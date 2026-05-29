@@ -102,14 +102,14 @@ impl ButterflyFlight {
     /// the REST 501 with the same wording).
     fn dispatch_for_pair(
         &self,
-        src_lon: f64,
-        src_lat: f64,
-        dst_lon: f64,
-        dst_lat: f64,
+        origin_lon: f64,
+        origin_lat: f64,
+        destination_lon: f64,
+        destination_lat: f64,
         profile: &str,
     ) -> std::result::Result<(Arc<ServerState>, String), Status> {
         self.regions
-            .dispatch_p2p_id(src_lon, src_lat, dst_lon, dst_lat, profile)
+            .dispatch_p2p_id(origin_lon, origin_lat, destination_lon, destination_lat, profile)
             .map_err(dispatch_to_status)
     }
 }
@@ -266,10 +266,10 @@ fn matrix_schema() -> Schema {
 
 fn route_batch_schema() -> Schema {
     Schema::new(vec![
-        Field::new("src_lon", DataType::Float64, false),
-        Field::new("src_lat", DataType::Float64, false),
-        Field::new("dst_lon", DataType::Float64, false),
-        Field::new("dst_lat", DataType::Float64, false),
+        Field::new("origin_lon", DataType::Float64, false),
+        Field::new("origin_lat", DataType::Float64, false),
+        Field::new("destination_lon", DataType::Float64, false),
+        Field::new("destination_lat", DataType::Float64, false),
         Field::new("duration_s", DataType::Float32, false),
         Field::new("distance_m", DataType::Float32, false),
         Field::new("geometry_wkb", DataType::Binary, false),
@@ -335,8 +335,8 @@ pub fn transit_bulk_schema() -> Schema {
         Field::new("error", DataType::Utf8, true),
         Field::new("origin_lon", DataType::Float64, false),
         Field::new("origin_lat", DataType::Float64, false),
-        Field::new("dest_lon", DataType::Float64, false),
-        Field::new("dest_lat", DataType::Float64, false),
+        Field::new("destination_lon", DataType::Float64, false),
+        Field::new("destination_lat", DataType::Float64, false),
         Field::new("depart_time", DataType::Utf8, true),
         Field::new("arrival_time", DataType::Utf8, true),
         Field::new("total_duration_s", DataType::UInt32, true),
@@ -352,7 +352,7 @@ pub fn transit_bulk_schema() -> Schema {
 
 #[derive(Deserialize)]
 struct MatrixParams {
-    sources: Vec<[f64; 2]>,
+    origins: Vec<[f64; 2]>,
     destinations: Vec<[f64; 2]>,
     /// Optional Euclidean pre-filter radius in kilometres. Accepts a
     /// positive number, the string "auto", or null/0 to disable.
@@ -365,14 +365,14 @@ struct MatrixParams {
 fn build_matrix_batch(
     matrix: &[u32],
     lat_matrix: Option<&[u32]>,
-    n_valid_src: usize,
+    n_valid_origin: usize,
     n_valid_dst: usize,
     valid_src_indices: &[usize],
     valid_dst_indices: &[usize],
     schema: Arc<Schema>,
     neighbor_mask: Option<&[Vec<u32>]>,
 ) -> std::result::Result<RecordBatch, Status> {
-    let capacity = n_valid_src * n_valid_dst;
+    let capacity = n_valid_origin * n_valid_dst;
     let mut src_idx = UInt32Builder::with_capacity(capacity);
     let mut tgt_idx = UInt32Builder::with_capacity(capacity);
     let mut dur_ms = UInt32Builder::with_capacity(capacity);
@@ -442,7 +442,7 @@ fn do_matrix(
     // lives in the INF-cell fallback below.
     type PrimarySnap = Option<((u32, f64, f64, f64), u32)>;
     let src_primary: Vec<PrimarySnap> = params
-        .sources
+        .origins
         .par_iter()
         .map(|&[lon, lat]| {
             super::snap_kbest::snap_primary_role(
@@ -472,17 +472,17 @@ fn do_matrix(
         })
         .collect();
 
-    let mut sources_rank = Vec::with_capacity(params.sources.len());
-    let mut valid_src = Vec::with_capacity(params.sources.len());
-    let mut sources_snapped = Vec::with_capacity(params.sources.len());
+    let mut origins_rank = Vec::with_capacity(params.origins.len());
+    let mut valid_origin = Vec::with_capacity(params.origins.len());
+    let mut origins_snapped = Vec::with_capacity(params.origins.len());
     for (i, snap) in src_primary.iter().enumerate() {
         if let Some(((_, plon, plat, _), rank)) = snap {
-            sources_rank.push(*rank);
-            valid_src.push(i);
-            sources_snapped.push((*plon, *plat));
+            origins_rank.push(*rank);
+            valid_origin.push(i);
+            origins_snapped.push((*plon, *plat));
         } else {
-            let [lon, lat] = params.sources[i];
-            sources_snapped.push((lon, lat));
+            let [lon, lat] = params.origins[i];
+            origins_snapped.push((lon, lat));
         }
     }
     let mut targets_rank = Vec::with_capacity(params.destinations.len());
@@ -499,7 +499,7 @@ fn do_matrix(
         }
     }
 
-    if sources_rank.is_empty() || targets_rank.is_empty() {
+    if origins_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
         let empty = RecordBatch::new_empty(schema);
         return Ok(Box::pin(stream::once(async move { Ok(empty) })));
@@ -509,15 +509,15 @@ fn do_matrix(
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
         RadiusParam::None => None,
         RadiusParam::Km(r) => Some(Arc::new(build_neighbors(
-            &sources_snapped,
+            &origins_snapped,
             &targets_snapped,
             r,
         ))),
         RadiusParam::Auto => {
-            let r = auto_radius_km(&sources_snapped, &targets_snapped);
+            let r = auto_radius_km(&origins_snapped, &targets_snapped);
             if r > 0.0 {
                 Some(Arc::new(build_neighbors(
-                    &sources_snapped,
+                    &origins_snapped,
                     &targets_snapped,
                     r,
                 )))
@@ -527,9 +527,9 @@ fn do_matrix(
         }
     };
 
-    let n_src = params.sources.len();
+    let n_origin = params.origins.len();
     let n_dst = params.destinations.len();
-    let n_valid_src = sources_rank.len();
+    let n_valid_origin = origins_rank.len();
     let n_valid_dst = targets_rank.len();
 
     // Bucket-M2M handles up to ~1M cells comfortably (4 MB matrix + a
@@ -540,9 +540,9 @@ fn do_matrix(
     // path still wins on memory.
     const BUCKET_M2M_THRESHOLD: usize = 1_000_000;
 
-    if n_src * n_dst <= BUCKET_M2M_THRESHOLD {
+    if n_origin * n_dst <= BUCKET_M2M_THRESHOLD {
         // ---- SMALL MATRIX: Bucket M2M, single batch ----
-        let use_parallel = n_valid_src * n_valid_dst >= 2500;
+        let use_parallel = n_valid_origin * n_valid_dst >= 2500;
         let up = &mode_data.up_adj_flat;
         let down = &mode_data.down_rev_flat;
 
@@ -569,15 +569,15 @@ fn do_matrix(
                 down,
                 up_lat,
                 dn_lat,
-                &sources_rank,
+                &origins_rank,
                 &targets_rank,
             );
             (m, Some(lm), st)
         } else {
             let (m, st) = if use_parallel {
-                table_bucket_parallel(n_nodes, up, down, &sources_rank, &targets_rank)
+                table_bucket_parallel(n_nodes, up, down, &origins_rank, &targets_rank)
             } else {
-                table_bucket_full_flat(n_nodes, up, down, &sources_rank, &targets_rank)
+                table_bucket_full_flat(n_nodes, up, down, &origins_rank, &targets_rank)
             };
             (m, None, st)
         };
@@ -595,11 +595,11 @@ fn do_matrix(
             let mut work: Vec<(usize, usize)> = Vec::new();
             let mut needed_src: HashSet<usize> = HashSet::new();
             let mut needed_dst: HashSet<usize> = HashSet::new();
-            for (i, _) in valid_src.iter().enumerate() {
+            for (i, _) in valid_origin.iter().enumerate() {
                 for (j, _) in valid_dst.iter().enumerate() {
                     if matrix[i * n_valid_dst + j] == u32::MAX {
                         work.push((i, j));
-                        needed_src.insert(valid_src[i]);
+                        needed_src.insert(valid_origin[i]);
                         needed_dst.insert(valid_dst[j]);
                     }
                 }
@@ -612,7 +612,7 @@ fn do_matrix(
             for (orig_idx, ranks) in needed_src_vec
                 .par_iter()
                 .map(|&oi| {
-                    let [lon, lat] = params.sources[oi];
+                    let [lon, lat] = params.origins[oi];
                     let snap = super::snap_kbest::snap_k_pair_role(
                         state,
                         &mode_data,
@@ -656,7 +656,7 @@ fn do_matrix(
             let patches: Vec<(usize, usize, u32)> = work
                 .par_iter()
                 .filter_map(|&(i, j)| {
-                    let src_orig_idx = valid_src[i];
+                    let src_orig_idx = valid_origin[i];
                     let dst_orig_idx = valid_dst[j];
                     let src_ranks = src_kbest_ranks.get(&src_orig_idx).unwrap_or(&empty);
                     let dst_ranks = dst_kbest_ranks.get(&dst_orig_idx).unwrap_or(&empty);
@@ -685,9 +685,9 @@ fn do_matrix(
         let batch = build_matrix_batch(
             &matrix,
             lat_matrix_opt.as_deref(),
-            n_valid_src,
+            n_valid_origin,
             n_valid_dst,
-            &valid_src,
+            &valid_origin,
             &valid_dst,
             schema,
             neighbor_mask.as_ref().map(|v| v.as_slice()),
@@ -706,14 +706,14 @@ fn do_matrix(
         let schema = Arc::new(matrix_schema());
         let neighbor_mask_bg = neighbor_mask.clone();
 
-        let src_tile_size = 1000usize.min(n_src).max(1);
+        let src_tile_size = 1000usize.min(n_origin).max(1);
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
 
-            let src_blocks: Vec<(usize, usize)> = (0..n_src)
+            let src_blocks: Vec<(usize, usize)> = (0..n_origin)
                 .step_by(src_tile_size)
-                .map(|s| (s, (s + src_tile_size).min(n_src)))
+                .map(|s| (s, (s + src_tile_size).min(n_origin)))
                 .collect();
 
             src_blocks.par_iter().for_each(|&(src_start, src_end)| {
@@ -723,9 +723,9 @@ fn do_matrix(
 
                 let mut block_src_ranks = Vec::new();
                 let mut block_src_orig = Vec::new();
-                for (vi, &oi) in valid_src.iter().enumerate() {
+                for (vi, &oi) in valid_origin.iter().enumerate() {
                     if oi >= src_start && oi < src_end {
-                        block_src_ranks.push(sources_rank[vi]);
+                        block_src_ranks.push(origins_rank[vi]);
                         block_src_orig.push(oi);
                     }
                 }
@@ -806,7 +806,7 @@ fn do_matrix(
 
 #[derive(Deserialize)]
 struct RouteBatchParams {
-    pairs: Vec<[f64; 4]>, // [src_lon, src_lat, dst_lon, dst_lat]
+    pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
 }
 
 /// #273: in-place WKB encoder — appends bytes to `out`. Clears `out`
@@ -846,10 +846,10 @@ struct RouteScratch {
 /// (source, destination) pair. Named fields — the previous tuple alias
 /// indexed by position (`r.6` for WKB) was brittle.
 struct RoutePairRow {
-    src_lon: f64,
-    src_lat: f64,
-    dst_lon: f64,
-    dst_lat: f64,
+    origin_lon: f64,
+    origin_lat: f64,
+    destination_lon: f64,
+    destination_lat: f64,
     duration_s: f32,
     distance_m: f32,
     wkb: Vec<u8>,
@@ -1069,19 +1069,19 @@ fn row_of(
 ) -> RoutePairRow {
     match result {
         Some((dur, dist, wkb)) => RoutePairRow {
-            src_lon: slon,
-            src_lat: slat,
-            dst_lon: dlon,
-            dst_lat: dlat,
+            origin_lon: slon,
+            origin_lat: slat,
+            destination_lon: dlon,
+            destination_lat: dlat,
             duration_s: dur,
             distance_m: dist,
             wkb,
         },
         None => RoutePairRow {
-            src_lon: slon,
-            src_lat: slat,
-            dst_lon: dlon,
-            dst_lat: dlat,
+            origin_lon: slon,
+            origin_lat: slat,
+            destination_lon: dlon,
+            destination_lat: dlat,
             duration_s: f32::NAN,
             distance_m: f32::NAN,
             wkb: Vec::new(),
@@ -1112,20 +1112,20 @@ fn emit_route_batch(
     n: usize,
     results: Vec<RoutePairRow>,
 ) -> EmitOutcome {
-    let mut src_lon_arr = Float64Builder::with_capacity(n);
-    let mut src_lat_arr = Float64Builder::with_capacity(n);
-    let mut dst_lon_arr = Float64Builder::with_capacity(n);
-    let mut dst_lat_arr = Float64Builder::with_capacity(n);
+    let mut origin_lon_arr = Float64Builder::with_capacity(n);
+    let mut origin_lat_arr = Float64Builder::with_capacity(n);
+    let mut destination_lon_arr = Float64Builder::with_capacity(n);
+    let mut destination_lat_arr = Float64Builder::with_capacity(n);
     let mut dur_arr = Float32Builder::with_capacity(n);
     let mut dist_arr = Float32Builder::with_capacity(n);
     let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
     let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
 
     for row in results {
-        src_lon_arr.append_value(row.src_lon);
-        src_lat_arr.append_value(row.src_lat);
-        dst_lon_arr.append_value(row.dst_lon);
-        dst_lat_arr.append_value(row.dst_lat);
+        origin_lon_arr.append_value(row.origin_lon);
+        origin_lat_arr.append_value(row.origin_lat);
+        destination_lon_arr.append_value(row.destination_lon);
+        destination_lat_arr.append_value(row.destination_lat);
         dur_arr.append_value(row.duration_s);
         dist_arr.append_value(row.distance_m);
         geom_arr.append_value(&row.wkb);
@@ -1134,10 +1134,10 @@ fn emit_route_batch(
     let batch = match RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(src_lon_arr.finish()) as ArrayRef,
-            Arc::new(src_lat_arr.finish()),
-            Arc::new(dst_lon_arr.finish()),
-            Arc::new(dst_lat_arr.finish()),
+            Arc::new(origin_lon_arr.finish()) as ArrayRef,
+            Arc::new(origin_lat_arr.finish()),
+            Arc::new(destination_lon_arr.finish()),
+            Arc::new(destination_lat_arr.finish()),
             Arc::new(dur_arr.finish()),
             Arc::new(dist_arr.finish()),
             Arc::new(geom_arr.finish()),
@@ -1363,10 +1363,10 @@ fn do_route_batch_blocking(
                                     first_panic_msg = Some(msg);
                                 }
                                 slots[d.slot] = Some(RoutePairRow {
-                                    src_lon: f64::NAN,
-                                    src_lat: f64::NAN,
-                                    dst_lon: f64::NAN,
-                                    dst_lat: f64::NAN,
+                                    origin_lon: f64::NAN,
+                                    origin_lat: f64::NAN,
+                                    destination_lon: f64::NAN,
+                                    destination_lat: f64::NAN,
                                     duration_s: f32::NAN,
                                     distance_m: f32::NAN,
                                     wkb: Vec::new(),
@@ -1623,7 +1623,7 @@ fn do_isochrone(
 /// predecessor-tracking batched PHAST variant.
 #[derive(Deserialize)]
 pub struct EdgesBatchParams {
-    pub pairs: Vec<[f64; 4]>, // [src_lon, src_lat, dst_lon, dst_lat]
+    pub pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
 }
 
 pub fn do_edges_batch(
@@ -1988,8 +1988,8 @@ pub fn do_transit_bulk(
             let mut error_b = StringBuilder::with_capacity(n, n * 16);
             let mut origin_lon_b = Float64Builder::with_capacity(n);
             let mut origin_lat_b = Float64Builder::with_capacity(n);
-            let mut dest_lon_b = Float64Builder::with_capacity(n);
-            let mut dest_lat_b = Float64Builder::with_capacity(n);
+            let mut destination_lon_b = Float64Builder::with_capacity(n);
+            let mut destination_lat_b = Float64Builder::with_capacity(n);
             let mut depart_b = StringBuilder::with_capacity(n, n * 8);
             let mut arrival_b = StringBuilder::with_capacity(n, n * 8);
             let mut total_dur_b = UInt32Builder::with_capacity(n);
@@ -2003,8 +2003,8 @@ pub fn do_transit_bulk(
                 query_idx_b.append_value(qi);
                 origin_lon_b.append_value(req.origin_lon);
                 origin_lat_b.append_value(req.origin_lat);
-                dest_lon_b.append_value(req.dest_lon);
-                dest_lat_b.append_value(req.dest_lat);
+                destination_lon_b.append_value(req.destination_lon);
+                destination_lat_b.append_value(req.destination_lat);
                 match result {
                     Ok(resp) => {
                         status_b.append_value("ok");
@@ -2049,8 +2049,8 @@ pub fn do_transit_bulk(
                     Arc::new(error_b.finish()),
                     Arc::new(origin_lon_b.finish()),
                     Arc::new(origin_lat_b.finish()),
-                    Arc::new(dest_lon_b.finish()),
-                    Arc::new(dest_lat_b.finish()),
+                    Arc::new(destination_lon_b.finish()),
+                    Arc::new(destination_lat_b.finish()),
                     Arc::new(depart_b.finish()),
                     Arc::new(arrival_b.finish()),
                     Arc::new(total_dur_b.finish()),
@@ -2439,12 +2439,12 @@ impl FlightService for ButterflyFlight {
                         Status::invalid_argument(format!("Invalid matrix params: {}", e))
                     })?;
 
-                if params.sources.is_empty() || params.destinations.is_empty() {
+                if params.origins.is_empty() || params.destinations.is_empty() {
                     return Err(Status::invalid_argument(
                         "sources and destinations must not be empty",
                     ));
                 }
-                for (i, [lon, lat]) in params.sources.iter().enumerate() {
+                for (i, [lon, lat]) in params.origins.iter().enumerate() {
                     validate_coord(*lon, *lat, &format!("source[{}]", i))?;
                 }
                 for (i, [lon, lat]) in params.destinations.iter().enumerate() {
@@ -2454,7 +2454,7 @@ impl FlightService for ButterflyFlight {
                 // Snap the first (source, destination) pair. If both
                 // sides snap to the same region we proceed; otherwise
                 // the dispatcher returns CrossRegion → 9 (FAILED_PRECONDITION).
-                let [s_lon, s_lat] = params.sources[0];
+                let [s_lon, s_lat] = params.origins[0];
                 let [d_lon, d_lat] = params.destinations[0];
                 let (state, _region) =
                     self.dispatch_for_pair(s_lon, s_lat, d_lon, d_lat, &parsed.profile)?;
@@ -2638,7 +2638,7 @@ impl FlightService for ButterflyFlight {
             },
             ActionType {
                 r#type: "route_batch".into(),
-                description: "Batch P2P routing with WKB geometry. Ticket: route_batch:<profile>:{\"pairs\":[[src_lon,src_lat,dst_lon,dst_lat],...]}".into(),
+                description: "Batch P2P routing with WKB geometry. Ticket: route_batch:<profile>:{\"pairs\":[[origin_lon,origin_lat,destination_lon,destination_lat],...]}".into(),
             },
             ActionType {
                 r#type: "isochrone".into(),
@@ -2646,15 +2646,15 @@ impl FlightService for ButterflyFlight {
             },
             ActionType {
                 r#type: "catchment".into(),
-                description: "Catchment areas via DoExchange. Input: (store_id:utf8, store_lon:f64, store_lat:f64, client_lon:f64, client_lat:f64). Descriptor cmd: catchment:<profile>:{\"percentiles\":[50,80],\"hull_mode\":\"isochrone\",\"remove_outliers\":true}".into(),
+                description: "Catchment areas via DoExchange. Input: (store_id:utf8, store_lon:f64, store_lat:f64, client_lon:f64, client_lat:f64). Descriptor cmd: catchment:<profile>:{\"percentiles\":[50,80],\"hull_shape\":\"isochrone\",\"remove_outliers\":true}".into(),
             },
             ActionType {
                 r#type: "transit_bulk".into(),
-                description: "Multimodal transit batch routing with Arrow IPC streaming (#119). Ticket: transit_bulk:<profile>:{\"queries\":[{\"origin_lon\":...,\"origin_lat\":...,\"dest_lon\":...,\"dest_lat\":...,\"depart\":\"08:00:00\",...},...]}. The profile is ignored — every query carries its own access_mode/egress_mode. Schema: query_idx, status, http_status, error, origin/dest lon/lat, depart_time, arrival_time, total_duration_s, access/egress_mode, legs_json (JSON-encoded leg array). Up to 500k queries per call.".into(),
+                description: "Multimodal transit batch routing with Arrow IPC streaming (#119). Ticket: transit_bulk:<profile>:{\"queries\":[{\"origin_lon\":...,\"origin_lat\":...,\"destination_lon\":...,\"destination_lat\":...,\"depart\":\"08:00:00\",...},...]}. The profile is ignored — every query carries its own access_mode/egress_mode. Schema: query_idx, status, http_status, error, origin/dest lon/lat, depart_time, arrival_time, total_duration_s, access/egress_mode, legs_json (JSON-encoded leg array). Up to 500k queries per call.".into(),
             },
             ActionType {
                 r#type: "edges_batch".into(),
-                description: "Unnested per-edge path output for bulk flow analytics (#125). Ticket: edges_batch:<profile>:{\"pairs\":[[src_lon,src_lat,dst_lon,dst_lat],...]}. Unlike route_batch (which returns WKB polyline geometry), edges_batch emits one row per traversed EBG edge with columns: query_idx, target_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m. Unreachable pairs emit a single row with null edge columns. Continuity invariant: consecutive rows within a query satisfy osm_node_to[i] == osm_node_from[i+1]. Up to 500k pairs per call.".into(),
+                description: "Unnested per-edge path output for bulk flow analytics (#125). Ticket: edges_batch:<profile>:{\"pairs\":[[origin_lon,origin_lat,destination_lon,destination_lat],...]}. Unlike route_batch (which returns WKB polyline geometry), edges_batch emits one row per traversed EBG edge with columns: query_idx, target_idx, edge_seq, osm_node_from, osm_node_to, duration_ms, distance_m. Unreachable pairs emit a single row with null edge columns. Continuity invariant: consecutive rows within a query satisfy osm_node_to[i] == osm_node_from[i+1]. Up to 500k pairs per call.".into(),
             },
         ];
 

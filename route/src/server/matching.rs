@@ -18,7 +18,7 @@ use super::types::{parse_mode, validate_coord};
 pub struct MatchRequest {
     /// GPS coordinates [[lon, lat], ...] -- at least 2 points
     #[schema(example = json!([[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]]))]
-    coordinates: Vec<[f64; 2]>,
+    points: Vec<[f64; 2]>,
     /// Transport mode (e.g. "car", "bike", "foot" -- depends on available models)
     #[serde(default = "default_match_mode")]
     #[schema(example = "car")]
@@ -103,7 +103,7 @@ pub struct MatchTracepoint {
     description = "Snaps a sequence of GPS coordinates to the most likely route on the road network\nusing HMM + Viterbi decoding (Newson & Krumm 2009).\n\nThe trace may be split into multiple sub-matchings if gaps are detected.\nMaximum 500 coordinates per request.",
     request_body(content = MatchRequest, description = "GPS trace coordinates with optional accuracy",
         example = json!({
-            "coordinates": [[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]],
+            "points": [[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]],
             "mode": "car",
             "gps_accuracy": 10.0,
             "steps": true
@@ -119,7 +119,7 @@ pub async fn match_trace_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<MatchRequest>,
 ) -> impl IntoResponse {
-    if req.coordinates.len() < 2 {
+    if req.points.len() < 2 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -138,7 +138,7 @@ pub async fn match_trace_handler(
     //     `map_match_multi_region`. When no overlay is loaded, fall
     //     back to the historical 501 response.
     let started_dispatch = std::time::Instant::now();
-    let coords_iter = req.coordinates.iter().map(|&[lon, lat]| (lon, lat));
+    let coords_iter = req.points.iter().map(|&[lon, lat]| (lon, lat));
     let (state, region_id): (Arc<ServerState>, String) =
         match regions.dispatch_many(coords_iter, &req.mode) {
             Ok(pair) => pair,
@@ -171,7 +171,7 @@ pub async fn match_trace_handler(
     };
 
     // Validate coordinates
-    if req.coordinates.len() < 2 {
+    if req.points.len() < 2 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -182,7 +182,7 @@ pub async fn match_trace_handler(
             .into_response();
     }
 
-    if req.coordinates.len() > 500 {
+    if req.points.len() > 500 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -193,7 +193,7 @@ pub async fn match_trace_handler(
             .into_response();
     }
 
-    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+    for (i, &[lon, lat]) in req.points.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
             return (
                 StatusCode::BAD_REQUEST,
@@ -255,7 +255,7 @@ pub async fn match_trace_handler(
 
     // Convert coordinates
     let coords: Vec<(f64, f64)> = req
-        .coordinates
+        .points
         .iter()
         .map(|&[lon, lat]| (lon, lat))
         .collect();
@@ -432,7 +432,7 @@ async fn cross_region_match_inner(
     started_dispatch: std::time::Instant,
 ) -> axum::response::Response {
     // Validate inputs (same checks as the single-region path).
-    if req.coordinates.len() < 2 {
+    if req.points.len() < 2 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -442,7 +442,7 @@ async fn cross_region_match_inner(
         )
             .into_response();
     }
-    if req.coordinates.len() > 500 {
+    if req.points.len() > 500 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -452,7 +452,7 @@ async fn cross_region_match_inner(
         )
             .into_response();
     }
-    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+    for (i, &[lon, lat]) in req.points.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
             return (
                 StatusCode::BAD_REQUEST,
@@ -511,7 +511,7 @@ async fn cross_region_match_inner(
     }
 
     let coords: Vec<(f64, f64)> = req
-        .coordinates
+        .points
         .iter()
         .map(|&[lon, lat]| (lon, lat))
         .collect();

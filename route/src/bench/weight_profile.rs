@@ -1157,8 +1157,8 @@ fn compute_bbox(state: &ServerState) -> Bbox {
 struct OdPair {
     origin_lon: f64,
     origin_lat: f64,
-    dest_lon: f64,
-    dest_lat: f64,
+    destination_lon: f64,
+    destination_lat: f64,
 }
 
 /// 10 100 OD pairs drawn uniformly from the bbox: 100 from a fixed
@@ -1192,8 +1192,8 @@ fn rng_od_pair(rng: &mut StdRng, bbox: &Bbox) -> OdPair {
     OdPair {
         origin_lon: rng.random_range(bbox.min_lon..bbox.max_lon),
         origin_lat: rng.random_range(bbox.min_lat..bbox.max_lat),
-        dest_lon: rng.random_range(bbox.min_lon..bbox.max_lon),
-        dest_lat: rng.random_range(bbox.min_lat..bbox.max_lat),
+        destination_lon: rng.random_range(bbox.min_lon..bbox.max_lon),
+        destination_lat: rng.random_range(bbox.min_lat..bbox.max_lat),
     }
 }
 
@@ -1211,7 +1211,7 @@ fn snap_od_pairs(state: &ServerState, pairs: &[OdPair], mode_idx: u8) -> Vec<(u3
             let src_orig = state
                 .snap_index
                 .snap(p.origin_lon, p.origin_lat, mode_idx)?;
-            let dst_orig = state.snap_index.snap(p.dest_lon, p.dest_lat, mode_idx)?;
+            let dst_orig = state.snap_index.snap(p.destination_lon, p.destination_lat, mode_idx)?;
             let src_rank = mode_data.rank_for_original(src_orig)?;
             let dst_rank = mode_data.rank_for_original(dst_orig)?;
             Some((src_rank, dst_rank))

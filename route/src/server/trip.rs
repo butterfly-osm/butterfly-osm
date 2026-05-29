@@ -347,7 +347,7 @@ fn brute_force_3(
 pub struct TripRequest {
     /// Waypoint coordinates [[lon, lat], ...] - 2 to 100 waypoints
     #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]]))]
-    pub coordinates: Vec<[f64; 2]>,
+    pub points: Vec<[f64; 2]>,
     /// Transport mode (e.g. "car", "bike", "foot" — depends on available models)
     #[serde(default = "default_mode")]
     #[schema(example = "car")]
@@ -449,7 +449,7 @@ pub struct TripLeg {
     description = "Takes 2-100 waypoints and returns the optimized visiting order that minimizes total travel time.\n\nAlgorithm: multi-start nearest-neighbor greedy + 2-opt + or-opt local search on an N×N duration matrix.\n\nSet `round_trip: false` for open-jaw trips (no return to start).",
     request_body(content = TripRequest, description = "Waypoints, mode, and options",
         example = json!({
-            "coordinates": [[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]],
+            "points": [[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]],
             "mode": "car",
             "round_trip": true,
             "annotations": "duration,distance"
@@ -467,7 +467,7 @@ pub async fn trip_handler(
     // Region dispatch (#91): the trip's coordinate set must all snap
     // into one region. Mixed-region trips require the cross-region
     // overlay (PR C / Phase 2) and are rejected with 501 here.
-    if req.coordinates.is_empty() {
+    if req.points.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -478,7 +478,7 @@ pub async fn trip_handler(
             .into_response();
     }
     let started_dispatch = std::time::Instant::now();
-    let coords_iter = req.coordinates.iter().map(|&[lon, lat]| (lon, lat));
+    let coords_iter = req.points.iter().map(|&[lon, lat]| (lon, lat));
     let (state, region_id): (Arc<ServerState>, String) =
         match regions.dispatch_many(coords_iter, &req.mode) {
             Ok(pair) => pair,
@@ -508,7 +508,7 @@ pub async fn trip_handler(
     };
 
     // Validate coordinates
-    for (i, &[lon, lat]) in req.coordinates.iter().enumerate() {
+    for (i, &[lon, lat]) in req.points.iter().enumerate() {
         if !(-180.0..=180.0).contains(&lon)
             || !(-90.0..=90.0).contains(&lat)
             || lon.is_nan()
@@ -526,7 +526,7 @@ pub async fn trip_handler(
     }
 
     // Validate waypoint count
-    let n = req.coordinates.len();
+    let n = req.points.len();
     if n < 2 {
         return (
             StatusCode::BAD_REQUEST,
@@ -592,7 +592,7 @@ pub async fn trip_handler(
     };
 
     // Extract owned values before the spawn_blocking closure
-    let coordinates = req.coordinates;
+    let coordinates = req.points;
     let round_trip = req.round_trip;
     let mode_str = req.mode;
 

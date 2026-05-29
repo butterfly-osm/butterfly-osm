@@ -23,16 +23,16 @@ use super::unpack::unpack_path;
 pub struct RouteRequest {
     /// Source longitude
     #[schema(example = 4.3517)]
-    src_lon: f64,
+    origin_lon: f64,
     /// Source latitude
     #[schema(example = 50.8503)]
-    src_lat: f64,
+    origin_lat: f64,
     /// Destination longitude
     #[schema(example = 4.4017)]
-    dst_lon: f64,
+    destination_lon: f64,
     /// Destination latitude
     #[schema(example = 50.8603)]
-    dst_lat: f64,
+    destination_lat: f64,
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
@@ -202,10 +202,10 @@ pub struct StepManeuver {
     summary = "Calculate route between two points",
     description = "Computes the shortest path between source and destination using edge-based CCH.\nSupports turn-by-turn instructions with road names and alternative routes.\n\nContent negotiation:\n- `Accept: application/json` (default) -> JSON response\n- `Accept: application/gpx+xml` -> GPX 1.1 XML track",
     params(
-        ("src_lon" = f64, Query, description = "Source longitude", example = 4.3517),
-        ("src_lat" = f64, Query, description = "Source latitude", example = 50.8503),
-        ("dst_lon" = f64, Query, description = "Destination longitude", example = 4.4017),
-        ("dst_lat" = f64, Query, description = "Destination latitude", example = 50.8603),
+        ("origin_lon" = f64, Query, description = "Source longitude", example = 4.3517),
+        ("origin_lat" = f64, Query, description = "Source latitude", example = 50.8503),
+        ("destination_lon" = f64, Query, description = "Destination longitude", example = 4.4017),
+        ("destination_lat" = f64, Query, description = "Destination latitude", example = 50.8603),
         ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot — depends on available models)", example = "car"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
         ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
@@ -227,10 +227,10 @@ pub async fn route_handler(
     Query(req): Query<RouteRequest>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_coord(req.src_lon, req.src_lat, "source") {
+    if let Err(e) = validate_coord(req.origin_lon, req.origin_lat, "source") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
-    if let Err(e) = validate_coord(req.dst_lon, req.dst_lat, "destination") {
+    if let Err(e) = validate_coord(req.destination_lon, req.destination_lat, "destination") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
@@ -240,10 +240,10 @@ pub async fn route_handler(
     // existing intra-region implementation below.
     let started_dispatch = std::time::Instant::now();
     let (state, region_id): (Arc<ServerState>, String) = match regions.dispatch_p2p_with_overlay(
-        req.src_lon,
-        req.src_lat,
-        req.dst_lon,
-        req.dst_lat,
+        req.origin_lon,
+        req.origin_lat,
+        req.destination_lon,
+        req.destination_lat,
         &req.mode,
     ) {
         Ok(super::regions::P2pPlan::SameRegion { state, region }) => (state, region),
@@ -514,8 +514,8 @@ pub async fn route_handler(
     // queries now start at K=1 too and only escalate on failure.
     let mut src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
         match state.snap_index.snap_with_bearing_filtered_role(
-            req.src_lon,
-            req.src_lat,
+            req.origin_lon,
+            req.origin_lat,
             mode.0,
             angle,
             range,
@@ -527,8 +527,8 @@ pub async fn route_handler(
         }
     } else {
         match state.snap_index.snap_with_info_filtered_role(
-            req.src_lon,
-            req.src_lat,
+            req.origin_lon,
+            req.origin_lat,
             mode.0,
             Some(&snap_mask),
             src_role_filter,
@@ -549,8 +549,8 @@ pub async fn route_handler(
 
     let mut dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
         match state.snap_index.snap_with_bearing_filtered_role(
-            req.dst_lon,
-            req.dst_lat,
+            req.destination_lon,
+            req.destination_lat,
             mode.0,
             angle,
             range,
@@ -562,8 +562,8 @@ pub async fn route_handler(
         }
     } else {
         match state.snap_index.snap_with_info_filtered_role(
-            req.dst_lon,
-            req.dst_lat,
+            req.destination_lon,
+            req.destination_lat,
             mode.0,
             Some(&snap_mask),
             dst_role_filter,
@@ -832,16 +832,16 @@ pub async fn route_handler(
         && dst_candidates.len() == 1
     {
         let mut new_src = state.snap_index.snap_k_with_info_filtered_role(
-            req.src_lon,
-            req.src_lat,
+            req.origin_lon,
+            req.origin_lat,
             mode.0,
             SNAP_K,
             Some(&snap_mask),
             src_role_filter,
         );
         let mut new_dst = state.snap_index.snap_k_with_info_filtered_role(
-            req.dst_lon,
-            req.dst_lat,
+            req.destination_lon,
+            req.destination_lat,
             mode.0,
             SNAP_K,
             Some(&snap_mask),
@@ -1176,8 +1176,8 @@ fn cross_region_route_inner(
     let dst_role_filter = SnapRole::Dst.role_filter(&dst_mode_data);
 
     let (src_orig, src_snap) = match src_state.snap_index.snap_with_info_filtered_role(
-        req.src_lon,
-        req.src_lat,
+        req.origin_lon,
+        req.origin_lat,
         src_mode.0,
         None,
         src_role_filter,
@@ -1194,8 +1194,8 @@ fn cross_region_route_inner(
         }
     };
     let (dst_orig, dst_snap) = match dst_state.snap_index.snap_with_info_filtered_role(
-        req.dst_lon,
-        req.dst_lat,
+        req.destination_lon,
+        req.destination_lat,
         dst_mode.0,
         None,
         dst_role_filter,

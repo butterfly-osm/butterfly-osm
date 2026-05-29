@@ -928,13 +928,13 @@ impl RegionsState {
     /// [`DispatchError::CrossRegion`] which the caller renders as 501.
     pub fn dispatch_p2p(
         &self,
-        src_lon: f64,
-        src_lat: f64,
-        dst_lon: f64,
-        dst_lat: f64,
+        origin_lon: f64,
+        origin_lat: f64,
+        destination_lon: f64,
+        destination_lat: f64,
         mode_name: &str,
     ) -> Result<Arc<ServerState>, DispatchError> {
-        self.dispatch_p2p_id(src_lon, src_lat, dst_lon, dst_lat, mode_name)
+        self.dispatch_p2p_id(origin_lon, origin_lat, destination_lon, destination_lat, mode_name)
             .map(|(s, _)| s)
     }
 
@@ -944,10 +944,10 @@ impl RegionsState {
     /// returned index.
     pub fn dispatch_p2p_with_idx(
         &self,
-        src_lon: f64,
-        src_lat: f64,
-        dst_lon: f64,
-        dst_lat: f64,
+        origin_lon: f64,
+        origin_lat: f64,
+        destination_lon: f64,
+        destination_lat: f64,
         mode_name: &str,
     ) -> Result<(Arc<ServerState>, String, usize), DispatchError> {
         if !self.has_mode(mode_name) {
@@ -956,8 +956,8 @@ impl RegionsState {
                 available: self.available_modes(),
             });
         }
-        let src = self.snap_winner(src_lon, src_lat, mode_name);
-        let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
+        let src = self.snap_winner(origin_lon, origin_lat, mode_name);
+        let dst = self.snap_winner(destination_lon, destination_lat, mode_name);
         match (src, dst) {
             (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok((
                 self.regions[s_idx].state(),
@@ -975,15 +975,15 @@ impl RegionsState {
             }
             (None, _) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Source,
-                lon: src_lon,
-                lat: src_lat,
+                lon: origin_lon,
+                lat: origin_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
             (_, None) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Destination,
-                lon: dst_lon,
-                lat: dst_lat,
+                lon: destination_lon,
+                lat: destination_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
@@ -996,10 +996,10 @@ impl RegionsState {
     /// without parsing log lines.
     pub fn dispatch_p2p_id(
         &self,
-        src_lon: f64,
-        src_lat: f64,
-        dst_lon: f64,
-        dst_lat: f64,
+        origin_lon: f64,
+        origin_lat: f64,
+        destination_lon: f64,
+        destination_lat: f64,
         mode_name: &str,
     ) -> Result<(Arc<ServerState>, String), DispatchError> {
         if !self.has_mode(mode_name) {
@@ -1008,8 +1008,8 @@ impl RegionsState {
                 available: self.available_modes(),
             });
         }
-        let src = self.snap_winner(src_lon, src_lat, mode_name);
-        let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
+        let src = self.snap_winner(origin_lon, origin_lat, mode_name);
+        let dst = self.snap_winner(destination_lon, destination_lat, mode_name);
         match (src, dst) {
             (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => {
                 Ok((self.regions[s_idx].state(), self.regions[s_idx].id.clone()))
@@ -1025,15 +1025,15 @@ impl RegionsState {
             }
             (None, _) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Source,
-                lon: src_lon,
-                lat: src_lat,
+                lon: origin_lon,
+                lat: origin_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
             (_, None) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Destination,
-                lon: dst_lon,
-                lat: dst_lat,
+                lon: destination_lon,
+                lat: destination_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
@@ -1212,10 +1212,10 @@ impl RegionsState {
     /// keeps existing handlers that haven't been migrated correct.
     pub fn dispatch_p2p_with_overlay(
         &self,
-        src_lon: f64,
-        src_lat: f64,
-        dst_lon: f64,
-        dst_lat: f64,
+        origin_lon: f64,
+        origin_lat: f64,
+        destination_lon: f64,
+        destination_lat: f64,
         mode_name: &str,
     ) -> Result<P2pPlan, DispatchError> {
         if !self.has_mode(mode_name) {
@@ -1224,8 +1224,8 @@ impl RegionsState {
                 available: self.available_modes(),
             });
         }
-        let src = self.snap_winner(src_lon, src_lat, mode_name);
-        let dst = self.snap_winner(dst_lon, dst_lat, mode_name);
+        let src = self.snap_winner(origin_lon, origin_lat, mode_name);
+        let dst = self.snap_winner(destination_lon, destination_lat, mode_name);
         match (src, dst) {
             (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => Ok(P2pPlan::SameRegion {
                 state: self.regions[s_idx].state(),
@@ -1253,15 +1253,15 @@ impl RegionsState {
             }
             (None, _) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Source,
-                lon: src_lon,
-                lat: src_lat,
+                lon: origin_lon,
+                lat: origin_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
             (_, None) => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Destination,
-                lon: dst_lon,
-                lat: dst_lat,
+                lon: destination_lon,
+                lat: destination_lat,
                 mode: mode_name.to_string(),
                 tried: self.region_ids().into_iter().collect(),
             }),
@@ -1316,9 +1316,9 @@ pub enum RegionAffinity {
 /// right input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
-    /// Source / origin coordinate (e.g. `src_lon`, `src_lat`).
+    /// Source / origin coordinate (e.g. `origin_lon`, `origin_lat`).
     Source,
-    /// Destination / target coordinate (e.g. `dst_lon`, `dst_lat`).
+    /// Destination / target coordinate (e.g. `destination_lon`, `destination_lat`).
     Destination,
     /// Single-coordinate request (e.g. `/nearest`, `/isochrone`,
     /// `/height`). The endpoint distinction does not apply.

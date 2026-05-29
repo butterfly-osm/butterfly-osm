@@ -80,8 +80,8 @@ fn default_access_params(mode: &str) -> (u32, usize, f64) {
 pub struct TransitRequest {
     pub origin_lon: f64,
     pub origin_lat: f64,
-    pub dest_lon: f64,
-    pub dest_lat: f64,
+    pub destination_lon: f64,
+    pub destination_lat: f64,
     /// HH:MM or HH:MM:SS in service-local time. Default: "08:00:00".
     #[serde(default)]
     pub depart: Option<String>,
@@ -254,8 +254,8 @@ pub async fn transit_handler(
     let (state, region_id) = match regions.dispatch_p2p_id(
         req.origin_lon,
         req.origin_lat,
-        req.dest_lon,
-        req.dest_lat,
+        req.destination_lon,
+        req.destination_lat,
         &access_mode,
     ) {
         Ok(pair) => pair,
@@ -504,7 +504,7 @@ pub fn compute_transit_journey_with_access(
     // Per-query destination validation (mirrors the pre-#120 single
     // function: a bad dest is rejected without affecting any other
     // query in the same bulk group).
-    if !(-180.0..=180.0).contains(&req.dest_lon) || !(-90.0..=90.0).contains(&req.dest_lat) {
+    if !(-180.0..=180.0).contains(&req.destination_lon) || !(-90.0..=90.0).contains(&req.destination_lat) {
         return Err(bad_request("invalid coordinates"));
     }
 
@@ -594,7 +594,7 @@ pub fn compute_transit_journey_with_access(
     let stop_index = snapshot.stop_index.as_ref();
 
     let egress_candidates =
-        stop_index.k_nearest(req.dest_lon, req.dest_lat, max_egress_m, max_access_stops);
+        stop_index.k_nearest(req.destination_lon, req.destination_lat, max_egress_m, max_access_stops);
     if egress_candidates.is_empty() {
         return Err(not_found(&format!(
             "no transit stops within max_egress_m ({max_egress_m} m, mode={egress_mode}) of destination"
@@ -604,8 +604,8 @@ pub fn compute_transit_journey_with_access(
     let dest_ranks = snap_stop_ranks_on_mode(&egress_candidates, timetable, state, egress_idx);
     // Destination is the target for the egress leg (walking IN from stops).
     let dest_source_rank = snap_to_rank_role(
-        req.dest_lon,
-        req.dest_lat,
+        req.destination_lon,
+        req.destination_lat,
         state,
         egress_idx,
         super::types::SnapRole::Dst,
@@ -820,7 +820,7 @@ pub fn compute_transit_journey_with_access(
     // with the egress mode.
     let last_stop = &timetable.stops[journey.final_stop as usize];
     let egress_from = [last_stop.lon, last_stop.lat];
-    let egress_to = [req.dest_lon, req.dest_lat];
+    let egress_to = [req.destination_lon, req.destination_lat];
     let (egress_distance_m, egress_geometry) = if geometry_full {
         match build_routed_road_leg(
             state,
@@ -853,7 +853,7 @@ pub fn compute_transit_journey_with_access(
 
     Ok(TransitResponse {
         origin: [access.origin_lon, access.origin_lat],
-        destination: [req.dest_lon, req.dest_lat],
+        destination: [req.destination_lon, req.destination_lat],
         depart_time: format_hms(depart_s),
         arrival_time: format_hms(total_arrival_s),
         total_duration_s,
@@ -1027,8 +1027,8 @@ pub async fn transit_bulk_handler(
     let (state, region_id, winner_idx) = match regions.dispatch_p2p_with_idx(
         req.queries[0].origin_lon,
         req.queries[0].origin_lat,
-        req.queries[0].dest_lon,
-        req.queries[0].dest_lat,
+        req.queries[0].destination_lon,
+        req.queries[0].destination_lat,
         &first_access_mode,
     ) {
         Ok(triple) => triple,
@@ -1053,8 +1053,8 @@ pub async fn transit_bulk_handler(
                 crate::server::regions::Endpoint::Source,
             ),
             (
-                q.dest_lon,
-                q.dest_lat,
+                q.destination_lon,
+                q.destination_lat,
                 crate::server::regions::Endpoint::Destination,
             ),
         ] {
