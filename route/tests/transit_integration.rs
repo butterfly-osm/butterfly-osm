@@ -720,8 +720,8 @@ fn base_req(origin: (f64, f64), dest: (f64, f64)) -> TransitRequest {
     TransitRequest {
         origin_lon: origin.0,
         origin_lat: origin.1,
-        dest_lon: dest.0,
-        dest_lat: dest.1,
+        destination_lon: dest.0,
+        destination_lat: dest.1,
         depart: Some("08:00:00".to_string()),
         access_mode: Some("foot".to_string()),
         egress_mode: Some("foot".to_string()),

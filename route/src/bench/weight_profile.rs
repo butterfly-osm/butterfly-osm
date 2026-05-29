@@ -1211,7 +1211,9 @@ fn snap_od_pairs(state: &ServerState, pairs: &[OdPair], mode_idx: u8) -> Vec<(u3
             let src_orig = state
                 .snap_index
                 .snap(p.origin_lon, p.origin_lat, mode_idx)?;
-            let dst_orig = state.snap_index.snap(p.destination_lon, p.destination_lat, mode_idx)?;
+            let dst_orig = state
+                .snap_index
+                .snap(p.destination_lon, p.destination_lat, mode_idx)?;
             let src_rank = mode_data.rank_for_original(src_orig)?;
             let dst_rank = mode_data.rank_for_original(dst_orig)?;
             Some((src_rank, dst_rank))

@@ -37,6 +37,7 @@ pub mod catchment;
 pub mod cross_region;
 pub mod edge_geom;
 pub mod elevation;
+pub mod evictable;
 pub mod exclude;
 pub mod overlay;
 // tonic::Status is 176 bytes — the canonical gRPC error type.
@@ -541,10 +542,11 @@ pub async fn serve(
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
 
-    // #400 — lean-at-rest: spawn the idle compactor. Periodically
-    // issues `rayon::broadcast` so each worker drops its per-thread
-    // routing state (~80 MB bucket-M2M + ~60 MB query state +
-    // PHAST per mode) when it hasn't served a query in
+    // #400/#409/#410 — lean-at-rest: spawn the idle compactor. Periodically
+    // walks the process-global `evictable` registry (thread-agnostic, so it
+    // reaches Tokio runtime, spawn_blocking, and rayon threads alike) and
+    // drops each worker's per-thread routing scratch (~80 MB bucket-M2M +
+    // ~60 MB query state + PHAST per mode) when its cell has been idle for
     // `idle_compact_secs`. Disabled with `--idle-compact-secs 0`.
     {
         let secs = idle_compact_secs();

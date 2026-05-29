@@ -1,45 +1,31 @@
-//! #400 — lean-at-rest: drop per-worker thread-local caches when idle.
+//! #400/#409/#410 — lean-at-rest: free per-thread query scratch when idle.
 //!
-//! After a heavy /table or /isochrone query, every active rayon worker
-//! retains its per-thread state (`SearchState`, `PhastState`, etc.) —
-//! tens to hundreds of MB per worker, never released for the rest of
-//! the process lifetime. The user wants the server lean at rest so the
-//! OS can give the RAM to other processes during idle periods.
+//! After a heavy /route, /table or /isochrone query the executing
+//! thread retains its per-thread state (`CchQueryState`, `PhastSlots`,
+//! bucket-M2M `SearchState`, etc.) — tens to hundreds of MB per thread,
+//! never released for the rest of the process lifetime. The user wants
+//! the server lean at rest so the OS can reclaim that RAM during idle.
 //!
 //! ## Mechanism
 //!
-//! A background thread sleeps `poll_interval`, then issues a
-//! `rayon::broadcast` so a closure runs on every rayon worker. Each
-//! worker checks its own thread-local `LAST_TOUCH` timestamp and, if
-//! it hasn't been touched in `threshold`, drops its caches.
+//! A background thread sleeps `poll_interval`, then calls
+//! [`crate::server::evictable::evict_idle`], which walks a process-
+//! global registry of [`crate::server::evictable::EvictableCell`]s —
+//! one per (scratch cell, thread). Each cell carries its own last-touch
+//! timestamp (stamped on the query hot path) and a `try_lock`-guarded
+//! slot; a cell idle longer than `threshold` is freed cross-thread.
 //!
-//! Workers update `LAST_TOUCH` at the entry of every routing function
-//! they execute (see e.g.
-//! `crate::matrix::bucket_ch::touch_idle_marker`). The check is
-//! cheap (one thread-local read + one timestamp compare) and only
-//! fires when the compactor wakes up — not on every query.
+//! ## Why a registry, not `rayon::broadcast` (#409/#410)
 //!
-//! The drop side per module:
-//! - `matrix::bucket_ch::try_drop_idle_state` — bucket-M2M
-//!   SearchStates + bucket-items Vecs + 2-channel equivalents
-//!   (~80 MB / worker on Belgium)
-//! - `server::query::try_drop_idle_state` — /route CchQueryState
-//!   (~60 MB / worker)
-//! - `server::isochrone_handler::try_drop_idle_phast` — PHAST
-//!   forward + reverse states per mode (~30-60 MB / worker per
-//!   mode populated)
-//! - `transit::raptor::try_drop_idle_state` — RAPTOR scratch
-//!   (small relative to others)
+//! The previous design broadcast a drop closure across the **rayon
+//! pool** only. But `/route` and `/isochrone` run *inline on Tokio
+//! runtime workers*, and small-N `/table` / `/trip` / `/transit_bulk`
+//! run on Tokio's `spawn_blocking` pool — none are rayon workers, so
+//! their scratch was never reclaimed (the real 27 → 48 Gi steady-state
+//! growth). The registry is thread-agnostic and reaches them all.
 //!
-//! ## Out of scope (still RAM after compact)
-//!
-//! - `SEQ_STATE_LAT` / `SEQUENTIAL_ENGINE` (small-N fast-path
-//!   thread-locals on the handler thread, not on rayon workers).
-//!   `rayon::broadcast` reaches rayon workers only; handler-thread
-//!   eviction would need a separate mechanism. ~60 MB total —
-//!   accepted for v1.
-//! - Container mmap pages — kernel evicts those itself under
-//!   memory pressure; nothing to do here.
+//! Container mmap pages stay out of scope — the kernel evicts those
+//! itself under memory pressure.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,37 +109,18 @@ fn run(
 }
 
 fn evict_all_workers(threshold: Duration) {
-    // `rayon::broadcast` runs `op` once on every worker thread in the
-    // global rayon pool. The closure must be `Sync + Fn(BroadcastContext) -> R`.
-    let drops_bucket = std::sync::atomic::AtomicUsize::new(0);
-    let drops_query = std::sync::atomic::AtomicUsize::new(0);
-    let drops_phast = std::sync::atomic::AtomicUsize::new(0);
-    let drops_raptor = std::sync::atomic::AtomicUsize::new(0);
-    rayon::broadcast(|_| {
-        if crate::matrix::bucket_ch::try_drop_idle_state(threshold) {
-            drops_bucket.fetch_add(1, Ordering::Relaxed);
-        }
-        if crate::server::query::try_drop_idle_state(threshold) {
-            drops_query.fetch_add(1, Ordering::Relaxed);
-        }
-        if crate::server::isochrone_handler::try_drop_idle_phast(threshold) {
-            drops_phast.fetch_add(1, Ordering::Relaxed);
-        }
-        if crate::transit::raptor::try_drop_idle_state(threshold) {
-            drops_raptor.fetch_add(1, Ordering::Relaxed);
-        }
-    });
-    let total = drops_bucket.load(Ordering::Relaxed)
-        + drops_query.load(Ordering::Relaxed)
-        + drops_phast.load(Ordering::Relaxed)
-        + drops_raptor.load(Ordering::Relaxed);
-    if total > 0 {
+    // #409/#410: a single thread-agnostic registry walk. Replaces the
+    // old `rayon::broadcast`, which only reached the rayon pool — it
+    // could not free the query/PHAST/bucket scratch that lives on Tokio
+    // runtime + spawn_blocking threads (where `/route`, `/isochrone`,
+    // and small-N `/table` actually execute). The registry holds a Weak
+    // to every per-thread cell regardless of pool, so this frees them
+    // all and prunes cells whose owning thread has died.
+    let freed = crate::server::evictable::evict_idle(threshold);
+    if freed > 0 {
         tracing::info!(
-            bucket = drops_bucket.load(Ordering::Relaxed),
-            query = drops_query.load(Ordering::Relaxed),
-            phast = drops_phast.load(Ordering::Relaxed),
-            raptor = drops_raptor.load(Ordering::Relaxed),
-            "#400 idle-compactor: dropped per-worker caches"
+            cells_freed = freed,
+            "#409 idle-compactor: freed idle per-thread query scratch"
         );
     }
 }
