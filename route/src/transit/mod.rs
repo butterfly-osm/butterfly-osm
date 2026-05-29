@@ -90,6 +90,68 @@ impl TransitState {
     }
 }
 
+/// #412: build (and persist to `transit/transfers.bin`) the ULTRA
+/// transfer graph for one already-loaded region, WITHOUT installing the
+/// transit subsystem. Used by the standalone `transit-build-transfers`
+/// CLI so the `build-cch` init container can pre-bake the cache (it runs
+/// as root with a writable `/data`); the serving pod then loads the
+/// cache in seconds and never pays the multi-minute build on its boot
+/// path.
+///
+/// It replicates serve's transit-config discovery (per-region
+/// `<data>/<region>/transit/` then the global `<data>/transit/`
+/// fallback) and calls the exact same [`load_from_disk`] the server
+/// uses, so the provenance — and therefore the cache path and the
+/// serve-side cache HIT — match byte-for-byte. Unlike the serve path, a
+/// missing cache file after the build is treated as fatal (the whole
+/// point is to produce it), which catches the read-only-mount / bad-perms
+/// failure mode that the non-fatal serve path deliberately swallows.
+pub fn build_transfers_cache_from_state(
+    state: &crate::server::state::ServerState,
+    data_dir_for_transit: &std::path::Path,
+    region_id: &str,
+) -> anyhow::Result<()> {
+    let region_lower = region_id.to_lowercase();
+    let per_region_dir = data_dir_for_transit.join(&region_lower);
+
+    let cfg = match crate::transit::config::load(&per_region_dir)? {
+        Some(cfg) => cfg,
+        None => crate::transit::config::load(data_dir_for_transit)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "no transit/ directory found under {} or {}",
+                per_region_dir.display(),
+                data_dir_for_transit.display()
+            )
+        })?,
+    };
+
+    let foot_idx = state
+        .mode_lookup
+        .get("foot")
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("foot mode not loaded; pass `--modes foot`"))?;
+    let foot = state.get_mode(crate::model::types::Mode(foot_idx));
+
+    let cache_path = cfg.transfers_cache_path();
+    let snapshot = load_from_disk(&cfg, &foot, foot_idx, &state.snap_index)?;
+
+    anyhow::ensure!(
+        cache_path.exists(),
+        "transfer build completed but the cache was not written to {} \
+         (read-only volume or bad permissions?)",
+        cache_path.display()
+    );
+    tracing::info!(
+        region = region_id,
+        path = %cache_path.display(),
+        stops = snapshot.timetable.n_stops(),
+        routes = snapshot.timetable.n_routes(),
+        trips = snapshot.timetable.n_total_trips,
+        "transit-build-transfers: transfer-graph cache written"
+    );
+    Ok(())
+}
+
 /// Load a transit snapshot from whatever GTFS zips are present on disk.
 ///
 /// Called at server startup. The behaviour is:

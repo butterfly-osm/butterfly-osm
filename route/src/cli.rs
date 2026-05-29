@@ -540,6 +540,35 @@ pub enum Commands {
         realtime: bool,
     },
 
+    /// #412: pre-build and cache the ULTRA transfer graph
+    /// (`transit/transfers.bin`) so the serving pod loads it in seconds
+    /// instead of paying the multi-minute build on its boot path.
+    ///
+    /// Run this in the builder (e.g. the `build-cch` init container,
+    /// which has a writable `/data`) after `pack` + `transit-fetch`.
+    /// It loads the container's foot CCH + snap index, merges the
+    /// on-disk feeds, builds the transfer graph, and writes the cache
+    /// with the SAME provenance the server expects — so `serve` gets a
+    /// cache HIT. Loading only `--modes foot` keeps memory minimal.
+    TransitBuildTransfers {
+        /// Path to a single `*.butterfly` container (as for `serve --data`).
+        #[arg(long, conflicts_with = "data_dir")]
+        data: Option<PathBuf>,
+
+        /// Legacy step-tree data directory (as for `serve --data-dir`).
+        #[arg(long, conflicts_with = "data")]
+        data_dir: Option<PathBuf>,
+
+        /// Modes to load. Only `foot` is required for the transfer
+        /// build; defaults to `foot` to minimise CCH residency.
+        #[arg(long, default_value = "foot")]
+        modes: String,
+
+        /// Log format: "text" (default) or "json".
+        #[arg(long, default_value = "text")]
+        log_format: String,
+    },
+
     /// Pack a `data_dir/step{1..8}/` tree into a single `*.butterfly`
     /// container. The container holds every per-step artefact plus a
     /// section directory + per-section CRCs, ready for a single
@@ -1918,6 +1947,78 @@ impl Cli {
                 if fail > 0 && ok == 0 {
                     anyhow::bail!("every feed failed to download");
                 }
+                Ok(())
+            }
+            Commands::TransitBuildTransfers {
+                data,
+                data_dir,
+                modes,
+                log_format,
+            } => {
+                server::init_tracing(&log_format);
+                let mode_filter: Vec<String> = modes
+                    .split(',')
+                    .map(|m| m.trim().to_lowercase())
+                    .filter(|m| !m.is_empty())
+                    .collect();
+                // `foot` must be present — the transfer graph is built on
+                // the foot CCH.
+                if !mode_filter.iter().any(|m| m == "foot") {
+                    anyhow::bail!(
+                        "--modes must include `foot` (transfers are built on the foot CCH)"
+                    );
+                }
+
+                // Load just enough state (foot CCH + snap index) to build
+                // the transfer graph, then write the provenance-matched
+                // cache. Supports a packed container (the build-cch init
+                // container path) or a legacy single-region step-tree.
+                let (state, data_dir_for_transit, region_id) = match (data, data_dir) {
+                    (Some(file), None) => {
+                        let load_options = crate::server::state::LoadOptions {
+                            eager_verify: false,
+                            warmup_on_boot: false,
+                        };
+                        let state =
+                            crate::server::state::ServerState::load_from_container_with_options(
+                                &file,
+                                Some(&mode_filter),
+                                &load_options,
+                            )?;
+                        let region_id = {
+                            use crate::formats::butterfly_dat::Container;
+                            let container = Container::open(&file)
+                                .with_context(|| format!("opening container {}", file.display()))?;
+                            container.read_region_id(&file).unwrap_or_else(|e| {
+                                tracing::warn!(error = %e, "could not read region id; defaulting");
+                                crate::pack::DEFAULT_REGION_ID.to_string()
+                            })
+                        };
+                        let parent = file
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .to_path_buf();
+                        (state, parent, region_id)
+                    }
+                    (None, Some(dir)) => {
+                        let state =
+                            crate::server::state::ServerState::load(&dir, Some(&mode_filter))?;
+                        (state, dir, crate::pack::DEFAULT_REGION_ID.to_string())
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("--data and --data-dir are mutually exclusive")
+                    }
+                    (None, None) => {
+                        anyhow::bail!("one of --data or --data-dir is required")
+                    }
+                };
+
+                crate::transit::build_transfers_cache_from_state(
+                    &state,
+                    &data_dir_for_transit,
+                    &region_id,
+                )?;
+                println!("✅ transit-build-transfers: transfer-graph cache written");
                 Ok(())
             }
             Commands::Pack {

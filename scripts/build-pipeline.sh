@@ -55,6 +55,25 @@ log() { echo -e "\033[0;32m[pipeline]\033[0m $*"; }
 
 CONTAINER="$DATA/belgium.butterfly"
 
+# #412: pre-build the ULTRA transfer graph cache (transit/transfers.bin)
+# so the serving pod loads it in seconds instead of paying the
+# multi-minute build on its boot path. Idempotent: the subcommand
+# cache-HITs and no-ops if the cache is already fresh. Skipped (with a
+# warning, non-fatal) if no transit feeds are present — the server can
+# still build it lazily at boot in that case.
+prebuild_transfers() {
+    if [[ ! -d "$DATA/transit" ]]; then
+        log "no transit/ dir — skipping transfer prebuild (road-only)"
+        return 0
+    fi
+    log "transit-build-transfers (foot)"
+    if time "$BIN" transit-build-transfers --data "$CONTAINER" --modes foot; then
+        log "transfer-graph cache built: $DATA/transit/transfers.bin"
+    else
+        log "WARN: transfer prebuild failed — serve will rebuild lazily on boot"
+    fi
+}
+
 # Freshness model. Uses the PBF SHA-256 sidecar (`<pbf>.sha256` written
 # atomically by butterfly-dl) as the source-of-truth identity for the
 # PBF rather than mtime — mtime gets bumped every time the PBF is
@@ -112,7 +131,15 @@ elif [[ "$pbf_matches_last" -eq 0 ]]; then
 fi
 
 if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
-    log "Container $CONTAINER is fresh vs PBF — nothing to do"
+    log "Container $CONTAINER is fresh vs PBF — nothing to rebuild"
+    # Container is fresh, but ensure the transfer cache exists (e.g.
+    # first run on a PVC packed before transfers were pre-built). When
+    # transfers.bin is already present this is a no-op and we avoid the
+    # ~1-2 min feed-parse the prebuild would otherwise pay.
+    if [[ -d "$DATA/transit" ]] && [[ ! -f "$DATA/transit/transfers.bin" ]]; then
+        prebuild_transfers
+    fi
+    log "pipeline DONE — container: $CONTAINER"
     exit 0
 fi
 
@@ -123,6 +150,7 @@ if [[ "$need_pipeline" -eq 0 ]]; then
     if [[ -f "$PBF_SHA_FILE" ]]; then
         cp "$PBF_SHA_FILE" "$LAST_SOURCE"
     fi
+    prebuild_transfers
     log "pipeline DONE — container: $CONTAINER"
     exit 0
 fi
@@ -212,5 +240,7 @@ time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
 if [[ -f "$PBF_SHA_FILE" ]]; then
     cp "$PBF_SHA_FILE" "$LAST_SOURCE"
 fi
+
+prebuild_transfers
 
 log "pipeline DONE — container: $CONTAINER"
