@@ -782,6 +782,34 @@ impl CchQuery<'_> {
     /// (O(1) per-query reset via generation stamps) and allocates
     /// nothing.
     pub fn distance(&self, source: u32, target: u32) -> Option<u32> {
+        self.distance_bounded(source, target, u32::MAX)
+    }
+
+    /// Distance-only bidirectional query with an upper bound.
+    ///
+    /// Identical to [`distance`](Self::distance) but abandons the search
+    /// as soon as no node reachable within `max_dist` remains unsettled
+    /// on either frontier — returning `None` when the true shortest
+    /// distance exceeds `max_dist`.
+    ///
+    /// #411: the ULTRA transfer build issues millions of these for
+    /// stop-pairs that are great-circle-close (within the 2 km
+    /// candidate radius) but may be network-far. Without a bound, a
+    /// pair separated by a river / rail / motorway runs the bidirectional
+    /// search to natural completion over a large slice of the 5 M-node
+    /// foot EBG, only for the caller to discard the result against
+    /// `max_walk_s`. Passing the walk-time budget here prunes every such
+    /// pair at the `max_dist` ball. The returned graph is identical —
+    /// pruned pairs would have been filtered out anyway — so this is a
+    /// pure speed fix, cache-compatible with the unbounded build.
+    ///
+    /// Correctness of the prune: bidirectional Dijkstra settles nodes in
+    /// nondecreasing distance per side, so once `min(fwd_min, bwd_min) >
+    /// max_dist`, every node with distance ≤ `max_dist` on either side
+    /// is already settled. Any s-t path of length ≤ `max_dist` therefore
+    /// meets at an already-settled node and is already reflected in
+    /// `best_dist`; no unsettled node can yield a shorter ≤-budget path.
+    pub fn distance_bounded(&self, source: u32, target: u32, max_dist: u32) -> Option<u32> {
         if source == target {
             return Some(0);
         }
@@ -810,6 +838,13 @@ impl CchQuery<'_> {
                 let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
                 let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                 if fwd_min >= best_dist && bwd_min >= best_dist {
+                    break;
+                }
+                // #411: bound prune — no unsettled node on either side is
+                // within budget, so the answer (if any) is already in
+                // best_dist. `max_dist == u32::MAX` (the unbounded
+                // `distance()` path) makes this branch dead.
+                if fwd_min.min(bwd_min) > max_dist {
                     break;
                 }
 
@@ -896,7 +931,7 @@ impl CchQuery<'_> {
                 }
             }
 
-            if best_dist == u32::MAX {
+            if best_dist == u32::MAX || best_dist > max_dist {
                 None
             } else {
                 Some(best_dist)
@@ -1025,6 +1060,35 @@ mod tests {
         // Path 1 → 3: 1→UP→2→UP→3, cost = 3 + 7 = 10
         let result = query.query(1, 3).expect("path should exist");
         assert_eq!(result.distance, 10);
+    }
+
+    #[test]
+    fn test_distance_bounded_prune() {
+        // #411: distance_bounded must (a) equal unbounded distance() when
+        // the path fits the budget, (b) return None when the true
+        // distance exceeds the bound, and (c) preserve the same-node
+        // short-circuit even at a zero budget.
+        let (topo, weights, up_flat, down_rev_flat) = build_test_cch();
+        let query = CchQuery::with_custom_weights(&topo, &up_flat, &down_rev_flat, &weights);
+
+        // True distances: 0→3 = 17, 0→4 = 15, 1→3 = 10.
+        assert_eq!(query.distance(0, 3), Some(17), "unbounded baseline");
+
+        // Unbounded variant delegates to distance_bounded(.., u32::MAX).
+        assert_eq!(query.distance_bounded(0, 3, u32::MAX), Some(17));
+
+        // Bound exactly at the true distance still returns it.
+        assert_eq!(query.distance_bounded(0, 3, 17), Some(17));
+
+        // Bound one below the true distance prunes to None.
+        assert_eq!(query.distance_bounded(0, 3, 16), None);
+
+        // A different pair: true 1→3 = 10.
+        assert_eq!(query.distance_bounded(1, 3, 10), Some(10));
+        assert_eq!(query.distance_bounded(1, 3, 9), None);
+
+        // Same-node is Some(0) regardless of budget (even 0).
+        assert_eq!(query.distance_bounded(2, 2, 0), Some(0));
     }
 
     #[test]
