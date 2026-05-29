@@ -132,13 +132,16 @@ fi
 
 if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
     log "Container $CONTAINER is fresh vs PBF — nothing to rebuild"
-    # Container is fresh, but ensure the transfer cache exists (e.g.
-    # first run on a PVC packed before transfers were pre-built). When
-    # transfers.bin is already present this is a no-op and we avoid the
-    # ~1-2 min feed-parse the prebuild would otherwise pay.
-    if [[ -d "$DATA/transit" ]] && [[ ! -f "$DATA/transit/transfers.bin" ]]; then
-        prebuild_transfers
-    fi
+    # Container is fresh, but still run the transfer prebuild: it is
+    # idempotent AND self-healing. transit-build-transfers cache-HITs and
+    # returns fast when transfers.bin is already fresh, but REBUILDS when
+    # the cache is stale for a reason the PBF SHA can't see — a
+    # TRANSFER_ALGO_VERSION bump, or a feeds change that didn't change the
+    # PBF. Doing this unconditionally in the (root, writable) init
+    # container guarantees the serving pod never discovers a stale cache
+    # and rebuilds on its boot path. Cost on a HIT is the ~1-2 min feed
+    # parse, paid in init, not on the serve critical path.
+    prebuild_transfers
     log "pipeline DONE — container: $CONTAINER"
     exit 0
 fi
