@@ -77,23 +77,34 @@ prebuild_transfers() {
 # Freshness model. Uses the PBF SHA-256 sidecar (`<pbf>.sha256` written
 # atomically by butterfly-dl) as the source-of-truth identity for the
 # PBF rather than mtime — mtime gets bumped every time the PBF is
-# re-downloaded byte-identically, which previously made the pipeline
-# rerun for hours when only a restart had occurred.
+# re-downloaded byte-identically.
 #
-# We persist the sidecar content into `<data>/last-source.sha256` after
-# a successful pack. Three states:
-#   1. Container fresh AND last-source matches PBF sidecar → nothing.
-#   2. Container missing/stale but step8 outputs exist AND last-source
-#      matches PBF sidecar → repack only (~30 s).
-#   3. Otherwise → full pipeline + pack.
+# We persist the sidecar into `<data>/last-source.sha256` after a
+# successful pack. CRITICAL distinction: "PBF changed" (last-source
+# EXISTS and differs from the current sidecar) forces a rebuild, but
+# "PBF identity unknown" (last-source ABSENT — e.g. a PVC packed by an
+# older build path that never wrote it) does NOT — we ADOPT the existing
+# container rather than burning ~2 h on a needless full rebuild. The
+# step8 outputs / container on the PVC are trusted unless we have
+# positive evidence the source changed.
 LAST_SOURCE="$DATA/last-source.sha256"
 PBF_SHA_FILE="${PBF}.sha256"
-pbf_matches_last=0
-if [[ -f "$LAST_SOURCE" ]] && [[ -f "$PBF_SHA_FILE" ]]; then
-    if cmp -s "$LAST_SOURCE" "$PBF_SHA_FILE"; then
-        pbf_matches_last=1
+
+# pbf_changed=1 ONLY when we have a stored identity AND it differs.
+pbf_changed=0
+if [[ -f "$LAST_SOURCE" ]]; then
+    if [[ ! -f "$PBF_SHA_FILE" ]] || ! cmp -s "$LAST_SOURCE" "$PBF_SHA_FILE"; then
+        pbf_changed=1
     fi
 fi
+
+all_step8_present=1
+for m in "${MODES[@]}"; do
+    if [[ ! -f "$DATA/step8/cch.w.${m}.u32" ]]; then
+        all_step8_present=0
+        break
+    fi
+done
 
 need_pipeline=0
 need_pack=0
@@ -101,46 +112,42 @@ if [[ "${BUTTERFLY_FORCE_REBUILD:-0}" == "1" ]]; then
     log "BUTTERFLY_FORCE_REBUILD=1 — forcing full rebuild"
     need_pipeline=1
     need_pack=1
-elif [[ ! -f "$CONTAINER" ]]; then
-    need_pack=1
-    # If sidecar matches stored hash AND every step8 output exists,
-    # the artefacts are valid — only the .butterfly container is
-    # missing.
-    all_step8_present=1
-    for m in "${MODES[@]}"; do
-        if [[ ! -f "$DATA/step8/cch.w.${m}.u32" ]]; then
-            all_step8_present=0
-            break
-        fi
-    done
-    if [[ "$pbf_matches_last" -eq 1 ]] && [[ "$all_step8_present" -eq 1 ]]; then
-        log "PBF sidecar matches stored hash, step8 present → packing only"
-    else
-        need_pipeline=1
-        if [[ "$pbf_matches_last" -eq 0 ]]; then
-            log "PBF sidecar differs from $LAST_SOURCE — will rebuild pipeline"
-        else
-            log "step8 outputs missing — will rebuild pipeline"
-        fi
-    fi
-elif [[ "$pbf_matches_last" -eq 0 ]]; then
-    # Container exists but the PBF identity has changed. Full rebuild.
+elif [[ "$pbf_changed" -eq 1 ]]; then
+    # Positive evidence the PBF changed since the last pack → full rebuild.
+    log "PBF changed vs $LAST_SOURCE — full rebuild"
     need_pipeline=1
     need_pack=1
-    log "Container present but PBF sidecar differs from $LAST_SOURCE — full rebuild"
+elif [[ ! -f "$CONTAINER" ]]; then
+    # Container missing but PBF unchanged/unknown. Pack from step8 if
+    # present; only run the full pipeline if step8 is also missing.
+    need_pack=1
+    if [[ "$all_step8_present" -eq 0 ]]; then
+        log "Container + step8 missing — full pipeline"
+        need_pipeline=1
+    else
+        log "Container missing, step8 present, PBF unchanged → packing only"
+    fi
 fi
+# else: container present and PBF unchanged-or-unknown → adopt it.
+
+# Persist the current PBF identity so subsequent runs have a baseline
+# (adopting an old PVC writes it for the first time).
+adopt_source() {
+    if [[ -f "$PBF_SHA_FILE" ]]; then
+        cp "$PBF_SHA_FILE" "$LAST_SOURCE"
+    fi
+}
 
 if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
-    log "Container $CONTAINER is fresh vs PBF — nothing to rebuild"
-    # Container is fresh, but still run the transfer prebuild: it is
-    # idempotent AND self-healing. transit-build-transfers cache-HITs and
-    # returns fast when transfers.bin is already fresh, but REBUILDS when
-    # the cache is stale for a reason the PBF SHA can't see — a
-    # TRANSFER_ALGO_VERSION bump, or a feeds change that didn't change the
-    # PBF. Doing this unconditionally in the (root, writable) init
-    # container guarantees the serving pod never discovers a stale cache
-    # and rebuilds on its boot path. Cost on a HIT is the ~1-2 min feed
-    # parse, paid in init, not on the serve critical path.
+    log "Container $CONTAINER present and PBF unchanged — adopting"
+    adopt_source
+    # Still run the transfer prebuild: it is idempotent AND self-healing.
+    # transit-build-transfers cache-HITs and returns fast when
+    # transfers.bin is already fresh, but REBUILDS when the cache is stale
+    # for a reason the PBF SHA can't see — a TRANSFER_ALGO_VERSION bump,
+    # or a feeds change that didn't move the PBF. Doing this in the (root,
+    # writable) init container guarantees the serving pod never discovers
+    # a stale cache and rebuilds on its boot path.
     prebuild_transfers
     log "pipeline DONE — container: $CONTAINER"
     exit 0
