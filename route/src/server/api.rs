@@ -112,8 +112,19 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
     // Prometheus metrics
     let (prometheus_layer, metric_handle) = axum_prometheus::PrometheusMetricLayer::pair();
 
+    // Only expose /height when SRTM DEM tiles are actually loaded in at
+    // least one region. Without them the handler can only 503, so
+    // registering it would advertise a non-functional endpoint. When no
+    // elevation data is staged the route is simply not registered (404).
+    // It self-enables on the next boot once `<data>/srtm/` is populated —
+    // no code change needed to re-enable. See butterfly-osm issue (SRTM
+    // staging) for wiring the dataset into the deploy.
+    let elevation_loaded = state
+        .iter_regions()
+        .any(|r| r.state_loaded().is_some_and(|s| s.elevation.is_some()));
+
     // API routes: normal endpoints with 120s timeout + response compression + concurrency limit
-    let api_routes = Router::new()
+    let mut api_routes = Router::new()
         .route("/route", get(super::route::route_handler))
         .route("/nearest", get(super::nearest::nearest_handler))
         .route("/table", post(super::table::table_post_handler))
@@ -123,7 +134,6 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
         )
         .route("/trip", post(super::trip::trip_handler))
         .route("/match", post(super::matching::match_trace_handler))
-        .route("/height", get(super::height_handler::height_handler))
         .route("/catchment", post(super::catchment::catchment_handler))
         .route("/transit", get(super::transit_handler::transit_handler))
         .route(
@@ -131,7 +141,14 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
             post(super::transit_handler::transit_bulk_handler),
         )
         .route("/health", get(super::health_handler::health_handler))
-        .route("/regions", get(super::regions_handler::regions_handler))
+        .route("/regions", get(super::regions_handler::regions_handler));
+    if elevation_loaded {
+        api_routes = api_routes.route("/height", get(super::height_handler::height_handler));
+        tracing::info!("/height endpoint enabled (SRTM elevation data loaded)");
+    } else {
+        tracing::info!("/height endpoint NOT registered — no SRTM elevation data loaded");
+    }
+    let api_routes = api_routes
         .layer(CompressionLayer::new())
         .layer(ConcurrencyLimitLayer::new(32))
         .layer(TimeoutLayer::with_status_code(
