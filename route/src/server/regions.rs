@@ -934,8 +934,14 @@ impl RegionsState {
         destination_lat: f64,
         mode_name: &str,
     ) -> Result<Arc<ServerState>, DispatchError> {
-        self.dispatch_p2p_id(origin_lon, origin_lat, destination_lon, destination_lat, mode_name)
-            .map(|(s, _)| s)
+        self.dispatch_p2p_id(
+            origin_lon,
+            origin_lat,
+            destination_lon,
+            destination_lat,
+            mode_name,
+        )
+        .map(|(s, _)| s)
     }
 
     /// #343: same as [`Self::dispatch_p2p_id`] but also returns the

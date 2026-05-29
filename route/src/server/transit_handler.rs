@@ -504,7 +504,9 @@ pub fn compute_transit_journey_with_access(
     // Per-query destination validation (mirrors the pre-#120 single
     // function: a bad dest is rejected without affecting any other
     // query in the same bulk group).
-    if !(-180.0..=180.0).contains(&req.destination_lon) || !(-90.0..=90.0).contains(&req.destination_lat) {
+    if !(-180.0..=180.0).contains(&req.destination_lon)
+        || !(-90.0..=90.0).contains(&req.destination_lat)
+    {
         return Err(bad_request("invalid coordinates"));
     }
 
@@ -593,8 +595,12 @@ pub fn compute_transit_journey_with_access(
     let transfers = snapshot.transfers.as_ref();
     let stop_index = snapshot.stop_index.as_ref();
 
-    let egress_candidates =
-        stop_index.k_nearest(req.destination_lon, req.destination_lat, max_egress_m, max_access_stops);
+    let egress_candidates = stop_index.k_nearest(
+        req.destination_lon,
+        req.destination_lat,
+        max_egress_m,
+        max_access_stops,
+    );
     if egress_candidates.is_empty() {
         return Err(not_found(&format!(
             "no transit stops within max_egress_m ({max_egress_m} m, mode={egress_mode}) of destination"
