@@ -109,7 +109,13 @@ impl ButterflyFlight {
         profile: &str,
     ) -> std::result::Result<(Arc<ServerState>, String), Status> {
         self.regions
-            .dispatch_p2p_id(origin_lon, origin_lat, destination_lon, destination_lat, profile)
+            .dispatch_p2p_id(
+                origin_lon,
+                origin_lat,
+                destination_lon,
+                destination_lat,
+                profile,
+            )
             .map_err(dispatch_to_status)
     }
 }
