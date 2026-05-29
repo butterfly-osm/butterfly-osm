@@ -876,7 +876,20 @@ fn emit_into_builder(
     let mut coord_to_idx: HashMap<(i64, i64), u32> = HashMap::new();
     let mut n_unresolved = 0usize;
 
-    for (ssp_id, ssp_rec) in &state.scheduled_stop_points {
+    // Iterate SSPs in a DETERMINISTIC order. `scheduled_stop_points` is a
+    // `HashMap` (randomized iteration per process), and the coord-dedup
+    // below keeps the FIRST SSP encountered at each quantised coordinate
+    // as the canonical physical stop — so a randomized order makes the
+    // chosen stop *id* differ run-to-run. That id feeds the transfer-cache
+    // provenance hash, so a build-process vs serve-process order
+    // difference caused a cache MISS and a boot-path rebuild (#412
+    // review). Sorting by SSP id (unique per element) makes the canonical
+    // pick reproducible — mirrors the GTFS loader's stop-id sort.
+    let mut sorted_ssps: Vec<(&String, &ScheduledStopPointRec)> =
+        state.scheduled_stop_points.iter().collect();
+    sorted_ssps.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (ssp_id, ssp_rec) in sorted_ssps {
         let Some((x, y)) = ssp_rec.lambert else {
             n_unresolved += 1;
             continue;
