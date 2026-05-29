@@ -46,7 +46,7 @@ pub struct CatchmentParams {
     /// Percentile thresholds (e.g. [50, 80])
     pub percentiles: Vec<f32>,
     /// Hull generation mode
-    pub hull_mode: HullMode,
+    pub hull_shape: HullMode,
     /// Whether to remove geographic outliers before hull computation
     pub remove_outliers: bool,
 }
@@ -535,7 +535,7 @@ pub fn compute_catchment(
         }
 
         // 4. Generate hull polygon
-        let ring = match params.hull_mode {
+        let ring = match params.hull_shape {
             HullMode::Isochrone => {
                 // Use PHAST isochrone at threshold duration
                 let wkb = isochrone_hull(state, mode, store.0, store.1, threshold);
@@ -631,7 +631,7 @@ pub fn compute_catchment(
 #[derive(Debug, Deserialize)]
 pub struct CatchmentRequest {
     pub mode: String,
-    pub hull_mode: HullMode,
+    pub hull_shape: HullMode,
     pub percentiles: Vec<f32>,
     #[serde(default = "default_true")]
     pub remove_outliers: bool,
@@ -780,7 +780,7 @@ pub async fn catchment_handler(
 
     let params = CatchmentParams {
         percentiles: req.percentiles.clone(),
-        hull_mode: req.hull_mode,
+        hull_shape: req.hull_shape,
         remove_outliers: req.remove_outliers,
     };
 
@@ -998,7 +998,7 @@ pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentParams, String> 
     #[derive(Deserialize)]
     struct ExchangeParams {
         percentiles: Vec<f32>,
-        hull_mode: HullMode,
+        hull_shape: HullMode,
         #[serde(default = "default_true")]
         remove_outliers: bool,
     }
@@ -1008,7 +1008,7 @@ pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentParams, String> 
 
     Ok(CatchmentParams {
         percentiles: parsed.percentiles,
-        hull_mode: parsed.hull_mode,
+        hull_shape: parsed.hull_shape,
         remove_outliers: parsed.remove_outliers,
     })
 }
