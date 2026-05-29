@@ -189,12 +189,86 @@ impl PhastState {
     }
 }
 
+/// #408: bounded per-thread PHAST state — `Option<PhastState>` slots
+/// indexed by mode_idx, plus a parallel last-used millis array used to
+/// pick a victim when the live-slot count reaches the LRU capacity.
+/// The whole-array idle drop in `try_drop_idle_phast` continues to fire
+/// after `PHAST_LAST_TOUCH` goes stale; this LRU bounds the *peak* RSS
+/// while traffic is steady across many modes.
+struct PhastSlots {
+    slots: [Option<PhastState>; crate::profile_abi::MAX_MODES],
+    last_used_ms: [u64; crate::profile_abi::MAX_MODES],
+    epoch: u64,
+}
+
+impl PhastSlots {
+    const fn empty() -> Self {
+        Self {
+            slots: [const { None }; crate::profile_abi::MAX_MODES],
+            last_used_ms: [0u64; crate::profile_abi::MAX_MODES],
+            epoch: 0,
+        }
+    }
+
+    /// Touch the slot for `mode_idx`. If the slot is empty and the
+    /// live-slot count is already at `cap`, evict the LRU slot first
+    /// (excluding `mode_idx` itself). Caller then `.get_or_insert_with`
+    /// on the returned slot reference.
+    fn touch(&mut self, mode_idx: usize, cap: usize) -> &mut Option<PhastState> {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.last_used_ms[mode_idx] = self.epoch;
+
+        if self.slots[mode_idx].is_some() {
+            return &mut self.slots[mode_idx];
+        }
+        let live = self.slots.iter().filter(|s| s.is_some()).count();
+        if live >= cap {
+            // Find LRU victim (smallest last_used_ms among live slots,
+            // excluding the requested mode_idx).
+            let mut victim: Option<(usize, u64)> = None;
+            for (i, slot) in self.slots.iter().enumerate() {
+                if i == mode_idx || slot.is_none() {
+                    continue;
+                }
+                let lu = self.last_used_ms[i];
+                if victim.map(|(_, vlu)| lu < vlu).unwrap_or(true) {
+                    victim = Some((i, lu));
+                }
+            }
+            if let Some((vi, _)) = victim {
+                self.slots[vi] = None;
+            }
+        }
+        &mut self.slots[mode_idx]
+    }
+
+    fn drop_all(&mut self) {
+        for slot in self.slots.iter_mut() {
+            *slot = None;
+        }
+        for lu in self.last_used_ms.iter_mut() {
+            *lu = 0;
+        }
+        self.epoch = 0;
+    }
+}
+
+/// #408: per-worker LRU capacity for the PHAST mode-slot array.
+/// Reads `BUTTERFLY_PHAST_MODE_LRU_CAP` (default 2). Cold-start cost
+/// per evicted-then-re-queried mode is one `PhastState::new(n_nodes)`
+/// allocation (~80 MB on Belgium); the steady-state RSS bound is
+/// `cap × (~80 MB) × 2 (fwd+rev) × n_workers`.
+fn phast_mode_lru_cap() -> usize {
+    std::env::var("BUTTERFLY_PHAST_MODE_LRU_CAP")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|c| c.max(1).min(crate::profile_abi::MAX_MODES))
+        .unwrap_or(2)
+}
+
 thread_local! {
-    /// Thread-local PHAST state array, one slot per mode (indexed by mode.index())
-    static PHAST_STATES: RefCell<[Option<PhastState>; crate::profile_abi::MAX_MODES]> = const { RefCell::new([
-        None, None, None, None,
-        None, None, None, None,
-    ]) };
+    /// #408: forward PHAST mode-slot LRU, per worker thread.
+    static PHAST_STATES: RefCell<PhastSlots> = const { RefCell::new(PhastSlots::empty()) };
 
     /// #400: per-thread last-touched timestamp for lean-at-rest eviction.
     static PHAST_LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
@@ -218,16 +292,8 @@ pub fn try_drop_idle_phast(threshold: std::time::Duration) -> bool {
     if !stale {
         return false;
     }
-    PHAST_STATES.with(|c| {
-        for slot in c.borrow_mut().iter_mut() {
-            *slot = None;
-        }
-    });
-    PHAST_STATES_REV.with(|c| {
-        for slot in c.borrow_mut().iter_mut() {
-            *slot = None;
-        }
-    });
+    PHAST_STATES.with(|c| c.borrow_mut().drop_all());
+    PHAST_STATES_REV.with(|c| c.borrow_mut().drop_all());
     PHAST_LAST_TOUCH.with(|c| c.set(None));
     true
 }
@@ -256,10 +322,12 @@ pub fn run_phast_bounded_fast(
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
 
-    // Get thread-local state for this mode
+    // #408: get thread-local state for this mode via the LRU; evicts
+    // the coldest mode-slot when the live count exceeds the cap.
+    let cap = phast_mode_lru_cap();
     PHAST_STATES.with(|cell| {
         let mut states = cell.borrow_mut();
-        let state_slot = &mut states[mode_idx];
+        let state_slot = states.touch(mode_idx, cap);
 
         // Initialize or reinitialize if needed
         let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
@@ -387,12 +455,9 @@ pub fn run_phast_bounded_fast(
 }
 
 thread_local! {
-    /// Thread-local PHAST state array for REVERSE queries, one slot per mode (indexed by mode.index()).
-    /// Separate from PHAST_STATES to avoid conflicts when forward and reverse queries run on the same thread.
-    static PHAST_STATES_REV: RefCell<[Option<PhastState>; crate::profile_abi::MAX_MODES]> = const { RefCell::new([
-        None, None, None, None,
-        None, None, None, None,
-    ]) };
+    /// #408: reverse-PHAST mode-slot LRU, per worker thread. Same
+    /// shape and capacity policy as `PHAST_STATES` (forward).
+    static PHAST_STATES_REV: RefCell<PhastSlots> = const { RefCell::new(PhastSlots::empty()) };
 }
 
 /// Run REVERSE PHAST bounded query -- computes d(all -> target) for reverse isochrones.
@@ -414,9 +479,10 @@ pub fn run_phast_bounded_fast_reverse(
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
 
+    let cap = phast_mode_lru_cap();
     PHAST_STATES_REV.with(|cell| {
         let mut states = cell.borrow_mut();
-        let state_slot = &mut states[mode_idx];
+        let state_slot = states.touch(mode_idx, cap);
 
         // Initialize or reinitialize if needed
         let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));

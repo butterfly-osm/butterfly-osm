@@ -55,32 +55,60 @@ log() { echo -e "\033[0;32m[pipeline]\033[0m $*"; }
 
 CONTAINER="$DATA/belgium.butterfly"
 
-# Freshness model has three states:
-#   1. Container fresh    → nothing to do.
-#   2. Container missing/stale but step8 outputs fresh → re-pack only
-#      (~30 s). Covers the "old PVC: pipeline ran before pack was wired
-#      in" case so we don't repeat the 2-hour pipeline.
-#   3. Step8 outputs missing/stale → run full pipeline, then pack.
+# Freshness model. Uses the PBF SHA-256 sidecar (`<pbf>.sha256` written
+# atomically by butterfly-dl) as the source-of-truth identity for the
+# PBF rather than mtime — mtime gets bumped every time the PBF is
+# re-downloaded byte-identically, which previously made the pipeline
+# rerun for hours when only a restart had occurred.
+#
+# We persist the sidecar content into `<data>/last-source.sha256` after
+# a successful pack. Three states:
+#   1. Container fresh AND last-source matches PBF sidecar → nothing.
+#   2. Container missing/stale but step8 outputs exist AND last-source
+#      matches PBF sidecar → repack only (~30 s).
+#   3. Otherwise → full pipeline + pack.
+LAST_SOURCE="$DATA/last-source.sha256"
+PBF_SHA_FILE="${PBF}.sha256"
+pbf_matches_last=0
+if [[ -f "$LAST_SOURCE" ]] && [[ -f "$PBF_SHA_FILE" ]]; then
+    if cmp -s "$LAST_SOURCE" "$PBF_SHA_FILE"; then
+        pbf_matches_last=1
+    fi
+fi
+
 need_pipeline=0
 need_pack=0
 if [[ "${BUTTERFLY_FORCE_REBUILD:-0}" == "1" ]]; then
     log "BUTTERFLY_FORCE_REBUILD=1 — forcing full rebuild"
     need_pipeline=1
     need_pack=1
-elif [[ ! -f "$CONTAINER" ]] || [[ "$PBF" -nt "$CONTAINER" ]]; then
+elif [[ ! -f "$CONTAINER" ]]; then
     need_pack=1
-    # Step8 outputs decide whether pipeline must also run.
+    # If sidecar matches stored hash AND every step8 output exists,
+    # the artefacts are valid — only the .butterfly container is
+    # missing.
+    all_step8_present=1
     for m in "${MODES[@]}"; do
-        OUT="$DATA/step8/cch.w.${m}.u32"
-        if [[ ! -f "$OUT" ]] || [[ "$PBF" -nt "$OUT" ]]; then
-            need_pipeline=1
-            log "Missing or stale: $OUT — will rebuild pipeline"
+        if [[ ! -f "$DATA/step8/cch.w.${m}.u32" ]]; then
+            all_step8_present=0
             break
         fi
     done
-    if [[ "$need_pipeline" -eq 0 ]]; then
-        log "Step8 outputs are fresh — packing only (skipping step1..8)"
+    if [[ "$pbf_matches_last" -eq 1 ]] && [[ "$all_step8_present" -eq 1 ]]; then
+        log "PBF sidecar matches stored hash, step8 present → packing only"
+    else
+        need_pipeline=1
+        if [[ "$pbf_matches_last" -eq 0 ]]; then
+            log "PBF sidecar differs from $LAST_SOURCE — will rebuild pipeline"
+        else
+            log "step8 outputs missing — will rebuild pipeline"
+        fi
     fi
+elif [[ "$pbf_matches_last" -eq 0 ]]; then
+    # Container exists but the PBF identity has changed. Full rebuild.
+    need_pipeline=1
+    need_pack=1
+    log "Container present but PBF sidecar differs from $LAST_SOURCE — full rebuild"
 fi
 
 if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
@@ -91,6 +119,10 @@ fi
 if [[ "$need_pipeline" -eq 0 ]]; then
     log "pack -> $CONTAINER"
     time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
+    # Persist source identity so the next restart fast-skips correctly.
+    if [[ -f "$PBF_SHA_FILE" ]]; then
+        cp "$PBF_SHA_FILE" "$LAST_SOURCE"
+    fi
     log "pipeline DONE — container: $CONTAINER"
     exit 0
 fi
@@ -176,5 +208,9 @@ done
 
 log "pack -> $CONTAINER"
 time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
+
+if [[ -f "$PBF_SHA_FILE" ]]; then
+    cp "$PBF_SHA_FILE" "$LAST_SOURCE"
+fi
 
 log "pipeline DONE — container: $CONTAINER"
