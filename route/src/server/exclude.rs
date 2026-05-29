@@ -62,6 +62,109 @@ pub struct ExcludeWeights {
     pub dist_down_fwd_flat: DownAdjFlat,
 }
 
+/// #407: default LRU capacity for the per-mode exclude-weight cache.
+///
+/// The exclude mask is a `u8` with only three meaningful bits
+/// (toll/ferry/motorway), so at most 8 distinct entries can ever exist
+/// per mode — but **each entry is ~5-8 GB on Belgium** (two
+/// `CchWeights` + six flat adjacencies sized to the CCH). An unbounded
+/// cache therefore pins up to ~8 × 6 GB × n_modes of heap that never
+/// releases. A small bound caps that: cap 3 holds ~15-24 GB worst case
+/// for a single mode and a miss costs one `compute_exclude_weights`
+/// recustomization (incremental BFS, a few seconds), which is the right
+/// RAM/latency trade for a feature most traffic doesn't exercise.
+pub const DEFAULT_EXCLUDE_CACHE_CAP: usize = 3;
+
+struct ExcludeCacheInner {
+    // key = exclude_mask; value = (weights, last-touched generation).
+    map: std::collections::HashMap<u8, (std::sync::Arc<ExcludeWeights>, u64)>,
+    generation: u64,
+    capacity: usize,
+    hits: u64,
+    misses: u64,
+}
+
+/// #407: bounded LRU for per-mode exclude weights, mirroring
+/// [`super::avoid::AvoidWeightCache`]. Keyed on the raw `u8` exclude
+/// mask — the cache lives inside `ModeData`, so the mode is implicit in
+/// the key and the whole cache is dropped (and rebuilt) when #402
+/// evicts the mode. Eviction is safe: an in-flight query holds its own
+/// `Arc<ExcludeWeights>` clone, so a removed map entry only frees once
+/// the last clone is released.
+pub struct ExcludeWeightCache {
+    inner: parking_lot::RwLock<ExcludeCacheInner>,
+}
+
+impl ExcludeWeightCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: parking_lot::RwLock::new(ExcludeCacheInner {
+                map: std::collections::HashMap::with_capacity(capacity.max(1)),
+                generation: 0,
+                capacity: capacity.max(1),
+                hits: 0,
+                misses: 0,
+            }),
+        }
+    }
+
+    /// Return the cached entry for `mask`, bumping its LRU generation
+    /// stamp. `None` on miss.
+    pub fn get(&self, mask: u8) -> Option<std::sync::Arc<ExcludeWeights>> {
+        // Fast path: read lock + presence check.
+        if !self.inner.read().map.contains_key(&mask) {
+            return None;
+        }
+        // Slow path: write lock to bump the LRU generation atomically.
+        let mut inner = self.inner.write();
+        let new_gen = inner.generation.wrapping_add(1);
+        if let Some((entry, gen_stamp)) = inner.map.get_mut(&mask) {
+            *gen_stamp = new_gen;
+            let entry_clone = std::sync::Arc::clone(entry);
+            inner.generation = new_gen;
+            inner.hits += 1;
+            return Some(entry_clone);
+        }
+        None
+    }
+
+    /// Insert `entry` for `mask`, evicting the least-recently-used entry
+    /// first when at capacity.
+    pub fn insert(&self, mask: u8, entry: std::sync::Arc<ExcludeWeights>) {
+        let mut inner = self.inner.write();
+        inner.misses += 1;
+        if !inner.map.contains_key(&mask)
+            && inner.map.len() >= inner.capacity
+            && let Some(victim) = inner
+                .map
+                .iter()
+                .min_by_key(|(_, (_, g))| *g)
+                .map(|(k, _)| *k)
+        {
+            inner.map.remove(&victim);
+        }
+        inner.generation = inner.generation.wrapping_add(1);
+        let gen_stamp = inner.generation;
+        inner.map.insert(mask, (entry, gen_stamp));
+    }
+
+    /// (hits, misses, current size, capacity) — operational visibility.
+    pub fn stats(&self) -> (u64, u64, usize, usize) {
+        let inner = self.inner.read();
+        (inner.hits, inner.misses, inner.map.len(), inner.capacity)
+    }
+}
+
+impl Default for ExcludeWeightCache {
+    fn default() -> Self {
+        let cap = std::env::var("BUTTERFLY_EXCLUDE_CACHE_CAP")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_EXCLUDE_CACHE_CAP);
+        Self::new(cap)
+    }
+}
+
 /// Parse exclude parameter string into bitmask.
 /// Accepts comma-separated tokens: toll, ferry, motorway.
 /// Returns 0 for empty/whitespace-only input.
