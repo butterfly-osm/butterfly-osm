@@ -164,7 +164,7 @@ pub struct ModeData {
     /// `up_adj_flat_len_along_time`.
     pub down_rev_flat_len_along_time: Option<DownReverseAdjFlat>,
     // Cached exclude weight sets (keyed by exclude bitmask)
-    pub exclude_cache: parking_lot::RwLock<HashMap<u8, std::sync::Arc<ExcludeWeights>>>,
+    pub exclude_cache: super::exclude::ExcludeWeightCache,
 }
 
 impl ModeData {
@@ -1142,7 +1142,7 @@ impl ServerState {
                 down_adj_flat_dist: base_data.down_adj_flat_dist.clone(),
                 up_adj_flat_len_along_time: base_data.up_adj_flat_len_along_time.clone(),
                 down_rev_flat_len_along_time: base_data.down_rev_flat_len_along_time.clone(),
-                exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+                exclude_cache: super::exclude::ExcludeWeightCache::default(),
             };
             let new_index = modes_data.len();
             tracing::info!(
@@ -1659,26 +1659,21 @@ impl ServerState {
     ) -> std::sync::Arc<ExcludeWeights> {
         let mode_data = self.get_mode(mode);
 
-        // Fast path: check cache with read lock
-        {
-            let cache = mode_data.exclude_cache.read();
-            if let Some(weights) = cache.get(&exclude_mask) {
-                return std::sync::Arc::clone(weights);
-            }
+        // #407: bounded-LRU fast path.
+        if let Some(weights) = mode_data.exclude_cache.get(exclude_mask) {
+            return weights;
         }
 
-        // Slow path: compute and insert with write lock
-        let mut cache = mode_data.exclude_cache.write();
-        // Double-check after acquiring write lock
-        if let Some(weights) = cache.get(&exclude_mask) {
-            return std::sync::Arc::clone(weights);
-        }
-
+        // Miss: compute, then insert (evicting the LRU entry if at cap).
+        // Two simultaneous misses on the same mask may both compute and
+        // the second insert wins — the same benign racy semantics
+        // AvoidWeightCache documents; the only cost is a rare duplicate
+        // recustomization, never a correctness issue.
         let mode_name = &self.mode_names[mode.index()];
         tracing::info!(
             mode = mode_name.as_str(),
             exclude_mask,
-            "computing exclude weights (first request)"
+            "computing exclude weights (cache miss)"
         );
 
         let weights = std::sync::Arc::new(exclude::compute_exclude_weights(
@@ -1690,7 +1685,9 @@ impl ServerState {
             &mode_data.filtered_to_original,
         ));
 
-        cache.insert(exclude_mask, std::sync::Arc::clone(&weights));
+        mode_data
+            .exclude_cache
+            .insert(exclude_mask, std::sync::Arc::clone(&weights));
         weights
     }
 }
@@ -1889,7 +1886,7 @@ fn load_traffic_variant_mode_data(
         down_adj_flat_dist: base.down_adj_flat_dist.clone(),
         up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
         down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
-        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+        exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
 
@@ -2011,7 +2008,7 @@ fn load_mode_data(
         down_adj_flat_dist,
         up_adj_flat_len_along_time,
         down_rev_flat_len_along_time,
-        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+        exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
 
@@ -3088,7 +3085,7 @@ fn load_mode_data_from_bundle(
         down_adj_flat_dist,
         up_adj_flat_len_along_time,
         down_rev_flat_len_along_time,
-        exclude_cache: parking_lot::RwLock::new(HashMap::new()),
+        exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
 
