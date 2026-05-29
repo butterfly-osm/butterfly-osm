@@ -36,7 +36,7 @@ use super::types::{
 pub struct TablePostRequest {
     /// Source coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603]]))]
-    pub sources: Vec<[f64; 2]>,
+    pub origins: Vec<[f64; 2]>,
     /// Destination coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.3817, 50.8553], [4.4217, 50.8653]]))]
     pub destinations: Vec<[f64; 2]>,
@@ -78,7 +78,7 @@ pub struct TableResponse {
     pub distances: Option<Vec<Vec<Option<f64>>>>,
     /// Source waypoints with snapped locations
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<Waypoint>>,
+    pub origins: Option<Vec<Waypoint>>,
     /// Destination waypoints with snapped locations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destinations: Option<Vec<Waypoint>>,
@@ -89,7 +89,7 @@ pub struct TableResponse {
 pub struct TableStreamRequest {
     /// Source coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553]]))]
-    pub sources: Vec<[f64; 2]>,
+    pub origins: Vec<[f64; 2]>,
     /// Destination coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.4017, 50.8603], [4.4117, 50.8653]]))]
     pub destinations: Vec<[f64; 2]>,
@@ -138,7 +138,7 @@ pub fn default_tile_size() -> usize {
     description = "Computes a many-to-many distance and/or duration matrix using Bucket CH.\nBest for matrices up to ~10K cells. For larger matrices, use POST /table/stream.",
     request_body(content = TablePostRequest, description = "Source and destination coordinates with mode",
         example = json!({
-            "sources": [[4.3517, 50.8503], [4.3617, 50.8553]],
+            "origins": [[4.3517, 50.8503], [4.3617, 50.8553]],
             "destinations": [[4.4017, 50.8603], [4.4117, 50.8653]],
             "mode": "car",
             "annotations": "duration,distance"
@@ -153,7 +153,7 @@ pub async fn table_post_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TablePostRequest>,
 ) -> impl IntoResponse {
-    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+    for (i, [lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
@@ -170,7 +170,7 @@ pub async fn table_post_handler(
     // PR C / Phase 2).
     let started_dispatch = std::time::Instant::now();
     let coords_iter = req
-        .sources
+        .origins
         .iter()
         .chain(req.destinations.iter())
         .map(|&[lon, lat]| (lon, lat));
@@ -190,7 +190,7 @@ pub async fn table_post_handler(
         }
     };
 
-    if req.sources.is_empty() {
+    if req.origins.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -202,14 +202,14 @@ pub async fn table_post_handler(
     // Guard against memory explosion: max 10,000 sources × destinations for /table
     // (use /table/stream for larger matrices)
     const MAX_TABLE_CELLS: usize = 10_000_000;
-    if req.sources.len() * req.destinations.len() > MAX_TABLE_CELLS {
+    if req.origins.len() * req.destinations.len() > MAX_TABLE_CELLS {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: format!(
                     "matrix too large: {}×{} = {} cells exceeds limit of {}. Use POST /table/stream for large matrices.",
-                    req.sources.len(), req.destinations.len(),
-                    req.sources.len() * req.destinations.len(),
+                    req.origins.len(), req.destinations.len(),
+                    req.origins.len() * req.destinations.len(),
                     MAX_TABLE_CELLS
                 ),
             }),
@@ -310,7 +310,7 @@ pub async fn table_post_handler(
     let resp = compute_table_bucket_m2m(
         &state,
         mode,
-        &req.sources,
+        &req.origins,
         &req.destinations,
         want_duration,
         want_distance,
@@ -642,7 +642,7 @@ pub async fn compute_table_bucket_m2m(
         code: "Ok".into(),
         durations,
         distances,
-        sources: Some(source_waypoints),
+        origins: Some(source_waypoints),
         destinations: Some(dest_waypoints),
     })
     .into_response();
@@ -1037,7 +1037,7 @@ pub fn flat_matrix_to_2d(
     description = "Computes a distance matrix in tiles and streams results as Apache Arrow IPC format.\nDesigned for large matrices (10K+ sources/destinations) where JSON would be too large.\nBenchmarked at 50K\u{00d7}50K (2.5 billion distances) in 9.5 minutes with 2.4GB RAM overhead.\n\nNo hard point-count limit \u{2014} memory is bounded by tile-by-tile streaming regardless of input size.\n\nThe response is a binary Arrow IPC stream. Each record batch contains one tile with:\n- `src_block_start`, `dst_block_start`: tile offsets\n- `src_block_len`, `dst_block_len`: tile dimensions\n- `durations_ms`: packed u32 array of durations in milliseconds\n\nSupports cooperative cancellation on client disconnect.",
     request_body(content = TableStreamRequest, description = "Sources, destinations, mode, and optional tile sizes",
         example = json!({
-            "sources": [[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]],
+            "origins": [[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]],
             "destinations": [[4.4017, 50.8603], [4.4117, 50.8653], [4.4217, 50.8703]],
             "mode": "car",
             "src_tile_size": 1000,
@@ -1053,7 +1053,7 @@ pub async fn table_stream_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<TableStreamRequest>,
 ) -> impl IntoResponse {
-    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+    for (i, [lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
@@ -1068,7 +1068,7 @@ pub async fn table_stream_handler(
     // snap to the same region for the streaming matrix.
     let started_dispatch = std::time::Instant::now();
     let coords_iter = req
-        .sources
+        .origins
         .iter()
         .chain(req.destinations.iter())
         .map(|&[lon, lat]| (lon, lat));
@@ -1088,7 +1088,7 @@ pub async fn table_stream_handler(
         }
     };
 
-    if req.sources.is_empty() || req.destinations.is_empty() {
+    if req.origins.is_empty() || req.destinations.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -1160,13 +1160,13 @@ pub async fn table_stream_handler(
     // Convert all sources to rank space, keeping track of valid indices.
     // We also keep a full-length snapped coordinate vector (indexed by the
     // original request order) for downstream haversine pre-filtering.
-    let mut sources_rank: Vec<u32> = Vec::with_capacity(req.sources.len());
-    let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.sources.len());
-    let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.sources.len());
+    let mut sources_rank: Vec<u32> = Vec::with_capacity(req.origins.len());
+    let mut valid_src_indices: Vec<usize> = Vec::with_capacity(req.origins.len());
+    let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(req.origins.len());
     let src_role_filter = SnapRole::Src.role_filter(&mode_data);
     let dst_role_filter = SnapRole::Dst.role_filter(&mode_data);
 
-    for (i, [lon, lat]) in req.sources.iter().enumerate() {
+    for (i, [lon, lat]) in req.origins.iter().enumerate() {
         let mut matched = false;
         if let Some(orig_id) = state.snap_index.snap_filtered_role(
             *lon,
@@ -1243,7 +1243,7 @@ pub async fn table_stream_handler(
 
     let n_valid_sources = sources_rank.len();
     let n_valid_targets = targets_rank.len();
-    let n_total_sources = req.sources.len();
+    let n_total_sources = req.origins.len();
     let n_total_targets = req.destinations.len();
 
     let Some(n_total_cells) = n_total_sources.checked_mul(n_total_targets) else {
