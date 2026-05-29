@@ -598,13 +598,15 @@ pub fn build_transfer_graph(
             let query = CchQuery::with_custom_weights(topo, up_flat, down_rev_flat, weights);
             let mut emitted: Vec<(u32, u32, u32)> = Vec::with_capacity(w.neighbours.len());
             for &(target_stop, target_rank) in &w.neighbours {
-                // query.distance returns seconds (post-#297).
-                let Some(walk_s) = query.distance(w.source_rank, target_rank) else {
+                // query.distance_bounded returns seconds (post-#297),
+                // pruned at max_walk_s. #411: the bound stops barrier-
+                // separated pairs (great-circle-close, network-far) from
+                // running the bidirectional search to graph scale only to
+                // be discarded. Same output as the old post-hoc filter.
+                let Some(walk_s) = query.distance_bounded(w.source_rank, target_rank, max_walk_s)
+                else {
                     continue;
                 };
-                if walk_s > max_walk_s {
-                    continue;
-                }
                 emitted.push((w.stop, target_stop, walk_s));
             }
             emitted.into_iter()
