@@ -292,7 +292,11 @@ impl Default for TransferBuildOptions {
 ///     dropped via spurious zero-cost triangles, disconnecting
 ///     whole stations from themselves. v6 caches silently held
 ///     broken data for those stations; v7 rebuilds.
-const TRANSFER_ALGO_VERSION: u32 = 7;
+///   - v8: drops the date-dependent `n_routes()` term from the
+///     provenance hash (#412 review). v7 caches built on one
+///     service-weekday mismatched on the next, forcing a boot-path
+///     rebuild; v8 rebuilds once then stays stable across days.
+const TRANSFER_ALGO_VERSION: u32 = 8;
 
 /// Foot-CCH fingerprint: a stable identifier of the specific foot CCH
 /// graph that was used to compute the cached transfer edges. Derived
@@ -365,7 +369,15 @@ pub fn compute_provenance(
     h.update(TRANSFER_ALGO_VERSION.to_le_bytes());
     h.update(foot_fingerprint);
     h.update((timetable.n_stops() as u64).to_le_bytes());
-    h.update((timetable.n_routes() as u64).to_le_bytes());
+    // NOTE: deliberately NOT hashing `n_routes()`. The transfer graph is
+    // a pure function of the stop SET + foot CCH + build options — it does
+    // not depend on which trips/patterns are active. `n_routes()` counts
+    // service-date-ACTIVE patterns (weekday vs weekend timetables differ),
+    // so folding it in made the provenance date-dependent: a pod restart
+    // on a different service-weekday than the cache was built mismatched
+    // and forced a multi-minute rebuild on the serve boot path (#412
+    // review). The stop set + coords digest below already uniquely and
+    // date-independently identifies the graph inputs.
     h.update(opts.radius_m.to_le_bytes());
     h.update(opts.max_walk_s.to_le_bytes());
     h.update((opts.apply_ultra_restriction as u8).to_le_bytes());
@@ -906,8 +918,9 @@ pub fn load_or_build(
     // with the in-memory graph; the only cost is rebuilding next boot.
     let cache_result = (|| -> Result<()> {
         if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating transit cache directory {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("creating transit cache directory {}", parent.display())
+            })?;
         }
         graph
             .save_cached(cache_path)
@@ -1076,6 +1089,55 @@ mod tests {
         let h1 = compute_provenance(&tt, &opts, &fp);
         let h2 = compute_provenance(&tt, &opts, &fp);
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn provenance_invariant_to_n_routes() {
+        // #412 review: the transfer graph depends only on the stop SET +
+        // foot CCH + options — NOT on how many trips/patterns are active.
+        // `n_routes()` counts service-date-active patterns (weekday vs
+        // weekend timetables differ), so it must NOT feed the provenance
+        // hash, or a cross-weekday restart would cache-MISS and rebuild on
+        // the boot path. Build two timetables with the IDENTICAL stop set
+        // + coords but different route counts and assert equal provenance.
+        let st = |t: u32| StopTime {
+            arrival: t,
+            departure: t,
+        };
+
+        // tt_one: a single pattern [A,B] → n_routes == 1.
+        let tt_one = {
+            let mut b = TimetableBuilder::new();
+            let a = b.add_stop("A", "A", 0.0, 0.0, None);
+            let c = b.add_stop("B", "B", 0.01, 0.0, None);
+            b.add_trip("T1", "R", "R", "h", vec![a, c], vec![st(0), st(60)]);
+            b.build().unwrap()
+        };
+
+        // tt_two: same two stops at the same coords, but TWO distinct
+        // patterns ([A,B] and [B,A]) → n_routes == 2.
+        let tt_two = {
+            let mut b = TimetableBuilder::new();
+            let a = b.add_stop("A", "A", 0.0, 0.0, None);
+            let c = b.add_stop("B", "B", 0.01, 0.0, None);
+            b.add_trip("T1", "R", "R", "h", vec![a, c], vec![st(0), st(60)]);
+            b.add_trip("T2", "R", "R", "h", vec![c, a], vec![st(0), st(60)]);
+            b.build().unwrap()
+        };
+
+        assert_ne!(
+            tt_one.n_routes(),
+            tt_two.n_routes(),
+            "test setup must differ in n_routes"
+        );
+
+        let opts = TransferBuildOptions::default();
+        let fp: FootCchFingerprint = [0xAB; 32];
+        assert_eq!(
+            compute_provenance(&tt_one, &opts, &fp),
+            compute_provenance(&tt_two, &opts, &fp),
+            "provenance must be invariant to active-route count (date-independent)"
+        );
     }
 
     #[test]
