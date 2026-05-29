@@ -254,11 +254,7 @@ pub async fn match_trace_handler(
     };
 
     // Convert coordinates
-    let coords: Vec<(f64, f64)> = req
-        .points
-        .iter()
-        .map(|&[lon, lat]| (lon, lat))
-        .collect();
+    let coords: Vec<(f64, f64)> = req.points.iter().map(|&[lon, lat]| (lon, lat)).collect();
 
     // Extract owned values before the spawn_blocking closure
     let gps_accuracy = req.gps_accuracy;
@@ -510,11 +506,7 @@ async fn cross_region_match_inner(
             .into_response();
     }
 
-    let coords: Vec<(f64, f64)> = req
-        .points
-        .iter()
-        .map(|&[lon, lat]| (lon, lat))
-        .collect();
+    let coords: Vec<(f64, f64)> = req.points.iter().map(|&[lon, lat]| (lon, lat)).collect();
     let mode_name = req.mode.clone();
     let gps_accuracy = req.gps_accuracy;
     let want_steps = req.steps;

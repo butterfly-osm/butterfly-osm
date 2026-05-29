@@ -9,7 +9,6 @@ use axum::{
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
@@ -192,9 +191,10 @@ impl PhastState {
 /// #408: bounded per-thread PHAST state — `Option<PhastState>` slots
 /// indexed by mode_idx, plus a parallel last-used millis array used to
 /// pick a victim when the live-slot count reaches the LRU capacity.
-/// The whole-array idle drop in `try_drop_idle_phast` continues to fire
-/// after `PHAST_LAST_TOUCH` goes stale; this LRU bounds the *peak* RSS
-/// while traffic is steady across many modes.
+/// This LRU bounds *peak* RSS while traffic is steady across many
+/// modes; #409 wraps the whole `PhastSlots` in an `EvictableCell` so
+/// the idle-compactor reclaims the entire arena once the owning thread
+/// (Tokio or rayon) goes quiet.
 struct PhastSlots {
     slots: [Option<PhastState>; crate::profile_abi::MAX_MODES],
     last_used_ms: [u64; crate::profile_abi::MAX_MODES],
@@ -241,16 +241,6 @@ impl PhastSlots {
         }
         &mut self.slots[mode_idx]
     }
-
-    fn drop_all(&mut self) {
-        for slot in self.slots.iter_mut() {
-            *slot = None;
-        }
-        for lu in self.last_used_ms.iter_mut() {
-            *lu = 0;
-        }
-        self.epoch = 0;
-    }
 }
 
 /// #408: per-worker LRU capacity for the PHAST mode-slot array.
@@ -262,40 +252,18 @@ fn phast_mode_lru_cap() -> usize {
     std::env::var("BUTTERFLY_PHAST_MODE_LRU_CAP")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .map(|c| c.max(1).min(crate::profile_abi::MAX_MODES))
+        .map(|c| c.clamp(1, crate::profile_abi::MAX_MODES))
         .unwrap_or(2)
 }
 
 thread_local! {
     /// #408: forward PHAST mode-slot LRU, per worker thread.
-    static PHAST_STATES: RefCell<PhastSlots> = const { RefCell::new(PhastSlots::empty()) };
-
-    /// #400: per-thread last-touched timestamp for lean-at-rest eviction.
-    static PHAST_LAST_TOUCH: std::cell::Cell<Option<std::time::Instant>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[inline]
-fn touch_phast_idle_marker() {
-    PHAST_LAST_TOUCH.with(|c| c.set(Some(std::time::Instant::now())));
-}
-
-/// #400: drop both forward and reverse PHAST states on this thread if
-/// idle > threshold. Releases up to MAX_MODES × 2 × ~30 MB per worker
-/// when fully populated (Belgium uses 4 car modes + bike + foot ≈
-/// ~720 MB per worker upper bound).
-pub fn try_drop_idle_phast(threshold: std::time::Duration) -> bool {
-    let stale = PHAST_LAST_TOUCH.with(|c| match c.get() {
-        Some(last) => last.elapsed() > threshold,
-        None => false,
-    });
-    if !stale {
-        return false;
-    }
-    PHAST_STATES.with(|c| c.borrow_mut().drop_all());
-    PHAST_STATES_REV.with(|c| c.borrow_mut().drop_all());
-    PHAST_LAST_TOUCH.with(|c| c.set(None));
-    true
+    /// #409/#410: wrapped in an `EvictableCell` so the idle-compactor
+    /// frees the whole `PhastSlots` arena (up to MAX_MODES × ~80 MB)
+    /// regardless of which pool owns the thread — `/isochrone` runs
+    /// inline on Tokio workers, which `rayon::broadcast` could not reach.
+    static PHAST_STATES: crate::server::evictable::EvictableCell<PhastSlots> =
+        const { crate::server::evictable::EvictableCell::new() };
 }
 
 /// Run PHAST bounded query using thread-local state.
@@ -317,147 +285,150 @@ pub fn run_phast_bounded_fast(
 ) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
-    touch_phast_idle_marker();
     let total_start = std::time::Instant::now();
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
 
-    // #408: get thread-local state for this mode via the LRU; evicts
-    // the coldest mode-slot when the live count exceeds the cap.
+    // #408: per-mode LRU within the thread's PhastSlots; #409: the whole
+    // PhastSlots is an EvictableCell so the idle-compactor frees it on
+    // any thread (incl. Tokio workers running /isochrone inline).
     let cap = phast_mode_lru_cap();
     PHAST_STATES.with(|cell| {
-        let mut states = cell.borrow_mut();
-        let state_slot = states.touch(mode_idx, cap);
+        cell.with_or_init(PhastSlots::empty, |states| {
+            let state_slot = states.touch(mode_idx, cap);
 
-        // Initialize or reinitialize if needed
-        let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
+            // Initialize or reinitialize if needed
+            let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
 
-        // Verify size matches (in case different datasets)
-        if state.dist.len() != n_nodes {
-            *state = PhastState::new(n_nodes);
-        }
-
-        // Start new query (O(1) instead of O(n) memset)
-        state.start_query();
-        state.set_dist(origin_rank as usize, 0);
-
-        // Track settled nodes during upward phase
-        let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
-
-        // Phase 1: Upward search (PQ-based, UP edges only). Reads weights
-        // from `up_adj_flat` (pre-filtered for INF), so the hot loop is
-        // branch-free w.r.t. weight validity.
-        let upward_start = std::time::Instant::now();
-        state.pq.push(Reverse((0, origin_rank)));
-
-        while let Some(Reverse((d, u))) = state.pq.pop() {
-            if d > threshold {
-                break;
+            // Verify size matches (in case different datasets)
+            if state.dist.len() != n_nodes {
+                *state = PhastState::new(n_nodes);
             }
 
-            if d > state.get_dist(u as usize) {
-                continue; // Stale entry
-            }
+            // Start new query (O(1) instead of O(n) memset)
+            state.start_query();
+            state.set_dist(origin_rank as usize, 0);
 
-            upward_settled.push(u);
+            // Track settled nodes during upward phase
+            let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
 
-            let up_start = up_adj_flat.offsets[u as usize] as usize;
-            let up_end = up_adj_flat.offsets[u as usize + 1] as usize;
+            // Phase 1: Upward search (PQ-based, UP edges only). Reads weights
+            // from `up_adj_flat` (pre-filtered for INF), so the hot loop is
+            // branch-free w.r.t. weight validity.
+            let upward_start = std::time::Instant::now();
+            state.pq.push(Reverse((0, origin_rank)));
 
-            for i in up_start..up_end {
-                let v = up_adj_flat.targets[i] as usize;
-                let w = up_adj_flat.weights.get(i);
-                let new_dist = d.saturating_add(w);
-                if new_dist < state.get_dist(v) {
-                    state.set_dist(v, new_dist);
-                    state.pq.push(Reverse((new_dist, v as u32)));
+            while let Some(Reverse((d, u))) = state.pq.pop() {
+                if d > threshold {
+                    break;
+                }
+
+                if d > state.get_dist(u as usize) {
+                    continue; // Stale entry
+                }
+
+                upward_settled.push(u);
+
+                let up_start = up_adj_flat.offsets[u as usize] as usize;
+                let up_end = up_adj_flat.offsets[u as usize + 1] as usize;
+
+                for i in up_start..up_end {
+                    let v = up_adj_flat.targets[i] as usize;
+                    let w = up_adj_flat.weights.get(i);
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < state.get_dist(v) {
+                        state.set_dist(v, new_dist);
+                        state.pq.push(Reverse((new_dist, v as u32)));
+                    }
                 }
             }
-        }
-        let upward_us = upward_start.elapsed().as_micros();
+            let upward_us = upward_start.elapsed().as_micros();
 
-        // Phase 2: Block-gated downward scan (linear, DOWN edges only).
-        // Reads from `down_adj_flat` — same shape as the legacy
-        // `cch_topo.down_*` + `cch_weights.down` pair, but pre-filtered.
-        let downward_start = std::time::Instant::now();
-        let mut blocks_active = 0usize;
-        for block_idx in (0..state.n_blocks).rev() {
-            // Skip blocks with no active nodes
-            if !state.is_block_active(block_idx) {
-                continue;
-            }
-            blocks_active += 1;
-
-            // Process nodes in this block in reverse rank order
-            let block_start = block_idx * PHAST_BLOCK_SIZE;
-            let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
-
-            for rank in (block_start..block_end).rev() {
-                let d_u = state.get_dist(rank);
-
-                if d_u == u32::MAX || d_u > threshold {
+            // Phase 2: Block-gated downward scan (linear, DOWN edges only).
+            // Reads from `down_adj_flat` — same shape as the legacy
+            // `cch_topo.down_*` + `cch_weights.down` pair, but pre-filtered.
+            let downward_start = std::time::Instant::now();
+            let mut blocks_active = 0usize;
+            for block_idx in (0..state.n_blocks).rev() {
+                // Skip blocks with no active nodes
+                if !state.is_block_active(block_idx) {
                     continue;
                 }
+                blocks_active += 1;
 
-                let down_start = down_adj_flat.offsets[rank] as usize;
-                let down_end = down_adj_flat.offsets[rank + 1] as usize;
+                // Process nodes in this block in reverse rank order
+                let block_start = block_idx * PHAST_BLOCK_SIZE;
+                let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
 
-                for i in down_start..down_end {
-                    let v = down_adj_flat.targets[i] as usize;
-                    let w = down_adj_flat.weights.get(i);
-                    let new_dist = d_u.saturating_add(w);
-                    if new_dist < state.get_dist(v) {
-                        // set_dist marks the target block as active too
-                        state.set_dist(v, new_dist);
+                for rank in (block_start..block_end).rev() {
+                    let d_u = state.get_dist(rank);
+
+                    if d_u == u32::MAX || d_u > threshold {
+                        continue;
+                    }
+
+                    let down_start = down_adj_flat.offsets[rank] as usize;
+                    let down_end = down_adj_flat.offsets[rank + 1] as usize;
+
+                    for i in down_start..down_end {
+                        let v = down_adj_flat.targets[i] as usize;
+                        let w = down_adj_flat.weights.get(i);
+                        let new_dist = d_u.saturating_add(w);
+                        if new_dist < state.get_dist(v) {
+                            // set_dist marks the target block as active too
+                            state.set_dist(v, new_dist);
+                        }
                     }
                 }
             }
-        }
-        let downward_us = downward_start.elapsed().as_micros();
+            let downward_us = downward_start.elapsed().as_micros();
 
-        // Collect settled nodes (only those within threshold)
-        // Only scan active blocks - much faster than full n_nodes scan
-        let collect_start = std::time::Instant::now();
-        let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
-        for block_idx in 0..state.n_blocks {
-            if !state.is_block_active(block_idx) {
-                continue;
-            }
-            let block_start = block_idx * PHAST_BLOCK_SIZE;
-            let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
-            for rank in block_start..block_end {
-                if state.version[rank] == state.current_gen {
-                    let d = state.dist[rank];
-                    if d <= threshold {
-                        result.push((rank as u32, d));
+            // Collect settled nodes (only those within threshold)
+            // Only scan active blocks - much faster than full n_nodes scan
+            let collect_start = std::time::Instant::now();
+            let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            for block_idx in 0..state.n_blocks {
+                if !state.is_block_active(block_idx) {
+                    continue;
+                }
+                let block_start = block_idx * PHAST_BLOCK_SIZE;
+                let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
+                for rank in block_start..block_end {
+                    if state.version[rank] == state.current_gen {
+                        let d = state.dist[rank];
+                        if d <= threshold {
+                            result.push((rank as u32, d));
+                        }
                     }
                 }
             }
-        }
-        let collect_us = collect_start.elapsed().as_micros();
-        let total_us = total_start.elapsed().as_micros();
+            let collect_us = collect_start.elapsed().as_micros();
+            let total_us = total_start.elapsed().as_micros();
 
-        tracing::debug!(
-            threshold_s = threshold,
-            upward_us = upward_us,
-            downward_us = downward_us,
-            collect_us = collect_us,
-            total_us = total_us,
-            upward_settled = upward_settled.len(),
-            settled_nodes = result.len(),
-            blocks_active = blocks_active,
-            blocks_total = state.n_blocks,
-            "PHAST forward timing"
-        );
+            tracing::debug!(
+                threshold_s = threshold,
+                upward_us = upward_us,
+                downward_us = downward_us,
+                collect_us = collect_us,
+                total_us = total_us,
+                upward_settled = upward_settled.len(),
+                settled_nodes = result.len(),
+                blocks_active = blocks_active,
+                blocks_total = state.n_blocks,
+                "PHAST forward timing"
+            );
 
-        result
+            result
+        })
     })
 }
 
 thread_local! {
     /// #408: reverse-PHAST mode-slot LRU, per worker thread. Same
-    /// shape and capacity policy as `PHAST_STATES` (forward).
-    static PHAST_STATES_REV: RefCell<PhastSlots> = const { RefCell::new(PhastSlots::empty()) };
+    /// shape and capacity policy as `PHAST_STATES` (forward). #409:
+    /// EvictableCell for cross-thread idle reclamation.
+    static PHAST_STATES_REV: crate::server::evictable::EvictableCell<PhastSlots> =
+        const { crate::server::evictable::EvictableCell::new() };
 }
 
 /// Run REVERSE PHAST bounded query -- computes d(all -> target) for reverse isochrones.
@@ -474,112 +445,112 @@ pub fn run_phast_bounded_fast_reverse(
 ) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
-    touch_phast_idle_marker();
     let total_start = std::time::Instant::now();
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
 
     let cap = phast_mode_lru_cap();
     PHAST_STATES_REV.with(|cell| {
-        let mut states = cell.borrow_mut();
-        let state_slot = states.touch(mode_idx, cap);
+        cell.with_or_init(PhastSlots::empty, |states| {
+            let state_slot = states.touch(mode_idx, cap);
 
-        // Initialize or reinitialize if needed
-        let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
-        if state.dist.len() != n_nodes {
-            *state = PhastState::new(n_nodes);
-        }
-
-        state.start_query();
-        state.set_dist(target_rank as usize, 0);
-
-        // Phase 1: Upward search using DOWN-reverse edges (goes to higher rank nodes)
-        let upward_start = std::time::Instant::now();
-        state.pq.push(Reverse((0, target_rank)));
-
-        while let Some(Reverse((d, u))) = state.pq.pop() {
-            if d > threshold {
-                break;
-            }
-            if d > state.get_dist(u as usize) {
-                continue;
+            // Initialize or reinitialize if needed
+            let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
+            if state.dist.len() != n_nodes {
+                *state = PhastState::new(n_nodes);
             }
 
-            // down_rev_flat[u] gives higher-rank neighbors with DOWN weights
-            let start = down_rev_flat.offsets[u as usize] as usize;
-            let end = down_rev_flat.offsets[u as usize + 1] as usize;
+            state.start_query();
+            state.set_dist(target_rank as usize, 0);
 
-            for i in start..end {
-                let v = down_rev_flat.sources[i] as usize; // v has higher rank
-                let w = down_rev_flat.weights.get(i);
+            // Phase 1: Upward search using DOWN-reverse edges (goes to higher rank nodes)
+            let upward_start = std::time::Instant::now();
+            state.pq.push(Reverse((0, target_rank)));
 
-                if w == u32::MAX {
+            while let Some(Reverse((d, u))) = state.pq.pop() {
+                if d > threshold {
+                    break;
+                }
+                if d > state.get_dist(u as usize) {
                     continue;
                 }
 
-                let new_dist = d.saturating_add(w);
-                if new_dist < state.get_dist(v) {
-                    state.set_dist(v, new_dist);
-                    state.pq.push(Reverse((new_dist, v as u32)));
+                // down_rev_flat[u] gives higher-rank neighbors with DOWN weights
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+
+                for i in start..end {
+                    let v = down_rev_flat.sources[i] as usize; // v has higher rank
+                    let w = down_rev_flat.weights.get(i);
+
+                    if w == u32::MAX {
+                        continue;
+                    }
+
+                    let new_dist = d.saturating_add(w);
+                    if new_dist < state.get_dist(v) {
+                        state.set_dist(v, new_dist);
+                        state.pq.push(Reverse((new_dist, v as u32)));
+                    }
                 }
             }
-        }
-        let upward_us = upward_start.elapsed().as_micros();
+            let upward_us = upward_start.elapsed().as_micros();
 
-        // Phase 2: Plain downward PULL scan using UP edges
-        // For each node v (decreasing rank), pull from higher-rank neighbors u
-        // via up_adj_flat[v].targets (which have higher rank).
-        //
-        // NOTE: Block-gating is NOT used here because PULL cannot propagate
-        // block activation downward (unlike PUSH in forward PHAST). A PUSH
-        // approach would need a reverse-UP adjacency we don't have.
-        let downward_start = std::time::Instant::now();
-        for v in (0..n_nodes).rev() {
-            let up_start = up_adj_flat.offsets[v] as usize;
-            let up_end = up_adj_flat.offsets[v + 1] as usize;
+            // Phase 2: Plain downward PULL scan using UP edges
+            // For each node v (decreasing rank), pull from higher-rank neighbors u
+            // via up_adj_flat[v].targets (which have higher rank).
+            //
+            // NOTE: Block-gating is NOT used here because PULL cannot propagate
+            // block activation downward (unlike PUSH in forward PHAST). A PUSH
+            // approach would need a reverse-UP adjacency we don't have.
+            let downward_start = std::time::Instant::now();
+            for v in (0..n_nodes).rev() {
+                let up_start = up_adj_flat.offsets[v] as usize;
+                let up_end = up_adj_flat.offsets[v + 1] as usize;
 
-            for i in up_start..up_end {
-                let u = up_adj_flat.targets[i] as usize; // u has higher rank
-                let w = up_adj_flat.weights.get(i);
+                for i in up_start..up_end {
+                    let u = up_adj_flat.targets[i] as usize; // u has higher rank
+                    let w = up_adj_flat.weights.get(i);
 
-                let d_u = state.get_dist(u);
-                if d_u == u32::MAX || d_u > threshold {
-                    continue;
-                }
+                    let d_u = state.get_dist(u);
+                    if d_u == u32::MAX || d_u > threshold {
+                        continue;
+                    }
 
-                let new_dist = d_u.saturating_add(w);
-                if new_dist < state.get_dist(v) {
-                    state.set_dist(v, new_dist);
-                }
-            }
-        }
-        let downward_us = downward_start.elapsed().as_micros();
-
-        // Collect settled nodes (full scan -- no block-gating)
-        let collect_start = std::time::Instant::now();
-        let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
-        for rank in 0..n_nodes {
-            if state.version[rank] == state.current_gen {
-                let d = state.dist[rank];
-                if d <= threshold {
-                    result.push((rank as u32, d));
+                    let new_dist = d_u.saturating_add(w);
+                    if new_dist < state.get_dist(v) {
+                        state.set_dist(v, new_dist);
+                    }
                 }
             }
-        }
-        let collect_us = collect_start.elapsed().as_micros();
-        let total_us = total_start.elapsed().as_micros();
+            let downward_us = downward_start.elapsed().as_micros();
 
-        tracing::debug!(
-            threshold_s = threshold,
-            upward_us = upward_us,
-            downward_us = downward_us,
-            collect_us = collect_us,
-            total_us = total_us,
-            settled_nodes = result.len(),
-            "PHAST reverse timing"
-        );
+            // Collect settled nodes (full scan -- no block-gating)
+            let collect_start = std::time::Instant::now();
+            let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            for rank in 0..n_nodes {
+                if state.version[rank] == state.current_gen {
+                    let d = state.dist[rank];
+                    if d <= threshold {
+                        result.push((rank as u32, d));
+                    }
+                }
+            }
+            let collect_us = collect_start.elapsed().as_micros();
+            let total_us = total_start.elapsed().as_micros();
 
-        result
+            tracing::debug!(
+                threshold_s = threshold,
+                upward_us = upward_us,
+                downward_us = downward_us,
+                collect_us = collect_us,
+                total_us = total_us,
+                settled_nodes = result.len(),
+                "PHAST reverse timing"
+            );
+
+            result
+        })
     })
 }
 
