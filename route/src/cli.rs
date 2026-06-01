@@ -1259,6 +1259,62 @@ pub enum Commands {
         #[arg(short, long)]
         outdir: PathBuf,
     },
+
+    /// #388: fit a traffic profile's per-density speed factors from an
+    /// observed-drive-times dataset. Offline — runs OUTSIDE the step1-8
+    /// pipeline and emits a `*.traffic.json` that step 8's `--traffic` flag
+    /// (#84) consumes unchanged, replacing hand-picked multipliers with
+    /// learned numbers.
+    ///
+    /// Source-independent: it takes whatever `(way_id,
+    /// observed_avg_speed_kmh, sample_count)` table you produce (parquet or
+    /// csv). Choosing/licensing the observed-speed dataset, and resolving any
+    /// non-OSM segment identifier to a way_id, are out of scope (the MVP
+    /// adapter assumes the identifier IS the OSM way_id).
+    CalibrateTraffic {
+        /// Observed-speed table. `.parquet`/`.pq`, `.csv`, or `.tsv` with
+        /// columns way_id (aka segment_identifier), observed_avg_speed_kmh,
+        /// and optional sample_count.
+        #[arg(long)]
+        observations: PathBuf,
+
+        /// Path to a loose `way_attrs.<mode>.bin` (a step-2 output).
+        #[arg(long, conflicts_with = "data_dir")]
+        way_attrs: Option<PathBuf>,
+
+        /// Alternatively, a step-tree data dir; resolves
+        /// `<dir>/step2/way_attrs.<mode>.bin` for `--mode`.
+        #[arg(long, conflicts_with = "way_attrs")]
+        data_dir: Option<PathBuf>,
+
+        /// Mode whose way_attrs to use (with `--data-dir`). Default: car.
+        #[arg(long, default_value = "car")]
+        mode: String,
+
+        /// `name` field written into the emitted profile JSON.
+        #[arg(long, default_value = "calibrated")]
+        name: String,
+
+        /// `base_model` field written into the emitted profile JSON.
+        #[arg(long, default_value = "car")]
+        base_model: String,
+
+        /// Minimum joined observations a density class needs before we trust
+        /// its own median; below this it inherits the global median.
+        #[arg(long, default_value_t = 100)]
+        min_samples: usize,
+
+        /// Sanity clamp band for emitted factors (must lie within the schema
+        /// bounds [0.1, 1.5]). Default mirrors the #388 spec.
+        #[arg(long, default_value_t = 0.30)]
+        clamp_min: f32,
+        #[arg(long, default_value_t = 1.20)]
+        clamp_max: f32,
+
+        /// Output `*.traffic.json` path.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 impl Cli {
@@ -2846,6 +2902,72 @@ impl Cli {
                 println!("✅ Step 8 (Hybrid) CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
+                Ok(())
+            }
+            Commands::CalibrateTraffic {
+                observations,
+                way_attrs,
+                data_dir,
+                mode,
+                name,
+                base_model,
+                min_samples,
+                clamp_min,
+                clamp_max,
+                out,
+            } => {
+                let wa_path = match (way_attrs, data_dir) {
+                    (Some(p), None) => p,
+                    (None, Some(dir)) => dir
+                        .join("step2")
+                        .join(format!("way_attrs.{}.bin", mode.to_lowercase())),
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("--way-attrs and --data-dir are mutually exclusive")
+                    }
+                    (None, None) => {
+                        anyhow::bail!("one of --way-attrs or --data-dir is required")
+                    }
+                };
+
+                let params = crate::calibrate::CalibrationParams {
+                    name,
+                    base_model,
+                    min_samples,
+                    clamp_min,
+                    clamp_max,
+                };
+                let result = crate::calibrate::run_calibration(&observations, &wa_path, &params)?;
+
+                // Human-readable fit summary to stderr (the profile JSON is
+                // the machine output, written to --out).
+                eprintln!(
+                    "calibration: {} matched, {} unmatched, {} dropped; global ratio {:.3}",
+                    result.matched, result.unmatched, result.skipped_bad, result.global_factor
+                );
+                eprintln!(
+                    "{:<14} {:>10} {:>12} {:>10} {:>9} {:>8}",
+                    "density", "n_obs", "samples", "raw", "fallback", "factor"
+                );
+                for cf in &result.per_class {
+                    let raw = cf
+                        .raw_factor
+                        .map(|r| format!("{r:.3}"))
+                        .unwrap_or_else(|| "-".to_string());
+                    eprintln!(
+                        "{:<14} {:>10} {:>12} {:>10} {:>9} {:>8.3}",
+                        cf.class.as_str(),
+                        cf.n_obs,
+                        cf.total_samples,
+                        raw,
+                        if cf.used_fallback { "yes" } else { "no" },
+                        cf.factor
+                    );
+                }
+
+                let json = result.profile.to_json_string()?;
+                std::fs::write(&out, &json)
+                    .with_context(|| format!("writing profile to {}", out.display()))?;
+                println!("✅ wrote calibrated traffic profile: {}", out.display());
                 Ok(())
             }
         }

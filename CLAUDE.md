@@ -520,6 +520,18 @@ overlapped semantically with realistic.
 - **Profiles** live in `traffic/*.traffic.json`; ship 2 samples
   (`car_realistic` baked into base car, `rush_hour` as variant). Strict
   schema validation: all 5 density keys required, factors in `[0.1, 1.5]`.
+- **Calibration (#388)**: the profile factors can be *fit from observed drive
+  times* instead of hand-picked, via the offline `butterfly-route
+  calibrate-traffic` subcommand (`route/src/calibrate.rs`). It is
+  source-independent — give it any `(way_id, observed_avg_speed_kmh,
+  sample_count)` table (parquet or csv) plus a `way_attrs.<mode>.bin`, and it
+  emits a schema-valid `*.traffic.json`. Per density class it takes the
+  sample-count-weighted median of `observed_kmh / base_kmh` (the ratio
+  normalises out the highway mix), clamps to a sanity band, and falls back to
+  the global median for under-sampled classes. It does NOT choose/license the
+  observed-speed dataset or resolve non-OSM segment ids — those are the
+  remaining decisions on #388 (MVP adapter assumes `segment_identifier ==
+  OSM way_id`).
 - **Wall time** (Belgium, car, ≈5M EBG nodes / ≈34M shortcuts): ~35-40 s.
   Bottom-up alone is 0.5 s; the rest is parallel triangle relaxation,
   which is **correctness-critical** — skipping it produces over-estimated
