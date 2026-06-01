@@ -2350,6 +2350,15 @@ struct SearchState {
     pushes: usize,
     pops: usize,
     stale_pops: usize, // Should always be 0 with decrease-key
+    /// Early-stop bound (#415 / max_minutes): `pop()` returns `None`
+    /// once the heap minimum exceeds this. `u32::MAX` = unbounded (no
+    /// behavioural change). The min-heap pops in non-decreasing order, so
+    /// once the minimum crosses the threshold every remaining entry does
+    /// too — stopping here is exact for the reachable-within-threshold set.
+    /// Set per-sweep by the bounded entry points; preserved across
+    /// `start_search()` so it must be reset explicitly when reusing a
+    /// thread-local state for an unbounded query.
+    dist_threshold: u32,
 }
 
 impl SearchState {
@@ -2368,6 +2377,7 @@ impl SearchState {
             pushes: 0,
             pops: 0,
             stale_pops: 0,
+            dist_threshold: u32::MAX,
         }
     }
 
@@ -2424,6 +2434,13 @@ impl SearchState {
     #[inline]
     fn pop(&mut self) -> Option<(u32, u32)> {
         if let Some((dist, node)) = self.heap.pop(&mut self.handles) {
+            // Bounded early-stop: the popped node already had its handle
+            // cleared by `DAryHeap::pop`, so returning `None` here cleanly
+            // terminates the sweep. Every node with final distance
+            // <= dist_threshold has already been settled (min-heap order).
+            if dist > self.dist_threshold {
+                return None;
+            }
             self.pops += 1;
             // Mark as settled (handle becomes INVALID_HANDLE after pop in heapify_down)
             self.handles[node as usize] = INVALID_HANDLE;
@@ -2893,6 +2910,7 @@ impl BucketM2MEngine {
         down_rev_flat: &DownReverseAdjFlat,
         sources: &[u32],
         targets: &[u32],
+        threshold: u32,
     ) -> (Vec<u32>, BucketM2MStats) {
         let n_sources = sources.len();
         let n_targets = targets.len();
@@ -2908,6 +2926,10 @@ impl BucketM2MEngine {
             n_targets,
             ..Default::default()
         };
+
+        // max_minutes bound: stop both forward and backward sweeps once the
+        // time metric exceeds `threshold`. `u32::MAX` = unbounded.
+        self.state.dist_threshold = threshold;
 
         // Clear bucket items (reuse allocation)
         self.bucket_items.clear();
@@ -3101,6 +3123,17 @@ pub fn forward_build_buckets(
     up_adj_flat: &UpAdjFlat,
     sources: &[u32],
 ) -> SourceBuckets {
+    forward_build_buckets_bounded(n_nodes, up_adj_flat, sources, u32::MAX)
+}
+
+/// Time-bounded [`forward_build_buckets`] (#415). Stops each source's forward
+/// sweep once the up-distance exceeds `threshold`. `u32::MAX` = unbounded.
+pub fn forward_build_buckets_bounded(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    sources: &[u32],
+    threshold: u32,
+) -> SourceBuckets {
     let n_sources = sources.len();
 
     if n_sources == 0 {
@@ -3115,6 +3148,7 @@ pub fn forward_build_buckets(
 
     // Single reusable search state
     let mut state = SearchState::new(n_nodes, avg_visited);
+    state.dist_threshold = threshold;
 
     // Collect bucket items: (node, source_idx, dist)
     let mut bucket_items: Vec<(u32, u32, u32)> = Vec::with_capacity(n_sources * avg_visited);
@@ -3147,6 +3181,21 @@ pub fn backward_join_with_buckets(
     source_buckets: &SourceBuckets,
     targets: &[u32],
 ) -> Vec<u32> {
+    backward_join_with_buckets_bounded(n_nodes, down_rev_flat, source_buckets, targets, u32::MAX)
+}
+
+/// Time-bounded [`backward_join_with_buckets`] (#415). Stops each target's
+/// backward sweep once the down-distance exceeds `threshold`. Pairs whose
+/// shortest time exceeds `threshold` are left as `u32::MAX` or a non-minimal
+/// value > `threshold`; the caller must treat any cell > `threshold` as
+/// out-of-bound. `u32::MAX` = unbounded.
+pub fn backward_join_with_buckets_bounded(
+    n_nodes: usize,
+    down_rev_flat: &DownReverseAdjFlat,
+    source_buckets: &SourceBuckets,
+    targets: &[u32],
+    threshold: u32,
+) -> Vec<u32> {
     let n_sources = source_buckets.n_sources;
     let n_targets = targets.len();
 
@@ -3159,6 +3208,7 @@ pub fn backward_join_with_buckets(
     // Estimate for pre-allocation
     let avg_visited = (n_nodes / 400).clamp(500, 20000);
     let mut state = SearchState::new(n_nodes, avg_visited);
+    state.dist_threshold = threshold;
 
     for (target_idx, &target) in targets.iter().enumerate() {
         if target as usize >= n_nodes {
@@ -3390,6 +3440,37 @@ pub fn table_bucket_parallel(
     sources: &[u32],
     targets: &[u32],
 ) -> (Vec<u32>, BucketM2MStats) {
+    table_bucket_parallel_bounded(
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        sources,
+        targets,
+        u32::MAX,
+    )
+}
+
+/// Time-bounded variant of [`table_bucket_parallel`] (max_minutes, #415).
+///
+/// Stops every forward and backward sweep once the popped distance exceeds
+/// `threshold` (in the metric of `up_adj_flat`/`down_rev_flat` — pass the
+/// TIME flats and a seconds threshold). `u32::MAX` = unbounded (identical
+/// behaviour to the wrapper above).
+///
+/// Exactness: for any pair whose shortest distance d(s→t) ≤ `threshold`, the
+/// optimal CCH meeting node m* satisfies up(s→m*) ≤ d ≤ threshold and
+/// down(m*→t) ≤ d ≤ threshold, so m* survives both bounded sweeps and the
+/// join recovers d exactly. Pairs with d(s→t) > `threshold` may be returned
+/// as `u32::MAX` or as a non-minimal value > `threshold`; callers MUST treat
+/// any cell > `threshold` as out-of-bound (the /table handler nulls them).
+pub fn table_bucket_parallel_bounded(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+    threshold: u32,
+) -> (Vec<u32>, BucketM2MStats) {
     let n_sources = sources.len();
     let n_targets = targets.len();
 
@@ -3416,7 +3497,7 @@ pub fn table_bucket_parallel(
                     if engine.n_nodes != n_nodes {
                         *engine = BucketM2MEngine::new(n_nodes);
                     }
-                    engine.compute_flat(up_adj_flat, down_rev_flat, sources, targets)
+                    engine.compute_flat(up_adj_flat, down_rev_flat, sources, targets, threshold)
                 },
             )
         });
@@ -3437,6 +3518,7 @@ pub fn table_bucket_parallel(
             sources,
             targets,
             tile,
+            threshold,
         );
     }
 
@@ -3471,6 +3553,7 @@ pub fn table_bucket_parallel(
                             if state.entries.len() != n_nodes {
                                 *state = SearchState::new(n_nodes, avg_visited);
                             }
+                            state.dist_threshold = threshold;
                             items_cell.with_or_init(Vec::new, |items| {
                                 items.clear();
 
@@ -3535,6 +3618,7 @@ pub fn table_bucket_parallel(
                         if state.entries.len() != n_nodes {
                             *state = SearchState::new(n_nodes, avg_visited);
                         }
+                        state.dist_threshold = threshold;
                         backward_join_parallel_prefix(
                             down_rev_flat,
                             target,
@@ -3588,6 +3672,7 @@ fn table_bucket_parallel_l3_tiled(
     sources: &[u32],
     targets: &[u32],
     src_tile_size: usize,
+    threshold: u32,
 ) -> (Vec<u32>, BucketM2MStats) {
     use std::sync::atomic::AtomicU32;
 
@@ -3631,6 +3716,7 @@ fn table_bucket_parallel_l3_tiled(
                                 if state.entries.len() != n_nodes {
                                     *state = SearchState::new(n_nodes, avg_visited);
                                 }
+                                state.dist_threshold = threshold;
                                 items_cell.with_or_init(Vec::new, |items| {
                                     items.clear();
 
@@ -3685,6 +3771,7 @@ fn table_bucket_parallel_l3_tiled(
                             if state.entries.len() != n_nodes {
                                 *state = SearchState::new(n_nodes, avg_visited);
                             }
+                            state.dist_threshold = threshold;
                             backward_join_tile(
                                 down_rev_flat,
                                 target,
@@ -4109,6 +4196,9 @@ struct SearchState2 {
     handles: Vec<u32>,
     pushes: usize,
     pops: usize,
+    /// Early-stop bound on the ordering metric (time). See
+    /// [`SearchState::dist_threshold`]. `u32::MAX` = unbounded.
+    dist_threshold: u32,
 }
 
 impl SearchState2 {
@@ -4127,6 +4217,7 @@ impl SearchState2 {
             handles: vec![INVALID_HANDLE; n_nodes],
             pushes: 0,
             pops: 0,
+            dist_threshold: u32::MAX,
         }
     }
 
@@ -4180,6 +4271,11 @@ impl SearchState2 {
     #[inline]
     fn pop(&mut self) -> Option<(u32, u32, u32)> {
         if let Some((dist, node)) = self.heap.pop(&mut self.handles) {
+            // Bounded early-stop on the time metric (`dist`). See
+            // `SearchState::pop`.
+            if dist > self.dist_threshold {
+                return None;
+            }
             self.pops += 1;
             self.handles[node as usize] = INVALID_HANDLE;
             let lat = self.lats[node as usize];
@@ -4315,6 +4411,7 @@ pub fn table_bucket_full_flat_len_along_time(
     down_rev_flat_len_along_time: &DownReverseAdjFlat,
     sources: &[u32],
     targets: &[u32],
+    threshold: u32,
 ) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
     let n_sources = sources.len();
     let n_targets = targets.len();
@@ -4350,6 +4447,7 @@ pub fn table_bucket_full_flat_len_along_time(
                         // Reset cumulative perf counters per call.
                         state.pushes = 0;
                         state.pops = 0;
+                        state.dist_threshold = threshold;
                         buckets_cell.with_or_init(
                             || PrefixSumBuckets2::new(n_nodes),
                             |buckets| {
@@ -4519,6 +4617,37 @@ pub fn table_bucket_parallel_len_along_time(
     sources: &[u32],
     targets: &[u32],
 ) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    table_bucket_parallel_len_along_time_bounded(
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        up_adj_flat_len_along_time,
+        down_rev_flat_len_along_time,
+        sources,
+        targets,
+        u32::MAX,
+    )
+}
+
+/// Time-bounded 2-channel bucket-M2M (max_minutes, #415). `threshold` bounds
+/// the TIME channel (the ordering metric); the length-along-time channel is
+/// carried unbounded alongside. `u32::MAX` = unbounded. See
+/// [`table_bucket_parallel_bounded`] for the exactness argument — it applies
+/// identically here because the heap orders on time. The returned `time`
+/// matrix is `u32::MAX` (or a value > threshold) for out-of-bound pairs, and
+/// the paired `lat` cell for those pairs is meaningless — the /table handler
+/// nulls both whenever the time cell exceeds the bound.
+#[allow(clippy::too_many_arguments)]
+pub fn table_bucket_parallel_len_along_time_bounded(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    sources: &[u32],
+    targets: &[u32],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
     let n_sources = sources.len();
     let n_targets = targets.len();
 
@@ -4546,6 +4675,7 @@ pub fn table_bucket_parallel_len_along_time(
             down_rev_flat_len_along_time,
             sources,
             targets,
+            threshold,
         );
     }
 
@@ -4573,6 +4703,7 @@ pub fn table_bucket_parallel_len_along_time(
                             if state.entries.len() != n_nodes {
                                 *state = SearchState2::new(n_nodes, avg_visited);
                             }
+                            state.dist_threshold = threshold;
                             items_cell.with_or_init(Vec::new, |items| {
                                 items.clear();
                                 forward_fill_buckets_flat_len_along_time(
@@ -4633,6 +4764,7 @@ pub fn table_bucket_parallel_len_along_time(
                         if state.entries.len() != n_nodes {
                             *state = SearchState2::new(n_nodes, avg_visited);
                         }
+                        state.dist_threshold = threshold;
                         let mut time_col = vec![u32::MAX; n_sources];
                         let mut lat_col = vec![u32::MAX; n_sources];
                         let (visited, joins) = backward_join_local_columns_len_along_time(
@@ -5033,24 +5165,45 @@ mod step_a_tests {
         let (mono, _) = table_bucket_parallel(n_nodes, &up_adj, &down_rev, &sources, &targets);
 
         // L3-tiled with tile=1 (one source per tile — most aggressive split).
-        let (tiled, _) =
-            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 1);
+        let (tiled, _) = table_bucket_parallel_l3_tiled(
+            n_nodes,
+            &up_adj,
+            &down_rev,
+            &sources,
+            &targets,
+            1,
+            u32::MAX,
+        );
         assert_eq!(
             tiled, mono,
             "L3-tiled (tile=1) must match monolithic byte-for-byte"
         );
 
         // Also exercise tile=3 (forces non-uniform last tile).
-        let (tiled3, _) =
-            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 3);
+        let (tiled3, _) = table_bucket_parallel_l3_tiled(
+            n_nodes,
+            &up_adj,
+            &down_rev,
+            &sources,
+            &targets,
+            3,
+            u32::MAX,
+        );
         assert_eq!(
             tiled3, mono,
             "L3-tiled (tile=3) must match monolithic byte-for-byte"
         );
 
         // And tile=8 (one tile, equivalent to monolithic shape).
-        let (tiled8, _) =
-            table_bucket_parallel_l3_tiled(n_nodes, &up_adj, &down_rev, &sources, &targets, 8);
+        let (tiled8, _) = table_bucket_parallel_l3_tiled(
+            n_nodes,
+            &up_adj,
+            &down_rev,
+            &sources,
+            &targets,
+            8,
+            u32::MAX,
+        );
         assert_eq!(
             tiled8, mono,
             "L3-tiled (tile=8 = whole problem) must match monolithic"
@@ -5434,5 +5587,194 @@ mod step_a_tests {
         let err = decode_flat_weights_bytes(&bytes).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("CRC"), "expected CRC error, got: {msg}");
+    }
+}
+
+#[cfg(test)]
+mod max_minutes_bound_tests {
+    //! #415 max_minutes — exactness of the time-bounded bucket-M2M.
+    //!
+    //! Each test builds a deterministic "broom" graph: every leaf node has a
+    //! single UP edge to one apex node, and a single reverse-down edge to the
+    //! same apex. The bucket-M2M then computes, for leaf source `s` and leaf
+    //! target `t`, exactly `d(s→t) = wu[s] + wd[t]` (and `0` on the diagonal),
+    //! via the apex meeting node. Because there is exactly one path, an
+    //! out-of-bound cell settles to `u32::MAX` — so we can assert the strict
+    //! invariant: `bounded[c] == unbounded[c]` when `unbounded[c] ≤ threshold`,
+    //! else `bounded[c] == u32::MAX`. This exercises the real `SearchState`
+    //! early-stop through the sequential (≤100 cells) and monolithic (>100)
+    //! dispatch paths, plus the 2-channel variant.
+    use super::*;
+    use crate::formats::{ArcCow, WeightArray};
+
+    /// Build a broom with `n_leaf` leaves (ids 0..n_leaf) and one apex
+    /// (id n_leaf). UP weights = (i+1)*10, reverse-down weights = (i+1).
+    /// Returns (n_nodes, up, down, wu, wd).
+    fn broom(n_leaf: usize) -> (usize, UpAdjFlat, DownReverseAdjFlat, Vec<u32>, Vec<u32>) {
+        let apex = n_leaf as u32;
+        let n_nodes = n_leaf + 1;
+        let wu: Vec<u32> = (0..n_leaf).map(|i| (i as u32 + 1) * 10).collect();
+        let wd: Vec<u32> = (0..n_leaf).map(|i| i as u32 + 1).collect();
+
+        // CSR: each leaf has 1 edge to apex; apex has 0.
+        let mut offsets: Vec<u64> = Vec::with_capacity(n_nodes + 1);
+        for i in 0..=n_nodes {
+            offsets.push(i.min(n_leaf) as u64);
+        }
+        let up_targets: Vec<u32> = vec![apex; n_leaf];
+        let dn_sources: Vec<u32> = vec![apex; n_leaf];
+
+        let up = UpAdjFlat {
+            offsets: ArcCow::from_vec(offsets.clone()),
+            targets: ArcCow::from_vec(up_targets),
+            weights: WeightArray::from_vec_u32(wu.clone()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        let down = DownReverseAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            sources: ArcCow::from_vec(dn_sources),
+            weights: WeightArray::from_vec_u32(wd.clone()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        (n_nodes, up, down, wu, wd)
+    }
+
+    /// Expected single-channel time for cell (s, t).
+    fn expect(wu: &[u32], wd: &[u32], s: usize, t: usize) -> u32 {
+        if s == t { 0 } else { wu[s] + wd[t] }
+    }
+
+    fn assert_bounded_eq_filtered(
+        n_nodes: usize,
+        up: &UpAdjFlat,
+        down: &DownReverseAdjFlat,
+        wu: &[u32],
+        wd: &[u32],
+        threshold: u32,
+    ) {
+        let n = wu.len();
+        let srcs: Vec<u32> = (0..n as u32).collect();
+        let tgts: Vec<u32> = (0..n as u32).collect();
+
+        let (unbounded, _) = table_bucket_parallel(n_nodes, up, down, &srcs, &tgts);
+        let (bounded, _) =
+            table_bucket_parallel_bounded(n_nodes, up, down, &srcs, &tgts, threshold);
+
+        for s in 0..n {
+            for t in 0..n {
+                let c = s * n + t;
+                // Ground truth (independent of the engine).
+                assert_eq!(unbounded[c], expect(wu, wd, s, t), "unbounded ({s},{t})");
+                if unbounded[c] <= threshold {
+                    assert_eq!(
+                        bounded[c], unbounded[c],
+                        "in-bound cell ({s},{t}) must match exactly"
+                    );
+                } else {
+                    // Engine-level invariant: a bounded cell may still hold a
+                    // real value > threshold (both half-searches stayed within
+                    // the bound but their sum exceeded it) or MAX — but NEVER a
+                    // ≤threshold value, and NEVER an underestimate. The server
+                    // post-filter nulls every > threshold cell, so the SERVED
+                    // matrix is exactly the unbounded matrix filtered to
+                    // ≤ threshold.
+                    assert!(
+                        bounded[c] > threshold,
+                        "out-of-bound cell ({s},{t}) leaked a ≤threshold value: {}",
+                        bounded[c]
+                    );
+                    assert!(
+                        bounded[c] >= unbounded[c],
+                        "bounded must never underestimate at ({s},{t})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_equals_unbounded_filtered_sequential() {
+        // 5×5 = 25 cells ≤ 100 → sequential BucketM2MEngine path.
+        let (n_nodes, up, down, wu, wd) = broom(5);
+        for &thr in &[0u32, 15, 25, 55, 1000] {
+            assert_bounded_eq_filtered(n_nodes, &up, &down, &wu, &wd, thr);
+        }
+    }
+
+    #[test]
+    fn bounded_equals_unbounded_filtered_monolithic() {
+        // 12×12 = 144 cells > 100 → monolithic parallel forward+backward.
+        let (n_nodes, up, down, wu, wd) = broom(12);
+        for &thr in &[0u32, 30, 75, 130, 100_000] {
+            assert_bounded_eq_filtered(n_nodes, &up, &down, &wu, &wd, thr);
+        }
+    }
+
+    #[test]
+    fn unbounded_sentinel_is_byte_identical() {
+        // threshold == u32::MAX must reproduce the unbounded matrix exactly.
+        for n_leaf in [5usize, 12] {
+            let (n_nodes, up, down, ..) = broom(n_leaf);
+            let srcs: Vec<u32> = (0..n_leaf as u32).collect();
+            let (a, _) = table_bucket_parallel(n_nodes, &up, &down, &srcs, &srcs);
+            let (b, _) = table_bucket_parallel_bounded(n_nodes, &up, &down, &srcs, &srcs, u32::MAX);
+            assert_eq!(
+                a, b,
+                "bounded(u32::MAX) must equal unbounded for n_leaf={n_leaf}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_2channel_time_bound_carries_length() {
+        // 12×12 → 2-channel parallel path. Bound is on TIME; the length
+        // channel (= 2× the time weights here) is carried alongside and must
+        // match the unbounded length on in-bound cells, MAX otherwise.
+        let (n_nodes, up, down, wu, wd) = broom(12);
+        let up_lat = UpAdjFlat {
+            offsets: up.offsets.clone(),
+            targets: up.targets.clone(),
+            weights: WeightArray::from_vec_u32(wu.iter().map(|w| w * 2).collect()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        let dn_lat = DownReverseAdjFlat {
+            offsets: down.offsets.clone(),
+            sources: down.sources.clone(),
+            weights: WeightArray::from_vec_u32(wd.iter().map(|w| w * 2).collect()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        let n = wu.len();
+        let srcs: Vec<u32> = (0..n as u32).collect();
+        let threshold = 75u32;
+
+        let (u_time, u_lat, _) = table_bucket_parallel_len_along_time(
+            n_nodes, &up, &down, &up_lat, &dn_lat, &srcs, &srcs,
+        );
+        let (b_time, b_lat, _) = table_bucket_parallel_len_along_time_bounded(
+            n_nodes, &up, &down, &up_lat, &dn_lat, &srcs, &srcs, threshold,
+        );
+
+        for s in 0..n {
+            for t in 0..n {
+                let c = s * n + t;
+                assert_eq!(
+                    u_time[c],
+                    expect(&wu, &wd, s, t),
+                    "unbounded time ({s},{t})"
+                );
+                if u_time[c] <= threshold {
+                    assert_eq!(b_time[c], u_time[c], "in-bound time ({s},{t})");
+                    assert_eq!(b_lat[c], u_lat[c], "in-bound length ({s},{t})");
+                } else {
+                    // Out-of-bound: time > threshold (MAX or a real >threshold
+                    // value). The server post-filter nulls both channels here.
+                    assert!(
+                        b_time[c] > threshold,
+                        "out-of-bound time ({s},{t}) leaked: {}",
+                        b_time[c]
+                    );
+                }
+            }
+        }
     }
 }
