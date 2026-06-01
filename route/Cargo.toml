@@ -116,6 +116,12 @@ hdrhistogram = "7.5.4"
 # Arrow streaming for bulk matrix output
 arrow = { version = "58", default-features = false, features = ["ipc"] }
 arrow-flight = "58"
+
+# #388 offline traffic calibration: read observed-speed tables. Parquet is the
+# lake-native format (DuckDB `COPY ... TO`); CSV is the zero-friction path.
+# Pinned to arrow's 58 line so the RecordBatch types unify with `arrow` above.
+parquet = "58"
+csv = "1.4"
 futures = "0.3.32"
 futures-util = "0.3.32"
 bytes = "1.11.1"
