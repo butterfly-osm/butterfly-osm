@@ -686,28 +686,40 @@ pub async fn compute_table_bucket_m2m(
     // The K-best snap (expensive — iterates all samples within 5 km)
     // is done LAZILY for only the affected src/dst rows/cols, so a
     // healthy matrix pays zero K-best snap cost.
-    // Pass `need_dur_internal` (not `want_duration`): when bounded we keep an
-    // internal time grid so the fallback can recover genuine in-bound snap-gap
-    // cells (and so the threshold mask below has a time reference). The grid is
-    // dropped from the response afterwards if the caller didn't ask for it.
-    let (durations, distances) = apply_k_best_fallback(
-        state,
-        &mode_data,
-        mode,
-        durations,
-        distances,
-        sources,
-        destinations,
-        &source_valid,
-        &target_valid,
-        snap_mask,
-        src_role_filter,
-        dst_role_filter,
-        custom_weights,
-        need_dur_internal,
-        want_distance,
-        threshold_s,
-    );
+    //
+    // #12: SKIP the fallback when a minutes bound is in effect. Under a bound,
+    // most MAX cells are unreached because they are genuinely beyond the bound
+    // (the search early-stopped) — NOT snap gaps. Running the K-best rescue on
+    // them would fire a ~max_minutes-isochrone-sized `distance_bounded` search
+    // per cell × K combos, re-doing exactly the work the bound saved (measured:
+    // an 8×250 matrix went 45 ms unbounded → 60 s+ with the bounded fallback).
+    // So under a bound we trade the rare in-bound primary-snap-disconnected
+    // cell (returned null instead of rescued — value never wrong) for the
+    // bound's whole point: compute proportional to the reachable region. This
+    // matches the Flight `matrix` behaviour; the unbounded /table path keeps
+    // full snap-gap fidelity.
+    let (durations, distances) = if bounded {
+        (durations, distances)
+    } else {
+        apply_k_best_fallback(
+            state,
+            &mode_data,
+            mode,
+            durations,
+            distances,
+            sources,
+            destinations,
+            &source_valid,
+            &target_valid,
+            snap_mask,
+            src_role_filter,
+            dst_role_filter,
+            custom_weights,
+            need_dur_internal,
+            want_distance,
+            threshold_s,
+        )
+    };
 
     // #12: apply the time bound to the FINAL grids, after the fallback. A
     // bucket-M2M-reached cell with time > threshold was kept non-null through
