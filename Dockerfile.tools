@@ -41,8 +41,9 @@ RUN cargo build --release -p butterfly-dl -p butterfly-route
 
 FROM debian:trixie-slim
 
+# gzip: decompress the SRTM .hgt.gz tiles fetched for /height (#413).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates coreutils curl \
+    bash ca-certificates coreutils curl gzip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/butterfly-dl    /usr/local/bin/butterfly-dl
