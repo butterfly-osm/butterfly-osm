@@ -58,10 +58,39 @@ pub struct TablePostRequest {
     /// or null/0 to disable. Pairs beyond the radius are returned as null.
     #[serde(default)]
     pub radius_km: Option<serde_json::Value>,
+    /// Optional drive-time bound in minutes (#12). When set, only cells whose
+    /// travel time ≤ `max_minutes` are returned (others are null), and the
+    /// search itself early-stops at the bound so compute is proportional to
+    /// the time-reachable region rather than the full source×target product.
+    /// Exact: returned durations/distances are identical to the unbounded
+    /// matrix filtered to ≤ `max_minutes`. Orthogonal to `radius_km`.
+    #[serde(default)]
+    pub max_minutes: Option<f64>,
 }
 
 pub fn default_annotations() -> String {
     "duration".to_string()
+}
+
+/// Convert an optional `max_minutes` request field into a CCH time-weight
+/// threshold in seconds (the unit of the time metric, post-#297). Returns
+/// `Ok(None)` when unset, an error on out-of-range values. `u32::MAX` stays
+/// reserved as the "unbounded" sentinel inside the matrix engine, so the
+/// 24 h cap keeps any real threshold far below it.
+pub fn parse_max_minutes(max_minutes: Option<f64>) -> Result<Option<u32>, String> {
+    match max_minutes {
+        None => Ok(None),
+        Some(m) => {
+            if !m.is_finite() || m <= 0.0 {
+                return Err(format!("max_minutes must be a positive number, got {m}"));
+            }
+            if m > 1440.0 {
+                return Err(format!("max_minutes must be ≤ 1440 (24 h), got {m}"));
+            }
+            // ceil so a cell exactly at the bound is included.
+            Ok(Some((m * 60.0).ceil() as u32))
+        }
+    }
 }
 
 /// Response for table computation (OSRM-compatible format)
@@ -307,6 +336,13 @@ pub async fn table_post_handler(
 
     let radius_param = parse_radius(req.radius_km.as_ref());
 
+    let threshold_s = match parse_max_minutes(req.max_minutes) {
+        Ok(t) => t,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        }
+    };
+
     let resp = compute_table_bucket_m2m(
         &state,
         mode,
@@ -317,6 +353,7 @@ pub async fn table_post_handler(
         custom_weights_ref,
         &snap_mask,
         radius_param,
+        threshold_s,
     )
     .await;
     super::region_metrics::record_query(
@@ -339,6 +376,7 @@ pub async fn compute_table_bucket_m2m(
     custom_weights: Option<&super::exclude::ExcludeWeights>,
     snap_mask: &[u64],
     radius_param: RadiusParam,
+    threshold_s: Option<u32>,
 ) -> Response {
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
@@ -496,6 +534,15 @@ pub async fn compute_table_bucket_m2m(
         && mode_data.up_adj_flat_len_along_time.is_some()
         && mode_data.down_rev_flat_len_along_time.is_some();
 
+    // #12 max_minutes: when set, bound the TIME search at `threshold` so
+    // compute is proportional to the reachable region, and null every cell
+    // whose time exceeds it. `u32::MAX` = unbounded (byte-identical to the
+    // pre-#12 path). Reachability is ALWAYS defined by time, even when only
+    // `distance` is requested — so the bounded branch computes the time
+    // matrix regardless and masks the distance cells against it.
+    let threshold = threshold_s.unwrap_or(u32::MAX);
+    let bounded = threshold_s.is_some();
+
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
         let up_lat = mode_data
@@ -509,12 +556,11 @@ pub async fn compute_table_bucket_m2m(
         // #395: always go through the `_parallel_` wrapper — it now
         // dispatches internally to the pooled sequential 2-channel
         // path for small N (≤ SEQUENTIAL_FAST_PATH_CELL_THRESHOLD)
-        // and the rayon-parallel path above it. Routing the dispatch
-        // through the wrapper avoids the hand-coded cells>=2500 split
-        // that previously called `table_bucket_full_flat_len_along_time`
-        // directly and ate a ~80 MB SearchState2 allocation per call.
-        let (time_mat, lat_mat, _stats) =
-            crate::matrix::bucket_ch::table_bucket_parallel_len_along_time(
+        // and the rayon-parallel path above it.
+        // #12: the `_bounded` variant early-stops the time sweeps at
+        // `threshold`; `u32::MAX` reproduces the unbounded result exactly.
+        let (mut time_mat, mut lat_mat, _stats) =
+            crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
                 n_nodes,
                 time_up,
                 time_down,
@@ -522,7 +568,19 @@ pub async fn compute_table_bucket_m2m(
                 dn_lat,
                 &sources_rank,
                 &targets_rank,
+                threshold,
             );
+        if bounded {
+            // The bounded join can surface a non-minimal value > threshold for
+            // an out-of-bound pair; null both channels there so the OUTPUT is
+            // exactly the unbounded matrix filtered to ≤ threshold.
+            for c in 0..time_mat.len() {
+                if time_mat[c] > threshold {
+                    time_mat[c] = u32::MAX;
+                    lat_mat[c] = u32::MAX;
+                }
+            }
+        }
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
@@ -548,21 +606,45 @@ pub async fn compute_table_bucket_m2m(
         (Some(dur), Some(dist))
     } else {
         // Legacy two-pass: separate distance-shortest CCH for `distance`.
-        // #395: always dispatch through `table_bucket_parallel`; it
-        // routes small-N (cells ≤ SEQUENTIAL_FAST_PATH_CELL_THRESHOLD)
-        // to the thread-local `BucketM2MEngine` and rayon-parallels
-        // above that. The previous hand-split call to
-        // `table_bucket_full_flat` allocated a fresh `SearchState`
-        // (~60 MB) per request and dominated small-N latency.
-        let durations = if want_duration {
+        // The time matrix is computed whenever duration is requested OR a
+        // bound is in effect (reachability is defined by time).
+        let time_mat: Option<Vec<u32>> = if want_duration || bounded {
             let t_dur = std::time::Instant::now();
-            let (matrix, _stats) =
-                table_bucket_parallel(n_nodes, time_up, time_down, &sources_rank, &targets_rank);
+            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_bounded(
+                n_nodes,
+                time_up,
+                time_down,
+                &sources_rank,
+                &targets_rank,
+                threshold,
+            );
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
             );
+            Some(matrix)
+        } else {
+            None
+        };
 
+        let distances = if want_distance {
+            let t_dist = std::time::Instant::now();
+            // Distance weights are metres — the minutes bound does not apply to
+            // the distance search itself. We bound which distance cells are
+            // RETURNED by masking against the (bounded) time matrix below.
+            let (mut matrix, _stats) =
+                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank);
+            if bounded && let Some(ref tm) = time_mat {
+                for (d, &t) in matrix.iter_mut().zip(tm.iter()) {
+                    if t > threshold {
+                        *d = u32::MAX;
+                    }
+                }
+            }
+            tracing::debug!(
+                "compute_table_bucket_m2m: distance M2M took {:?}",
+                t_dist.elapsed()
+            );
             Some(flat_matrix_to_2d(
                 &matrix,
                 n_sources,
@@ -576,17 +658,17 @@ pub async fn compute_table_bucket_m2m(
             None
         };
 
-        let distances = if want_distance {
-            let t_dist = std::time::Instant::now();
-            let (matrix, _stats) =
-                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank);
-            tracing::debug!(
-                "compute_table_bucket_m2m: distance M2M took {:?}",
-                t_dist.elapsed()
-            );
-
+        let durations = if want_duration {
+            let mut tm = time_mat.expect("time matrix computed when want_duration");
+            if bounded {
+                for t in tm.iter_mut() {
+                    if *t > threshold {
+                        *t = u32::MAX;
+                    }
+                }
+            }
             Some(flat_matrix_to_2d(
-                &matrix,
+                &tm,
                 n_sources,
                 n_targets,
                 &source_valid,
@@ -630,6 +712,7 @@ pub async fn compute_table_bucket_m2m(
         custom_weights,
         want_duration,
         want_distance,
+        threshold_s,
     );
 
     tracing::debug!(
@@ -681,9 +764,18 @@ fn apply_k_best_fallback(
     custom_weights: Option<&super::exclude::ExcludeWeights>,
     want_duration: bool,
     want_distance: bool,
+    threshold_s: Option<u32>,
 ) -> (MatrixGrid, MatrixGrid) {
     use super::query::CchQuery;
     const SNAP_K: usize = 64;
+
+    // #12: when a minutes bound is in effect, a None cell may be None
+    // because it is genuinely beyond the bound (correctly excluded) rather
+    // than a snap/connectivity gap. The fallback must NOT resurrect those.
+    // We gate every fill on a bounded time query so out-of-bound pairs stay
+    // None, while in-bound snap-gap cells are still recovered.
+    let threshold = threshold_s.unwrap_or(u32::MAX);
+    let bounded = threshold_s.is_some();
 
     // Cap per-cell fallback combos. /route uses 400 because a single
     // hopeless query at 20s wall is acceptable; /table can have
@@ -717,8 +809,11 @@ fn apply_k_best_fallback(
         }
         false
     };
-    let need_time = want_duration && needs_fallback(&durations);
     let need_dist = want_distance && needs_fallback(&distances);
+    // When bounded we always need the time query (even for a distance-only
+    // request) — it is the gate that decides whether a recovered cell is
+    // within the minutes bound.
+    let need_time = (want_duration && needs_fallback(&durations)) || (bounded && need_dist);
     tracing::debug!(
         "apply_k_best_fallback: needs_fallback decision took {:?}, need_time={}, need_dist={}",
         _t_fb_start.elapsed(),
@@ -925,24 +1020,49 @@ fn apply_k_best_fallback(
                 if s_rank == d_rank {
                     continue;
                 }
-                if !dur_done
-                    && let Some(tq) = time_query_ref
-                    && let Some(r) = tq.query(s_rank, d_rank)
-                {
-                    // r.distance is already in seconds (post-#297).
-                    dur_val = Some(r.distance as f64);
-                    dur_done = true;
-                }
-                if !dist_done
-                    && let Some(dq) = dist_query_ref
-                    && let Some(r) = dq.query(s_rank, d_rank)
-                {
-                    // r.distance is already in meters (post-#297).
-                    dist_val = Some(r.distance as f64);
-                    dist_done = true;
-                }
-                if dur_done && dist_done {
-                    break;
+                if bounded {
+                    // A recovered cell is only valid if the pair is within the
+                    // minutes bound. `distance_bounded` returns None for
+                    // > threshold or unreachable, so out-of-bound cells stay
+                    // None. The time gate also covers distance-only requests.
+                    if let Some(tq) = time_query_ref
+                        && let Some(t) = tq.distance_bounded(s_rank, d_rank, threshold)
+                    {
+                        if !dur_done {
+                            dur_val = Some(t as f64);
+                            dur_done = true;
+                        }
+                        if !dist_done
+                            && let Some(dq) = dist_query_ref
+                            && let Some(r) = dq.query(s_rank, d_rank)
+                        {
+                            dist_val = Some(r.distance as f64);
+                            dist_done = true;
+                        }
+                        if dur_done && dist_done {
+                            break;
+                        }
+                    }
+                } else {
+                    if !dur_done
+                        && let Some(tq) = time_query_ref
+                        && let Some(r) = tq.query(s_rank, d_rank)
+                    {
+                        // r.distance is already in seconds (post-#297).
+                        dur_val = Some(r.distance as f64);
+                        dur_done = true;
+                    }
+                    if !dist_done
+                        && let Some(dq) = dist_query_ref
+                        && let Some(r) = dq.query(s_rank, d_rank)
+                    {
+                        // r.distance is already in meters (post-#297).
+                        dist_val = Some(r.distance as f64);
+                        dist_done = true;
+                    }
+                    if dur_done && dist_done {
+                        break;
+                    }
                 }
             }
             (src_idx, tgt_idx, dur_val, dist_val)
@@ -1679,4 +1799,36 @@ fn table_stream_bucket_path(
             )
                 .into_response()
         })
+}
+
+#[cfg(test)]
+mod max_minutes_tests {
+    use super::parse_max_minutes;
+
+    #[test]
+    fn none_passes_through() {
+        assert_eq!(parse_max_minutes(None).unwrap(), None);
+    }
+
+    #[test]
+    fn converts_minutes_to_seconds_ceil() {
+        assert_eq!(parse_max_minutes(Some(10.0)).unwrap(), Some(600));
+        assert_eq!(parse_max_minutes(Some(0.5)).unwrap(), Some(30));
+        // ceil so a cell exactly at the bound is included.
+        assert_eq!(parse_max_minutes(Some(1.001)).unwrap(), Some(61));
+    }
+
+    #[test]
+    fn rejects_non_positive_and_nonfinite() {
+        assert!(parse_max_minutes(Some(0.0)).is_err());
+        assert!(parse_max_minutes(Some(-5.0)).is_err());
+        assert!(parse_max_minutes(Some(f64::NAN)).is_err());
+        assert!(parse_max_minutes(Some(f64::INFINITY)).is_err());
+    }
+
+    #[test]
+    fn rejects_above_24h_cap() {
+        assert!(parse_max_minutes(Some(1441.0)).is_err());
+        assert_eq!(parse_max_minutes(Some(1440.0)).unwrap(), Some(86400));
+    }
 }
