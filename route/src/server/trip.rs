@@ -739,7 +739,14 @@ pub async fn trip_handler(
             let dn_lat = mode_data.down_rev_flat_len_along_time.as_ref().unwrap();
             let (dur_mat, lat_mat, _stats) =
                 crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
-                    n_nodes, time_up, time_down, up_lat, dn_lat, &ranks, &ranks,
+                    n_nodes,
+                    time_up,
+                    time_down,
+                    up_lat,
+                    dn_lat,
+                    &ranks,
+                    &ranks,
+                    u32::MAX,
                 );
             (dur_mat, Some(lat_mat))
         } else {
