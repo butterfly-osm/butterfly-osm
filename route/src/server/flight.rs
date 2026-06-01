@@ -354,6 +354,7 @@ pub fn transit_bulk_schema() -> Schema {
 // =============================================================================
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] // #415: reject unsupported params (e.g. max_minutes on an old build) instead of silently ignoring
 struct MatrixParams {
     origins: Vec<[f64; 2]>,
     destinations: Vec<[f64; 2]>,
@@ -361,7 +362,7 @@ struct MatrixParams {
     /// positive number, the string "auto", or null/0 to disable.
     #[serde(default)]
     radius_km: Option<serde_json::Value>,
-    /// Optional drive-time bound in minutes (#12). When set, only cells whose
+    /// Optional drive-time bound in minutes (#415). When set, only cells whose
     /// travel time ≤ `max_minutes` are returned, and the search early-stops at
     /// the bound (compute ∝ reachable region). Orthogonal to radius_km.
     ///
@@ -446,7 +447,7 @@ fn do_matrix(
     let mode_data = state.get_mode(mode);
     let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-    // #12 max_minutes: time bound in CCH seconds. `u32::MAX` = unbounded.
+    // #415 max_minutes: time bound in CCH seconds. `u32::MAX` = unbounded.
     let threshold = super::table::parse_max_minutes(params.max_minutes)
         .map_err(Status::invalid_argument)?
         .unwrap_or(u32::MAX);
@@ -585,7 +586,7 @@ fn do_matrix(
             // parallel path reuses thread-local SearchState2 via
             // BACKWARD_STATE_LAT, so even 10×10 amortises the alloc
             // away. Rayon spawn cost is in microseconds and fine.
-            // #12: `_bounded` early-stops the time sweeps at `threshold`
+            // #415: `_bounded` early-stops the time sweeps at `threshold`
             // (u32::MAX = unbounded, byte-identical to the prior call).
             let (m, lm, st) =
                 crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
@@ -600,7 +601,7 @@ fn do_matrix(
                 );
             (m, Some(lm), st)
         } else {
-            // #12: when bounded, always take the parallel `_bounded` path
+            // #415: when bounded, always take the parallel `_bounded` path
             // (the sequential `table_bucket_full_flat` has no bound hook).
             let (m, st) = if use_parallel || bounded {
                 crate::matrix::bucket_ch::table_bucket_parallel_bounded(
@@ -623,7 +624,7 @@ fn do_matrix(
         // K=64 escalation runs only for src/dst indices that have at
         // least one INF cell.
         //
-        // #12: skip the fallback entirely when a minutes bound is in effect.
+        // #415: skip the fallback entirely when a minutes bound is in effect.
         // A MAX cell under a bound is overwhelmingly "beyond the time bound"
         // (legitimately excluded), not a snap gap — rescuing every one with
         // an UNBOUNDED P2P would do large wasted work and then be masked away
@@ -717,7 +718,7 @@ fn do_matrix(
             }
         }
 
-        // #12: exact-output mask. The bounded join can leave a non-minimal
+        // #415: exact-output mask. The bounded join can leave a non-minimal
         // value > threshold for an out-of-bound pair; null both channels
         // there so the emitted set is exactly the unbounded matrix filtered
         // to ≤ threshold.
@@ -792,7 +793,7 @@ fn do_matrix(
                     return;
                 }
 
-                // #12: bound both sweeps at the time threshold so the large
+                // #415: bound both sweeps at the time threshold so the large
                 // (streamed) path is also time-proportional, not just the
                 // small bucket-M2M path. u32::MAX = unbounded.
                 let buckets = Arc::new(crate::matrix::bucket_ch::forward_build_buckets_bounded(
@@ -831,7 +832,7 @@ fn do_matrix(
                             u32::MAX
                         } else {
                             let v = tile_matrix[bsi * n_block_dst + bdi];
-                            // #12: null cells beyond the time bound. When
+                            // #415: null cells beyond the time bound. When
                             // unbounded, threshold == u32::MAX so this never
                             // fires (v > u32::MAX is impossible).
                             if v > threshold { u32::MAX } else { v }
@@ -841,7 +842,10 @@ fn do_matrix(
                         if d == u32::MAX {
                             dur_arr.append_value(u32::MAX);
                         } else {
-                            dur_arr.append_value(d.saturating_mul(100));
+                            // #415 review: seconds → milliseconds (×1000) to
+                            // match the small-matrix branch and the `duration_ms`
+                            // schema name (was ×100, i.e. 10× too small here).
+                            dur_arr.append_value(d.saturating_mul(1000));
                         }
                         dist_arr.append_value(u32::MAX);
                     }

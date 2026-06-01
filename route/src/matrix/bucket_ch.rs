@@ -2350,7 +2350,7 @@ struct SearchState {
     pushes: usize,
     pops: usize,
     stale_pops: usize, // Should always be 0 with decrease-key
-    /// Early-stop bound (#412-matrix / max_minutes): `pop()` returns `None`
+    /// Early-stop bound (#415 / max_minutes): `pop()` returns `None`
     /// once the heap minimum exceeds this. `u32::MAX` = unbounded (no
     /// behavioural change). The min-heap pops in non-decreasing order, so
     /// once the minimum crosses the threshold every remaining entry does
@@ -3126,7 +3126,7 @@ pub fn forward_build_buckets(
     forward_build_buckets_bounded(n_nodes, up_adj_flat, sources, u32::MAX)
 }
 
-/// Time-bounded [`forward_build_buckets`] (#12). Stops each source's forward
+/// Time-bounded [`forward_build_buckets`] (#415). Stops each source's forward
 /// sweep once the up-distance exceeds `threshold`. `u32::MAX` = unbounded.
 pub fn forward_build_buckets_bounded(
     n_nodes: usize,
@@ -3184,7 +3184,7 @@ pub fn backward_join_with_buckets(
     backward_join_with_buckets_bounded(n_nodes, down_rev_flat, source_buckets, targets, u32::MAX)
 }
 
-/// Time-bounded [`backward_join_with_buckets`] (#12). Stops each target's
+/// Time-bounded [`backward_join_with_buckets`] (#415). Stops each target's
 /// backward sweep once the down-distance exceeds `threshold`. Pairs whose
 /// shortest time exceeds `threshold` are left as `u32::MAX` or a non-minimal
 /// value > `threshold`; the caller must treat any cell > `threshold` as
@@ -3450,7 +3450,7 @@ pub fn table_bucket_parallel(
     )
 }
 
-/// Time-bounded variant of [`table_bucket_parallel`] (max_minutes, #12).
+/// Time-bounded variant of [`table_bucket_parallel`] (max_minutes, #415).
 ///
 /// Stops every forward and backward sweep once the popped distance exceeds
 /// `threshold` (in the metric of `up_adj_flat`/`down_rev_flat` — pass the
@@ -4629,7 +4629,7 @@ pub fn table_bucket_parallel_len_along_time(
     )
 }
 
-/// Time-bounded 2-channel bucket-M2M (max_minutes, #12). `threshold` bounds
+/// Time-bounded 2-channel bucket-M2M (max_minutes, #415). `threshold` bounds
 /// the TIME channel (the ordering metric); the length-along-time channel is
 /// carried unbounded alongside. `u32::MAX` = unbounded. See
 /// [`table_bucket_parallel_bounded`] for the exactness argument — it applies
@@ -5592,7 +5592,7 @@ mod step_a_tests {
 
 #[cfg(test)]
 mod max_minutes_bound_tests {
-    //! #12 max_minutes — exactness of the time-bounded bucket-M2M.
+    //! #415 max_minutes — exactness of the time-bounded bucket-M2M.
     //!
     //! Each test builds a deterministic "broom" graph: every leaf node has a
     //! single UP edge to one apex node, and a single reverse-down edge to the

@@ -32,7 +32,13 @@ use super::types::{
 // ============ Types ============
 
 /// POST request for table computation
+///
+/// `deny_unknown_fields` (#415): reject unrecognised parameters with 400
+/// rather than silently ignoring them. Without this, a client sending
+/// `max_minutes` (or a typo) to a server build that predates the field would
+/// get a full unbounded matrix back with no error — silently wrong results.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TablePostRequest {
     /// Source coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603]]))]
@@ -58,7 +64,7 @@ pub struct TablePostRequest {
     /// or null/0 to disable. Pairs beyond the radius are returned as null.
     #[serde(default)]
     pub radius_km: Option<serde_json::Value>,
-    /// Optional drive-time bound in minutes (#12). When set, only cells whose
+    /// Optional drive-time bound in minutes (#415). When set, only cells whose
     /// travel time ≤ `max_minutes` are returned (others are null), and the
     /// search itself early-stops at the bound so compute is proportional to
     /// the time-reachable region rather than the full source×target product.
@@ -115,6 +121,7 @@ pub struct TableResponse {
 
 /// Request for streaming table computation
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #415: surface unsupported params instead of silently dropping
 pub struct TableStreamRequest {
     /// Source coordinates [[lon, lat], ...]
     #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553]]))]
@@ -534,10 +541,10 @@ pub async fn compute_table_bucket_m2m(
         && mode_data.up_adj_flat_len_along_time.is_some()
         && mode_data.down_rev_flat_len_along_time.is_some();
 
-    // #12 max_minutes: when set, bound the TIME search at `threshold` so
+    // #415 max_minutes: when set, bound the TIME search at `threshold` so
     // compute is proportional to the reachable region, and null every cell
     // whose time exceeds it. `u32::MAX` = unbounded (byte-identical to the
-    // pre-#12 path). Reachability is ALWAYS defined by time, even when only
+    // pre-#415 path). Reachability is ALWAYS defined by time, even when only
     // `distance` is requested — so the bounded branch computes the time
     // matrix regardless and masks the distance cells against it.
     let threshold = threshold_s.unwrap_or(u32::MAX);
@@ -572,7 +579,7 @@ pub async fn compute_table_bucket_m2m(
         // dispatches internally to the pooled sequential 2-channel
         // path for small N (≤ SEQUENTIAL_FAST_PATH_CELL_THRESHOLD)
         // and the rayon-parallel path above it.
-        // #12: the `_bounded` variant early-stops the time sweeps at
+        // #415: the `_bounded` variant early-stops the time sweeps at
         // `threshold`; `u32::MAX` reproduces the unbounded result exactly.
         let (time_mat, lat_mat, _stats) =
             crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
@@ -687,7 +694,7 @@ pub async fn compute_table_bucket_m2m(
     // is done LAZILY for only the affected src/dst rows/cols, so a
     // healthy matrix pays zero K-best snap cost.
     //
-    // #12: SKIP the fallback when a minutes bound is in effect. Under a bound,
+    // #415: SKIP the fallback when a minutes bound is in effect. Under a bound,
     // most MAX cells are unreached because they are genuinely beyond the bound
     // (the search early-stopped) — NOT snap gaps. Running the K-best rescue on
     // them would fire a ~max_minutes-isochrone-sized `distance_bounded` search
@@ -721,7 +728,7 @@ pub async fn compute_table_bucket_m2m(
         )
     };
 
-    // #12: apply the time bound to the FINAL grids, after the fallback. A
+    // #415: apply the time bound to the FINAL grids, after the fallback. A
     // bucket-M2M-reached cell with time > threshold was kept non-null through
     // the fallback (so it wasn't snap-"improved"); null it now — along with its
     // distance cell — so the served matrix is exactly the unbounded matrix
@@ -807,7 +814,7 @@ fn apply_k_best_fallback(
     use super::query::CchQuery;
     const SNAP_K: usize = 64;
 
-    // #12: when a minutes bound is in effect, a None cell may be None
+    // #415: when a minutes bound is in effect, a None cell may be None
     // because it is genuinely beyond the bound (correctly excluded) rather
     // than a snap/connectivity gap. The fallback must NOT resurrect those.
     // We gate every fill on a bounded time query so out-of-bound pairs stay
@@ -1841,11 +1848,26 @@ fn table_stream_bucket_path(
 
 #[cfg(test)]
 mod max_minutes_tests {
-    use super::parse_max_minutes;
+    use super::{TablePostRequest, parse_max_minutes};
 
     #[test]
     fn none_passes_through() {
         assert_eq!(parse_max_minutes(None).unwrap(), None);
+    }
+
+    #[test]
+    fn unknown_field_is_rejected_not_silently_ignored() {
+        // #415: a server that supports max_minutes must accept it...
+        let ok = r#"{"origins":[[4.35,50.85]],"destinations":[[4.4,51.2]],"mode":"car","max_minutes":15}"#;
+        assert!(serde_json::from_str::<TablePostRequest>(ok).is_ok());
+        // ...and `deny_unknown_fields` must REJECT a typo / unsupported param
+        // (the silent-ignore bug: pre-#415 builds dropped these and returned a
+        // full unbounded matrix with no error).
+        let typo = r#"{"origins":[[4.35,50.85]],"destinations":[[4.4,51.2]],"mode":"car","max_minute":15}"#;
+        assert!(serde_json::from_str::<TablePostRequest>(typo).is_err());
+        let bogus =
+            r#"{"origins":[[4.35,50.85]],"destinations":[[4.4,51.2]],"mode":"car","wat":1}"#;
+        assert!(serde_json::from_str::<TablePostRequest>(bogus).is_err());
     }
 
     #[test]
