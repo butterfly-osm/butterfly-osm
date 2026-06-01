@@ -63,8 +63,12 @@ pub struct CalibrationParams {
     pub name: String,
     /// `base_model` written into the emitted profile JSON.
     pub base_model: String,
-    /// Minimum number of joined observation rows a density class needs before
-    /// we trust its own median; below this it inherits the global median.
+    /// Minimum number of OBSERVATIONS (sum of `sample_count`, not row count) a
+    /// density class needs before we trust its own median; below this it
+    /// inherits the global median. Counting observations rather than rows keeps
+    /// the threshold consistent with the sample-count weighting and the
+    /// `samples` column the CLI reports — so a class fed a few aggregated rows
+    /// with large `sample_count` is correctly trusted.
     pub min_samples: usize,
     /// Sanity clamp applied to every emitted factor. Must lie within the
     /// profile schema's hard bounds `[MIN_FACTOR, MAX_FACTOR]`.
@@ -252,8 +256,11 @@ pub fn fit(
         let n_obs = bucket.len();
         let total_samples: u64 = bucket.iter().map(|(_, w)| *w).sum();
         let raw_factor = weighted_median(bucket);
+        // Trust the class's own median once it has enough OBSERVATIONS (sum of
+        // sample_count), matching the weighting — not row count, so a class fed
+        // a few high-`sample_count` rows isn't wrongly forced to the fallback.
         let (unclamped, used_fallback) = match raw_factor {
-            Some(r) if n_obs >= params.min_samples => (r, false),
+            Some(r) if total_samples >= params.min_samples as u64 => (r, false),
             _ => (global_factor, true),
         };
         let factor = unclamped.clamp(params.clamp_min, params.clamp_max);
@@ -370,8 +377,20 @@ fn read_observations_delimited(path: &Path, delimiter: u8) -> Result<Vec<Observa
             .unwrap_or("")
             .parse()
             .with_context(|| format!("{}: row {row}: bad observed speed", path.display()))?;
+        // sample_count: default 1 when the column is absent OR the cell is
+        // blank, but a present-but-unparseable value is a data error we surface
+        // rather than silently treating as 1 (which would skew the weighting).
         let sample_count: u32 = match count_idx {
-            Some(ci) => rec.get(ci).unwrap_or("").parse().unwrap_or(1),
+            Some(ci) => {
+                let s = rec.get(ci).unwrap_or("").trim();
+                if s.is_empty() {
+                    1
+                } else {
+                    s.parse().with_context(|| {
+                        format!("{}: row {row}: bad sample_count '{s}'", path.display())
+                    })?
+                }
+            }
             None => 1,
         };
         out.push(Observation {
@@ -468,7 +487,12 @@ fn arr_as_i64(col: &dyn arrow::array::Array, row: usize) -> Result<i64> {
         return Ok(a.value(row) as i64);
     }
     if let Some(a) = col.as_any().downcast_ref::<UInt64Array>() {
-        return Ok(a.value(row) as i64);
+        let v = a.value(row);
+        // `as i64` would wrap a > i64::MAX value to a negative way_id; fail loud.
+        if v > i64::MAX as u64 {
+            bail!("way_id {v} exceeds i64::MAX — not a valid OSM way id");
+        }
+        return Ok(v as i64);
     }
     if let Some(a) = col.as_any().downcast_ref::<UInt32Array>() {
         return Ok(a.value(row) as i64);
@@ -619,6 +643,54 @@ mod tests {
         assert!(rural.used_fallback);
         // Global median is dominated by the 200 urban_high rows → ~0.5.
         assert!((rural.factor - 0.50).abs() < 1e-4, "{rural:?}");
+    }
+
+    #[test]
+    fn min_samples_counts_observations_not_rows() {
+        // #414 review: the threshold is on the OBSERVATION count (sum of
+        // sample_count), not the row count. urban_high gets 2 rows but 400
+        // observations (≥ 100) → trusted; rural gets 50 rows but 50
+        // observations (< 100) → fallback.
+        let index = idx(&[
+            (1, 100.0, DensityClass::UrbanHigh),
+            (2, 100.0, DensityClass::Rural),
+        ]);
+        let mut observations = vec![obs(1, 50.0, 200), obs(1, 50.0, 200)]; // ratio 0.5, 400 obs
+        for _ in 0..50 {
+            observations.push(obs(2, 95.0, 1)); // ratio 0.95, 50 obs
+        }
+        let res = fit(&observations, &index, &CalibrationParams::default()).unwrap();
+        let uh = res
+            .per_class
+            .iter()
+            .find(|p| p.class == DensityClass::UrbanHigh)
+            .unwrap();
+        assert!(
+            !uh.used_fallback,
+            "400 observations in 2 rows must be trusted"
+        );
+        assert!(
+            (res.profile.factors[DensityClass::UrbanHigh.to_u8() as usize] - 0.50).abs() < 1e-3
+        );
+        let ru = res
+            .per_class
+            .iter()
+            .find(|p| p.class == DensityClass::Rural)
+            .unwrap();
+        assert!(ru.used_fallback, "50 observations must fall back");
+    }
+
+    #[test]
+    fn csv_bad_sample_count_errors_not_silently_one() {
+        // #414 review: a present-but-unparseable sample_count is a data error,
+        // not silently treated as 1.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obs.csv");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "way_id,observed_avg_speed_kmh,sample_count").unwrap();
+        writeln!(f, "7,55.0,notanumber").unwrap();
+        f.flush().unwrap();
+        assert!(read_observations(&path).is_err());
     }
 
     #[test]

@@ -1299,8 +1299,9 @@ pub enum Commands {
         #[arg(long, default_value = "car")]
         base_model: String,
 
-        /// Minimum joined observations a density class needs before we trust
-        /// its own median; below this it inherits the global median.
+        /// Minimum observations (sum of sample_count, not row count) a density
+        /// class needs before we trust its own median; below this it inherits
+        /// the global median.
         #[arg(long, default_value_t = 100)]
         min_samples: usize,
 
@@ -2965,6 +2966,16 @@ impl Cli {
                 }
 
                 let json = result.profile.to_json_string()?;
+                // Create the parent dir so `--out traffic/realistic.traffic.json`
+                // works without a manual mkdir (matches other generated-artifact
+                // writers in this crate).
+                if let Some(parent) = out.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("creating output directory {}", parent.display())
+                    })?;
+                }
                 std::fs::write(&out, &json)
                     .with_context(|| format!("writing profile to {}", out.display()))?;
                 println!("✅ wrote calibrated traffic profile: {}", out.display());
