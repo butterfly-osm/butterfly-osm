@@ -363,7 +363,15 @@ struct MatrixParams {
     radius_km: Option<serde_json::Value>,
     /// Optional drive-time bound in minutes (#12). When set, only cells whose
     /// travel time ≤ `max_minutes` are returned, and the search early-stops at
-    /// the bound (compute ∝ reachable region). Exact. Orthogonal to radius_km.
+    /// the bound (compute ∝ reachable region). Orthogonal to radius_km.
+    ///
+    /// Returned values are exact for every reachable cell. NOTE: under a bound
+    /// the Flight path skips the K-best snap-gap rescue (a bounded MAX cell is
+    /// overwhelmingly "beyond the bound", not a snap gap), so a rare in-bound
+    /// cell whose PRIMARY snap lands on a disconnected micro-component may be
+    /// returned null instead of rescued. Use POST /table for full snap-gap
+    /// fidelity under a bound. Values are never wrong — only conservatively
+    /// dropped.
     #[serde(default)]
     max_minutes: Option<f64>,
 }

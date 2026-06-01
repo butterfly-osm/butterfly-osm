@@ -542,6 +542,21 @@ pub async fn compute_table_bucket_m2m(
     // matrix regardless and masks the distance cells against it.
     let threshold = threshold_s.unwrap_or(u32::MAX);
     let bounded = threshold_s.is_some();
+    // When bounded we always need the TIME grid internally — it defines which
+    // cells are within the bound (and therefore which distance cells are
+    // valid), even for a distance-only request.
+    //
+    // CRITICAL: we do NOT null > threshold cells here. The threshold mask is
+    // applied to the FINAL grids AFTER the K-best fallback (below). If we
+    // masked a bucket-M2M-reached cell to null now, the bounded fallback
+    // would treat it as a snap gap and "improve" it via an alternative K=64
+    // snap — surfacing a value the unbounded matrix never shows (its primary
+    // snap kept the original, fallback-skipped value). Masking last keeps the
+    // served matrix exactly equal to the unbounded matrix filtered to
+    // ≤ max_minutes. The bound still pays off: the SEARCH already early-stopped
+    // at `threshold`, so out-of-bound cells are mostly unreached (MAX) and the
+    // bounded fallback's distance_bounded gate keeps them null cheaply.
+    let need_dur_internal = want_duration || bounded;
 
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
@@ -559,7 +574,7 @@ pub async fn compute_table_bucket_m2m(
         // and the rayon-parallel path above it.
         // #12: the `_bounded` variant early-stops the time sweeps at
         // `threshold`; `u32::MAX` reproduces the unbounded result exactly.
-        let (mut time_mat, mut lat_mat, _stats) =
+        let (time_mat, lat_mat, _stats) =
             crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
                 n_nodes,
                 time_up,
@@ -570,17 +585,6 @@ pub async fn compute_table_bucket_m2m(
                 &targets_rank,
                 threshold,
             );
-        if bounded {
-            // The bounded join can surface a non-minimal value > threshold for
-            // an out-of-bound pair; null both channels there so the OUTPUT is
-            // exactly the unbounded matrix filtered to ≤ threshold.
-            for c in 0..time_mat.len() {
-                if time_mat[c] > threshold {
-                    time_mat[c] = u32::MAX;
-                    lat_mat[c] = u32::MAX;
-                }
-            }
-        }
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
@@ -608,7 +612,7 @@ pub async fn compute_table_bucket_m2m(
         // Legacy two-pass: separate distance-shortest CCH for `distance`.
         // The time matrix is computed whenever duration is requested OR a
         // bound is in effect (reachability is defined by time).
-        let time_mat: Option<Vec<u32>> = if want_duration || bounded {
+        let time_mat: Option<Vec<u32>> = if need_dur_internal {
             let t_dur = std::time::Instant::now();
             let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_bounded(
                 n_nodes,
@@ -630,17 +634,10 @@ pub async fn compute_table_bucket_m2m(
         let distances = if want_distance {
             let t_dist = std::time::Instant::now();
             // Distance weights are metres — the minutes bound does not apply to
-            // the distance search itself. We bound which distance cells are
-            // RETURNED by masking against the (bounded) time matrix below.
-            let (mut matrix, _stats) =
+            // the distance search. Distance cells are bounded by the final
+            // time-grid mask after the fallback.
+            let (matrix, _stats) =
                 table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank);
-            if bounded && let Some(ref tm) = time_mat {
-                for (d, &t) in matrix.iter_mut().zip(tm.iter()) {
-                    if t > threshold {
-                        *d = u32::MAX;
-                    }
-                }
-            }
             tracing::debug!(
                 "compute_table_bucket_m2m: distance M2M took {:?}",
                 t_dist.elapsed()
@@ -658,15 +655,8 @@ pub async fn compute_table_bucket_m2m(
             None
         };
 
-        let durations = if want_duration {
-            let mut tm = time_mat.expect("time matrix computed when want_duration");
-            if bounded {
-                for t in tm.iter_mut() {
-                    if *t > threshold {
-                        *t = u32::MAX;
-                    }
-                }
-            }
+        let durations = if need_dur_internal {
+            let tm = time_mat.expect("time matrix computed when need_dur_internal");
             Some(flat_matrix_to_2d(
                 &tm,
                 n_sources,
@@ -696,6 +686,10 @@ pub async fn compute_table_bucket_m2m(
     // The K-best snap (expensive — iterates all samples within 5 km)
     // is done LAZILY for only the affected src/dst rows/cols, so a
     // healthy matrix pays zero K-best snap cost.
+    // Pass `need_dur_internal` (not `want_duration`): when bounded we keep an
+    // internal time grid so the fallback can recover genuine in-bound snap-gap
+    // cells (and so the threshold mask below has a time reference). The grid is
+    // dropped from the response afterwards if the caller didn't ask for it.
     let (durations, distances) = apply_k_best_fallback(
         state,
         &mode_data,
@@ -710,10 +704,42 @@ pub async fn compute_table_bucket_m2m(
         src_role_filter,
         dst_role_filter,
         custom_weights,
-        want_duration,
+        need_dur_internal,
         want_distance,
         threshold_s,
     );
+
+    // #12: apply the time bound to the FINAL grids, after the fallback. A
+    // bucket-M2M-reached cell with time > threshold was kept non-null through
+    // the fallback (so it wasn't snap-"improved"); null it now — along with its
+    // distance cell — so the served matrix is exactly the unbounded matrix
+    // filtered to ≤ max_minutes. The duration grid is the time reference.
+    let (mut durations, mut distances) = (durations, distances);
+    if let Some(thr) = threshold_s {
+        let thr_f = thr as f64;
+        let n_s = durations.as_ref().map_or(0, |g| g.len());
+        for i in 0..n_s {
+            let n_t = durations.as_ref().map_or(0, |g| g[i].len());
+            for j in 0..n_t {
+                let over = durations
+                    .as_ref()
+                    .and_then(|g| g[i][j])
+                    .is_some_and(|v| v > thr_f);
+                if over {
+                    if let Some(g) = durations.as_mut() {
+                        g[i][j] = None;
+                    }
+                    if let Some(g) = distances.as_mut() {
+                        g[i][j] = None;
+                    }
+                }
+            }
+        }
+    }
+    // Drop the internally-computed duration grid if the caller didn't ask.
+    if !want_duration {
+        durations = None;
+    }
 
     tracing::debug!(
         "compute_table_bucket_m2m: post-m2m to response took {:?}",
