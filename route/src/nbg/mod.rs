@@ -435,9 +435,8 @@ fn assemble_csr(
     }
     offsets[n_nodes as usize] = heads.len() as u64;
 
-    let created_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    // #419: deterministic for byte-reproducible builds (field never read).
+    let created_unix: u64 = 0;
 
     // Caller (`build_nbg`) overwrites `inputs_sha` with a SHA-256 of
     // every step-1/2 artefact used to derive the CSR (nodes.sa,

@@ -55,11 +55,9 @@ pub fn write<P: AsRef<Path>>(
     // Calculate bounding box in fixed-point
     let (bbox_min_lat, bbox_min_lon, bbox_max_lat, bbox_max_lon) = calculate_bbox(&sorted_nodes);
 
-    // Get current timestamp
-    let created_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    // #419: deterministic for byte-reproducible builds. created_unix is never
+    // read for logic; build provenance lives in the lock files + artifact-info.
+    let created_unix: u64 = 0;
 
     // Write header (we'll calculate CRCs and update later)
     let mut header = Vec::with_capacity(HEADER_SIZE);
