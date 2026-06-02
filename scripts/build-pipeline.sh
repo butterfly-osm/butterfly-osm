@@ -37,6 +37,16 @@ fi
 
 BIN="${BUTTERFLY_BIN:-butterfly-route}"
 MODELS_DIR="${BUTTERFLY_MODELS_DIR:-/opt/butterfly/models}"
+TRAFFIC_DIR="${BUTTERFLY_TRAFFIC_DIR:-/opt/butterfly/traffic}"
+
+# #392/#415: car is traffic-aware BY DEFAULT. After the legal-limit step8, the
+# realistic friction profile is baked into BASE car (`?mode=car`) and a peak
+# congestion variant is built (`?mode=car_rush_hour`). These names map a
+# profile file to its role; editing them or the profiles bumps the recipe
+# fingerprint below, which forces a rebuild even when the PBF is unchanged.
+CAR_BASE_PROFILE="car_realistic.traffic.json"   # baked into ?mode=car
+CAR_VARIANT_PROFILE="rush_hour.traffic.json"    # served as ?mode=car_rush_hour
+RECIPE_VERSION="car-realistic-base+rush_hour-variant-v1"
 
 if ! command -v "$BIN" >/dev/null 2>&1; then
     echo "Error: $BIN not on PATH (set BUTTERFLY_BIN)" >&2
@@ -98,6 +108,30 @@ if [[ -f "$LAST_SOURCE" ]]; then
     fi
 fi
 
+# #392/#415 recipe fingerprint: the traffic baking (realistic→base, rush_hour
+# variant) lives in step8, so changing the profiles or the recipe must force a
+# full rebuild — even when the PBF is byte-identical. A PVC packed before
+# traffic baking has no `last-recipe` marker, so it ALSO rebuilds (which is
+# exactly how the legal-limit container gets upgraded to traffic-aware).
+LAST_RECIPE="$DATA/last-recipe"
+car_present=0
+for m in "${MODES[@]}"; do [[ "$m" == "car" ]] && car_present=1; done
+recipe_fingerprint() {
+    {
+        echo "$RECIPE_VERSION"
+        for p in "$CAR_BASE_PROFILE" "$CAR_VARIANT_PROFILE"; do
+            [[ -f "$TRAFFIC_DIR/$p" ]] && sha256sum "$TRAFFIC_DIR/$p"
+        done
+    } | sha256sum | cut -d' ' -f1
+}
+RECIPE_FP="$(recipe_fingerprint)"
+recipe_changed=0
+if [[ "$car_present" -eq 1 ]]; then
+    if [[ ! -f "$LAST_RECIPE" ]] || [[ "$(cat "$LAST_RECIPE" 2>/dev/null)" != "$RECIPE_FP" ]]; then
+        recipe_changed=1
+    fi
+fi
+
 all_step8_present=1
 for m in "${MODES[@]}"; do
     if [[ ! -f "$DATA/step8/cch.w.${m}.u32" ]]; then
@@ -117,6 +151,12 @@ elif [[ "$pbf_changed" -eq 1 ]]; then
     log "PBF changed vs $LAST_SOURCE — full rebuild"
     need_pipeline=1
     need_pack=1
+elif [[ "$recipe_changed" -eq 1 ]]; then
+    # Traffic recipe/profiles changed (or PVC predates traffic baking) →
+    # full rebuild so step8 re-bakes realistic into base car + the variant.
+    log "traffic recipe changed (fp=$RECIPE_FP) — full rebuild to (re)bake car profiles"
+    need_pipeline=1
+    need_pack=1
 elif [[ ! -f "$CONTAINER" ]]; then
     # Container missing but PBF unchanged/unknown. Pack from step8 if
     # present; only run the full pipeline if step8 is also missing.
@@ -130,12 +170,11 @@ elif [[ ! -f "$CONTAINER" ]]; then
 fi
 # else: container present and PBF unchanged-or-unknown → adopt it.
 
-# Persist the current PBF identity so subsequent runs have a baseline
-# (adopting an old PVC writes it for the first time).
+# Persist the current PBF identity + recipe fingerprint so subsequent runs
+# fast-skip correctly (adopting an old PVC writes them for the first time).
 adopt_source() {
-    if [[ -f "$PBF_SHA_FILE" ]]; then
-        cp "$PBF_SHA_FILE" "$LAST_SOURCE"
-    fi
+    [[ -f "$PBF_SHA_FILE" ]] && cp "$PBF_SHA_FILE" "$LAST_SOURCE"
+    echo "$RECIPE_FP" >"$LAST_RECIPE"
 }
 
 if [[ "$need_pipeline" -eq 0 ]] && [[ "$need_pack" -eq 0 ]]; then
@@ -156,10 +195,8 @@ fi
 if [[ "$need_pipeline" -eq 0 ]]; then
     log "pack -> $CONTAINER"
     time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
-    # Persist source identity so the next restart fast-skips correctly.
-    if [[ -f "$PBF_SHA_FILE" ]]; then
-        cp "$PBF_SHA_FILE" "$LAST_SOURCE"
-    fi
+    # Persist source identity + recipe fingerprint for the next restart.
+    adopt_source
     prebuild_transfers
     log "pipeline DONE — container: $CONTAINER"
     exit 0
@@ -244,12 +281,40 @@ for m in "${MODES[@]}"; do
       --outdir "$DATA/step8"
 done
 
+# #392/#415: make car traffic-aware. The base step8 above produced the
+# legal-limit car (time + distance + length-along-time channels). Now:
+#   1. bake the realistic friction profile into BASE car — overwrites the car
+#      TIME weights so `?mode=car` is realistic by default (distance + lat
+#      channels from the base step8 are kept);
+#   2. build the rush_hour congestion variant as `cch.w.car_rush_hour.u32`,
+#      which `pack` picks up and the server auto-registers as `?mode=car_rush_hour`.
+# Both reuse the car step4–7 artefacts and the step2 way_attrs density classes.
+if [[ "$car_present" -eq 1 ]]; then
+    base_prof="$TRAFFIC_DIR/$CAR_BASE_PROFILE"
+    var_prof="$TRAFFIC_DIR/$CAR_VARIANT_PROFILE"
+    if [[ -f "$base_prof" && -f "$var_prof" ]]; then
+        car8=(--cch-topo "$DATA/step7/cch.car.topo"
+              --filtered-ebg "$DATA/step5/filtered.car.ebg"
+              --order "$DATA/step6/order.car.ebg"
+              --weights "$DATA/step5/w.car.u32"
+              --turns "$DATA/step5/t.car.u32"
+              --ebg-nodes "$DATA/step4/ebg.nodes"
+              --way-attrs "$DATA/step2/way_attrs.car.bin"
+              --nbg-geo "$DATA/step3/nbg.geo"
+              --mode car --outdir "$DATA/step8")
+        log "step8 bake realistic friction into BASE car (?mode=car)"
+        time "$BIN" step8-customize "${car8[@]}" --traffic "$base_prof" --bake-as-base
+        log "step8 build rush_hour variant (?mode=car_rush_hour)"
+        time "$BIN" step8-customize "${car8[@]}" --traffic "$var_prof"
+    else
+        log "WARN: traffic profiles missing under $TRAFFIC_DIR — car stays legal-limit"
+    fi
+fi
+
 log "pack -> $CONTAINER"
 time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE
 
-if [[ -f "$PBF_SHA_FILE" ]]; then
-    cp "$PBF_SHA_FILE" "$LAST_SOURCE"
-fi
+adopt_source
 
 prebuild_transfers
 
