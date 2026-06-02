@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
@@ -69,14 +69,17 @@ impl ProfileResult {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProfileMeta {
     pub abi_version: u32,
-    pub profile_versions: HashMap<String, u32>,
-    pub highway_classes: HashMap<u16, String>,
-    pub surface_classes: HashMap<u16, String>,
-    pub class_bits: HashMap<String, u32>,
+    // #425: BTreeMap (sorted keys) so profile_meta.json serialises deterministically.
+    // HashMap iteration order is randomised per process, and profile_meta_sha256 is
+    // part of Step2LockFile — HashMap here made the step2 lock non-reproducible.
+    pub profile_versions: BTreeMap<String, u32>,
+    pub highway_classes: BTreeMap<u16, String>,
+    pub surface_classes: BTreeMap<u16, String>,
+    pub class_bits: BTreeMap<String, u32>,
     pub ways_sha256: String,
     pub relations_sha256: String,
-    pub way_attrs_sha256: HashMap<String, String>,
-    pub turn_rules_sha256: HashMap<String, String>,
+    pub way_attrs_sha256: BTreeMap<String, String>,
+    pub turn_rules_sha256: BTreeMap<String, String>,
 }
 
 pub fn build_highway_classes() -> HashMap<u16, String> {
@@ -424,9 +427,9 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let ways_sha256 = compute_file_sha256(&config.ways_path)?;
     let relations_sha256 = compute_file_sha256(&config.relations_path)?;
 
-    let mut way_attrs_sha256 = HashMap::new();
-    let mut turn_rules_sha256 = HashMap::new();
-    let mut profile_versions = HashMap::new();
+    let mut way_attrs_sha256 = BTreeMap::new();
+    let mut turn_rules_sha256 = BTreeMap::new();
+    let mut profile_versions = BTreeMap::new();
 
     for out in &mode_outputs {
         way_attrs_sha256.insert(
@@ -445,9 +448,9 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let meta = ProfileMeta {
         abi_version: 2,
         profile_versions,
-        highway_classes: build_highway_classes(),
-        surface_classes: build_surface_classes(),
-        class_bits: build_class_bits(),
+        highway_classes: build_highway_classes().into_iter().collect(),
+        surface_classes: build_surface_classes().into_iter().collect(),
+        class_bits: build_class_bits().into_iter().collect(),
         ways_sha256,
         relations_sha256,
         way_attrs_sha256,
