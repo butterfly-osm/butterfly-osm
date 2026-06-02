@@ -48,9 +48,18 @@ pub fn write<P: AsRef<Path>>(
         .with_context(|| format!("Failed to create {}", path.as_ref().display()))?;
     let mut writer = BufWriter::new(file);
 
-    // Ensure nodes are sorted
-    let mut sorted_nodes = nodes.to_vec();
-    sorted_nodes.sort_by_key(|(id, _, _)| *id);
+    // #421: step1 already sorts nodes by id, so the previous unconditional
+    // `nodes.to_vec()` + re-sort was a redundant ~1.6 GB clone + O(n log n).
+    // Borrow when already sorted (the build path); only own+sort the unsorted
+    // (test-only) case. Output bytes are identical either way.
+    let sorted_nodes: std::borrow::Cow<[(i64, f64, f64)]> =
+        if nodes.is_sorted_by_key(|(id, _, _)| *id) {
+            std::borrow::Cow::Borrowed(nodes)
+        } else {
+            let mut v = nodes.to_vec();
+            v.sort_by_key(|(id, _, _)| *id);
+            std::borrow::Cow::Owned(v)
+        };
 
     // Calculate bounding box in fixed-point
     let (bbox_min_lat, bbox_min_lon, bbox_max_lat, bbox_max_lon) = calculate_bbox(&sorted_nodes);
