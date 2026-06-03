@@ -208,35 +208,66 @@ fn load_way_attrs_index(path: &PathBuf) -> Result<HashMap<i64, Vec<u8>>> {
     Ok(index)
 }
 
-fn load_node_coordinates(path: &PathBuf) -> Result<HashMap<i64, (f64, f64)>> {
-    use std::fs::File;
-    use std::io::Read;
+/// Node coordinate table loaded from nodes.sa. (#422)
+///
+/// Replaces the prior `HashMap<i64,(f64,f64)>` (~3.3 GB on Belgium: 8B key + 16B
+/// value + hash overhead over 69M nodes) with a sorted 16-bytes-per-node
+/// `Vec<(i64,i32,i32)>` (~1.1 GB) + binary search. nodes.sa records are stored
+/// strictly ascending by id, so no sort is needed. `get()` decodes lat/lon with
+/// the EXACT same expression the loader used, so geometry stays byte-identical.
+struct NodeCoords {
+    /// (node_id, lat_fxp, lon_fxp) ascending by node_id.
+    entries: Vec<(i64, i32, i32)>,
+}
 
-    let mut file = File::open(path)?;
-    let mut header = vec![0u8; 128];
-    file.read_exact(&mut header)?;
-
-    let count = u64::from_le_bytes(header[8..16].try_into()?);
-    let mut coords = HashMap::new();
-
-    for _ in 0..count {
-        let mut record = [0u8; 16];
-        file.read_exact(&mut record)?;
-
-        let node_id = i64::from_le_bytes(record[0..8].try_into()?);
-        let lat_lon = u64::from_le_bytes(record[8..16].try_into()?);
-
-        // Decode lat/lon from packed format (1e-7 degrees)
-        // In little-endian: lower 32 bits are lat_fxp (bytes 8-11), upper 32 bits are lon_fxp (bytes 12-15)
-        let lat_fxp = (lat_lon & 0xFFFFFFFF) as i32;
-        let lon_fxp = (lat_lon >> 32) as i32;
-        let lat = lat_fxp as f64 * 1e-7;
-        let lon = lon_fxp as f64 * 1e-7;
-
-        coords.insert(node_id, (lat, lon));
+impl NodeCoords {
+    fn len(&self) -> usize {
+        self.entries.len()
     }
 
-    Ok(coords)
+    /// Look up a node's (lat, lon) in degrees; None if absent.
+    #[inline]
+    fn get(&self, id: i64) -> Option<(f64, f64)> {
+        match self.entries.binary_search_by_key(&id, |&(nid, _, _)| nid) {
+            Ok(i) => {
+                let (_, lat_fxp, lon_fxp) = self.entries[i];
+                Some((lat_fxp as f64 * 1e-7, lon_fxp as f64 * 1e-7))
+            }
+            Err(_) => None,
+        }
+    }
+}
+
+fn load_node_coordinates(path: &PathBuf) -> Result<NodeCoords> {
+    use std::fs::File;
+    use std::io::{BufReader, Read};
+
+    // Buffered read: the body is `count` × 16-byte records; the previous
+    // read_exact(16) per record was one syscall per node (~69M). A 1 MiB
+    // BufReader collapses that to ~1k syscalls — a load-time win that offsets
+    // the binary-search lookup cost downstream.
+    let mut file = BufReader::with_capacity(1 << 20, File::open(path)?);
+    let mut header = [0u8; 128];
+    file.read_exact(&mut header)?;
+
+    let count = u64::from_le_bytes(header[8..16].try_into()?) as usize;
+    let mut entries = Vec::with_capacity(count);
+
+    let mut record = [0u8; 16];
+    for _ in 0..count {
+        file.read_exact(&mut record)?;
+        let node_id = i64::from_le_bytes(record[0..8].try_into()?);
+        let lat_lon = u64::from_le_bytes(record[8..16].try_into()?);
+        // Little-endian: lower 32 bits = lat_fxp (bytes 8-11), upper = lon_fxp.
+        let lat_fxp = (lat_lon & 0xFFFFFFFF) as i32;
+        let lon_fxp = (lat_lon >> 32) as i32;
+        entries.push((node_id, lat_fxp, lon_fxp));
+    }
+
+    // nodes.sa is strictly ascending by id (format invariant) → binary search OK.
+    debug_assert!(entries.windows(2).all(|w| w[0].0 < w[1].0));
+
+    Ok(NodeCoords { entries })
 }
 
 fn collect_decision_nodes(
@@ -319,7 +350,7 @@ fn emit_edges(
     ways_path: &PathBuf,
     included_ways: &HashSet<i64>,
     osm_to_compact: &HashMap<i64, u32>,
-    node_coords: &HashMap<i64, (f64, f64)>,
+    node_coords: &NodeCoords,
 ) -> Result<(Vec<EdgeInfo>, HashMap<u32, Vec<(u32, u64)>>)> {
     let mut edges = Vec::new();
     let mut adjacency: HashMap<u32, Vec<(u32, u64)>> = HashMap::new();
@@ -355,13 +386,13 @@ fn emit_edges(
 
                     for j in seg_start_idx..=i {
                         let osm_id = nodes[j];
-                        if let Some(&(lat, lon)) = node_coords.get(&osm_id) {
+                        if let Some((lat, lon)) = node_coords.get(osm_id) {
                             lat_fxp.push((lat * 1e7).round() as i32);
                             lon_fxp.push((lon * 1e7).round() as i32);
 
                             if j > seg_start_idx {
                                 let prev_osm = nodes[j - 1];
-                                if let Some(&(prev_lat, prev_lon)) = node_coords.get(&prev_osm) {
+                                if let Some((prev_lat, prev_lon)) = node_coords.get(prev_osm) {
                                     length_m += haversine_distance(prev_lat, prev_lon, lat, lon);
                                 }
                             }
@@ -375,9 +406,8 @@ fn emit_edges(
 
                         // Compute bearing
                         let (start_lat, start_lon) =
-                            node_coords.get(&start_osm).copied().unwrap_or((0.0, 0.0));
-                        let (end_lat, end_lon) =
-                            node_coords.get(&end_osm).copied().unwrap_or((0.0, 0.0));
+                            node_coords.get(start_osm).unwrap_or((0.0, 0.0));
+                        let (end_lat, end_lon) = node_coords.get(end_osm).unwrap_or((0.0, 0.0));
                         let bearing = compute_bearing(start_lat, start_lon, end_lat, end_lon);
 
                         let edge_idx = edges.len() as u64;
