@@ -53,6 +53,11 @@ use crate::core::{ConditionalOutcome, Downloader};
 /// Rust program against this struct directly — the CLI surface stays
 /// minimal.
 #[derive(Debug, Clone, Default)]
+// #[non_exhaustive]: this is a public, field-rich options struct. Marking it
+// non-exhaustive means downstream crates must build it via `Default`/
+// `for_extension` + field assignment (which is how every caller already does
+// it) rather than a struct literal, so adding future fields is non-breaking.
+#[non_exhaustive]
 pub struct VerifiedOptions {
     /// Reject the download if the response body is smaller than this
     /// many bytes. `None` = no minimum. Use ≥ 10 KB for real GTFS
@@ -85,9 +90,15 @@ pub struct VerifiedOptions {
     pub sha256_sidecar: bool,
     /// If a sidecar already exists next to `target`, and the streamed
     /// body hashes to the same SHA-256, skip the final rename and
-    /// return [`Outcome::Unchanged`]. The full body is still streamed
-    /// over the network (there's no conditional GET), but the target
-    /// file is left untouched.
+    /// return [`Outcome::Unchanged`], leaving the target untouched.
+    ///
+    /// This is the *fallback* path that still pays the full transfer: it
+    /// applies when the body WAS streamed because no usable validators were
+    /// cached or the server ignored the conditional request. When
+    /// `conditional_get` is enabled (default for recognised extensions) and the
+    /// upstream honours `If-None-Match` / `If-Modified-Since`, an unchanged
+    /// resource is short-circuited earlier by a `304` and the body is never
+    /// streamed at all — this sidecar-hash check is only reached on a `200`.
     pub skip_if_matches_sidecar: bool,
     /// #418: issue a conditional GET (`If-None-Match` / `If-Modified-Since`)
     /// when a local file + cached validators exist, so an UNCHANGED upstream
@@ -556,9 +567,21 @@ pub fn write_meta(target: &Path, meta: &Meta) -> Result<()> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let json = serde_json::to_string(meta).context("serialising validators")?;
-    std::fs::write(&tmp, &json).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    // Clean up the staging file on any failure so a permission/IO error can't
+    // accumulate stray `<target>.meta.json.tmp` siblings (matches the download
+    // tmp-cleanup behaviour).
+    if let Err(e) = std::fs::write(&tmp, &json) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e).context(format!("writing {}", tmp.display())));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e).context(format!(
+            "renaming {} -> {}",
+            tmp.display(),
+            path.display()
+        )));
+    }
     Ok(())
 }
 
