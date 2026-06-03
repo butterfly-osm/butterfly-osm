@@ -197,9 +197,8 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     let csr_path = config.outdir.join("ebg.csr");
     let turn_table_path = config.outdir.join("ebg.turn_table");
 
-    let created_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    // #419: deterministic for byte-reproducible builds (field never read).
+    let created_unix: u64 = 0;
 
     // Compute inputs SHA
     let inputs_sha = compute_inputs_sha(&config)?;
@@ -569,9 +568,8 @@ fn materialize_csr(
     }
     offsets[n_nodes as usize] = current_offset;
 
-    let created_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    // #419: deterministic for byte-reproducible builds (field never read).
+    let created_unix: u64 = 0;
 
     Ok(EbgCsr {
         n_nodes,

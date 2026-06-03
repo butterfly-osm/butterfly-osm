@@ -9,6 +9,11 @@ use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile}
 use crate::formats::{NodeSignals, NodeSignalsFile};
 use crate::formats::{nodes_sa, nodes_si};
 
+/// (nodes, signal_node_ids) accumulated from one PBF blob during the parallel
+/// node pass (#421). Aliased to keep the rayon closure return type within
+/// clippy's type-complexity budget.
+type NodeBlob = (Vec<(i64, f64, f64)>, Vec<i64>);
+
 pub struct IngestConfig {
     pub input: PathBuf,
     pub outdir: PathBuf,
@@ -128,55 +133,78 @@ struct NodeExtractionResult {
     signal_node_ids: Vec<i64>,
 }
 
-/// Extract all nodes from PBF, also collecting traffic signal node IDs
+/// Extract all nodes from PBF, also collecting traffic signal node IDs.
+///
+/// #421: decode PBF blobs in parallel (osmpbf blobs are independent). Each blob
+/// accumulates into LOCAL Vecs — no per-element allocation, no lock contention —
+/// then per-blob results are merged append-smaller-into-larger to bound copying.
+/// par_bridge yields blobs in arbitrary order, so the result is sorted to a
+/// deterministic total order afterwards (node ids are unique in OSM, so the
+/// lat/lon tiebreak never triggers and the output matches the serial id-sorted
+/// baseline byte-for-byte). Peak RSS stays below the (ways-pass) build peak.
 fn extract_nodes<P: AsRef<Path>>(path: P) -> Result<NodeExtractionResult> {
-    use std::sync::Mutex;
+    use osmpbf::{BlobDecode, BlobReader};
+    use rayon::prelude::*;
 
-    let reader = ElementReader::from_path(path)?;
-    let nodes = Mutex::new(Vec::new());
-    let signal_nodes = Mutex::new(Vec::new());
+    let reader = BlobReader::from_path(path)?;
 
-    reader
-        .for_each(|element| {
-            match element {
-                Element::Node(node) => {
-                    nodes
-                        .lock()
-                        .unwrap()
-                        .push((node.id(), node.lat(), node.lon()));
-
-                    // Check for traffic signal tag
-                    for (key, value) in node.tags() {
-                        if key == "highway" && value == "traffic_signals" {
-                            signal_nodes.lock().unwrap().push(node.id());
-                            break;
+    let (mut nodes, mut signal_node_ids) = reader
+        .par_bridge()
+        .map(|blob| -> Result<NodeBlob> {
+            let mut nodes = Vec::new();
+            let mut signals = Vec::new();
+            if let BlobDecode::OsmData(block) = blob?.decode()? {
+                for element in block.elements() {
+                    match element {
+                        Element::Node(node) => {
+                            nodes.push((node.id(), node.lat(), node.lon()));
+                            for (key, value) in node.tags() {
+                                if key == "highway" && value == "traffic_signals" {
+                                    signals.push(node.id());
+                                    break;
+                                }
+                            }
                         }
+                        Element::DenseNode(node) => {
+                            nodes.push((node.id(), node.lat(), node.lon()));
+                            for (key, value) in node.tags() {
+                                if key == "highway" && value == "traffic_signals" {
+                                    signals.push(node.id());
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                Element::DenseNode(node) => {
-                    nodes
-                        .lock()
-                        .unwrap()
-                        .push((node.id(), node.lat(), node.lon()));
-
-                    // Check for traffic signal tag
-                    for (key, value) in node.tags() {
-                        if key == "highway" && value == "traffic_signals" {
-                            signal_nodes.lock().unwrap().push(node.id());
-                            break;
-                        }
-                    }
-                }
-                _ => {}
             }
+            Ok((nodes, signals))
         })
+        .reduce(
+            || Ok((Vec::new(), Vec::new())),
+            |a, b| {
+                let (mut an, mut asig) = a?;
+                let (mut bn, mut bsig) = b?;
+                if bn.len() > an.len() {
+                    std::mem::swap(&mut an, &mut bn);
+                }
+                an.extend(bn);
+                if bsig.len() > asig.len() {
+                    std::mem::swap(&mut asig, &mut bsig);
+                }
+                asig.extend(bsig);
+                Ok((an, asig))
+            },
+        )
         .context("Failed to read nodes")?;
 
-    let mut nodes = nodes.into_inner().unwrap();
-    let mut signal_node_ids = signal_nodes.into_inner().unwrap();
-
-    // Sort by ID for determinism
-    nodes.sort_by_key(|(id, _, _)| *id);
+    // Deterministic total order. id is unique in OSM so the lat/lon tiebreak is
+    // pure insurance; the sorted sequence is identical to the serial baseline.
+    nodes.sort_unstable_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.total_cmp(&b.1))
+            .then_with(|| a.2.total_cmp(&b.2))
+    });
     signal_node_ids.sort_unstable();
     signal_node_ids.dedup();
 
@@ -223,61 +251,78 @@ fn extract_ways<P: AsRef<Path>>(path: P) -> Result<Vec<Way>> {
 
 /// Extract relations from PBF, filtering for turn restrictions
 fn extract_relations<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
-    use std::sync::Mutex;
+    use osmpbf::{BlobDecode, BlobReader};
+    use rayon::prelude::*;
 
-    let reader = ElementReader::from_path(path)?;
-    let relations = Mutex::new(Vec::new());
+    let reader = BlobReader::from_path(path)?;
 
-    reader
-        .for_each(|element| {
-            if let Element::Relation(relation) = element {
-                // Parse tags
-                let tags: Vec<(String, String)> = relation
-                    .tags()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect();
+    // #421: parallel blob decode (relations are a tiny fraction of elements;
+    // the cost is the full-file decode, which parallelises). Per-blob local
+    // Vecs, merged append-into-larger; sorted by unique id afterwards so the
+    // output is identical to the serial baseline.
+    let mut relations = reader
+        .par_bridge()
+        .map(|blob| -> Result<Vec<Relation>> {
+            let mut out = Vec::new();
+            if let BlobDecode::OsmData(block) = blob?.decode()? {
+                for element in block.elements() {
+                    if let Element::Relation(relation) = element {
+                        let tags: Vec<(String, String)> = relation
+                            .tags()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect();
 
-                // Filter: only keep if type=restriction or has restriction-related tags
-                let is_restriction = tags.iter().any(|(k, v)| {
-                    (k == "type" && v == "restriction")
-                        || k.starts_with("restriction")
-                        || k == "except"
-                });
+                        // Filter: type=restriction or restriction-related tags.
+                        let is_restriction = tags.iter().any(|(k, v)| {
+                            (k == "type" && v == "restriction")
+                                || k.starts_with("restriction")
+                                || k == "except"
+                        });
+                        if !is_restriction {
+                            continue;
+                        }
 
-                if !is_restriction {
-                    return;
+                        let members: Vec<Member> = relation
+                            .members()
+                            .filter_map(|member| {
+                                let kind = match member.member_type {
+                                    osmpbf::RelMemberType::Node => MemberKind::Node,
+                                    osmpbf::RelMemberType::Way => MemberKind::Way,
+                                    osmpbf::RelMemberType::Relation => return None,
+                                };
+                                Some(Member {
+                                    role: member.role().unwrap_or("").to_string(),
+                                    kind,
+                                    ref_id: member.member_id,
+                                })
+                            })
+                            .collect();
+
+                        out.push(Relation {
+                            id: relation.id(),
+                            members,
+                            tags,
+                        });
+                    }
                 }
-
-                // Parse members
-                let members: Vec<Member> = relation
-                    .members()
-                    .filter_map(|member| {
-                        let kind = match member.member_type {
-                            osmpbf::RelMemberType::Node => MemberKind::Node,
-                            osmpbf::RelMemberType::Way => MemberKind::Way,
-                            osmpbf::RelMemberType::Relation => return None, // Skip relation members for now
-                        };
-
-                        Some(Member {
-                            role: member.role().unwrap_or("").to_string(),
-                            kind,
-                            ref_id: member.member_id,
-                        })
-                    })
-                    .collect();
-
-                relations.lock().unwrap().push(Relation {
-                    id: relation.id(),
-                    members,
-                    tags,
-                });
             }
+            Ok(out)
         })
+        .reduce(
+            || Ok(Vec::new()),
+            |a, b| {
+                let mut av = a?;
+                let mut bv = b?;
+                if bv.len() > av.len() {
+                    std::mem::swap(&mut av, &mut bv);
+                }
+                av.extend(bv);
+                Ok(av)
+            },
+        )
         .context("Failed to read relations")?;
 
-    let mut relations = relations.into_inner().unwrap();
-
-    // Sort by ID for determinism
+    // Sort by unique ID for determinism.
     relations.sort_by_key(|r| r.id);
 
     Ok(relations)

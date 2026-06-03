@@ -45,7 +45,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
-use crate::formats::{CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile, mod_turns, mod_weights};
+use crate::formats::{CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile, mod_weights};
 use crate::profile_abi::Mode;
 
 /// Edge weight for weighted adjacency - stores (target, weight)
@@ -113,7 +113,9 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     // Load weights for metric-aware witness search
     println!("Loading weights for witness search ({})...", mode_name);
     let weights_data = mod_weights::read_all(&config.weights_path)?;
-    let _turns_data = mod_turns::read_all(&config.turns_path)?;
+    // #423: step7 topology does not use turn penalties — the metric-aware witness
+    // search uses edge weights only. The previous `mod_turns::read_all` here was a
+    // dead read (underscore-bound, never used); dropped to save the load + RSS.
     let weights = &weights_data.weights;
     println!("  ✓ {} edge weights", weights.len());
 
