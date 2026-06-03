@@ -117,11 +117,22 @@ LAST_RECIPE="$DATA/last-recipe"
 car_present=0
 for m in "${MODES[@]}"; do [[ "$m" == "car" ]] && car_present=1; done
 recipe_fingerprint() {
+    # #424: content-only fingerprint over BOTH the model files and the traffic
+    # profiles, in a locale-stable (LC_ALL=C) order. `sha256sum < file` emits the
+    # hash with no path, so the fingerprint is path- and readdir-order-independent;
+    # the basename is included so a mode rename still counts as a change. Models
+    # are included (previously only traffic profiles were) so editing a *.model.json
+    # forces a rebuild instead of silently reusing a stale container.
     {
         echo "$RECIPE_VERSION"
-        for p in "$CAR_BASE_PROFILE" "$CAR_VARIANT_PROFILE"; do
-            [[ -f "$TRAFFIC_DIR/$p" ]] && sha256sum "$TRAFFIC_DIR/$p"
-        done
+        # Emit "basename <content-hash>" per recipe file, then sort by that line.
+        # Ordering is therefore determined by basename + content only — NOT by the
+        # directory paths — so MODELS_DIR/TRAFFIC_DIR location can't change the
+        # fingerprint. `sha256sum < file` keeps the per-file hash path-free.
+        for f in "$MODELS_DIR"/*.model.json "$TRAFFIC_DIR"/*.traffic.json; do
+            [[ -f "$f" ]] || continue
+            printf '%s %s\n' "$(basename "$f")" "$(sha256sum <"$f" | cut -d' ' -f1)"
+        done | LC_ALL=C sort
     } | sha256sum | cut -d' ' -f1
 }
 RECIPE_FP="$(recipe_fingerprint)"
@@ -247,6 +258,12 @@ time "$BIN" step5-weights \
   "${WA_ARGS[@]}" \
   --outdir "$DATA/step5"
 
+# #424: steps 6/7/8 run sequentially per mode ON PURPOSE — do NOT fan the modes
+# out concurrently. Each invocation is already internally rayon-parallel AND holds
+# a multi-GB working set (filtered EBG + order + weighted_adj/atomic weight Vecs);
+# running modes in parallel would multiply peak RSS by the mode count and blow the
+# 78 GB staging budget. step7 also writes a non-mode-keyed shortcuts.tmp that
+# concurrent runs would clobber. Keep these loops sequential.
 for m in "${MODES[@]}"; do
     log "step6-order $m"
     time "$BIN" step6-order \
