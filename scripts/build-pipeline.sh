@@ -129,10 +129,18 @@ recipe_fingerprint() {
         # Ordering is therefore determined by basename + content only — NOT by the
         # directory paths — so MODELS_DIR/TRAFFIC_DIR location can't change the
         # fingerprint. `sha256sum < file` keeps the per-file hash path-free.
-        for f in "$MODELS_DIR"/*.model.json "$TRAFFIC_DIR"/*.traffic.json; do
-            [[ -f "$f" ]] || continue
-            printf '%s %s\n' "$(basename "$f")" "$(sha256sum <"$f" | cut -d' ' -f1)"
-        done | LC_ALL=C sort
+        {
+            for f in "$MODELS_DIR"/*.model.json "$TRAFFIC_DIR"/*.traffic.json; do
+                [[ -f "$f" ]] || continue
+                printf '%s %s\n' "$(basename "$f")" "$(sha256sum <"$f" | cut -d' ' -f1)"
+            done
+            # #388: a calibrated observed-speeds table changes the baked car
+            # 'realistic' profile, so fold its content hash in too — otherwise a
+            # fresh calibration would silently reuse a stale container.
+            if [[ -n "${BUTTERFLY_OBSERVED_SPEEDS:-}" && -f "${BUTTERFLY_OBSERVED_SPEEDS}" ]]; then
+                printf 'observed-speeds %s\n' "$(sha256sum <"$BUTTERFLY_OBSERVED_SPEEDS" | cut -d' ' -f1)"
+            fi
+        } | LC_ALL=C sort
     } | sha256sum | cut -d' ' -f1
 }
 RECIPE_FP="$(recipe_fingerprint)"
@@ -302,6 +310,35 @@ for m in "${MODES[@]}"; do
       --outdir "$DATA/step8"
 done
 
+# #388: optional calibration. If a generic observed-speeds table is provided via
+# BUTTERFLY_OBSERVED_SPEEDS — (way_id, observed_avg_speed_kmh, sample_count) as
+# parquet/csv, produced by the private butterfly-speeds pipeline — fit the car
+# 'realistic' profile from it instead of using the shipped sample. The engine is
+# source-independent: it never knows which provider the speeds came from; absent
+# the env var it falls back to the bundled profile (today's behaviour).
+CAR_BASE_OVERRIDE=""
+if [[ -n "${BUTTERFLY_OBSERVED_SPEEDS:-}" && "$car_present" -eq 1 ]]; then
+    if [[ -f "$BUTTERFLY_OBSERVED_SPEEDS" && -f "$DATA/step2/way_attrs.car.bin" ]]; then
+        mkdir -p "$DATA/traffic"
+        log "calibrating car 'realistic' from observed speeds: $BUTTERFLY_OBSERVED_SPEEDS"
+        # Tolerant: a bad/empty observed table (e.g. 0 way_ids matched) must NOT
+        # abort the build — fall back to the bundled profile with a loud warning
+        # so staging stays up. (butterfly-speeds validates before publishing; this
+        # is the belt-and-suspenders.)
+        if time "$BIN" calibrate-traffic \
+            --observations "$BUTTERFLY_OBSERVED_SPEEDS" \
+            --way-attrs "$DATA/step2/way_attrs.car.bin" \
+            --name realistic --base-model car \
+            --out "$DATA/traffic/car_realistic.traffic.json"; then
+            CAR_BASE_OVERRIDE="$DATA/traffic/car_realistic.traffic.json"
+        else
+            log "WARN: calibrate-traffic failed (bad/empty observed table?) — falling back to the bundled car profile"
+        fi
+    else
+        log "WARN: BUTTERFLY_OBSERVED_SPEEDS set but observed file or way_attrs.car.bin missing — using shipped car profile"
+    fi
+fi
+
 # #392/#415: make car traffic-aware. The base step8 above produced the
 # legal-limit car (time + distance + length-along-time channels). Now:
 #   1. bake the realistic friction profile into BASE car — overwrites the car
@@ -311,7 +348,9 @@ done
 #      which `pack` picks up and the server auto-registers as `?mode=car_rush_hour`.
 # Both reuse the car step4–7 artefacts and the step2 way_attrs density classes.
 if [[ "$car_present" -eq 1 ]]; then
-    base_prof="$TRAFFIC_DIR/$CAR_BASE_PROFILE"
+    # #388: prefer the calibrated profile when butterfly-speeds supplied observed
+    # data this run; otherwise the bundled sample.
+    base_prof="${CAR_BASE_OVERRIDE:-$TRAFFIC_DIR/$CAR_BASE_PROFILE}"
     var_prof="$TRAFFIC_DIR/$CAR_VARIANT_PROFILE"
     if [[ -f "$base_prof" && -f "$var_prof" ]]; then
         car8=(--cch-topo "$DATA/step7/cch.car.topo"
