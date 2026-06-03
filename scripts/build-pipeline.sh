@@ -136,11 +136,15 @@ recipe_fingerprint() {
     } | sha256sum | cut -d' ' -f1
 }
 RECIPE_FP="$(recipe_fingerprint)"
+# #424: the fingerprint now covers the *.model.json files (not just car traffic
+# profiles), so a model edit must force a rebuild for ANY mode set. This was
+# previously gated on car_present, which let a non-car build (e.g. foot,bike)
+# silently adopt a stale container after a model edit — defeating the intent.
+# Compute unconditionally; worst case a traffic-only change on a non-car build
+# triggers one extra (correct, safe) rebuild.
 recipe_changed=0
-if [[ "$car_present" -eq 1 ]]; then
-    if [[ ! -f "$LAST_RECIPE" ]] || [[ "$(cat "$LAST_RECIPE" 2>/dev/null)" != "$RECIPE_FP" ]]; then
-        recipe_changed=1
-    fi
+if [[ ! -f "$LAST_RECIPE" ]] || [[ "$(cat "$LAST_RECIPE" 2>/dev/null)" != "$RECIPE_FP" ]]; then
+    recipe_changed=1
 fi
 
 all_step8_present=1
