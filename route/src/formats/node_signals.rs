@@ -75,10 +75,8 @@ impl NodeSignalsFile {
             .with_context(|| format!("Failed to create {}", path.as_ref().display()))?;
         let mut writer = BufWriter::new(file);
 
-        let created_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // #419: deterministic for byte-reproducible builds (field never read).
+        let created_unix: u64 = 0;
 
         // Build header
         let mut header = Vec::with_capacity(HEADER_SIZE);

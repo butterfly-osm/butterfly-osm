@@ -5,13 +5,13 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
 use crate::density::{DensityClassifier, WayTagsView};
 use crate::formats::{TurnRule, WayAttr, turn_rules, way_attrs};
-use crate::profile_abi::{Mode, TurnRuleKind};
+use crate::profile_abi::{Mode, TurnRuleKind, WayOutput};
 
 pub struct ProfileConfig {
     pub ways_path: PathBuf,
@@ -69,14 +69,17 @@ impl ProfileResult {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProfileMeta {
     pub abi_version: u32,
-    pub profile_versions: HashMap<String, u32>,
-    pub highway_classes: HashMap<u16, String>,
-    pub surface_classes: HashMap<u16, String>,
-    pub class_bits: HashMap<String, u32>,
+    // #425: BTreeMap (sorted keys) so profile_meta.json serialises deterministically.
+    // HashMap iteration order is randomised per process, and profile_meta_sha256 is
+    // part of Step2LockFile — HashMap here made the step2 lock non-reproducible.
+    pub profile_versions: BTreeMap<String, u32>,
+    pub highway_classes: BTreeMap<u16, String>,
+    pub surface_classes: BTreeMap<u16, String>,
+    pub class_bits: BTreeMap<String, u32>,
     pub ways_sha256: String,
     pub relations_sha256: String,
-    pub way_attrs_sha256: HashMap<String, String>,
-    pub turn_rules_sha256: HashMap<String, String>,
+    pub way_attrs_sha256: BTreeMap<String, String>,
+    pub turn_rules_sha256: BTreeMap<String, String>,
 }
 
 pub fn build_highway_classes() -> HashMap<u16, String> {
@@ -222,45 +225,84 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     // Reverse-map highway_class u16 -> highway name for the density classifier.
     let highway_classes = build_highway_classes();
 
-    let way_stream = crate::formats::WaysFile::stream_ways(&config.ways_path)?;
+    // #420: parallelise the per-way evaluation. Per way the work (density
+    // classify + one evaluate_way per mode) is independent and read-only over
+    // the compiled models + dictionaries. We pull the serial decode stream in
+    // BOUNDED chunks and rayon-evaluate each chunk: peak RSS stays flat (only
+    // one chunk of decoded ways is resident on top of the already-resident
+    // per-mode output Vecs — it does NOT scale with file size). Output bytes are
+    // order-independent (way_attrs is written sorted by the unique way_id), but
+    // we accumulate in stream order anyway for robustness. density_hist is an
+    // exact integer sum, so order does not affect it.
+    use rayon::prelude::*;
+    const CHUNK_WAYS: usize = 65_536;
+    let density_classifier = config.density_classifier;
+
+    let mut way_stream = crate::formats::WaysFile::stream_ways(&config.ways_path)?;
     let mut count = 0u64;
+    let mut next_progress = 1_000_000u64;
     let mut density_hist: [u64; 5] = [0; 5];
+    let mut chunk: Vec<(i64, Vec<u32>, Vec<u32>)> = Vec::with_capacity(CHUNK_WAYS);
 
-    for result in way_stream {
-        let (way_id, keys, vals, _nodes) = result?;
-
-        // Density class is the same across all modes — compute once per way.
-        let density_class = {
-            // Pick the first compiled model just to evaluate the way and
-            // resolve the highway tag — we only need the highway_class u16.
-            // Any model works because they share the same dictionaries.
-            let first = &compiled_models[0];
-            let output = evaluate_way(first, &keys, &vals, &val_dict);
-
-            let highway_name = highway_classes
-                .get(&output.highway_class)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-
-            let view = WayTagsView {
-                keys: &keys,
-                vals: &vals,
-                key_dict: &key_dict,
-                val_dict: &val_dict,
-            };
-            crate::density::classify_osm_tag(config.density_classifier, highway_name, &view)
-        };
-        density_hist[density_class.to_u8() as usize] += 1;
-
-        for (i, compiled) in compiled_models.iter().enumerate() {
-            let mut output = evaluate_way(compiled, &keys, &vals, &val_dict);
-            output.density_class = density_class.to_u8();
-            way_attrs_per_mode[i].push(WayAttr { way_id, output });
+    loop {
+        // Fill one bounded chunk from the (serial) decode stream.
+        chunk.clear();
+        for result in way_stream.by_ref() {
+            let (way_id, keys, vals, _nodes) = result?;
+            chunk.push((way_id, keys, vals));
+            if chunk.len() >= CHUNK_WAYS {
+                break;
+            }
+        }
+        if chunk.is_empty() {
+            break;
         }
 
-        count += 1;
-        if count.is_multiple_of(1_000_000) {
+        // Evaluate the chunk in parallel; collect() preserves chunk index order.
+        let results: Vec<(i64, u8, Vec<WayOutput>)> = chunk
+            .par_iter()
+            .map(|(way_id, keys, vals)| {
+                // Density class is mode-agnostic — compute once per way (one
+                // extra eval just to resolve the highway tag; any model works
+                // since they share dictionaries).
+                let out0 = evaluate_way(&compiled_models[0], keys, vals, &val_dict);
+                let highway_name = highway_classes
+                    .get(&out0.highway_class)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let view = WayTagsView {
+                    keys: keys.as_slice(),
+                    vals: vals.as_slice(),
+                    key_dict: &key_dict,
+                    val_dict: &val_dict,
+                };
+                let dclass =
+                    crate::density::classify_osm_tag(density_classifier, highway_name, &view)
+                        .to_u8();
+                let outputs: Vec<WayOutput> = compiled_models
+                    .iter()
+                    .map(|compiled| {
+                        let mut output = evaluate_way(compiled, keys, vals, &val_dict);
+                        output.density_class = dclass;
+                        output
+                    })
+                    .collect();
+                (*way_id, dclass, outputs)
+            })
+            .collect();
+
+        // Accumulate serially (deterministic).
+        for (way_id, dclass, outputs) in results {
+            density_hist[dclass as usize] += 1;
+            for (i, output) in outputs.into_iter().enumerate() {
+                way_attrs_per_mode[i].push(WayAttr { way_id, output });
+            }
+        }
+
+        count += chunk.len() as u64;
+        if count >= next_progress {
             println!("  processed {} ways...", count);
+            next_progress += 1_000_000;
         }
     }
 
@@ -424,9 +466,9 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let ways_sha256 = compute_file_sha256(&config.ways_path)?;
     let relations_sha256 = compute_file_sha256(&config.relations_path)?;
 
-    let mut way_attrs_sha256 = HashMap::new();
-    let mut turn_rules_sha256 = HashMap::new();
-    let mut profile_versions = HashMap::new();
+    let mut way_attrs_sha256 = BTreeMap::new();
+    let mut turn_rules_sha256 = BTreeMap::new();
+    let mut profile_versions = BTreeMap::new();
 
     for out in &mode_outputs {
         way_attrs_sha256.insert(
@@ -445,9 +487,9 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let meta = ProfileMeta {
         abi_version: 2,
         profile_versions,
-        highway_classes: build_highway_classes(),
-        surface_classes: build_surface_classes(),
-        class_bits: build_class_bits(),
+        highway_classes: build_highway_classes().into_iter().collect(),
+        surface_classes: build_surface_classes().into_iter().collect(),
+        class_bits: build_class_bits().into_iter().collect(),
         ways_sha256,
         relations_sha256,
         way_attrs_sha256,
