@@ -245,6 +245,7 @@ pub async fn fetch_region(
     region_name: &str,
     data_root: &Path,
     filter: SectionFilter,
+    force: bool,
 ) -> Result<RegionReport> {
     let index = RegionIndex::load(region_name)?;
     let entries = index.entries(region_name, data_root, filter);
@@ -260,7 +261,9 @@ pub async fn fetch_region(
         .map(|entry| {
             let entry_clone = entry.clone();
             tokio::spawn(async move {
-                let opts = VerifiedOptions::for_extension(&entry_clone.target);
+                let mut opts = VerifiedOptions::for_extension(&entry_clone.target);
+                // #418: --force suppresses the conditional GET + sidecar skip.
+                opts.force_refresh = force;
                 let result = download_verified(&entry_clone.url, &entry_clone.target, &opts)
                     .await
                     .map_err(|e| format!("{e:#}"));
