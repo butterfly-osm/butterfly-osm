@@ -162,6 +162,8 @@ async fn fetch_one(url: &str, target: &std::path::Path, is_realtime: bool) -> Fe
         opts.min_bytes = Some(8);
         opts.sha256_sidecar = false;
         opts.skip_if_matches_sidecar = false;
+        // #418: RT content changes every poll — never skip the transfer.
+        opts.conditional_get = false;
     }
     // We don't know a priori whether there was a previous sidecar
     // without reading it; `download_verified` handles that

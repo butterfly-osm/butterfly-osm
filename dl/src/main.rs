@@ -265,7 +265,7 @@ async fn run_region(cli: &Cli) -> Result<()> {
     }
 
     eprintln!("🦋 Region fetch: '{region}' → {}", data_root.display());
-    let report = fetch_region(region, &data_root, filter)
+    let report = fetch_region(region, &data_root, filter, cli.force)
         .await
         .map_err(|e| butterfly_dl::Error::HttpError(format!("{e:#}")))?;
 

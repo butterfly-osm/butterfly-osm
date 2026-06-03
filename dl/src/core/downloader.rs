@@ -121,6 +121,25 @@ async fn check_overwrite_permission(file_path: &str, behavior: &OverwriteBehavio
     }
 }
 
+/// Outcome of a conditional streaming GET (#418).
+pub enum ConditionalOutcome {
+    /// Server responded `304 Not Modified` — the caller's cached copy is
+    /// current and no body was transferred.
+    NotModified,
+    /// Server returned a body. Carries the response's own `ETag` /
+    /// `Last-Modified` so the caller can cache them for the next request.
+    Body {
+        /// The body stream.
+        stream: DownloadStream,
+        /// `content-length` if the server advertised one.
+        total_size: Option<u64>,
+        /// Response `ETag`, if present.
+        etag: Option<String>,
+        /// Response `Last-Modified`, if present.
+        last_modified: Option<String>,
+    },
+}
+
 /// High-level downloader that handles all source types
 pub struct Downloader {
     config: SourceConfig,
@@ -296,6 +315,81 @@ impl Downloader {
             .and_then(|v| v.parse::<u64>().ok());
         let stream = create_http_stream(response);
         Ok((stream, total_size))
+    }
+
+    /// HEAD-less streaming GET with optional conditional validators (#418).
+    ///
+    /// When `etag`/`last_modified` are supplied, sends `If-None-Match` /
+    /// `If-Modified-Since`; a `304 Not Modified` then yields
+    /// [`ConditionalOutcome::NotModified`] (no body transferred). A 304 is only
+    /// honoured when we actually sent a validator — an unsolicited 304 is a
+    /// server bug and is surfaced as an error. On `200` the body stream is
+    /// returned together with the response's own `ETag`/`Last-Modified` so the
+    /// caller can cache them. With both validators `None` this is a plain GET
+    /// that still surfaces the response validators (so a first download can
+    /// persist them for next time). Same shared client / TLS / user-agent as
+    /// [`Self::stream_url_raw`]; no HEAD prelude.
+    pub async fn stream_url_conditional(
+        url: &str,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<ConditionalOutcome> {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(Error::InvalidInput(format!(
+                "stream_url_conditional expects a raw http(s) URL, got: {url}"
+            )));
+        }
+        let sent_validator = etag.is_some() || last_modified.is_some();
+        let client = &*GLOBAL_CLIENT;
+        let mut req = client.get(url);
+        if let Some(tag) = etag {
+            req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+        }
+        if let Some(lm) = last_modified {
+            req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
+        }
+        let response = req.send().await?;
+        let status = response.status();
+
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            if sent_validator {
+                return Ok(ConditionalOutcome::NotModified);
+            }
+            // 304 without a conditional header sent is a server bug — do not
+            // silently treat it as "unchanged".
+            return Err(Error::HttpError(format!(
+                "GET {url} returned 304 Not Modified without a conditional request"
+            )));
+        }
+        if !status.is_success() {
+            return Err(Error::HttpError(format!(
+                "GET {url} returned HTTP {status}"
+            )));
+        }
+
+        let new_etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let new_last_modified = response
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let total_size = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let stream = create_http_stream(response);
+        Ok(ConditionalOutcome::Body {
+            stream,
+            total_size,
+            etag: new_etag,
+            last_modified: new_last_modified,
+        })
     }
 
     /// Resilient single connection download with range resume capability

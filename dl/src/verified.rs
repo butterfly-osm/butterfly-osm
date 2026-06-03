@@ -40,10 +40,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::core::Downloader;
+use crate::core::{ConditionalOutcome, Downloader};
 
 /// Options for [`download_verified`].
 ///
@@ -52,6 +53,11 @@ use crate::core::Downloader;
 /// Rust program against this struct directly — the CLI surface stays
 /// minimal.
 #[derive(Debug, Clone, Default)]
+// #[non_exhaustive]: this is a public, field-rich options struct. Marking it
+// non-exhaustive means downstream crates must build it via `Default`/
+// `for_extension` + field assignment (which is how every caller already does
+// it) rather than a struct literal, so adding future fields is non-breaking.
+#[non_exhaustive]
 pub struct VerifiedOptions {
     /// Reject the download if the response body is smaller than this
     /// many bytes. `None` = no minimum. Use ≥ 10 KB for real GTFS
@@ -84,10 +90,28 @@ pub struct VerifiedOptions {
     pub sha256_sidecar: bool,
     /// If a sidecar already exists next to `target`, and the streamed
     /// body hashes to the same SHA-256, skip the final rename and
-    /// return [`Outcome::Unchanged`]. The full body is still streamed
-    /// over the network (there's no conditional GET), but the target
-    /// file is left untouched.
+    /// return [`Outcome::Unchanged`], leaving the target untouched.
+    ///
+    /// This is the *fallback* path that still pays the full transfer: it
+    /// applies when the body WAS streamed because no usable validators were
+    /// cached or the server ignored the conditional request. When
+    /// `conditional_get` is enabled (default for recognised extensions) and the
+    /// upstream honours `If-None-Match` / `If-Modified-Since`, an unchanged
+    /// resource is short-circuited earlier by a `304` and the body is never
+    /// streamed at all — this sidecar-hash check is only reached on a `200`.
     pub skip_if_matches_sidecar: bool,
+    /// #418: issue a conditional GET (`If-None-Match` / `If-Modified-Since`)
+    /// when a local file + cached validators exist, so an UNCHANGED upstream
+    /// returns `304 Not Modified` and the body is never streamed. Validators are
+    /// cached in a `<target>.meta.json` sidecar next to the `.sha256` one (which
+    /// stays byte-stable). Falls back to a full download whenever validators are
+    /// absent, the cached URL differs, the cached SHA disagrees with the
+    /// `.sha256` sidecar, or the server ignores the conditional headers. On by
+    /// default for recognised extensions (see [`Self::for_extension`]).
+    pub conditional_get: bool,
+    /// #418: force a fresh download — bypass BOTH the conditional GET and the
+    /// sidecar-hash skip, always re-fetch and overwrite. Maps to CLI `--force`.
+    pub force_refresh: bool,
     /// Display an `indicatif` progress bar on stderr while streaming.
     /// Defaults to `false` so library consumers don't accidentally
     /// render bars from batch / cron contexts; the `fetch` CLI
@@ -158,6 +182,8 @@ impl VerifiedOptions {
             timeout: None,
             sha256_sidecar: recognised,
             skip_if_matches_sidecar: recognised,
+            conditional_get: recognised,
+            force_refresh: false,
             progress: false,
         }
     }
@@ -215,32 +241,63 @@ pub async fn download_verified(
     // Read the previous sidecar once at the start; we need it for the
     // skip-if-matches optimisation and for deciding Downloaded vs
     // Updated in the final outcome.
-    let previous_sha = if opts.skip_if_matches_sidecar || opts.sha256_sidecar {
-        read_sidecar(target)
-    } else {
-        None
-    };
+    let previous_sha =
+        if opts.skip_if_matches_sidecar || opts.sha256_sidecar || opts.conditional_get {
+            read_sidecar(target)
+        } else {
+            None
+        };
     let first_download = previous_sha.is_none();
 
-    // Reuse butterfly-dl's shared `GLOBAL_CLIENT` via the
-    // HEAD-less `stream_url_raw` primitive. Same connection pool +
-    // TLS config as every other butterfly-dl download, same
-    // user-agent, same retry/resume infrastructure — but no HEAD
-    // prelude, so mirrors that don't support HEAD (common on GTFS)
-    // just work, and wiremock servers in unit tests don't need to
-    // register HEAD handlers.
-    //
-    // The `Downloader::download_stream` path is still the right
-    // primitive for OSM PBFs where we DO want a HEAD-based size
-    // check and parallel range downloads. `download_verified` is
-    // the single-connection verified-fetch path for GTFS / NeTEx /
-    // small-to-medium verified downloads.
     let _ = opts.timeout; // Global client timeout is authoritative for now.
     let _ = &opts.allowed_content_types; // Advisory, see below.
 
-    let (stream, total_size_hint) = Downloader::stream_url_raw(url)
-        .await
-        .with_context(|| format!("GET {url} (via butterfly-dl shared client)"))?;
+    // #418 conditional GET. Send If-None-Match / If-Modified-Since only when a
+    // local file + cached validators exist AND those validators belong to THIS
+    // url and agree with the current `.sha256` sidecar — a stale or repurposed
+    // cache simply falls through to a normal full download instead of trusting
+    // bad data. `--force` (force_refresh) suppresses it.
+    let cond = if opts.conditional_get
+        && !opts.force_refresh
+        && target.exists()
+        && let Some(prev) = previous_sha
+        && let Some(meta) = read_meta(target)
+        && meta.url == url
+        && meta.sha256 == hex::encode(prev)
+        && (meta.etag.is_some() || meta.last_modified.is_some())
+    {
+        Some(meta)
+    } else {
+        None
+    };
+    let (etag_req, lm_req) = match &cond {
+        Some(m) => (m.etag.as_deref(), m.last_modified.as_deref()),
+        None => (None, None),
+    };
+
+    // Reuse butterfly-dl's shared `GLOBAL_CLIENT` via the HEAD-less conditional
+    // streaming primitive — same connection pool / TLS / user-agent as every
+    // other butterfly-dl download, no HEAD prelude (mirrors that don't support
+    // HEAD just work). With no validators it is a plain GET that still surfaces
+    // the response ETag/Last-Modified so a first download can cache them.
+    let (stream, total_size_hint, resp_etag, resp_last_modified) =
+        match Downloader::stream_url_conditional(url, etag_req, lm_req)
+            .await
+            .with_context(|| format!("GET {url} (via butterfly-dl shared client)"))?
+        {
+            ConditionalOutcome::NotModified => {
+                // Upstream unchanged — transfer skipped entirely; the local file
+                // and both sidecars are left untouched.
+                log::info!("{url}: 304 Not Modified — skipped transfer (#418)");
+                return Ok(Outcome::Unchanged);
+            }
+            ConditionalOutcome::Body {
+                stream,
+                total_size,
+                etag,
+                last_modified,
+            } => (stream, total_size, etag, last_modified),
+        };
 
     // Note on content-type: the shared client's HEAD path already
     // enforced status + content-length. The content-type allowlist is
@@ -377,6 +434,7 @@ pub async fn download_verified(
     // value as the existing sidecar, discard the tmp and return
     // Unchanged. The previous target + sidecar survive.
     if opts.skip_if_matches_sidecar
+        && !opts.force_refresh
         && let Some(prev) = previous_sha
         && prev == sha
     {
@@ -398,6 +456,24 @@ pub async fn download_verified(
 
     if opts.sha256_sidecar {
         write_sidecar(target, sha).context("writing sha256 sidecar")?;
+    }
+
+    // #418: cache the response validators (written LAST, after target + .sha256)
+    // so the next run can do a conditional GET. Advisory — a write failure only
+    // costs one extra full download, never corruption.
+    if opts.conditional_get && (resp_etag.is_some() || resp_last_modified.is_some()) {
+        let meta = Meta {
+            url: url.to_string(),
+            sha256: hex::encode(sha),
+            etag: resp_etag,
+            last_modified: resp_last_modified,
+        };
+        if let Err(e) = write_meta(target, &meta) {
+            log::warn!(
+                "{}: failed to write validators sidecar: {e:#}",
+                target.display()
+            );
+        }
     }
 
     if first_download {
@@ -448,6 +524,64 @@ pub fn write_sidecar(target: &Path, sha: [u8; 32]) -> Result<()> {
     let path = sidecar_path(target);
     std::fs::write(&path, hex::encode(sha))
         .with_context(|| format!("writing sidecar {}", path.display()))?;
+    Ok(())
+}
+
+/// Cached HTTP conditional-request validators for a downloaded file (#418),
+/// persisted as JSON in a `<target>.meta.json` sidecar next to the `.sha256`
+/// one. `url` + `sha256` bind the validators to a specific source and body, so
+/// a stale or repurposed sidecar is never trusted (the conditional GET is only
+/// attempted when both still match).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Meta {
+    /// Source URL the validators were obtained from.
+    pub url: String,
+    /// Hex SHA-256 of the body the validators describe (must equal `.sha256`).
+    pub sha256: String,
+    /// Response `ETag`, verbatim (including any weak `W/"..."` prefix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    /// Response `Last-Modified`, verbatim HTTP-date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<String>,
+}
+
+fn meta_path(target: &Path) -> PathBuf {
+    let mut s = target.as_os_str().to_os_string();
+    s.push(".meta.json");
+    PathBuf::from(s)
+}
+
+/// Read the conditional-GET validators sidecar next to `target`. Returns `None`
+/// on any missing / unreadable / malformed file (advisory — the caller then
+/// performs a normal full download).
+pub fn read_meta(target: &Path) -> Option<Meta> {
+    let text = std::fs::read_to_string(meta_path(target)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Write the validators sidecar atomically (tmp + rename) next to `target`.
+pub fn write_meta(target: &Path, meta: &Meta) -> Result<()> {
+    let path = meta_path(target);
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let json = serde_json::to_string(meta).context("serialising validators")?;
+    // Clean up the staging file on any failure so a permission/IO error can't
+    // accumulate stray `<target>.meta.json.tmp` siblings (matches the download
+    // tmp-cleanup behaviour).
+    if let Err(e) = std::fs::write(&tmp, &json) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e).context(format!("writing {}", tmp.display())));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e).context(format!(
+            "renaming {} -> {}",
+            tmp.display(),
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -605,5 +739,85 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), body);
         // No sidecar for unknown extensions.
         assert!(!dir.path().join("payload.bin.sha256").exists());
+    }
+
+    /// #418: a second fetch sends `If-None-Match`; the server replies 304 and
+    /// the body is never streamed. Also checks that `--force` (force_refresh)
+    /// suppresses the conditional GET and re-downloads.
+    #[tokio::test]
+    async fn conditional_get_skips_transfer_on_304() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Valid PKZIP body so the .zip preset (magic + min_bytes) passes.
+        let mut body = b"PK\x03\x04".to_vec();
+        body.extend(std::iter::repeat_n(0xCD, 20 * 1024));
+        let etag = "\"abc123\"";
+
+        let body_arc = Arc::new(body.clone());
+        let body_served = Arc::new(AtomicUsize::new(0)); // count 200s with a body
+
+        let server = MockServer::start().await;
+        let body_for = Arc::clone(&body_arc);
+        let served = Arc::clone(&body_served);
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                let conditional = req.headers.get("if-none-match").is_some();
+                if conditional {
+                    // Upstream unchanged → 304, no body.
+                    ResponseTemplate::new(304)
+                } else {
+                    served.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200)
+                        .insert_header("etag", etag)
+                        .set_body_bytes((*body_for).clone())
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("feed.zip");
+        let opts = VerifiedOptions::for_extension(&target);
+        assert!(opts.conditional_get, "zip preset enables conditional_get");
+
+        // 1st fetch: 200 → file + .sha256 + .meta.json (with the etag).
+        let first = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap();
+        assert!(matches!(first, Outcome::Downloaded { .. }));
+        let meta = read_meta(&target).expect(".meta.json must be written");
+        assert_eq!(meta.etag.as_deref(), Some(etag));
+        assert_eq!(meta.url, server.uri());
+        assert_eq!(body_served.load(Ordering::SeqCst), 1, "one body served");
+
+        // 2nd fetch: sends If-None-Match → 304 → Unchanged, no body streamed.
+        let second = download_verified(&server.uri(), &target, &opts)
+            .await
+            .unwrap();
+        assert!(matches!(second, Outcome::Unchanged));
+        assert_eq!(
+            body_served.load(Ordering::SeqCst),
+            1,
+            "304 path must NOT stream the body"
+        );
+
+        // 3rd fetch with --force: suppresses the conditional GET → full 200.
+        let forced = download_verified(
+            &server.uri(),
+            &target,
+            &VerifiedOptions {
+                force_refresh: true,
+                ..VerifiedOptions::for_extension(&target)
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(forced, Outcome::Updated { .. }));
+        assert_eq!(
+            body_served.load(Ordering::SeqCst),
+            2,
+            "--force must re-download the body"
+        );
     }
 }

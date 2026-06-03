@@ -7,5 +7,5 @@ pub mod source;
 pub mod stream;
 
 // Re-export main types for internal use
-pub use downloader::Downloader;
+pub use downloader::{ConditionalOutcome, Downloader};
 pub use source::{SourceConfig, resolve_output_filename};
