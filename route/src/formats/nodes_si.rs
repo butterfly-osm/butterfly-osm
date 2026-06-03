@@ -44,9 +44,17 @@ pub fn write<P: AsRef<Path>>(path: P, nodes: &[(i64, f64, f64)]) -> Result<()> {
         .with_context(|| format!("Failed to create {}", path.as_ref().display()))?;
     let mut writer = BufWriter::new(file);
 
-    // Ensure nodes are sorted
-    let mut sorted_nodes = nodes.to_vec();
-    sorted_nodes.sort_by_key(|(id, _, _)| *id);
+    // #421: borrow when already sorted (step1 pre-sorts) instead of an
+    // unconditional ~1.6 GB clone + re-sort; own+sort only the unsorted
+    // (test-only) case. Byte-identical output.
+    let sorted_nodes: std::borrow::Cow<[(i64, f64, f64)]> =
+        if nodes.is_sorted_by_key(|(id, _, _)| *id) {
+            std::borrow::Cow::Borrowed(nodes)
+        } else {
+            let mut v = nodes.to_vec();
+            v.sort_by_key(|(id, _, _)| *id);
+            std::borrow::Cow::Owned(v)
+        };
 
     // Build Level 2 samples (one per block_size records)
     let mut level2: Vec<Level2Sample> = Vec::new();
