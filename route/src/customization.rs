@@ -1641,7 +1641,7 @@ mod determinism_tests {
     /// against a real Belgium build:
     /// ```text
     /// BT_TOPO=data/belgium/step7/cch.car.topo \
-    /// BT_FILTERED_EBG=data/belgium/step4/filtered.car.ebg \
+    /// BT_FILTERED_EBG=data/belgium/step5/filtered.car.ebg \
     /// BT_W_CAR=data/belgium/step5/w.car.u32 \
     /// BT_T_CAR=data/belgium/step5/t.car.u32 \
     /// BT_EBG_NODES=data/belgium/step4/ebg.nodes \

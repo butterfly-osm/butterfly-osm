@@ -1623,7 +1623,7 @@ impl ServerState {
     /// pinned non-evictable so the #402 idle compactor can't drop the
     /// recustomized weights and silently lazy-reload the clean base car.
     ///
-    /// Requires the container path (`_mmap_arc` + `lazy` populated). The keeps
+    /// Requires the container path (`_mmap_arc` + `lazy` populated). This keeps
     /// the engine provider-clean: `observed_path` is a generic
     /// `(way_id, observed_avg_speed_kmh, sample_count)` table — the provider
     /// never crosses into the artifact. Returns the fitted profile on success.
@@ -1809,7 +1809,16 @@ impl ServerState {
             return false;
         }
         let mut w = slot.state.write();
-        // Re-check under the write lock to handle races with get_mode.
+        // Re-check under the write lock to handle races with get_mode AND with
+        // a concurrent pin. #433: a background recustomize can flip `evictable`
+        // false→pinned after our pre-lock read above; without this re-check the
+        // compactor could evict (and the next query lazy-reload the CLEAN base)
+        // a slot that was just pinned. The synchronous boot path pins before the
+        // compactor is even spawned, so this is defense-in-depth that also keeps
+        // the background-swap variant correct.
+        if !slot.evictable.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
         let last2 = slot.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
         if now.saturating_sub(last2) < threshold_ms {
             return false;
