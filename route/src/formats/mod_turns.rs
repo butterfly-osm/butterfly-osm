@@ -83,11 +83,22 @@ pub fn write<P: AsRef<Path>>(path: P, data: &ModTurns) -> Result<()> {
 
 /// Read t.<mode>.u32 file
 pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModTurns> {
-    use std::io::Read;
-
-    let mut file = File::open(path.as_ref())
+    let file = File::open(path.as_ref())
         .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
+    read_all_from_reader(std::io::BufReader::new(file))
+        .with_context(|| format!("reading turn penalties from {}", path.as_ref().display()))
+}
 
+/// Read `t.<mode>.u32` from an in-memory byte slice (e.g. a `.butterfly`
+/// container `mode/<m>/node_weights.turn` section). Mirrors
+/// [`crate::formats::mod_weights::read_all_from_bytes`]; used by the #433
+/// serve-boot car recustomization, which re-reads the turn table the
+/// build-time step8 folded into the served CCH weights.
+pub fn read_all_from_bytes(bytes: &[u8]) -> Result<ModTurns> {
+    read_all_from_reader(std::io::Cursor::new(bytes))
+}
+
+fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModTurns> {
     // Read header
     let mut header = vec![0u8; HEADER_SIZE];
     file.read_exact(&mut header)?;
@@ -95,8 +106,7 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModTurns> {
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     anyhow::ensure!(
         magic == MAGIC,
-        "Invalid magic in {}: expected 0x{:08x}, got 0x{:08x}",
-        path.as_ref().display(),
+        "Invalid magic: expected 0x{:08x}, got 0x{:08x}",
         MAGIC,
         magic
     );
@@ -104,9 +114,8 @@ pub fn read_all<P: AsRef<Path>>(path: P) -> Result<ModTurns> {
     let version = u16::from_le_bytes([header[4], header[5]]);
     anyhow::ensure!(
         version == VERSION,
-        "Unsupported t.<mode>.u32 version in {}: {} (expected {}). \
+        "Unsupported t.<mode>.u32 version: {} (expected {}). \
          v1 stored deciseconds; re-run step 5 to regenerate as v2 (seconds, #297).",
-        path.as_ref().display(),
         version,
         VERSION,
     );
