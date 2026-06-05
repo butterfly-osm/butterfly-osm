@@ -221,7 +221,13 @@ pub struct ModeSlot {
     /// `load_mode_data_from_bundle` doesn't handle that yet. For v1
     /// the compactor skips variants. Base modes (the heavy ones —
     /// 1-4 GB each) are the eviction target.
-    pub evictable: bool,
+    ///
+    /// Atomic so the #433 serve-boot car recustomization can pin the
+    /// slot AFTER it hot-swaps the calibrated car in: if it stayed
+    /// evictable, the idle compactor would drop the recustomized Arc
+    /// and the next query would lazy-reload the CLEAN base car from the
+    /// container — a silent traffic regression.
+    pub evictable: std::sync::atomic::AtomicBool,
 }
 
 /// #402: a mode name is a traffic-variant iff it has the shape
@@ -245,7 +251,7 @@ impl ModeSlot {
             mode_name,
             state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
             last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            evictable: true,
+            evictable: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -254,7 +260,7 @@ impl ModeSlot {
             mode_name,
             state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
             last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            evictable: false,
+            evictable: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -1602,15 +1608,193 @@ impl ServerState {
         load_mode_data_from_bundle(mode_name, mode, container, mmap, lazy)
     }
 
+    /// #433: serve-boot car traffic recustomization from a runtime
+    /// `observed_speeds.parquet`.
+    ///
+    /// Re-reads the raw step4-7 car inputs that `pack` ships as container
+    /// sections (`mode/car/{way_attrs,filtered_ebg,node_weights.turn}` plus the
+    /// shared `ebg.nodes` / `nbg.geo` already resident in `ServerState` and the
+    /// base car's `cch_topo` + `node_weights`), calibrates ONE car traffic
+    /// profile from the observations, re-runs the TIME-only step8 customization
+    /// in memory ([`crate::customization::customize_cch_time_in_memory`]),
+    /// builds fresh TIME flats, and **hot-swaps** the car `ModeSlot` to the
+    /// calibrated weights. In-flight queries finish on their previously-cloned
+    /// `Arc<ModeData>`; new queries see the calibrated car. The slot is then
+    /// pinned non-evictable so the #402 idle compactor can't drop the
+    /// recustomized weights and silently lazy-reload the clean base car.
+    ///
+    /// Requires the container path (`_mmap_arc` + `lazy` populated). The keeps
+    /// the engine provider-clean: `observed_path` is a generic
+    /// `(way_id, observed_avg_speed_kmh, sample_count)` table — the provider
+    /// never crosses into the artifact. Returns the fitted profile on success.
+    /// EVERY failure mode (parquet absent/bad, zero observations, customization
+    /// error) is the CALLER's to treat as non-fatal — the clean base car keeps
+    /// serving unchanged because the swap only happens on the success path.
+    pub fn recustomize_car_from_observed(
+        &self,
+        observed_path: &std::path::Path,
+    ) -> Result<crate::traffic::TrafficProfile> {
+        let t0 = std::time::Instant::now();
+
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("recustomize: no 'car' mode loaded"))?
+            as usize;
+
+        // Clone-base: the currently-resident car ModeData. At boot (well within
+        // the compactor's grace window) car is resident; if it was somehow
+        // evicted we bail (non-fatal — the next query lazy-reloads clean base).
+        let base: std::sync::Arc<ModeData> = self.modes[car_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("recustomize: car slot not resident at boot"))?;
+
+        // Container handles for re-reading the raw recustomization inputs.
+        let mmap = self
+            ._mmap_arc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("recustomize requires container-backed ServerState"))?;
+        let lazy = self
+            .lazy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("recustomize requires LazyContainer"))?;
+        let container = lazy.container();
+
+        let fetch_bytes = |leaf: &str| -> Result<&[u8]> {
+            let name = format!("mode/car/{}", leaf);
+            let entry = container
+                .get(&name)
+                .ok_or_else(|| anyhow::anyhow!("recustomize: missing section '{}'", name))?;
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            anyhow::ensure!(
+                off + len <= mmap.len(),
+                "recustomize: section '{}' bytes [{},{}) exceed mmap len {}",
+                name,
+                off,
+                off + len,
+                mmap.len()
+            );
+            lazy.verify_now(&name)?;
+            Ok(&mmap[off..off + len])
+        };
+        let fetch_arc = |leaf: &str| -> Result<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
+            let name = format!("mode/car/{}", leaf);
+            let entry = container
+                .get(&name)
+                .ok_or_else(|| anyhow::anyhow!("recustomize: missing section '{}'", name))?;
+            let off = entry.offset as usize;
+            let len = entry.len as usize;
+            anyhow::ensure!(
+                off + len <= mmap.len(),
+                "recustomize: section '{}' bytes [{},{}) exceed mmap len {}",
+                name,
+                off,
+                off + len,
+                mmap.len()
+            );
+            lazy.verify_now(&name)?;
+            Ok((std::sync::Arc::clone(mmap), off, len))
+        };
+
+        // 1. Raw inputs from the container.
+        let way_attrs_vec =
+            crate::formats::way_attrs::read_all_from_bytes(fetch_bytes("way_attrs")?)?;
+        let turns =
+            crate::formats::mod_turns::read_all_from_bytes(fetch_bytes("node_weights.turn")?)?;
+        let (fe_mmap, fe_off, fe_len) = fetch_arc("filtered_ebg")?;
+        let filtered_ebg =
+            crate::formats::FilteredEbgFile::read_from_mmap_unverified(fe_mmap, fe_off, fe_len)?;
+
+        // 2. Calibrate ONE car profile from the observed speeds.
+        let observations = crate::calibrate::read_observations(observed_path)?;
+        anyhow::ensure!(
+            !observations.is_empty(),
+            "recustomize: 0 observations in {}",
+            observed_path.display()
+        );
+        let way_index = crate::calibrate::index_ways(&way_attrs_vec);
+        let params = crate::calibrate::CalibrationParams::default();
+        let result = crate::calibrate::fit(&observations, &way_index, &params)?;
+        let profile = result.profile;
+        tracing::info!(
+            profile = profile.name.as_str(),
+            observations = observations.len(),
+            "recustomize: calibrated car profile"
+        );
+
+        // 3. Re-run TIME-only customization in memory (triangle-relax always on).
+        let new_weights = crate::customization::customize_cch_time_in_memory(
+            &base.cch_topo,
+            &filtered_ebg,
+            &base.node_weights,
+            &turns.penalties,
+            &self.ebg_nodes,
+            Some((&profile, &way_attrs_vec, &self.nbg_geo)),
+        )?;
+
+        // 4. Fresh TIME flats (mirrors load_traffic_variant_mode_data).
+        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+
+        // 5. Assemble the recustomized car ModeData — distance / length-along-time
+        // are physical and unchanged by traffic, so they (and topology + the
+        // mapping sections) are cloned from the base.
+        let new_car = ModeData {
+            mode: base.mode,
+            cch_topo: base.cch_topo.clone(),
+            cch_weights: new_weights,
+            cch_weights_dist: base.cch_weights_dist.clone(),
+            cch_weights_len_along_time: base.cch_weights_len_along_time.clone(),
+            orig_to_rank: base.orig_to_rank.clone(),
+            filtered_to_original: base.filtered_to_original.clone(),
+            n_filtered_nodes: base.n_filtered_nodes,
+            n_original_nodes: base.n_original_nodes,
+            node_weights: base.node_weights.clone(),
+            mask: base.mask.clone(),
+            has_outbound: base.has_outbound.clone(),
+            has_inbound: base.has_inbound.clone(),
+            up_adj_flat,
+            down_rev_flat,
+            down_adj_flat,
+            up_adj_flat_dist: base.up_adj_flat_dist.clone(),
+            down_rev_flat_dist: base.down_rev_flat_dist.clone(),
+            down_adj_flat_dist: base.down_adj_flat_dist.clone(),
+            up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
+            down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
+            exclude_cache: super::exclude::ExcludeWeightCache::default(),
+        };
+
+        // 6. Hot-swap under the slot write lock, then pin non-evictable.
+        let slot = &self.modes[car_idx];
+        {
+            let mut w = slot.state.write();
+            *w = Some(std::sync::Arc::new(new_car));
+        }
+        slot.evictable
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        tracing::info!(
+            elapsed_s = t0.elapsed().as_secs_f64(),
+            "recustomize: hot-swapped + pinned calibrated car"
+        );
+        Ok(profile)
+    }
+
     /// #402: evict a single mode slot if it has been idle for at least
     /// `threshold_ms`. Drops the inner `Arc<ModeData>`; any in-flight
     /// query holding its own Arc clone keeps the data alive until that
     /// query finishes. Returns `true` if the slot was evicted.
     pub fn try_evict_mode_if_idle(&self, mode_idx: usize, threshold_ms: u64) -> bool {
         let slot = &self.modes[mode_idx];
-        if !slot.evictable {
+        if !slot.evictable.load(std::sync::atomic::Ordering::Relaxed) {
             // #402: variants have a different load shape; can't safely
-            // reload via load_mode_data_from_bundle. Skip.
+            // reload via load_mode_data_from_bundle. Skip. (#433: the
+            // serve-boot recustomized car is also pinned here.)
             return false;
         }
         let now = self.started_at.elapsed().as_millis() as u64;

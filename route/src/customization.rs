@@ -38,8 +38,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::formats::{
-    CchTopo, CchTopoFile, EbgNodes, EbgNodesFile, FilteredEbgFile, HybridStateFile, NbgGeoFile,
-    mod_turns, mod_weights, way_attrs,
+    ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
+    HybridStateFile, NbgGeoFile, WeightArray, mod_turns, mod_weights, way_attrs,
 };
 use crate::profile_abi::Mode;
 
@@ -509,6 +509,100 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     })
 }
 
+/// Serve-boot TIME-only CCH recustomization, fully in memory.
+///
+/// Mirrors the TIME path of [`customize_cch`] exactly — same bottom-up +
+/// triangle-relaxation leaf functions — but takes already-parsed inputs and
+/// RETURNS the customized TIME weights as [`CchWeights`] instead of writing
+/// `cch.w.<mode>.u32` to disk. Distance and length-along-time are physical and
+/// unaffected by traffic, so the caller keeps the base mode's dist/lat weights
+/// (the serve clones them from the base `ModeData`).
+///
+/// `traffic` = `(profile, way_attrs, nbg_geo)`: when `Some`, per-density-class
+/// speed factors are applied to a PRIVATE clone of the node time-weights before
+/// contraction (`node_weights_time` is borrowed read-only and left untouched).
+/// Triangle relaxation is ALWAYS run — serving requires exact shortcut weights,
+/// so the `skip_triangle_relax` dev fast-path is deliberately unavailable here.
+///
+/// Determinism: for identical inputs the returned `(up, down, up_middle,
+/// down_middle)` values are element-for-element equal to what the CLI
+/// `customize_cch` writes to `cch.w.<mode>.u32` (pinned by the
+/// `customize_in_memory_matches_cli` round-trip test). The in-memory
+/// `WeightArray`s use u32 storage rather than the on-disk narrowest width, but
+/// that is a storage detail invisible to the value-level consumers (the
+/// `*AdjFlat` builders and CCH search).
+pub fn customize_cch_time_in_memory(
+    topo: &CchTopo,
+    filtered_ebg: &crate::formats::FilteredEbg,
+    node_weights_time: &[u32],
+    turn_penalties: &[u32],
+    ebg_nodes: &EbgNodes,
+    traffic: Option<(
+        &crate::traffic::TrafficProfile,
+        &[way_attrs::WayAttr],
+        &crate::formats::NbgGeo,
+    )>,
+) -> Result<CchWeights> {
+    let n_nodes = topo.n_nodes as usize;
+
+    // Apply traffic to a private copy of the node time-weights — the caller's
+    // slice (a container section) is borrowed read-only.
+    let mut node_weights: Vec<u32> = node_weights_time.to_vec();
+    if let Some((profile, way_attrs_slice, nbg_geo)) = traffic {
+        apply_traffic_to_node_weights_in_memory(
+            &mut node_weights,
+            ebg_nodes,
+            profile,
+            way_attrs_slice,
+            nbg_geo,
+        )?;
+    }
+
+    // Shared structures — identical construction to the CLI TIME path.
+    let sorted_ebg = SortedFilteredEbgAdj::build(filtered_ebg);
+    let rank_to_filtered = &topo.rank_to_filtered;
+    let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let start = topo.down_offsets[u] as usize;
+            let end = topo.down_offsets[u + 1] as usize;
+            if start >= end {
+                return Vec::new();
+            }
+            let mut indices: Vec<usize> = (start..end).collect();
+            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
+            indices
+        })
+        .collect();
+    let rev_down = build_reverse_down_adj_for_relax(topo);
+
+    // Bottom-up TIME customization.
+    let (time_up, time_down) = bottom_up_customize(topo, &sorted_down_indices, |u_rank, v_rank| {
+        compute_original_weight_rank_aligned(
+            u_rank,
+            v_rank,
+            &node_weights,
+            turn_penalties,
+            &sorted_ebg,
+            &filtered_ebg.filtered_to_original,
+            rank_to_filtered,
+        )
+    });
+
+    // Triangle relaxation — ALWAYS run (correctness-critical for serving).
+    let (time_up, time_down, time_up_mid, time_down_mid, _relax_count, _relax_passes) =
+        triangle_relax_parallel(topo, time_up, time_down, &rev_down);
+
+    sanity_check_weights(topo, &time_up, &time_down, "Time", 95.0)?;
+
+    Ok(CchWeights {
+        up: WeightArray::from_vec_u32(time_up),
+        down: WeightArray::from_vec_u32(time_down),
+        up_middle: ArcCow::from_vec(time_up_mid),
+        down_middle: ArcCow::from_vec(time_down_mid),
+    })
+}
+
 /// Apply per-density-class speed factors to the in-memory time-weight array.
 ///
 /// For every accessible EBG node `n`:
@@ -524,9 +618,6 @@ fn apply_traffic_to_node_weights(
     ebg_nodes: &EbgNodes,
     traffic: &TrafficCustomization,
 ) -> Result<()> {
-    use crate::density::DensityClass;
-    use std::collections::HashMap;
-
     println!("\nLoading traffic profile inputs...");
     let way_attrs_vec = way_attrs::read_all(&traffic.way_attrs_path)?;
     println!(
@@ -541,8 +632,36 @@ fn apply_traffic_to_node_weights(
         traffic.nbg_geo_path.display()
     );
 
+    apply_traffic_to_node_weights_in_memory(
+        weights,
+        ebg_nodes,
+        &traffic.profile,
+        &way_attrs_vec,
+        &nbg_geo,
+    )
+}
+
+/// In-memory core of [`apply_traffic_to_node_weights`]: scale the per-EBG-node
+/// time-weights by the profile's per-density-class factors given the
+/// already-parsed way attributes + nbg geometry (no file reads, no profile
+/// path resolution).
+///
+/// Used by the build-time CLI path (via the file-reading shell above) AND by
+/// the serve-boot recustomization, which feeds in structs decoded from the
+/// `.butterfly` container sections. The loop is byte-for-byte identical to the
+/// pre-split CLI logic, so the built artifact is unchanged.
+fn apply_traffic_to_node_weights_in_memory(
+    weights: &mut [u32],
+    ebg_nodes: &EbgNodes,
+    profile: &crate::traffic::TrafficProfile,
+    way_attrs_slice: &[way_attrs::WayAttr],
+    nbg_geo: &crate::formats::NbgGeo,
+) -> Result<()> {
+    use crate::density::DensityClass;
+    use std::collections::HashMap;
+
     // way_id -> density class lookup
-    let way_density: HashMap<i64, u8> = way_attrs_vec
+    let way_density: HashMap<i64, u8> = way_attrs_slice
         .iter()
         .map(|w| (w.way_id, w.output.density_class))
         .collect();
@@ -552,7 +671,7 @@ fn apply_traffic_to_node_weights(
     // [0.667, 10.0] which fits comfortably in f64.
     let inv_factors: [f64; 5] = std::array::from_fn(|i| {
         let class = DensityClass::from_u8(i as u8);
-        1.0 / traffic.profile.factor_for(class) as f64
+        1.0 / profile.factor_for(class) as f64
     });
 
     let mut adjusted = 0usize;
@@ -1502,4 +1621,95 @@ fn compute_hybrid_original_weight(
     sorted_hybrid
         .find_weight(u_state, v_state)
         .unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod determinism_tests {
+    use super::*;
+    use crate::formats::CchWeightsFile;
+    use std::path::PathBuf;
+
+    /// #433: prove the in-memory serve-boot recustomization
+    /// ([`customize_cch_time_in_memory`], traffic = `None`) reproduces the CLI
+    /// [`customize_cch`] legal-limit `cch.w.car.u32` at the value level —
+    /// up/down weights and up/down middles element-for-element. This is the
+    /// contract the serve-boot hot-swap relies on: feeding the same raw inputs
+    /// the build used must yield the same weights the build baked.
+    ///
+    /// Skipped unless all six fixture paths are provided via env, because the
+    /// Belgium step4-7/step8 outputs are large and not committed. To run
+    /// against a real Belgium build:
+    /// ```text
+    /// BT_TOPO=data/belgium/step7/cch.car.topo \
+    /// BT_FILTERED_EBG=data/belgium/step4/filtered.car.ebg \
+    /// BT_W_CAR=data/belgium/step5/w.car.u32 \
+    /// BT_T_CAR=data/belgium/step5/t.car.u32 \
+    /// BT_EBG_NODES=data/belgium/step4/ebg.nodes \
+    /// BT_CCH_W_CAR=data/belgium/step8/cch.w.car.u32 \
+    ///   cargo test -p butterfly-route customize_in_memory_matches_cli -- --nocapture
+    /// ```
+    /// `BT_CCH_W_CAR` MUST be a legal-limit (no-traffic-bake) step8 output.
+    #[test]
+    fn customize_in_memory_matches_cli() {
+        const KEYS: [&str; 6] = [
+            "BT_TOPO",
+            "BT_FILTERED_EBG",
+            "BT_W_CAR",
+            "BT_T_CAR",
+            "BT_EBG_NODES",
+            "BT_CCH_W_CAR",
+        ];
+        let Some(paths) = KEYS
+            .iter()
+            .map(|k| std::env::var(k).ok().map(PathBuf::from))
+            .collect::<Option<Vec<_>>>()
+        else {
+            eprintln!(
+                "skipping customize_in_memory_matches_cli: set {} to a legal-limit Belgium build",
+                KEYS.join(", ")
+            );
+            return;
+        };
+
+        let topo = CchTopoFile::read(&paths[0]).unwrap();
+        let filtered_ebg = FilteredEbgFile::read(&paths[1]).unwrap();
+        let weights = mod_weights::read_all(&paths[2]).unwrap();
+        let turns = mod_turns::read_all(&paths[3]).unwrap();
+        let ebg_nodes = EbgNodesFile::read(&paths[4]).unwrap();
+
+        let got = customize_cch_time_in_memory(
+            &topo,
+            &filtered_ebg,
+            &weights.weights,
+            &turns.penalties,
+            &ebg_nodes,
+            None,
+        )
+        .unwrap();
+
+        let want = CchWeightsFile::read(&paths[5]).unwrap();
+
+        assert_eq!(
+            got.up.to_vec_u32(),
+            want.up.to_vec_u32(),
+            "up weights diverged from CLI customize_cch"
+        );
+        assert_eq!(
+            got.down.to_vec_u32(),
+            want.down.to_vec_u32(),
+            "down weights diverged from CLI customize_cch"
+        );
+        let got_um: Vec<u32> = got.up_middle.iter().copied().collect();
+        let want_um: Vec<u32> = want.up_middle.iter().copied().collect();
+        assert_eq!(
+            got_um, want_um,
+            "up middles diverged from CLI customize_cch"
+        );
+        let got_dm: Vec<u32> = got.down_middle.iter().copied().collect();
+        let want_dm: Vec<u32> = want.down_middle.iter().copied().collect();
+        assert_eq!(
+            got_dm, want_dm,
+            "down middles diverged from CLI customize_cch"
+        );
+    }
 }
