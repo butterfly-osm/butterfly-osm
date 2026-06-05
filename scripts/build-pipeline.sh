@@ -37,16 +37,18 @@ fi
 
 BIN="${BUTTERFLY_BIN:-butterfly-route}"
 MODELS_DIR="${BUTTERFLY_MODELS_DIR:-/opt/butterfly/models}"
-TRAFFIC_DIR="${BUTTERFLY_TRAFFIC_DIR:-/opt/butterfly/traffic}"
 
-# #392/#415: car is traffic-aware BY DEFAULT. After the legal-limit step8, the
-# realistic friction profile is baked into BASE car (`?mode=car`) and a peak
-# congestion variant is built (`?mode=car_rush_hour`). These names map a
-# profile file to its role; editing them or the profiles bumps the recipe
-# fingerprint below, which forces a rebuild even when the PBF is unchanged.
-CAR_BASE_PROFILE="car_realistic.traffic.json"   # baked into ?mode=car
-CAR_VARIANT_PROFILE="rush_hour.traffic.json"    # served as ?mode=car_rush_hour
-RECIPE_VERSION="car-realistic-base+rush_hour-variant-v1"
+# #433: car traffic is no longer baked at build time — the build ships a
+# provider-clean single legal-limit car and the engine recustomizes it at
+# serve boot from a runtime observed_speeds.parquet (see the step8 section
+# below). The build-time bake (#392), rush_hour variant (#415) and
+# observed-speeds calibration (#388) are gone, so TRAFFIC_DIR / the per-role
+# profile names are no longer consulted here.
+#
+# Bumping RECIPE_VERSION forces a one-time rebuild on the next deploy so the
+# existing traffic-BAKED container on the PVC is replaced with the clean one
+# (the fingerprint below folds this in).
+RECIPE_VERSION="car-clean-legal-limit+serve-boot-recustomize-v1"
 
 if ! command -v "$BIN" >/dev/null 2>&1; then
     echo "Error: $BIN not on PATH (set BUTTERFLY_BIN)" >&2
@@ -108,48 +110,36 @@ if [[ -f "$LAST_SOURCE" ]]; then
     fi
 fi
 
-# #392/#415 recipe fingerprint: the traffic baking (realistic→base, rush_hour
-# variant) lives in step8, so changing the profiles or the recipe must force a
-# full rebuild — even when the PBF is byte-identical. A PVC packed before
-# traffic baking has no `last-recipe` marker, so it ALSO rebuilds (which is
-# exactly how the legal-limit container gets upgraded to traffic-aware).
+# #424/#433 recipe fingerprint: per-mode model selection lives in the
+# *.model.json files, so changing one must force a full rebuild even when the
+# PBF is byte-identical. #433 dropped build-time traffic (bake/variant/observed
+# calibration), so the traffic profiles + observed-speeds table no longer affect
+# the artifact and are NO LONGER folded in — but RECIPE_VERSION bumped, so a PVC
+# holding the old traffic-baked container rebuilds once into the clean one.
 LAST_RECIPE="$DATA/last-recipe"
-car_present=0
-for m in "${MODES[@]}"; do [[ "$m" == "car" ]] && car_present=1; done
 recipe_fingerprint() {
-    # #424: content-only fingerprint over BOTH the model files and the traffic
-    # profiles, in a locale-stable (LC_ALL=C) order. `sha256sum < file` emits the
-    # hash with no path, so the fingerprint is path- and readdir-order-independent;
-    # the basename is included so a mode rename still counts as a change. Models
-    # are included (previously only traffic profiles were) so editing a *.model.json
-    # forces a rebuild instead of silently reusing a stale container.
+    # Content-only fingerprint over the model files, in a locale-stable
+    # (LC_ALL=C) order. `sha256sum < file` emits the hash with no path, so the
+    # fingerprint is path- and readdir-order-independent; the basename is
+    # included so a mode rename still counts as a change.
     {
         echo "$RECIPE_VERSION"
-        # Emit "basename <content-hash>" per recipe file, then sort by that line.
-        # Ordering is therefore determined by basename + content only — NOT by the
-        # directory paths — so MODELS_DIR/TRAFFIC_DIR location can't change the
-        # fingerprint. `sha256sum < file` keeps the per-file hash path-free.
+        # Emit "basename <content-hash>" per model file, then sort by that line —
+        # ordering is determined by basename + content only, NOT directory path,
+        # so MODELS_DIR location can't change the fingerprint.
         {
-            for f in "$MODELS_DIR"/*.model.json "$TRAFFIC_DIR"/*.traffic.json; do
+            for f in "$MODELS_DIR"/*.model.json; do
                 [[ -f "$f" ]] || continue
                 printf '%s %s\n' "$(basename "$f")" "$(sha256sum <"$f" | cut -d' ' -f1)"
             done
-            # #388: a calibrated observed-speeds table changes the baked car
-            # 'realistic' profile, so fold its content hash in too — otherwise a
-            # fresh calibration would silently reuse a stale container.
-            if [[ -n "${BUTTERFLY_OBSERVED_SPEEDS:-}" && -f "${BUTTERFLY_OBSERVED_SPEEDS}" ]]; then
-                printf 'observed-speeds %s\n' "$(sha256sum <"$BUTTERFLY_OBSERVED_SPEEDS" | cut -d' ' -f1)"
-            fi
         } | LC_ALL=C sort
     } | sha256sum | cut -d' ' -f1
 }
 RECIPE_FP="$(recipe_fingerprint)"
-# #424: the fingerprint now covers the *.model.json files (not just car traffic
-# profiles), so a model edit must force a rebuild for ANY mode set. This was
-# previously gated on car_present, which let a non-car build (e.g. foot,bike)
-# silently adopt a stale container after a model edit — defeating the intent.
-# Compute unconditionally; worst case a traffic-only change on a non-car build
-# triggers one extra (correct, safe) rebuild.
+# #424: the fingerprint covers the *.model.json files, so a model edit forces a
+# rebuild for ANY mode set (computed unconditionally — not gated on whether car
+# is in the build, which previously let a foot/bike build silently adopt a stale
+# container after a model edit).
 recipe_changed=0
 if [[ ! -f "$LAST_RECIPE" ]] || [[ "$(cat "$LAST_RECIPE" 2>/dev/null)" != "$RECIPE_FP" ]]; then
     recipe_changed=1
@@ -175,9 +165,9 @@ elif [[ "$pbf_changed" -eq 1 ]]; then
     need_pipeline=1
     need_pack=1
 elif [[ "$recipe_changed" -eq 1 ]]; then
-    # Traffic recipe/profiles changed (or PVC predates traffic baking) →
-    # full rebuild so step8 re-bakes realistic into base car + the variant.
-    log "traffic recipe changed (fp=$RECIPE_FP) — full rebuild to (re)bake car profiles"
+    # Model recipe or RECIPE_VERSION changed (e.g. #433 clean-car bump, or a
+    # PVC holding the old traffic-baked container) → full rebuild.
+    log "recipe changed (fp=$RECIPE_FP) — full rebuild"
     need_pipeline=1
     need_pack=1
 elif [[ ! -f "$CONTAINER" ]]; then
@@ -310,66 +300,19 @@ for m in "${MODES[@]}"; do
       --outdir "$DATA/step8"
 done
 
-# #388: optional calibration. If a generic observed-speeds table is provided via
-# BUTTERFLY_OBSERVED_SPEEDS — (way_id, observed_avg_speed_kmh, sample_count) as
-# parquet/csv, produced by the private butterfly-speeds pipeline — fit the car
-# 'realistic' profile from it instead of using the shipped sample. The engine is
-# source-independent: it never knows which provider the speeds came from; absent
-# the env var it falls back to the bundled profile (today's behaviour).
-CAR_BASE_OVERRIDE=""
-if [[ -n "${BUTTERFLY_OBSERVED_SPEEDS:-}" && "$car_present" -eq 1 ]]; then
-    if [[ -f "$BUTTERFLY_OBSERVED_SPEEDS" && -f "$DATA/step2/way_attrs.car.bin" ]]; then
-        mkdir -p "$DATA/traffic"
-        log "calibrating car 'realistic' from observed speeds: $BUTTERFLY_OBSERVED_SPEEDS"
-        # Tolerant: a bad/empty observed table (e.g. 0 way_ids matched) must NOT
-        # abort the build — fall back to the bundled profile with a loud warning
-        # so staging stays up. (butterfly-speeds validates before publishing; this
-        # is the belt-and-suspenders.)
-        if time "$BIN" calibrate-traffic \
-            --observations "$BUTTERFLY_OBSERVED_SPEEDS" \
-            --way-attrs "$DATA/step2/way_attrs.car.bin" \
-            --name realistic --base-model car \
-            --out "$DATA/traffic/car_realistic.traffic.json"; then
-            CAR_BASE_OVERRIDE="$DATA/traffic/car_realistic.traffic.json"
-        else
-            log "WARN: calibrate-traffic failed (bad/empty observed table?) — falling back to the bundled car profile"
-        fi
-    else
-        log "WARN: BUTTERFLY_OBSERVED_SPEEDS set but observed file or way_attrs.car.bin missing — using shipped car profile"
-    fi
-fi
-
-# #392/#415: make car traffic-aware. The base step8 above produced the
-# legal-limit car (time + distance + length-along-time channels). Now:
-#   1. bake the realistic friction profile into BASE car — overwrites the car
-#      TIME weights so `?mode=car` is realistic by default (distance + lat
-#      channels from the base step8 are kept);
-#   2. build the rush_hour congestion variant as `cch.w.car_rush_hour.u32`,
-#      which `pack` picks up and the server auto-registers as `?mode=car_rush_hour`.
-# Both reuse the car step4–7 artefacts and the step2 way_attrs density classes.
-if [[ "$car_present" -eq 1 ]]; then
-    # #388: prefer the calibrated profile when butterfly-speeds supplied observed
-    # data this run; otherwise the bundled sample.
-    base_prof="${CAR_BASE_OVERRIDE:-$TRAFFIC_DIR/$CAR_BASE_PROFILE}"
-    var_prof="$TRAFFIC_DIR/$CAR_VARIANT_PROFILE"
-    if [[ -f "$base_prof" && -f "$var_prof" ]]; then
-        car8=(--cch-topo "$DATA/step7/cch.car.topo"
-              --filtered-ebg "$DATA/step5/filtered.car.ebg"
-              --order "$DATA/step6/order.car.ebg"
-              --weights "$DATA/step5/w.car.u32"
-              --turns "$DATA/step5/t.car.u32"
-              --ebg-nodes "$DATA/step4/ebg.nodes"
-              --way-attrs "$DATA/step2/way_attrs.car.bin"
-              --nbg-geo "$DATA/step3/nbg.geo"
-              --mode car --outdir "$DATA/step8")
-        log "step8 bake realistic friction into BASE car (?mode=car)"
-        time "$BIN" step8-customize "${car8[@]}" --traffic "$base_prof" --bake-as-base
-        log "step8 build rush_hour variant (?mode=car_rush_hour)"
-        time "$BIN" step8-customize "${car8[@]}" --traffic "$var_prof"
-    else
-        log "WARN: traffic profiles missing under $TRAFFIC_DIR — car stays legal-limit"
-    fi
-fi
+# #433: car traffic calibration moved from BUILD-time to SERVE-BOOT, so this
+# pipeline now ships a PROVIDER-CLEAN, single legal-limit car (the step8 loop
+# above is the whole story for car). The build no longer:
+#   - reads BUTTERFLY_OBSERVED_SPEEDS / runs calibrate-traffic (#388),
+#   - bakes a 'realistic' friction profile into base car (#392),
+#   - builds a car_rush_hour variant (#415).
+# Instead, at serve startup the engine fits ONE car profile from a runtime
+# `observed_speeds.parquet` staged on the data volume by a deploy init
+# container, and recustomizes the car CCH weights in memory — see
+# `ServerState::recustomize_car_from_observed`. The artifact carries no
+# provider-derived data; `pack` already ships the step4-7 car inputs
+# (way_attrs / filtered_ebg / node_weights.turn / ebg.nodes / nbg.geo) the boot
+# recustomize re-reads, so this stays a single clean legal-limit build.
 
 log "pack -> $CONTAINER"
 time "$BIN" pack --data-dir "$DATA" --out "$CONTAINER" --region BE

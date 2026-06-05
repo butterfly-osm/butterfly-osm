@@ -505,6 +505,70 @@ pub async fn serve(
         );
     }
 
+    // ---- Serve-boot car traffic recustomization (#433) -------------
+    //
+    // If a generic observed-speeds table is staged next to the data —
+    // `<data_dir>/<region>/observed_speeds.parquet`, or the global
+    // `<data_dir>/observed_speeds.parquet` for the primary region — fit
+    // ONE car traffic profile from it and recustomize the car CCH
+    // weights in memory, then hot-swap them in. The artifact stays
+    // provider-clean: the parquet is a pure runtime input that a deploy
+    // init container drops on the data volume; the engine only ever
+    // reads a generic `(way_id, observed_avg_speed_kmh, sample_count)`
+    // table. Failure at any step is non-fatal — the clean legal-limit
+    // base car keeps serving.
+    //
+    // Synchronous (not backgrounded): butterfly is an always-on engine,
+    // not a scale-to-zero dashboard, and boot is already dominated by
+    // the artifact download — so paying the ~40s recustomize once here,
+    // with the car guaranteed calibrated before the first query served
+    // (no clean-base window), beats the complexity + eviction-race
+    // surface of swapping into the shared region Arc. The recustomize
+    // pins the car slot non-evictable so the #402 idle compactor can't
+    // later drop the calibrated weights and reload the clean base.
+    for idx in 0..n_regions {
+        let region_id_lower = regions_state.regions[idx].id.to_lowercase();
+        let per_region = data_dir_for_transit
+            .join(&region_id_lower)
+            .join("observed_speeds.parquet");
+        let global = data_dir_for_transit.join("observed_speeds.parquet");
+        let observed = if per_region.exists() {
+            Some(per_region)
+        } else if idx == 0 && global.exists() {
+            Some(global)
+        } else {
+            None
+        };
+        let Some(observed) = observed else {
+            continue;
+        };
+
+        let region_id = regions_state.regions[idx].id.clone();
+        regions_state.regions[idx].with_loaded_state_mut(|state_owned| {
+            if !state_owned.mode_lookup.contains_key("car") {
+                tracing::warn!(
+                    region = %region_id,
+                    "observed_speeds.parquet present but car mode not loaded; skipping recustomization"
+                );
+                return;
+            }
+            match state_owned.recustomize_car_from_observed(&observed) {
+                Ok(profile) => tracing::info!(
+                    region = %region_id,
+                    path = %observed.display(),
+                    profile = profile.name.as_str(),
+                    "car recustomized from observed speeds (#433)"
+                ),
+                Err(e) => tracing::warn!(
+                    region = %region_id,
+                    path = %observed.display(),
+                    error = %e,
+                    "car recustomization failed; serving clean base car"
+                ),
+            }
+        })?;
+    }
+
     // ---- Per-region size metrics -----------------------------------
     // Skip Pending regions on the lazy boot path; their stats publish
     // after the first query loads the ServerState. state_loaded() is a
