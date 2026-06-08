@@ -68,10 +68,11 @@ pub struct CalibrationParams {
     pub base_model: String,
     /// Minimum number of OBSERVATIONS (sum of `sample_count`, not row count) a
     /// density class needs before we trust its own median; below this it
-    /// inherits the global median. Counting observations rather than rows keeps
-    /// the threshold consistent with the sample-count weighting and the
-    /// `samples` column the CLI reports — so a class fed a few aggregated rows
-    /// with large `sample_count` is correctly trusted.
+    /// inherits the nearest sufficiently-sampled class on the density scale
+    /// (the global median only when no class qualifies). Counting observations
+    /// rather than rows keeps the threshold consistent with the sample-count
+    /// weighting and the `samples` column the CLI reports — so a class fed a few
+    /// aggregated rows with large `sample_count` is correctly trusted.
     pub min_samples: usize,
     /// Sanity clamp applied to every emitted factor. Must lie within the
     /// profile schema's hard bounds `[MIN_FACTOR, MAX_FACTOR]`.
