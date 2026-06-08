@@ -35,8 +35,11 @@
 //!
 //! Per class we take the sample-count-weighted median of the ratios, clamp it
 //! to a sanity band (default `[0.30, 1.20]`, always within the schema's hard
-//! `[0.1, 1.5]`), and fall back to the **global** weighted median for
-//! under-sampled classes so all five keys are always emitted.
+//! `[0.1, 1.5]`). An under-sampled class inherits the **nearest** sufficiently
+//! sampled class on the ordinal density scale (`UrbanHigh`..`Rural`) rather than
+//! the global all-class median — a closer proxy than a primary-road blend; only
+//! when *no* class clears the gate do we fall back to the global median. All
+//! five keys are always emitted.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -65,10 +68,11 @@ pub struct CalibrationParams {
     pub base_model: String,
     /// Minimum number of OBSERVATIONS (sum of `sample_count`, not row count) a
     /// density class needs before we trust its own median; below this it
-    /// inherits the global median. Counting observations rather than rows keeps
-    /// the threshold consistent with the sample-count weighting and the
-    /// `samples` column the CLI reports — so a class fed a few aggregated rows
-    /// with large `sample_count` is correctly trusted.
+    /// inherits the nearest sufficiently-sampled class on the density scale
+    /// (the global median only when no class qualifies). Counting observations
+    /// rather than rows keeps the threshold consistent with the sample-count
+    /// weighting and the `samples` column the CLI reports — so a class fed a few
+    /// aggregated rows with large `sample_count` is correctly trusted.
     pub min_samples: usize,
     /// Sanity clamp applied to every emitted factor. Must lie within the
     /// profile schema's hard bounds `[MIN_FACTOR, MAX_FACTOR]`.
@@ -121,6 +125,20 @@ impl CalibrationParams {
     }
 }
 
+/// Where a class's final factor came from, for diagnostics. An under-sampled
+/// class no longer jumps straight to the global (all-class) median; it inherits
+/// the nearest sufficiently-sampled class on the ordinal density scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackSource {
+    /// The class trusted its own weighted-median (enough observations).
+    OwnMedian,
+    /// Under-sampled: inherited the factor of the nearest sufficiently-sampled
+    /// class on the ordinal density scale (`UrbanHigh`..`Rural`).
+    NearestClass(DensityClass),
+    /// No class anywhere cleared `min_samples`; used the global median.
+    Global,
+}
+
 /// Per-class diagnostic, for the CLI summary and for tests.
 #[derive(Debug, Clone)]
 pub struct ClassFit {
@@ -132,8 +150,11 @@ pub struct ClassFit {
     /// Weighted-median ratio from this class's own observations, before
     /// clamping; `None` when the class had no joined observations.
     pub raw_factor: Option<f32>,
-    /// True when the class fell back to the global median (too few samples).
+    /// True when the class did NOT trust its own median (inherited a neighbour
+    /// or fell back to the global median).
     pub used_fallback: bool,
+    /// Where the final factor came from (own median / inherited neighbour / global).
+    pub fallback_source: FallbackSource,
     /// Final factor written to the profile (clamped).
     pub factor: f32,
 }
@@ -248,29 +269,59 @@ pub fn fit(
         )
     })?;
 
+    // Pass 1: each class's own weighted-median and whether it has enough
+    // OBSERVATIONS (sum of sample_count, matching the weighting — not row count,
+    // so a class fed a few high-`sample_count` rows isn't wrongly forced to fall
+    // back) to trust that median.
+    let mut own_factor = [Option::<f32>::None; 5];
+    let mut totals = [0u64; 5];
+    let mut n_obs_arr = [0usize; 5];
+    for class in DensityClass::ALL {
+        let idx = class.to_u8() as usize;
+        let bucket = &mut buckets[idx];
+        n_obs_arr[idx] = bucket.len();
+        totals[idx] = bucket.iter().map(|(_, w)| *w).sum();
+        own_factor[idx] = weighted_median(bucket);
+    }
+    let trusted =
+        |idx: usize| own_factor[idx].is_some() && totals[idx] >= params.min_samples as u64;
+
+    // Pass 2: resolve each class. An under-sampled class inherits the factor of
+    // the NEAREST trusted class along the ordinal density scale (`UrbanHigh`..
+    // `Rural`) rather than the global median — the global median is a primary-road
+    // blend of every class and a poor proxy for, say, a starved `UrbanLow`,
+    // whereas its neighbour `UrbanMedium`/`Suburban` is close. Ties prefer the
+    // coarser (higher) class. Only when NO class clears the gate do we fall back
+    // to the global median.
     let mut per_class: Vec<ClassFit> = Vec::with_capacity(5);
     let mut factors = [0f32; 5];
     for class in DensityClass::ALL {
         let idx = class.to_u8() as usize;
-        let bucket = &mut buckets[idx];
-        let n_obs = bucket.len();
-        let total_samples: u64 = bucket.iter().map(|(_, w)| *w).sum();
-        let raw_factor = weighted_median(bucket);
-        // Trust the class's own median once it has enough OBSERVATIONS (sum of
-        // sample_count), matching the weighting — not row count, so a class fed
-        // a few high-`sample_count` rows isn't wrongly forced to the fallback.
-        let (unclamped, used_fallback) = match raw_factor {
-            Some(r) if total_samples >= params.min_samples as u64 => (r, false),
-            _ => (global_factor, true),
+        let (unclamped, source) = if trusted(idx) {
+            (
+                own_factor[idx].expect("trusted => Some"),
+                FallbackSource::OwnMedian,
+            )
+        } else if let Some(j) = (0..5usize)
+            .filter(|&j| trusted(j))
+            .min_by_key(|&j| (idx.abs_diff(j), 5 - j))
+        {
+            (
+                own_factor[j].expect("trusted => Some"),
+                FallbackSource::NearestClass(DensityClass::from_u8(j as u8)),
+            )
+        } else {
+            (global_factor, FallbackSource::Global)
         };
         let factor = unclamped.clamp(params.clamp_min, params.clamp_max);
         factors[idx] = factor;
         per_class.push(ClassFit {
             class,
-            n_obs,
-            total_samples,
-            raw_factor,
-            used_fallback,
+            n_obs: n_obs_arr[idx],
+            total_samples: totals[idx],
+            raw_factor: own_factor[idx],
+            used_fallback: !matches!(source, FallbackSource::OwnMedian),
+            fallback_source: source,
             factor,
         });
     }
@@ -624,25 +675,90 @@ mod tests {
     }
 
     #[test]
-    fn fit_undersampled_class_falls_back_to_global() {
-        // urban_high well-sampled at 0.5; rural sampled only twice (< 100).
+    fn fit_undersampled_class_inherits_nearest_trusted_class() {
+        // UrbanMedium (idx 1) well-sampled at 0.6, Rural (idx 4) well-sampled at
+        // 0.95, UrbanLow (idx 2) starved (2 obs). UrbanLow's nearest trusted
+        // class on the density scale is UrbanMedium (distance 1) — NOT the
+        // distant Rural and NOT the global blend.
+        let index = idx(&[
+            (1, 100.0, DensityClass::UrbanMedium),
+            (2, 100.0, DensityClass::UrbanLow),
+            (3, 100.0, DensityClass::Rural),
+        ]);
+        let mut observations = vec![obs(2, 80.0, 1), obs(2, 80.0, 1)];
+        for _ in 0..200 {
+            observations.push(obs(1, 60.0, 1));
+        }
+        for _ in 0..200 {
+            observations.push(obs(3, 95.0, 1));
+        }
+        let res = fit(&observations, &index, &CalibrationParams::default()).unwrap();
+        let ul = res
+            .per_class
+            .iter()
+            .find(|p| p.class == DensityClass::UrbanLow)
+            .unwrap();
+        assert!(ul.used_fallback);
+        assert_eq!(
+            ul.fallback_source,
+            FallbackSource::NearestClass(DensityClass::UrbanMedium),
+            "{ul:?}"
+        );
+        assert!((ul.factor - 0.60).abs() < 1e-4, "{ul:?}");
+    }
+
+    #[test]
+    fn fit_nearest_class_tie_prefers_the_coarser_neighbour() {
+        // UrbanLow (idx 2) starved; UrbanMedium (idx 1, 0.6) and Suburban
+        // (idx 3, 0.9) are both trusted and equidistant. The tie-break prefers
+        // the coarser (higher) class → Suburban.
+        let index = idx(&[
+            (1, 100.0, DensityClass::UrbanMedium),
+            (2, 100.0, DensityClass::UrbanLow),
+            (3, 100.0, DensityClass::Suburban),
+        ]);
+        let mut observations = vec![obs(2, 80.0, 1), obs(2, 80.0, 1)];
+        for _ in 0..200 {
+            observations.push(obs(1, 60.0, 1));
+        }
+        for _ in 0..200 {
+            observations.push(obs(3, 90.0, 1));
+        }
+        let res = fit(&observations, &index, &CalibrationParams::default()).unwrap();
+        let ul = res
+            .per_class
+            .iter()
+            .find(|p| p.class == DensityClass::UrbanLow)
+            .unwrap();
+        assert_eq!(
+            ul.fallback_source,
+            FallbackSource::NearestClass(DensityClass::Suburban),
+            "{ul:?}"
+        );
+        assert!((ul.factor - 0.90).abs() < 1e-4, "{ul:?}");
+    }
+
+    #[test]
+    fn fit_no_trusted_class_falls_back_to_global() {
+        // No class clears min_samples (default 100): every class uses the global
+        // median as the last resort.
         let index = idx(&[
             (1, 100.0, DensityClass::UrbanHigh),
             (2, 100.0, DensityClass::Rural),
         ]);
-        let mut observations = vec![obs(2, 95.0, 1), obs(2, 95.0, 1)];
-        for _ in 0..200 {
-            observations.push(obs(1, 50.0, 1));
-        }
+        let observations = vec![
+            obs(1, 50.0, 1),
+            obs(1, 50.0, 1),
+            obs(1, 50.0, 1),
+            obs(2, 95.0, 1),
+            obs(2, 95.0, 1),
+        ];
         let res = fit(&observations, &index, &CalibrationParams::default()).unwrap();
-        let rural = res
-            .per_class
-            .iter()
-            .find(|p| p.class == DensityClass::Rural)
-            .unwrap();
-        assert!(rural.used_fallback);
-        // Global median is dominated by the 200 urban_high rows → ~0.5.
-        assert!((rural.factor - 0.50).abs() < 1e-4, "{rural:?}");
+        for p in &res.per_class {
+            assert!(p.used_fallback, "{p:?}");
+            assert_eq!(p.fallback_source, FallbackSource::Global, "{p:?}");
+            assert!((p.factor - res.global_factor).abs() < 1e-4, "{p:?}");
+        }
     }
 
     #[test]
