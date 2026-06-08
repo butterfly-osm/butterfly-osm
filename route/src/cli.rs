@@ -2946,21 +2946,28 @@ impl Cli {
                     result.matched, result.unmatched, result.skipped_bad, result.global_factor
                 );
                 eprintln!(
-                    "{:<14} {:>10} {:>12} {:>10} {:>9} {:>8}",
-                    "density", "n_obs", "samples", "raw", "fallback", "factor"
+                    "{:<14} {:>10} {:>12} {:>10} {:>16} {:>8}",
+                    "density", "n_obs", "samples", "raw", "source", "factor"
                 );
                 for cf in &result.per_class {
                     let raw = cf
                         .raw_factor
                         .map(|r| format!("{r:.3}"))
                         .unwrap_or_else(|| "-".to_string());
+                    let source = match cf.fallback_source {
+                        crate::calibrate::FallbackSource::OwnMedian => "own".to_string(),
+                        crate::calibrate::FallbackSource::NearestClass(c) => {
+                            format!("<-{}", c.as_str())
+                        }
+                        crate::calibrate::FallbackSource::Global => "global".to_string(),
+                    };
                     eprintln!(
-                        "{:<14} {:>10} {:>12} {:>10} {:>9} {:>8.3}",
+                        "{:<14} {:>10} {:>12} {:>10} {:>16} {:>8.3}",
                         cf.class.as_str(),
                         cf.n_obs,
                         cf.total_samples,
                         raw,
-                        if cf.used_fallback { "yes" } else { "no" },
+                        source,
                         cf.factor
                     );
                 }
