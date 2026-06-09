@@ -1705,6 +1705,153 @@ pub struct EdgesBatchParams {
     pub pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
 }
 
+/// One unpacked edge row for `edges_batch` (one per EBG node in a path).
+struct EdgeRow {
+    edge_seq: u32,
+    osm_from: i64,
+    osm_to: i64,
+    dur_ms: u32,
+    dist_m: u32,
+}
+
+/// Per-pair result: the query index plus its unpacked edge rows.
+/// `rows.is_empty()` ⇒ unreachable (the caller emits one all-null edge row).
+struct PairEdges {
+    query_idx: u32,
+    rows: Vec<EdgeRow>,
+}
+
+/// Compute the unpacked edge sequence for a single (src,dst) pair.
+///
+/// #436: factored out of `do_edges_batch` so the chunk loop can fan it
+/// across rayon workers. Mirrors `compute_route_pair`'s lean K=1 snap
+/// fast path (direct `snap_filtered_role`, no K=64 collect) and only
+/// escalates to the K=64 + combo fallback when the fast path misses —
+/// the dominant per-pair cost cut, since most realistic pairs snap on
+/// the first try. `CchQuery::new` is free (just references + a
+/// thread-local scratch reused across pairs on the same worker), so
+/// constructing it per pair carries no allocation.
+fn edges_for_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    query_idx: u32,
+    pair: &[f64; 4],
+) -> PairEdges {
+    use super::types::SnapRole;
+    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+
+    // K=1 fast path (same shape as compute_route_pair).
+    let mut p2p: Option<(u32, u32, super::query::QueryResult)> = None;
+    let src_role = SnapRole::Src.role_filter(mode_data);
+    let dst_role = SnapRole::Dst.role_filter(mode_data);
+    if let (Some(src_id), Some(dst_id)) = (
+        state
+            .snap_index
+            .snap_filtered_role(slon, slat, mode.0, None, src_role),
+        state
+            .snap_index
+            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    ) && let (Some(s), Some(d)) = (
+        mode_data.orig_to_rank.get(src_id as usize).copied(),
+        mode_data.orig_to_rank.get(dst_id as usize).copied(),
+    ) && s != u32::MAX
+        && d != u32::MAX
+        && let Some(r) = query.query(s, d)
+    {
+        p2p = Some((s, d, r));
+    }
+
+    // Escalation: K=64 snap + combo fallback. Rescues fast-path misses,
+    // including pairs whose closest snap had a u32::MAX rank (not in
+    // this mode's CCH) — K=64 looks further out for a contracted node.
+    if p2p.is_none() {
+        const SNAP_K: usize = 64;
+        let src_snap = super::snap_kbest::snap_k_pair_role(
+            state,
+            mode_data,
+            mode,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+            SNAP_K,
+        );
+        let dst_snap = super::snap_kbest::snap_k_pair_role(
+            state,
+            mode_data,
+            mode,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+            SNAP_K,
+        );
+        if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
+            p2p = super::snap_kbest::p2p_with_kbest_fallback(
+                query,
+                &src_snap.ranks,
+                &dst_snap.ranks,
+                super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+            );
+        }
+    }
+
+    let Some((src_rank, dst_rank, result)) = p2p else {
+        return PairEdges {
+            query_idx,
+            rows: Vec::new(),
+        };
+    };
+
+    // Unpack to the full EBG rank sequence, then map rank → original
+    // EBG node id and emit one row per node. Each EBG node is a directed
+    // NBG edge (tail → head), so osm_node_from = osm(tail), osm_node_to =
+    // osm(head); consecutive rows satisfy osm_to[i] == osm_from[i+1].
+    let rank_path = super::unpack::unpack_path(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+
+    let mut rows = Vec::with_capacity(rank_path.len());
+    for (edge_seq, &rank) in rank_path.iter().enumerate() {
+        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        let ebg_id = mode_data.filtered_to_original[filt_id as usize];
+        let node = &state.ebg_nodes.nodes[ebg_id as usize];
+        let osm_from = state
+            .nbg_node_to_osm
+            .get(node.tail_nbg as usize)
+            .copied()
+            .unwrap_or(0);
+        let osm_to = state
+            .nbg_node_to_osm
+            .get(node.head_nbg as usize)
+            .copied()
+            .unwrap_or(0);
+        // node_weights is per-EBG-node travel time in seconds → ms.
+        let dur_ms = mode_data
+            .node_weights
+            .get(ebg_id as usize)
+            .copied()
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        rows.push(EdgeRow {
+            edge_seq: edge_seq as u32,
+            osm_from,
+            osm_to,
+            dur_ms,
+            dist_m: node.length_m,
+        });
+    }
+    PairEdges { query_idx, rows }
+}
+
 pub fn do_edges_batch(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -1731,10 +1878,15 @@ pub fn do_edges_batch(
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(edges_batch_schema());
-        // Chunk by PAIR count — each pair expands to ~20 edges on
-        // Belgium (average path length), so 256 pairs ≈ 5k rows per
-        // RecordBatch, a comfortable amortisation window.
-        const CHUNK_PAIRS: usize = 256;
+        // #436: edges_batch was single-threaded (one spawn_blocking loop)
+        // while the sibling `matrix` / `route_batch` endpoints parallelise —
+        // that alone was the bulk of the 31× gap vs OSRM. We now process the
+        // pairs in chunks, fan each chunk across rayon workers, and stream the
+        // chunk's RecordBatch so memory stays bounded even at the 500k cap.
+        // CHUNK_PAIRS is larger than the old 256 so rayon dispatch amortises
+        // over more pairs (~1024 × ~20 edges ≈ 20k rows/batch).
+        let n_workers = route_batch_worker_threads(params.pairs.len());
+        const CHUNK_PAIRS: usize = 1024;
 
         for (chunk_start, chunk) in params
             .pairs
@@ -1742,198 +1894,75 @@ pub fn do_edges_batch(
             .enumerate()
             .map(|(ci, c)| (ci * CHUNK_PAIRS, c))
         {
-            // Pre-size row builders generously; they grow as needed.
-            let estimated_rows = chunk.len() * 32;
-            let mut query_idx_b = UInt32Builder::with_capacity(estimated_rows);
-            let mut target_idx_b = UInt32Builder::with_capacity(estimated_rows);
-            let mut edge_seq_b = UInt32Builder::with_capacity(estimated_rows);
-            let mut osm_from_b = Int64Builder::with_capacity(estimated_rows);
-            let mut osm_to_b = Int64Builder::with_capacity(estimated_rows);
-            let mut dur_ms_b = UInt32Builder::with_capacity(estimated_rows);
-            let mut dist_m_b = UInt32Builder::with_capacity(estimated_rows);
-
-            for (local_i, pair) in chunk.iter().enumerate() {
-                let global_idx = (chunk_start + local_i) as u32;
-                let target_idx = 0u32; // placeholder for source-batched shape
-
-                // Emit an "unreachable" row by pushing one row with
-                // all edge columns null. Query_idx / target_idx are
-                // always non-null so the row is still uniquely
-                // identifiable.
-                let emit_unreachable =
-                    |query_idx_b: &mut UInt32Builder,
-                     target_idx_b: &mut UInt32Builder,
-                     edge_seq_b: &mut UInt32Builder,
-                     osm_from_b: &mut Int64Builder,
-                     osm_to_b: &mut Int64Builder,
-                     dur_ms_b: &mut UInt32Builder,
-                     dist_m_b: &mut UInt32Builder| {
-                        query_idx_b.append_value(global_idx);
-                        target_idx_b.append_value(target_idx);
-                        edge_seq_b.append_null();
-                        osm_from_b.append_null();
-                        osm_to_b.append_null();
-                        dur_ms_b.append_null();
-                        dist_m_b.append_null();
-                    };
-
-                // Lazy snap (#368 pattern): K=1 primary first, escalate
-                // to K=64 + combo fallback when EITHER primary is None
-                // (closest snap has u32::MAX rank — not in this mode's
-                // CCH) OR the primary pair doesn't connect.
-                const SNAP_K: usize = 64;
-                let src_primary = super::snap_kbest::snap_primary_role(
-                    &state,
-                    &mode_data,
-                    mode,
-                    pair[0],
-                    pair[1],
-                    super::types::SnapRole::Src,
-                    None,
-                );
-                let dst_primary = super::snap_kbest::snap_primary_role(
-                    &state,
-                    &mode_data,
-                    mode,
-                    pair[2],
-                    pair[3],
-                    super::types::SnapRole::Dst,
-                    None,
-                );
-
-                // Run CchQuery against the default time weights (no
-                // avoid/exclude support in MVP; add later as a param
-                // if the first consumer needs it).
-                let query = super::query::CchQuery::with_custom_weights(
-                    &mode_data.cch_topo,
-                    &mode_data.up_adj_flat,
-                    &mode_data.down_rev_flat,
-                    &mode_data.cch_weights,
-                );
-
-                let primary_ranks = src_primary.and_then(|(_, s)| dst_primary.map(|(_, d)| (s, d)));
-                let p2p_result = if let Some((s, d)) = primary_ranks
-                    && let Some(r) = query.query(s, d)
-                {
-                    Some((s, d, r))
-                } else {
-                    // Escalation: K=64 snap + combo fallback. This
-                    // also rescues pairs whose closest snap had
-                    // u32::MAX rank — K=64 looks further out for a
-                    // contracted neighbor.
-                    let src_snap = super::snap_kbest::snap_k_pair_role(
-                        &state,
-                        &mode_data,
-                        mode,
-                        pair[0],
-                        pair[1],
-                        super::types::SnapRole::Src,
-                        None,
-                        SNAP_K,
-                    );
-                    let dst_snap = super::snap_kbest::snap_k_pair_role(
-                        &state,
-                        &mode_data,
-                        mode,
-                        pair[2],
-                        pair[3],
-                        super::types::SnapRole::Dst,
-                        None,
-                        SNAP_K,
-                    );
-                    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-                        None
-                    } else {
-                        super::snap_kbest::p2p_with_kbest_fallback(
+            // Per-pair edge lists, in pair order (rayon's indexed
+            // `par_iter().map().collect()` preserves order, so query_idx
+            // stays monotonic within the batch).
+            let per_pair: Vec<PairEdges> = if n_workers > 1 {
+                chunk
+                    .par_iter()
+                    .enumerate()
+                    .map(|(local_i, pair)| {
+                        let query = super::query::CchQuery::new(&mode_data);
+                        edges_for_pair(
+                            &state,
+                            &mode_data,
+                            mode,
                             &query,
-                            &src_snap.ranks,
-                            &dst_snap.ranks,
-                            super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                            (chunk_start + local_i) as u32,
+                            pair,
                         )
-                    }
-                };
-                let Some((src_rank, dst_rank, result)) = p2p_result else {
-                    emit_unreachable(
-                        &mut query_idx_b,
-                        &mut target_idx_b,
-                        &mut edge_seq_b,
-                        &mut osm_from_b,
-                        &mut osm_to_b,
-                        &mut dur_ms_b,
-                        &mut dist_m_b,
-                    );
-                    continue;
-                };
-
-                // Unpack to the full EBG rank sequence.
-                let rank_path = super::unpack::unpack_path(
-                    &mode_data.cch_topo,
-                    &mode_data.cch_weights,
-                    &result.forward_parent,
-                    &result.backward_parent,
-                    src_rank,
-                    dst_rank,
-                    result.meeting_node,
-                );
-                // Convert rank path → original EBG node ids.
-                let ebg_path: Vec<u32> = rank_path
-                    .iter()
-                    .map(|&rank| {
-                        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                        mode_data.filtered_to_original[filt_id as usize]
                     })
-                    .collect();
+                    .collect()
+            } else {
+                // Small-batch fast path: no pool overhead for tiny calls.
+                let query = super::query::CchQuery::new(&mode_data);
+                chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(local_i, pair)| {
+                        edges_for_pair(
+                            &state,
+                            &mode_data,
+                            mode,
+                            &query,
+                            (chunk_start + local_i) as u32,
+                            pair,
+                        )
+                    })
+                    .collect()
+            };
 
-                if ebg_path.is_empty() {
-                    emit_unreachable(
-                        &mut query_idx_b,
-                        &mut target_idx_b,
-                        &mut edge_seq_b,
-                        &mut osm_from_b,
-                        &mut osm_to_b,
-                        &mut dur_ms_b,
-                        &mut dist_m_b,
-                    );
-                    continue;
-                }
+            // Flatten into Arrow builders. An unreachable pair (no rows)
+            // contributes one all-null edge row so it stays identifiable
+            // via query_idx with edge_seq IS NULL.
+            let total_rows: usize = per_pair.iter().map(|p| p.rows.len().max(1)).sum();
+            let mut query_idx_b = UInt32Builder::with_capacity(total_rows);
+            let mut target_idx_b = UInt32Builder::with_capacity(total_rows);
+            let mut edge_seq_b = UInt32Builder::with_capacity(total_rows);
+            let mut osm_from_b = Int64Builder::with_capacity(total_rows);
+            let mut osm_to_b = Int64Builder::with_capacity(total_rows);
+            let mut dur_ms_b = UInt32Builder::with_capacity(total_rows);
+            let mut dist_m_b = UInt32Builder::with_capacity(total_rows);
 
-                // Emit one row per EBG node visited. Each EBG node
-                // represents a directed edge between two NBG nodes
-                // (tail → head), so `osm_node_from = osm(tail)`,
-                // `osm_node_to = osm(head)`. The continuity invariant
-                // `osm_to[i] == osm_from[i+1]` holds because
-                // consecutive EBG nodes in a path share a junction.
-                for (edge_seq, &ebg_id) in ebg_path.iter().enumerate() {
-                    let node = &state.ebg_nodes.nodes[ebg_id as usize];
-                    let osm_from = state
-                        .nbg_node_to_osm
-                        .get(node.tail_nbg as usize)
-                        .copied()
-                        .unwrap_or(0);
-                    let osm_to = state
-                        .nbg_node_to_osm
-                        .get(node.head_nbg as usize)
-                        .copied()
-                        .unwrap_or(0);
-                    // Per-edge duration: node_weights is in
-                    // seconds; convert to ms.
-                    let duration_s = mode_data
-                        .node_weights
-                        .get(ebg_id as usize)
-                        .copied()
-                        .unwrap_or(0);
-                    let duration_ms = duration_s.saturating_mul(1000);
-                    // Per-edge distance: length_m on the EbgNode is the
-                    // round-half-up conversion of nbg.geo.length_mm.
-                    let distance_m = node.length_m;
-
-                    query_idx_b.append_value(global_idx);
-                    target_idx_b.append_value(target_idx);
-                    edge_seq_b.append_value(edge_seq as u32);
-                    osm_from_b.append_value(osm_from);
-                    osm_to_b.append_value(osm_to);
-                    dur_ms_b.append_value(duration_ms);
-                    dist_m_b.append_value(distance_m);
+            for pe in &per_pair {
+                if pe.rows.is_empty() {
+                    query_idx_b.append_value(pe.query_idx);
+                    target_idx_b.append_value(0);
+                    edge_seq_b.append_null();
+                    osm_from_b.append_null();
+                    osm_to_b.append_null();
+                    dur_ms_b.append_null();
+                    dist_m_b.append_null();
+                } else {
+                    for row in &pe.rows {
+                        query_idx_b.append_value(pe.query_idx);
+                        target_idx_b.append_value(0);
+                        edge_seq_b.append_value(row.edge_seq);
+                        osm_from_b.append_value(row.osm_from);
+                        osm_to_b.append_value(row.osm_to);
+                        dur_ms_b.append_value(row.dur_ms);
+                        dist_m_b.append_value(row.dist_m);
+                    }
                 }
             }
 
