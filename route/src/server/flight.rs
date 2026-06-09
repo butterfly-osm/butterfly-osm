@@ -1789,11 +1789,19 @@ fn edges_for_pair(
             SNAP_K,
         );
         if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
+            // #438: bound the escalation at 16 combos rather than the default
+            // 200. Reachable pairs connect on the closest-sum-first combos
+            // almost immediately (the #197 connectivity masks keep candidates
+            // on the main component), so 16 loses no reachable pairs on the
+            // Belgium benchmark (5000 pairs, reachable count identical at 8 /
+            // 16 / 200) while bounding the worst-case cost of a pair whose
+            // K=64 candidates don't connect.
+            const EDGES_BATCH_MAX_COMBOS: usize = 16;
             p2p = super::snap_kbest::p2p_with_kbest_fallback(
                 query,
                 &src_snap.ranks,
                 &dst_snap.ranks,
-                super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                EDGES_BATCH_MAX_COMBOS,
             );
         }
     }

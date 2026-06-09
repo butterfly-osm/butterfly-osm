@@ -486,6 +486,37 @@ enum Commands {
         #[arg(long)]
         region: Option<String>,
     },
+
+    /// #438: P2P edges_batch-style query benchmark against a `.butterfly`
+    /// container (snap + bidirectional CCH query) — the OSRM-gap loop. Runs
+    /// in-process (no server), so it's reliable where a background serve isn't.
+    P2p {
+        /// Path to a `.butterfly` container.
+        #[arg(long)]
+        data: PathBuf,
+        /// Transport mode (car, bike, foot).
+        #[arg(long, default_value = "car")]
+        mode: String,
+        /// Number of pairs to run.
+        #[arg(long, default_value_t = 5000)]
+        n: usize,
+        /// Random seed (random-coord mode).
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Fan pairs across rayon (matches the serve). Else sequential —
+        /// isolates per-query CPU cost.
+        #[arg(long, default_value_t = false)]
+        parallel: bool,
+        /// Use the 12-city OSRM-parity workload (132 ordered pairs tiled to
+        /// `n`) instead of random Belgium-bbox coords.
+        #[arg(long, default_value_t = false)]
+        cities: bool,
+        /// Max snap-combo fallback attempts for the escalation path (#438:
+        /// unreachable pairs exhaust this many failed CCH queries). Default
+        /// mirrors the engine's DEFAULT_MAX_FALLBACK_COMBOS=200.
+        #[arg(long, default_value_t = 200)]
+        max_combos: usize,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -723,6 +754,16 @@ fn main() -> anyhow::Result<()> {
             output,
             region,
         } => weight_profile::run_weight_profile(&data_dir, &output, region.as_deref()),
+
+        Commands::P2p {
+            data,
+            mode,
+            n,
+            seed,
+            parallel,
+            cities,
+            max_combos,
+        } => run_p2p_bench(&data, &mode, n, seed, parallel, cities, max_combos),
     }
 }
 
@@ -4417,5 +4458,184 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
     println!("└──────────────────┴────────┴────────┴────────┴────────────┘");
     println!();
 
+    Ok(())
+}
+
+/// #438: in-process P2P query benchmark against a `.butterfly` container.
+///
+/// Mirrors `flight::edges_for_pair`'s snap+query path (K=1 fast path +
+/// K=64/combo escalation, default-weight CCH query) over `n` pairs, so it
+/// measures exactly the work that dominates `edges_batch` (99% query per the
+/// #436 profiling). Runs entirely in-process — no HTTP/Flight server — which
+/// makes it the reliable loop for iterating on the core-search optimization.
+fn run_p2p_bench(
+    data: &Path,
+    mode_name: &str,
+    n: usize,
+    seed: u64,
+    parallel: bool,
+    cities: bool,
+    max_combos: usize,
+) -> anyhow::Result<()> {
+    use butterfly_route::model::types::Mode;
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::snap_kbest;
+    use butterfly_route::server::state::{LoadOptions, ServerState};
+    use butterfly_route::server::types::SnapRole;
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  P2P QUERY BENCHMARK (#438) — edges_batch snap+query path");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!(
+        "  container: {}\n  mode: {}  pairs: {}  parallel: {}  workload: {}",
+        data.display(),
+        mode_name,
+        n,
+        parallel,
+        if cities {
+            "12-city OSRM-parity"
+        } else {
+            "random bbox"
+        }
+    );
+
+    let t = Instant::now();
+    let state = ServerState::load_from_container_with_options(
+        data,
+        Some(&[mode_name.to_string()]),
+        &LoadOptions {
+            eager_verify: false,
+            warmup_on_boot: false,
+        },
+    )?;
+    println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
+
+    let mode_idx = *state
+        .mode_lookup
+        .get(mode_name)
+        .ok_or_else(|| anyhow::anyhow!("mode '{}' not loaded", mode_name))?;
+    let mode = Mode(mode_idx);
+    let mode_data = state.get_mode(mode);
+
+    // Build the pair list.
+    let pairs: Vec<[f64; 4]> = if cities {
+        let c = [
+            [4.3517, 50.8503],
+            [4.4025, 51.2194],
+            [3.7250, 51.0500],
+            [5.5667, 50.6333],
+            [3.2200, 50.4100],
+            [4.0300, 50.4500],
+            [4.4400, 50.4100],
+            [5.3400, 50.2700],
+            [4.8700, 50.4700],
+            [4.3600, 50.8200],
+            [3.7500, 50.3200],
+            [4.0000, 51.0000],
+        ];
+        let base: Vec<[f64; 4]> = (0..c.len())
+            .flat_map(|i| {
+                (0..c.len())
+                    .filter(move |&j| i != j)
+                    .map(move |j| [c[i][0], c[i][1], c[j][0], c[j][1]])
+            })
+            .collect();
+        (0..n).map(|k| base[k % base.len()]).collect()
+    } else {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                [
+                    rng.random_range(2.55..6.40),
+                    rng.random_range(49.50..51.50),
+                    rng.random_range(2.55..6.40),
+                    rng.random_range(49.50..51.50),
+                ]
+            })
+            .collect()
+    };
+
+    // Per-pair snap+query — identical shape to flight::edges_for_pair (minus the
+    // unpack, which is 0.4% and not what we're optimizing). Returns reachable.
+    let run_pair = |pair: &[f64; 4]| -> bool {
+        let query = CchQuery::new(&mode_data);
+        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+        let src_role = SnapRole::Src.role_filter(&mode_data);
+        let dst_role = SnapRole::Dst.role_filter(&mode_data);
+        if let (Some(s_id), Some(d_id)) = (
+            state
+                .snap_index
+                .snap_filtered_role(slon, slat, mode.0, None, src_role),
+            state
+                .snap_index
+                .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+        ) && let (Some(s), Some(d)) = (
+            mode_data.orig_to_rank.get(s_id as usize).copied(),
+            mode_data.orig_to_rank.get(d_id as usize).copied(),
+        ) && s != u32::MAX
+            && d != u32::MAX
+            && query.query(s, d).is_some()
+        {
+            return true;
+        }
+        let ss = snap_kbest::snap_k_pair_role(
+            &state,
+            &mode_data,
+            mode,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+            64,
+        );
+        let ds = snap_kbest::snap_k_pair_role(
+            &state,
+            &mode_data,
+            mode,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+            64,
+        );
+        if !ss.ranks.is_empty() && !ds.ranks.is_empty() {
+            return snap_kbest::p2p_with_kbest_fallback(&query, &ss.ranks, &ds.ranks, max_combos)
+                .is_some();
+        }
+        false
+    };
+
+    // Warm one query (pages in hot sections so the timing is steady-state).
+    let _ = run_pair(&pairs[0]);
+
+    let reachable = AtomicU64::new(0);
+    let t0 = Instant::now();
+    if parallel {
+        pairs.par_iter().for_each(|p| {
+            if run_pair(p) {
+                reachable.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    } else {
+        for p in &pairs {
+            if run_pair(p) {
+                reachable.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    println!();
+    println!(
+        "  RESULT: {} pairs in {:.3}s → {:.0} pairs/s  (reachable {}/{}, {:.2} ms/pair wall)",
+        pairs.len(),
+        dt,
+        pairs.len() as f64 / dt,
+        reachable.load(Ordering::Relaxed),
+        pairs.len(),
+        dt * 1000.0 / pairs.len() as f64
+    );
+    println!("═══════════════════════════════════════════════════════════════");
     Ok(())
 }
