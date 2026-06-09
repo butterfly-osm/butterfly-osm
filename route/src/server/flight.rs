@@ -1881,11 +1881,19 @@ pub fn do_edges_batch(
         // #436: edges_batch was single-threaded (one spawn_blocking loop)
         // while the sibling `matrix` / `route_batch` endpoints parallelise —
         // that alone was the bulk of the 31× gap vs OSRM. We now process the
-        // pairs in chunks, fan each chunk across rayon workers, and stream the
-        // chunk's RecordBatch so memory stays bounded even at the 500k cap.
-        // CHUNK_PAIRS is larger than the old 256 so rayon dispatch amortises
-        // over more pairs (~1024 × ~20 edges ≈ 20k rows/batch).
-        let n_workers = route_batch_worker_threads(params.pairs.len());
+        // pairs in chunks, fan each chunk across rayon's GLOBAL pool, and
+        // stream the chunk's RecordBatch so memory stays bounded even at the
+        // 500k cap. CHUNK_PAIRS is larger than the old 256 so rayon dispatch
+        // amortises over more pairs (~1024 × ~20 edges ≈ 20k rows/batch).
+        //
+        // Concurrency = the shared global rayon pool (sized by
+        // `RAYON_NUM_THREADS`, default = all cores). We deliberately do NOT
+        // size a per-request pool from an env knob: a shared work-stealing
+        // pool means concurrent edges_batch requests can't oversubscribe the
+        // CPU, whereas N per-request pools of K threads would. Tiny batches
+        // skip the pool entirely to avoid dispatch overhead.
+        const MIN_PARALLEL_PAIRS: usize = 256;
+        let parallel = params.pairs.len() >= MIN_PARALLEL_PAIRS;
         const CHUNK_PAIRS: usize = 1024;
 
         for (chunk_start, chunk) in params
@@ -1897,7 +1905,7 @@ pub fn do_edges_batch(
             // Per-pair edge lists, in pair order (rayon's indexed
             // `par_iter().map().collect()` preserves order, so query_idx
             // stays monotonic within the batch).
-            let per_pair: Vec<PairEdges> = if n_workers > 1 {
+            let per_pair: Vec<PairEdges> = if parallel {
                 chunk
                     .par_iter()
                     .enumerate()
