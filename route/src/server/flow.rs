@@ -24,13 +24,17 @@
 //!    every parent before its children — each arc's flow is final when
 //!    popped, and the cascade is a single pass.
 //! 3. **Flush** base-arc flow to EBG ranks (a base UP/DOWN arc `u→v`
-//!    contributes the rank it appends to the unpacked path: `v`), map
-//!    ranks to OSM endpoints, and merge the fallback rows.
+//!    contributes the rank it appends to the unpacked path: `v`), then
+//!    expand each DISTINCT rank to **per-OSM-segment** rows via the
+//!    [`crate::server::edge_osm::EdgeOsmChains`] id chains (#460 —
+//!    NBG-junction granularity left ~49% of flow mass on node pairs
+//!    absent from per-segment reference tables). Old containers without
+//!    the chains fall back to NBG-endpoint rows.
 //!
 //! Pairs the tree can't serve (snap misses, singleton groups, lane
-//! backtrack misses) ride the existing per-pair path and fold their
-//! emitted rows directly into the OSM-keyed accumulator — bit-identical
-//! routing semantics to `edges_batch`, only the aggregation differs.
+//! backtrack misses) ride the same routing core per-pair and fold their
+//! unpacked RANK paths into the same accumulator — identical routing
+//! semantics to `edges_batch`, identical expansion at flush.
 //!
 //! Determinism: batches compute in parallel but merge in batch order, the
 //! cascade pops `(middle, arc, group)` tuples (total order), and the final
@@ -40,7 +44,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use rayon::prelude::*;
 
-use super::flight::{GroupedTarget, PairEdges, PerPairWork};
+use super::flight::{GroupedTarget, PerPairWork};
 use super::state::{ModeData, ServerState};
 use crate::model::types::Mode;
 use crate::range::tree_phast::{
@@ -71,10 +75,10 @@ struct BatchAcc {
     /// `(group, tagged CCH arc) → flow` from tree-served pairs.
     arc_flow: HashMap<(u32, u32), f64>,
     /// `(group, EBG rank) → flow` — source-rank deposits (the unpacked
-    /// path includes the source EBG node itself).
+    /// path includes the source EBG node itself) plus per-pair fallback
+    /// rank paths. EVERYTHING converges here so the per-OSM-segment
+    /// expansion at flush covers every pair uniformly (#460).
     rank_flow: HashMap<(u32, u32), f64>,
-    /// `(group, osm_from, osm_to) → flow` from per-pair fallback rows.
-    row_flow: HashMap<(u32, i64, i64), f64>,
     n_unreachable: u64,
     assigned: f64,
 }
@@ -87,25 +91,8 @@ impl BatchAcc {
         for (k, v) in self.rank_flow {
             *total.rank_flow.entry(k).or_default() += v;
         }
-        for (k, v) in self.row_flow {
-            *total.row_flow.entry(k).or_default() += v;
-        }
         total.n_unreachable += self.n_unreachable;
         total.assigned += self.assigned;
-    }
-
-    fn fold_pair_rows(&mut self, group: u32, weight: f64, rows: &[super::flight::EdgeRow]) {
-        if rows.is_empty() {
-            self.n_unreachable += 1;
-            return;
-        }
-        for r in rows {
-            *self
-                .row_flow
-                .entry((group, r.osm_from, r.osm_to))
-                .or_default() += weight;
-        }
-        self.assigned += weight;
     }
 }
 
@@ -165,9 +152,24 @@ fn process_flow_batch(
     for t in fallbacks {
         let g = groups[t.query_idx as usize];
         let w = weights[t.query_idx as usize];
-        let pe =
-            super::flight::edges_for_pair(state, mode_data, mode, &query, t.query_idx, &t.pair);
-        acc.fold_pair_rows(g, w, &pe.rows);
+        match super::flight::route_for_pair(state, mode_data, mode, &query, &t.pair) {
+            Some((s, d, r)) => {
+                let rank_path = super::unpack::unpack_path(
+                    &mode_data.cch_topo,
+                    &mode_data.cch_weights,
+                    &r.forward_parent,
+                    &r.backward_parent,
+                    s,
+                    d,
+                    r.meeting_node,
+                );
+                for rank in rank_path {
+                    *acc.rank_flow.entry((g, rank)).or_default() += w;
+                }
+                acc.assigned += w;
+            }
+            None => acc.n_unreachable += 1,
+        }
     }
     acc
 }
@@ -356,35 +358,79 @@ pub fn compute_edges_flow(
         acc.merge_into(&mut total);
     }
 
-    // Per-pair work (snap misses + singletons): existing per-pair path,
-    // rows folded by query_idx order (deterministic).
-    let pair_results: Vec<PairEdges> = if parallel {
+    // Per-pair work (snap misses + singletons): routing core only — the
+    // unpacked RANK paths fold into the same rank accumulator as the
+    // tree path, so the per-OSM-segment expansion at flush covers every
+    // pair uniformly (#460: NBG-granularity leakage through the fallback
+    // would re-create phantom rows). query_idx order keeps the merge
+    // deterministic.
+    let pair_ranks: Vec<(u32, Option<Vec<u32>>)> = if parallel {
         per_pair_work
             .par_iter()
             .map(|w: &PerPairWork| {
                 let query = super::query::CchQuery::new(mode_data);
-                super::flight::process_per_pair_work(state, mode_data, mode, &query, w)
+                let ranks = super::flight::route_per_pair_work(state, mode_data, mode, &query, w)
+                    .map(|(s, d, r)| {
+                        super::unpack::unpack_path(
+                            &mode_data.cch_topo,
+                            &mode_data.cch_weights,
+                            &r.forward_parent,
+                            &r.backward_parent,
+                            s,
+                            d,
+                            r.meeting_node,
+                        )
+                    });
+                (w.query_idx, ranks)
             })
             .collect()
     } else {
         let query = super::query::CchQuery::new(mode_data);
         per_pair_work
             .iter()
-            .map(|w| super::flight::process_per_pair_work(state, mode_data, mode, &query, w))
+            .map(|w| {
+                let ranks = super::flight::route_per_pair_work(state, mode_data, mode, &query, w)
+                    .map(|(s, d, r)| {
+                        super::unpack::unpack_path(
+                            &mode_data.cch_topo,
+                            &mode_data.cch_weights,
+                            &r.forward_parent,
+                            &r.backward_parent,
+                            s,
+                            d,
+                            r.meeting_node,
+                        )
+                    });
+                (w.query_idx, ranks)
+            })
             .collect()
     };
-    for pe in &pair_results {
-        let g = groups[pe.query_idx as usize];
-        let w = weights[pe.query_idx as usize];
-        total.fold_pair_rows(g, w, &pe.rows);
+    for (query_idx, ranks) in &pair_ranks {
+        let g = groups[*query_idx as usize];
+        let w = weights[*query_idx as usize];
+        match ranks {
+            Some(rank_path) => {
+                for &rank in rank_path {
+                    *total.rank_flow.entry((g, rank)).or_default() += w;
+                }
+                total.assigned += w;
+            }
+            None => total.n_unreachable += 1,
+        }
     }
 
     // Cascade CCH-arc flow to EBG ranks.
     let arc_flow = std::mem::take(&mut total.arc_flow);
     cascade_arc_flow(mode_data, arc_flow, &mut total.rank_flow, parallel);
 
-    // Flush: rank → EBG node → OSM endpoints, merged with fallback rows.
-    let mut out: HashMap<(u32, i64, i64), f64> = std::mem::take(&mut total.row_flow);
+    // Flush: rank → EBG node → per-OSM-segment rows via the id chains
+    // (#460). Each DISTINCT rank expands exactly once; direction is
+    // resolved by matching the chain endpoint against the EBG tail's
+    // OSM id. Containers without the sections (and the rare
+    // id/geometry-disagreement edge) fall back to one NBG-endpoint row.
+    let chains = &state.edge_osm;
+    let mut nbg_fallback_edges = 0u64;
+    let mut out: HashMap<(u32, i64, i64), f64> = HashMap::default();
     for ((g, rank), f) in std::mem::take(&mut total.rank_flow) {
         let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
         let ebg_id = mode_data.filtered_to_original[filt_id as usize];
@@ -394,12 +440,27 @@ pub fn compute_edges_flow(
             .get(node.tail_nbg as usize)
             .copied()
             .unwrap_or(0);
-        let osm_to = state
-            .nbg_node_to_osm
-            .get(node.head_nbg as usize)
-            .copied()
-            .unwrap_or(0);
-        *out.entry((g, osm_from, osm_to)).or_default() += f;
+        if let Some(segments) = chains.directed_segments(node.geom_idx, osm_from) {
+            for (a, b) in segments {
+                *out.entry((g, a, b)).or_default() += f;
+            }
+        } else {
+            let osm_to = state
+                .nbg_node_to_osm
+                .get(node.head_nbg as usize)
+                .copied()
+                .unwrap_or(0);
+            *out.entry((g, osm_from, osm_to)).or_default() += f;
+            nbg_fallback_edges += 1;
+        }
+    }
+    if nbg_fallback_edges > 0 && !chains.is_empty() {
+        // With chains PRESENT a fallback means id/geometry disagreement —
+        // rare and worth surfacing (absent chains already warned at boot).
+        tracing::warn!(
+            nbg_fallback_edges,
+            "edges_flow: some edges expanded as NBG endpoints despite id chains being loaded"
+        );
     }
 
     let mut rows: Vec<FlowRow> = out

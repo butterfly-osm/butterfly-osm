@@ -160,6 +160,48 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
     NbgNodeMapFile::write(&node_map_path, &node_map)?;
     println!("  ✓ Wrote {}", node_map_path.display());
 
+    // #460: persist the per-edge OSM id chains (1:1 with polyline
+    // vertices, canonical u→v direction) BEFORE build_geo_structure
+    // consumes `edges`. Same CSR shape as the geometry sections.
+    {
+        use crate::formats::edge_osm::{
+            EdgeOsmIds, EdgeOsmIdsFile, EdgeOsmOffsets, EdgeOsmOffsetsFile,
+        };
+        let n_edges = edges.len();
+        let mut offsets: Vec<u32> = Vec::with_capacity(n_edges + 1);
+        let total_ids: usize = edges.iter().map(|e| e.osm_ids.len()).sum();
+        let mut ids: Vec<i64> = Vec::with_capacity(total_ids);
+        let mut cumulative: u32 = 0;
+        for e in &edges {
+            offsets.push(cumulative);
+            debug_assert_eq!(
+                e.osm_ids.len(),
+                e.polyline.lat_fxp.len(),
+                "edge OSM id chain must be 1:1 with polyline vertices"
+            );
+            ids.extend_from_slice(&e.osm_ids);
+            cumulative = cumulative
+                .checked_add(e.osm_ids.len() as u32)
+                .ok_or_else(|| anyhow::anyhow!("edge_osm id count overflows u32"))?;
+        }
+        offsets.push(cumulative);
+        let off = EdgeOsmOffsets {
+            n_edges: n_edges as u32,
+            n_ids: cumulative,
+            offsets: crate::formats::mmap::ArcCow::from_vec(offsets),
+        };
+        let ids = EdgeOsmIds {
+            n_ids: cumulative,
+            ids: crate::formats::mmap::ArcCow::from_vec(ids),
+        };
+        let off_path = config.outdir.join("nbg.edge_osm.offsets");
+        EdgeOsmOffsetsFile::write(&off_path, &off)?;
+        println!("  ✓ Wrote {}", off_path.display());
+        let ids_path = config.outdir.join("nbg.edge_osm.ids");
+        EdgeOsmIdsFile::write(&ids_path, &ids)?;
+        println!("  ✓ Wrote {}", ids_path.display());
+    }
+
     let geo = build_geo_structure(edges)?;
     let geo_path = config.outdir.join("nbg.geo");
     NbgGeoFile::write(&geo_path, &geo)?;
@@ -341,6 +383,12 @@ struct EdgeInfo {
     length_mm: u32,
     bearing_deci_deg: u16,
     polyline: PolyLine,
+    /// OSM node IDs of every polyline vertex, 1:1 with the polyline's
+    /// points (same canonical u→v direction, same coord-missing skips).
+    /// Persisted to `nbg.edge_osm.*` so the serve path can expand NBG
+    /// edges to per-OSM-segment rows (#460) — this loop is the only
+    /// place the coord↔id association is unambiguous.
+    osm_ids: Vec<i64>,
     first_osm_way_id: i64,
     flags: u32,
 }
@@ -379,9 +427,13 @@ fn emit_edges(
                 if let (Some(&u_compact), Some(&v_compact)) =
                     (osm_to_compact.get(&start_osm), osm_to_compact.get(&end_osm))
                 {
-                    // Collect polyline
+                    // Collect polyline + the 1:1 OSM id chain (#460). The
+                    // id push sits INSIDE the coord guard so ids stay
+                    // exactly parallel to the vertices when a node's
+                    // coords are missing.
                     let mut lat_fxp = Vec::new();
                     let mut lon_fxp = Vec::new();
+                    let mut osm_ids: Vec<i64> = Vec::new();
                     let mut length_m = 0.0;
 
                     for j in seg_start_idx..=i {
@@ -389,6 +441,7 @@ fn emit_edges(
                         if let Some((lat, lon)) = node_coords.get(osm_id) {
                             lat_fxp.push((lat * 1e7).round() as i32);
                             lon_fxp.push((lon * 1e7).round() as i32);
+                            osm_ids.push(osm_id);
 
                             if j > seg_start_idx {
                                 let prev_osm = nodes[j - 1];
@@ -417,6 +470,7 @@ fn emit_edges(
                             length_mm,
                             bearing_deci_deg: bearing,
                             polyline: PolyLine { lat_fxp, lon_fxp },
+                            osm_ids,
                             first_osm_way_id: way_id,
                             flags: 0, // Reserved for future use (roundabout, ferry, tunnel, bridge); see NbgEdge definition in formats/nbg_geo.rs
                         };
