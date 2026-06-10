@@ -559,6 +559,7 @@ pub fn tree_settle_restricted_batch(
                     *s = TreeScratch::new(n);
                 }
                 // Selection: union reverse-DOWN ancestry of ALL lanes' targets.
+                let _t = std::time::Instant::now();
                 s.start_selection();
                 let mut stack: Vec<u32> = Vec::with_capacity(union_targets.len() * 4);
                 for &t in union_targets {
@@ -588,6 +589,11 @@ pub fn tree_settle_restricted_batch(
                 for (i, &u) in s.sel.iter().enumerate() {
                     s.sel_pos[u as usize] = (i + 1) as u32;
                 }
+                TREE_PHASE_NS[0].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                let _t = std::time::Instant::now();
 
                 // Lane arrays (compact, cache-resident).
                 s.lane_dist.clear();
@@ -611,6 +617,11 @@ pub fn tree_settle_restricted_batch(
                     }
                 }
                 s.sel = sel_snapshot;
+                TREE_PHASE_NS[1].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                let _t = std::time::Instant::now();
 
                 // ONE restricted scan, all lanes per arc.
                 let sel_view = std::mem::take(&mut s.sel);
@@ -644,6 +655,10 @@ pub fn tree_settle_restricted_batch(
                     }
                 }
                 s.sel = sel_view;
+                TREE_PHASE_NS[2].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 TreeSettle::Ok
             },
         )
@@ -668,9 +683,14 @@ pub fn tree_resweep(
                 if s.dist.len() != n {
                     *s = TreeScratch::new(n);
                 }
+                let _t = std::time::Instant::now();
                 s.start_tree(source, u32::MAX);
                 s.set(source as usize, 0, 0);
                 upward_sweep_body(s, topo, weights, down_rev, source);
+                TREE_PHASE_NS[1].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             },
         )
     });
