@@ -653,7 +653,7 @@ fn apply_traffic_to_node_weights(
 /// the serve-boot recustomization, which feeds in structs decoded from the
 /// `.butterfly` container sections. The loop is byte-for-byte identical to the
 /// pre-split CLI logic, so the built artifact is unchanged.
-fn apply_traffic_to_node_weights_in_memory(
+pub(crate) fn apply_traffic_to_node_weights_in_memory(
     weights: &mut [u32],
     ebg_nodes: &EbgNodes,
     profile: &crate::traffic::TrafficProfile,

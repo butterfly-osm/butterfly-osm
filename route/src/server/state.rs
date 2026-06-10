@@ -521,8 +521,9 @@ impl ServerState {
                         }
                     };
                     let base_data = &modes_data[base_idx];
-                    let variant_data =
-                        load_traffic_variant_mode_data(base_data, variant, base, &step8_dir)?;
+                    let variant_data = load_traffic_variant_mode_data(
+                        base_data, variant, base, &step8_dir, &step2_dir, &ebg_nodes, &nbg_geo,
+                    )?;
                     let new_index = modes_data.len();
                     tracing::info!(
                         base = base.as_str(),
@@ -1117,6 +1118,36 @@ impl ServerState {
             let variant_cch_weights =
                 CchWeightsFile::read_from_mmap_unverified(mmap_for_bytes.clone(), off, len)?;
             let base_data = &modes_data[base_idx];
+
+            // #440: derive traffic-adjusted per-node weights from the
+            // provenance profile (verified above) + the base mode's way_attrs
+            // section, so edges_batch per-edge durations match variant paths.
+            let adjusted_node_weights = {
+                let prov = container.get(&provenance_section_name).and_then(|e| {
+                    let o = e.offset as usize;
+                    let l = e.len as usize;
+                    std::str::from_utf8(&mmap_for_bytes[o..o + l])
+                        .ok()
+                        .map(|j| j.to_string())
+                });
+                let attrs = container
+                    .get(&format!("mode/{base}/way_attrs"))
+                    .and_then(|e| {
+                        lazy_arc
+                            .verify_now(&format!("mode/{base}/way_attrs"))
+                            .ok()?;
+                        let o = e.offset as usize;
+                        let l = e.len as usize;
+                        crate::formats::way_attrs::read_all_from_bytes(&mmap_for_bytes[o..o + l])
+                            .ok()
+                    });
+                match (prov, attrs) {
+                    (Some(json), Some(attrs)) => variant_adjusted_node_weights(
+                        base_data, &json, &attrs, &nbg_geo, &ebg_nodes,
+                    ),
+                    _ => None,
+                }
+            };
             // Rebuild only the TIME flats against the variant weights;
             // dist + len_along_time flats keep their base bytes
             // (distance semantics are mode-physical, not affected by
@@ -1136,7 +1167,9 @@ impl ServerState {
                 filtered_to_original: base_data.filtered_to_original.clone(),
                 n_filtered_nodes: base_data.n_filtered_nodes,
                 n_original_nodes: base_data.n_original_nodes,
-                node_weights: base_data.node_weights.clone(),
+                node_weights: adjusted_node_weights
+                    .map(std::borrow::Cow::Owned)
+                    .unwrap_or_else(|| base_data.node_weights.clone()),
                 mask: base_data.mask.clone(),
                 has_outbound: base_data.has_outbound.clone(),
                 has_inbound: base_data.has_inbound.clone(),
@@ -2296,15 +2329,74 @@ fn find_way_attrs_path(step2_dir: &Path, modes: &[String]) -> Option<std::path::
 /// This is the runtime side of the step-8 traffic recustomization: weights
 /// change but topology, distance, masks, accessibility, and adjacency
 /// structure are all identical to the base mode.
+/// #440: traffic-ADJUSTED per-node time weights for a variant, derived at
+/// load time from the variant's provenance profile JSON. The baked builds
+/// only persist the customized CCH weights; per-edge durations (edges_batch)
+/// read `ModeData.node_weights`, so cloning the base legal-limit vector gives
+/// wrong durations along variant paths. Returns `None` (caller falls back to
+/// the base clone — today's behaviour) on any parse/shape failure.
+fn variant_adjusted_node_weights(
+    base: &ModeData,
+    profile_json: &str,
+    way_attrs_vec: &[crate::formats::way_attrs::WayAttr],
+    nbg_geo: &crate::formats::NbgGeo,
+    ebg_nodes: &crate::formats::EbgNodes,
+) -> Option<Vec<u32>> {
+    let profile = match crate::traffic::TrafficProfile::from_json(profile_json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "variant provenance profile unparseable; per-edge durations stay base (#440)");
+            return None;
+        }
+    };
+    let mut weights: Vec<u32> = base.node_weights.to_vec();
+    if weights.len() != ebg_nodes.nodes.len() {
+        tracing::warn!("weights/EBG length mismatch; per-edge durations stay base (#440)");
+        return None;
+    }
+    match crate::customization::apply_traffic_to_node_weights_in_memory(
+        &mut weights,
+        ebg_nodes,
+        &profile,
+        way_attrs_vec,
+        nbg_geo,
+    ) {
+        Ok(()) => Some(weights),
+        Err(e) => {
+            tracing::warn!(error = %e, "variant node-weight scaling failed; per-edge durations stay base (#440)");
+            None
+        }
+    }
+}
+
 fn load_traffic_variant_mode_data(
     base: &ModeData,
     variant_name: &str,
     base_mode_name: &str,
     step8_dir: &Path,
+    step2_dir: &Path,
+    ebg_nodes: &crate::formats::EbgNodes,
+    nbg_geo: &crate::formats::NbgGeo,
 ) -> Result<ModeData> {
     let weights_path = step8_dir.join(format!("cch.w.{}_{}.u32", base_mode_name, variant_name));
     let cch_weights = CchWeightsFile::read(&weights_path)
         .with_context(|| format!("loading traffic variant weights {}", weights_path.display()))?;
+
+    // #440: scale the per-node time weights by the variant's provenance
+    // profile so edges_batch per-edge durations match the variant's paths
+    // (the baked artifact only persists the customized CCH weights).
+    let adjusted = std::fs::read_to_string(step8_dir.join(format!(
+        "cch.w.{}_{}.traffic.json",
+        base_mode_name, variant_name
+    )))
+    .ok()
+    .and_then(|json| {
+        let attrs = crate::formats::way_attrs::read_all(
+            step2_dir.join(format!("way_attrs.{}.bin", base_mode_name)),
+        )
+        .ok()?;
+        variant_adjusted_node_weights(base, &json, &attrs, nbg_geo, ebg_nodes)
+    });
 
     // Rebuild the TIME flats against the new weights — they're the only
     // thing that depends on cch_weights. Distance flats and topology are
@@ -2324,7 +2416,9 @@ fn load_traffic_variant_mode_data(
         filtered_to_original: base.filtered_to_original.clone(),
         n_filtered_nodes: base.n_filtered_nodes,
         n_original_nodes: base.n_original_nodes,
-        node_weights: base.node_weights.clone(),
+        node_weights: adjusted
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or_else(|| base.node_weights.clone()),
         mask: base.mask.clone(),
         has_outbound: base.has_outbound.clone(),
         has_inbound: base.has_inbound.clone(),
