@@ -378,14 +378,13 @@ impl RegionsState {
         let (peeked_bbox, peeked_modes, peeked_tiles) = peek_region_meta(&container)
             .map(|(_, b, m, t)| (b, m, t))
             .unwrap_or((None, Vec::new(), None));
-        // Prefer the live ServerState's mode names when available — for
-        // legacy step-tree containers the manifest may not list modes
-        // but the live state knows them.
-        let mode_names = if peeked_modes.is_empty() {
-            state.mode_names.clone()
-        } else {
-            peeked_modes
-        };
+        // #450: the LOADED state's mode names are authoritative — they
+        // include runtime-synthetic modes (car_freeflow, boot-recustomized
+        // variants) that the container sections can never list. The peeked
+        // (section-derived) list is only for the lazy/Pending constructor
+        // where no state exists yet.
+        let mode_names = state.mode_names.clone();
+        let _ = peeked_modes;
         let entry = RegionEntry {
             id: id.clone(),
             container,
@@ -436,11 +435,10 @@ impl RegionsState {
                 format!("loading region '{}' from {}", region_id, path.display())
             })?;
             let metrics = super::region_metrics::RegionMetrics::new(&region_id);
-            let mode_names = if peeked_modes.is_empty() {
-                state.mode_names.clone()
-            } else {
-                peeked_modes
-            };
+            // #450: loaded state's names are authoritative (include
+            // runtime-synthetic modes); peeked is for Pending only.
+            let mode_names = state.mode_names.clone();
+            let _ = peeked_modes;
             entries.push(RegionEntry {
                 id: region_id,
                 container: path.clone(),
@@ -651,11 +649,10 @@ impl RegionsState {
                 modes = ?state.mode_names,
                 "loaded region"
             );
-            let mode_names = if peeked_modes.is_empty() {
-                state.mode_names.clone()
-            } else {
-                peeked_modes
-            };
+            // #450: loaded state's names are authoritative (include
+            // runtime-synthetic modes); peeked is for Pending only.
+            let mode_names = state.mode_names.clone();
+            let _ = peeked_modes;
             regions.push(RegionEntry {
                 id,
                 container: path,
