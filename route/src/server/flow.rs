@@ -138,10 +138,15 @@ fn process_flow_batch(
             };
             match hit {
                 Some(_dist) => {
-                    for &arc in &arc_buf {
-                        *acc.arc_flow.entry((g, arc)).or_default() += w;
+                    // w == 0 pairs are routed (reachability counts) but
+                    // deposit nothing — or_default() would otherwise emit
+                    // zero-flow rows (Copilot review on #463).
+                    if w != 0.0 {
+                        for &arc in &arc_buf {
+                            *acc.arc_flow.entry((g, arc)).or_default() += w;
+                        }
+                        *acc.rank_flow.entry((g, *src_rank)).or_default() += w;
                     }
-                    *acc.rank_flow.entry((g, *src_rank)).or_default() += w;
                     acc.assigned += w;
                 }
                 None => fallbacks.push(t),
@@ -163,8 +168,10 @@ fn process_flow_batch(
                     d,
                     r.meeting_node,
                 );
-                for rank in rank_path {
-                    *acc.rank_flow.entry((g, rank)).or_default() += w;
+                if w != 0.0 {
+                    for rank in rank_path {
+                        *acc.rank_flow.entry((g, rank)).or_default() += w;
+                    }
                 }
                 acc.assigned += w;
             }
@@ -410,8 +417,10 @@ pub fn compute_edges_flow(
         let w = weights[*query_idx as usize];
         match ranks {
             Some(rank_path) => {
-                for &rank in rank_path {
-                    *total.rank_flow.entry((g, rank)).or_default() += w;
+                if w != 0.0 {
+                    for &rank in rank_path {
+                        *total.rank_flow.entry((g, rank)).or_default() += w;
+                    }
                 }
                 total.assigned += w;
             }
