@@ -799,6 +799,20 @@ impl<'a> CchQuery<'a> {
                     if state.dist_fwd.len() != n {
                         *state = CchQueryState::new(n);
                     }
+                    self.settle_forward_body(state, source)
+                },
+            )
+        });
+    }
+
+    /// #438: settle_forward's search body against a caller-held state (one
+    /// thread-local borrow per GROUP via [`Self::with_meet_group`] instead of
+    /// per call — the per-call EvictableCell ceremony showed at ~26% of
+    /// samples in the C-shape profile).
+    fn settle_forward_body(&self, state: &mut CchQueryState, source: u32) {
+        {
+            {
+                {
                     state.start_forward_only();
                     state.set_fwd(source as usize, 0, (source, 0));
                     state.push_fwd(source, 0);
@@ -831,9 +845,9 @@ impl<'a> CchQuery<'a> {
                             }
                         });
                     }
-                },
-            )
-        });
+                }
+            }
+        }
     }
 
     /// #438: run a BACKWARD search from `target` against the frozen forward
@@ -863,7 +877,23 @@ impl<'a> CchQuery<'a> {
         CCH_QUERY_STATE.with(|cell| {
             cell.with_or_init(
                 || CchQueryState::new(n),
-                |state| {
+                |state| self.backward_meet_body(state, source, target),
+            )
+        })
+    }
+
+    /// #438: backward_meet's search body against a caller-held state (see
+    /// [`Self::settle_forward_body`] — one borrow per group).
+    fn backward_meet_body(
+        &self,
+        state: &mut CchQueryState,
+        source: u32,
+        target: u32,
+    ) -> Option<QueryResult> {
+        let n = self.n_nodes;
+        {
+            {
+                {
                     // #438 review: guard against a graph swap between the
                     // settle_forward and this call (matches settle_forward /
                     // query_with_debug), AND (Copilot review) fail closed when
@@ -963,9 +993,66 @@ impl<'a> CchQuery<'a> {
                         forward_parent,
                         backward_parent,
                     })
+                }
+            }
+        }
+    }
+
+    /// #438: run a whole source GROUP under ONE thread-local borrow — the
+    /// per-call `EvictableCell::with_or_init` ceremony (mutex + last-touch
+    /// stamp) showed at ~26% of profile samples on the production shape.
+    /// Settles the forward tree for `source`, then hands the closure a
+    /// [`GroupMeet`] whose `meet(target)` runs the per-target backward search
+    /// against the held state. The closure MUST NOT call `query`/
+    /// `settle_forward`/`backward_meet_and_paths` (the state is already
+    /// borrowed; thread-local re-entry would panic).
+    pub fn with_meet_group<R>(
+        &self,
+        source: u32,
+        f: impl FnOnce(&mut GroupMeet<'_, '_>) -> R,
+    ) -> R {
+        let n = self.n_nodes;
+        CCH_QUERY_STATE.with(|cell| {
+            cell.with_or_init(
+                || CchQueryState::new(n),
+                |state| {
+                    if state.dist_fwd.len() != n {
+                        *state = CchQueryState::new(n);
+                    }
+                    self.settle_forward_body(state, source);
+                    let mut g = GroupMeet {
+                        query: self,
+                        state,
+                        source,
+                    };
+                    f(&mut g)
                 },
             )
         })
+    }
+}
+
+/// Group-scoped meet handle — see [`CchQuery::with_meet_group`].
+pub struct GroupMeet<'q, 's> {
+    query: &'q CchQuery<'q>,
+    state: &'s mut CchQueryState,
+    source: u32,
+}
+
+impl GroupMeet<'_, '_> {
+    /// Per-target backward search + meeting + reconstruct against the held
+    /// frozen forward. Same result as [`CchQuery::backward_meet_and_paths`].
+    pub fn meet(&mut self, target: u32) -> Option<QueryResult> {
+        if self.source == target {
+            return Some(QueryResult {
+                distance: 0,
+                meeting_node: self.source,
+                forward_parent: vec![],
+                backward_parent: vec![],
+            });
+        }
+        self.query
+            .backward_meet_body(self.state, self.source, target)
     }
 }
 
