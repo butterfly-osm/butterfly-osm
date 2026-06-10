@@ -554,9 +554,25 @@ pub async fn serve(
         } else {
             None
         };
-        let Some(observed) = observed else {
-            continue;
+        // #454: the DIRECTED per-edge contract (edge_speeds.parquet) takes
+        // precedence over the per-way table — it's the validated flow-loop
+        // output and carries direction. EITHER table triggers the block.
+        let edge_speeds = {
+            let per_region = data_dir_for_transit
+                .join(regions_state.regions[idx].id.to_lowercase())
+                .join("edge_speeds.parquet");
+            let global = data_dir_for_transit.join("edge_speeds.parquet");
+            if per_region.exists() {
+                Some(per_region)
+            } else if idx == 0 && global.exists() {
+                Some(global)
+            } else {
+                None
+            }
         };
+        if observed.is_none() && edge_speeds.is_none() {
+            continue;
+        }
         if !recustomize_enabled {
             continue;
         }
@@ -566,11 +582,33 @@ pub async fn serve(
             if !state_owned.mode_lookup.contains_key("car") {
                 tracing::warn!(
                     region = %region_id,
-                    "observed_speeds.parquet present but car mode not loaded; skipping recustomization"
+                    "observed/edge speeds present but car mode not loaded; skipping recustomization"
                 );
                 return;
             }
-            match state_owned.recustomize_car_from_observed(&observed) {
+            if let Some(edge_path) = &edge_speeds {
+                match state_owned.recustomize_car_from_edge_speeds(edge_path) {
+                    Ok(matched) => {
+                        tracing::info!(
+                            region = %region_id,
+                            path = %edge_path.display(),
+                            matched,
+                            "car recustomized from DIRECTED per-edge speeds (#454)"
+                        );
+                        return; // edge contract wins; skip the per-way path
+                    }
+                    Err(e) => tracing::warn!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        error = %e,
+                        "edge-speeds recustomization failed; falling through to the per-way table"
+                    ),
+                }
+            }
+            let Some(observed) = &observed else {
+                return; // edge-only deployment; per-way path not configured
+            };
+            match state_owned.recustomize_car_from_observed(observed) {
                 Ok(profile) => tracing::info!(
                     region = %region_id,
                     path = %observed.display(),
