@@ -1707,7 +1707,14 @@ impl ServerState {
         // the flats on a hit. The section CRC is ENGINE-INTERNAL provenance
         // (repo-boundary rule: no deploy-side file conventions in the open
         // engine). Cache failures are non-fatal in both directions.
-        let cache_path = observed_path.with_file_name("recustomize_cache.car.v1.bin");
+        // BUTTERFLY_RECUSTOMIZE_CACHE_DIR overrides the cache location for
+        // deployments where the data volume is mounted read-only and a
+        // separate writable directory is provided (generic env knob — no
+        // deploy-specific conventions). Default: next to the parquet.
+        let cache_path = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir).join("recustomize_cache.car.v1.bin"),
+            None => observed_path.with_file_name("recustomize_cache.car.v1.bin"),
+        };
         let car_weights_crc = container
             .get("mode/car/weights.time")
             .map(|e| e.crc)
