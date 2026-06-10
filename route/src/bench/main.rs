@@ -517,6 +517,30 @@ enum Commands {
         #[arg(long, default_value_t = 200)]
         max_combos: usize,
     },
+
+    /// #438: edges_batch FLAT (per-pair) vs source-GROUPED throughput +
+    /// equivalence, on a `.butterfly` container. Builds a source-sharing
+    /// workload (n_sources sources × targets_per_source nearby targets,
+    /// mirroring traffic-flow's origin→PoIs shape), runs BOTH paths, asserts
+    /// they are equivalent (same reachability + same per-pair total duration),
+    /// reports the byte-identity rate, and times flat vs grouped. Server-free.
+    EdgesBatch {
+        /// Path to a `.butterfly` container.
+        #[arg(long)]
+        data: PathBuf,
+        /// Transport mode (car, bike, foot).
+        #[arg(long, default_value = "car")]
+        mode: String,
+        /// Number of distinct sources.
+        #[arg(long, default_value_t = 200)]
+        n_sources: usize,
+        /// Targets per source (the source-sharing factor).
+        #[arg(long, default_value_t = 30)]
+        targets_per_source: usize,
+        /// Random seed.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -764,6 +788,14 @@ fn main() -> anyhow::Result<()> {
             cities,
             max_combos,
         } => run_p2p_bench(&data, &mode, n, seed, parallel, cities, max_combos),
+
+        Commands::EdgesBatch {
+            data,
+            mode,
+            n_sources,
+            targets_per_source,
+            seed,
+        } => run_edges_batch_bench(&data, &mode, n_sources, targets_per_source, seed),
     }
 }
 
@@ -4636,6 +4668,160 @@ fn run_p2p_bench(
         pairs.len(),
         dt * 1000.0 / pairs.len() as f64
     );
+    println!("═══════════════════════════════════════════════════════════════");
+    Ok(())
+}
+
+/// #438: edges_batch FLAT (per-pair) vs source-GROUPED — throughput + the
+/// equivalence oracle. Builds n_sources × targets_per_source pairs (the
+/// source-sharing shape of the real traffic-flow workload), runs both
+/// `compute_edges_flat` and `compute_edges_grouped` in-process, asserts they
+/// agree (reachability + per-pair total duration), reports byte-identity, and
+/// times them. The grouped path shares one forward CCH search per source.
+fn run_edges_batch_bench(
+    data: &Path,
+    mode_name: &str,
+    n_sources: usize,
+    targets_per_source: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::model::types::Mode;
+    use butterfly_route::server::flight::{compute_edges_flat, compute_edges_grouped};
+    use butterfly_route::server::state::{LoadOptions, ServerState};
+    use std::time::Instant;
+
+    let n_pairs = n_sources * targets_per_source;
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  EDGES_BATCH FLAT vs SOURCE-GROUPED (#438)");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!(
+        "  container: {}\n  mode: {}  sources: {}  targets/source: {}  pairs: {}",
+        data.display(),
+        mode_name,
+        n_sources,
+        targets_per_source,
+        n_pairs
+    );
+
+    let t = Instant::now();
+    let state = ServerState::load_from_container_with_options(
+        data,
+        Some(&[mode_name.to_string()]),
+        &LoadOptions {
+            eager_verify: false,
+            warmup_on_boot: false,
+        },
+    )?;
+    println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
+    let mode_idx = *state
+        .mode_lookup
+        .get(mode_name)
+        .ok_or_else(|| anyhow::anyhow!("mode '{}' not loaded", mode_name))?;
+    let mode = Mode(mode_idx);
+    let mode_data = state.get_mode(mode);
+
+    // Build a source-sharing workload: each source has `targets_per_source`
+    // random Belgium-bbox targets (mirrors origin→nearby-PoIs). Sources are
+    // random too; the K=1 snap groups pairs by resolved source rank.
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut pairs: Vec<[f64; 4]> = Vec::with_capacity(n_pairs);
+    for _ in 0..n_sources {
+        let slon = rng.random_range(2.55..6.40);
+        let slat = rng.random_range(49.50..51.50);
+        for _ in 0..targets_per_source {
+            // Targets NEAR the source (±~25 km), mirroring traffic-flow's
+            // origin→top-k-nearest-PoIs shape — keeps reachability realistic.
+            let dlon = (slon + rng.random_range(-0.30_f64..0.30)).clamp(2.55, 6.40);
+            let dlat = (slat + rng.random_range(-0.30_f64..0.30)).clamp(49.50, 51.50);
+            pairs.push([slon, slat, dlon, dlat]);
+        }
+    }
+
+    // ---- Equivalence oracle ----
+    let flat = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+    let grouped = compute_edges_grouped(&state, &mode_data, mode, &pairs, true);
+    assert_eq!(flat.len(), grouped.len(), "pair count mismatch");
+    let mut reach_mismatch = 0usize;
+    let mut dur_mismatch = 0usize;
+    let mut byte_identical = 0usize;
+    let mut reachable = 0usize;
+    for (f, g) in flat.iter().zip(grouped.iter()) {
+        assert_eq!(f.query_idx, g.query_idx, "query_idx order mismatch");
+        let f_reach = !f.rows.is_empty();
+        let g_reach = !g.rows.is_empty();
+        if f_reach {
+            reachable += 1;
+        }
+        if f_reach != g_reach {
+            reach_mismatch += 1;
+        }
+        let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
+        let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+        if f_dur != g_dur {
+            dur_mismatch += 1;
+        }
+        // Byte-identity: same edge rows (seq, osm ids, dur, dist).
+        let same = f.rows.len() == g.rows.len()
+            && f.rows.iter().zip(g.rows.iter()).all(|(a, b)| {
+                a.edge_seq == b.edge_seq
+                    && a.osm_from == b.osm_from
+                    && a.osm_to == b.osm_to
+                    && a.dur_ms == b.dur_ms
+                    && a.dist_m == b.dist_m
+            });
+        if same {
+            byte_identical += 1;
+        }
+    }
+    println!();
+    println!("  EQUIVALENCE:");
+    println!(
+        "    reachable {}/{}  | reachability mismatches: {}  | total-duration mismatches: {}",
+        reachable, n_pairs, reach_mismatch, dur_mismatch
+    );
+    println!(
+        "    byte-identical pairs: {}/{} ({:.2}%)  [equal-cost ties may differ]",
+        byte_identical,
+        n_pairs,
+        100.0 * byte_identical as f64 / n_pairs.max(1) as f64
+    );
+    assert_eq!(
+        reach_mismatch, 0,
+        "CORRECTNESS: grouped path changed reachability for {reach_mismatch} pairs"
+    );
+    assert_eq!(
+        dur_mismatch, 0,
+        "CORRECTNESS: grouped path changed total duration for {dur_mismatch} pairs"
+    );
+    println!("    ✓ reachability + total-duration IDENTICAL (correctness verified)");
+
+    // ---- Throughput (best of 2, after a warm run) ----
+    let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+    let mut flat_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+        flat_dt = flat_dt.min(t0.elapsed().as_secs_f64());
+    }
+    let mut grouped_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_grouped(&state, &mode_data, mode, &pairs, true);
+        grouped_dt = grouped_dt.min(t0.elapsed().as_secs_f64());
+    }
+    println!();
+    println!("  THROUGHPUT (parallel, best of 2):");
+    println!(
+        "    FLAT    {:.3}s  {:.0} pairs/s",
+        flat_dt,
+        n_pairs as f64 / flat_dt
+    );
+    println!(
+        "    GROUPED {:.3}s  {:.0} pairs/s",
+        grouped_dt,
+        n_pairs as f64 / grouped_dt
+    );
+    println!("    speedup: {:.2}×", flat_dt / grouped_dt);
     println!("═══════════════════════════════════════════════════════════════");
     Ok(())
 }

@@ -1706,19 +1706,19 @@ pub struct EdgesBatchParams {
 }
 
 /// One unpacked edge row for `edges_batch` (one per EBG node in a path).
-struct EdgeRow {
-    edge_seq: u32,
-    osm_from: i64,
-    osm_to: i64,
-    dur_ms: u32,
-    dist_m: u32,
+pub struct EdgeRow {
+    pub edge_seq: u32,
+    pub osm_from: i64,
+    pub osm_to: i64,
+    pub dur_ms: u32,
+    pub dist_m: u32,
 }
 
 /// Per-pair result: the query index plus its unpacked edge rows.
 /// `rows.is_empty()` ⇒ unreachable (the caller emits one all-null edge row).
-struct PairEdges {
-    query_idx: u32,
-    rows: Vec<EdgeRow>,
+pub struct PairEdges {
+    pub query_idx: u32,
+    pub rows: Vec<EdgeRow>,
 }
 
 /// Compute the unpacked edge sequence for a single (src,dst) pair.
@@ -1763,60 +1763,96 @@ fn edges_for_pair(
         p2p = Some((s, d, r));
     }
 
-    // Escalation: K=64 snap + combo fallback. Rescues fast-path misses,
-    // including pairs whose closest snap had a u32::MAX rank (not in
-    // this mode's CCH) — K=64 looks further out for a contracted node.
-    if p2p.is_none() {
-        const SNAP_K: usize = 64;
-        let src_snap = super::snap_kbest::snap_k_pair_role(
-            state,
-            mode_data,
-            mode,
-            slon,
-            slat,
-            SnapRole::Src,
-            None,
-            SNAP_K,
-        );
-        let dst_snap = super::snap_kbest::snap_k_pair_role(
-            state,
-            mode_data,
-            mode,
-            dlon,
-            dlat,
-            SnapRole::Dst,
-            None,
-            SNAP_K,
-        );
-        if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
-            // #438: bound the escalation at 16 combos rather than the default
-            // 200. Reachable pairs connect on the closest-sum-first combos
-            // almost immediately (the #197 connectivity masks keep candidates
-            // on the main component), so 16 loses no reachable pairs on the
-            // Belgium benchmark (5000 pairs, reachable count identical at 8 /
-            // 16 / 200) while bounding the worst-case cost of a pair whose
-            // K=64 candidates don't connect.
-            const EDGES_BATCH_MAX_COMBOS: usize = 16;
-            p2p = super::snap_kbest::p2p_with_kbest_fallback(
-                query,
-                &src_snap.ranks,
-                &dst_snap.ranks,
-                EDGES_BATCH_MAX_COMBOS,
-            );
+    if let Some((src_rank, dst_rank, result)) = p2p {
+        return emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx);
+    }
+    // K=1 didn't connect → K=64 escalation.
+    escalate_pair(state, mode_data, mode, query, query_idx, pair)
+}
+
+/// #438: K=64 + 16-combo escalation for a pair the K=1 fast path could not
+/// connect. Snaps both ends to 64 candidates and tries the closest-sum-first
+/// combos; emits the path or one unreachable null row.
+///
+/// Split out of `edges_for_pair` so the source-grouped per-pair path
+/// (`process_per_pair_work`) can escalate WITHOUT re-doing the K=1 snap+query
+/// it already attempted with the precomputed ranks (#438-review: avoids the
+/// redundant K=1 work that made the all-singleton workload regress).
+fn escalate_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    query_idx: u32,
+    pair: &[f64; 4],
+) -> PairEdges {
+    use super::types::SnapRole;
+    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+    const SNAP_K: usize = 64;
+    // Rescues K=1 misses, including pairs whose closest snap had a u32::MAX
+    // rank (not in this mode's CCH) — K=64 looks further out for a contracted
+    // node.
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        slon,
+        slat,
+        SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dlon,
+        dlat,
+        SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
+    if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
+        // Bound the escalation at 16 combos rather than the default 200.
+        // Reachable pairs connect on the closest-sum-first combos almost
+        // immediately (the #197 connectivity masks keep candidates on the main
+        // component), so 16 loses no reachable pairs on the Belgium benchmark
+        // (reachable count identical at 8 / 16 / 200) while bounding the
+        // worst-case cost of a pair whose K=64 candidates don't connect.
+        const EDGES_BATCH_MAX_COMBOS: usize = 16;
+        if let Some((src_rank, dst_rank, result)) = super::snap_kbest::p2p_with_kbest_fallback(
+            query,
+            &src_snap.ranks,
+            &dst_snap.ranks,
+            EDGES_BATCH_MAX_COMBOS,
+        ) {
+            return emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx);
         }
     }
+    // Unreachable.
+    PairEdges {
+        query_idx,
+        rows: Vec::new(),
+    }
+}
 
-    let Some((src_rank, dst_rank, result)) = p2p else {
-        return PairEdges {
-            query_idx,
-            rows: Vec::new(),
-        };
-    };
-
-    // Unpack to the full EBG rank sequence, then map rank → original
-    // EBG node id and emit one row per node. Each EBG node is a directed
-    // NBG edge (tail → head), so osm_node_from = osm(tail), osm_node_to =
-    // osm(head); consecutive rows satisfy osm_to[i] == osm_from[i+1].
+/// #438: shared unpack + per-edge row emit. Used by BOTH the per-pair
+/// `edges_for_pair` and the source-grouped path, so the row contract
+/// (osm_from/to, dur_ms, dist_m, edge_seq) is byte-identical regardless of
+/// how the `QueryResult` was produced.
+///
+/// Unpacks the CCH result to the full EBG rank sequence, then maps each rank
+/// → original EBG node id and emits one row per node. Each EBG node is a
+/// directed NBG edge (tail → head), so osm_node_from = osm(tail),
+/// osm_node_to = osm(head); consecutive rows satisfy osm_to[i] == osm_from[i+1].
+fn emit_pair_rows(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    src_rank: u32,
+    dst_rank: u32,
+    result: &super::query::QueryResult,
+    query_idx: u32,
+) -> PairEdges {
     let rank_path = super::unpack::unpack_path(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
@@ -1860,6 +1896,305 @@ fn edges_for_pair(
     PairEdges { query_idx, rows }
 }
 
+/// #438: resolve a coordinate to its K=1 (closest, role-filtered) CCH rank —
+/// the same fast-path snap `edges_for_pair` uses. Returns `None` when the
+/// closest role-valid node is not in this mode's contracted graph (the case
+/// that today triggers the K=64 escalation). Used to GROUP pairs by source
+/// rank so one forward search can be shared across a source's targets.
+fn resolve_k1_rank(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    lon: f64,
+    lat: f64,
+    role: super::types::SnapRole,
+) -> Option<u32> {
+    let role_filter = role.role_filter(mode_data);
+    let id = state
+        .snap_index
+        .snap_filtered_role(lon, lat, mode.0, None, role_filter)?;
+    let rank = mode_data.orig_to_rank.get(id as usize).copied()?;
+    if rank == u32::MAX { None } else { Some(rank) }
+}
+
+/// #438: one target of a source group: its original flat `query_idx`, the raw
+/// coords (for the per-pair escalation fallback), and its K=1 destination rank
+/// (`None` ⇒ the K=1 dst snap missed → must fall back to per-pair).
+struct GroupedTarget {
+    query_idx: u32,
+    pair: [f64; 4],
+    dst_rank: Option<u32>,
+}
+
+/// #438: process one source group — settle the forward CCH search ONCE for
+/// `src_rank`, then for each target do only the (cheaper) backward search +
+/// meeting + unpack. This is where the ~30× forward-recompute is amortised.
+///
+/// Targets that the shared K=1 forward can't serve (K=1 dst missed, or no path
+/// via the K=1 src) fall back to the full per-pair `edges_for_pair` (K=64 + 16
+/// combos) — but those fallbacks call `query.query()`, which bumps the forward
+/// epoch and ERASES the frozen tree, so they MUST run AFTER all shared-forward
+/// targets of the group. Output distances are identical to per-pair; equal-cost
+/// paths may differ on ties (both are valid time-shortest paths).
+fn process_source_group(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    src_rank: u32,
+    targets: &[GroupedTarget],
+) -> Vec<PairEdges> {
+    let query = super::query::CchQuery::new(mode_data);
+    query.settle_forward(src_rank);
+
+    let mut out = Vec::with_capacity(targets.len());
+    let mut fallbacks: Vec<&GroupedTarget> = Vec::new();
+    for t in targets {
+        match t.dst_rank {
+            Some(dst_rank) => match query.backward_meet_and_paths(src_rank, dst_rank) {
+                Some(result) => {
+                    out.push(emit_pair_rows(
+                        state,
+                        mode_data,
+                        src_rank,
+                        dst_rank,
+                        &result,
+                        t.query_idx,
+                    ));
+                }
+                None => fallbacks.push(t),
+            },
+            None => fallbacks.push(t),
+        }
+    }
+    // Fallbacks LAST — they destroy the frozen forward via query.query().
+    for t in fallbacks {
+        out.push(edges_for_pair(
+            state,
+            mode_data,
+            mode,
+            &query,
+            t.query_idx,
+            &t.pair,
+        ));
+    }
+    out
+}
+
+/// #438: a pair handled OUTSIDE a shared-forward group — either a singleton
+/// source (K=1 resolved but only 1 target, so no forward-sharing benefit) or a
+/// K=1-source-miss (needs K=64 escalation). Carries any already-resolved K=1
+/// ranks so `process_per_pair_work` can skip the redundant snap.
+struct PerPairWork {
+    query_idx: u32,
+    pair: [f64; 4],
+    /// K=1 source rank, if it resolved (singleton); `None` ⇒ K=1 src missed.
+    src_rank: Option<u32>,
+    /// K=1 destination rank, if it resolved.
+    dst_rank: Option<u32>,
+}
+
+/// #438: process one per-pair work item. When BOTH K=1 ranks are already
+/// resolved (the singleton case), try the direct K=1 query — skipping the
+/// redundant snap that `edges_for_pair` would otherwise repeat (the #438-review
+/// double-snap fix). Anything that misses (no precomputed ranks, or the K=1
+/// query doesn't connect) falls through to the full per-pair `edges_for_pair`
+/// (K=1 snap + K=64 + 16-combo escalation), byte-identical to today.
+fn process_per_pair_work(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    work: &PerPairWork,
+) -> PairEdges {
+    if let (Some(src_rank), Some(dst_rank)) = (work.src_rank, work.dst_rank)
+        && let Some(result) = query.query(src_rank, dst_rank)
+    {
+        return emit_pair_rows(
+            state,
+            mode_data,
+            src_rank,
+            dst_rank,
+            &result,
+            work.query_idx,
+        );
+    }
+    // K=1 missed (or didn't connect) → escalate WITHOUT re-doing the K=1 that
+    // the precomputed-rank query above already covered.
+    escalate_pair(state, mode_data, mode, query, work.query_idx, &work.pair)
+}
+
+/// #438: resolve each pair's K=1 source/dest rank and partition into
+/// `(multi_target_groups, per_pair)`:
+/// - sources with **≥2** targets become a shared-forward GROUP (the win);
+/// - sources with exactly **1** target, and pairs whose K=1 SOURCE snap missed
+///   (need K=64 escalation), go to the per-pair list.
+///
+/// The singleton split is the #438-review MAJOR fix: a 1-target source can't
+/// amortise the forward-settle-to-exhaustion, so routing it per-pair preserves
+/// the early-terminated bidirectional cost and avoids a regression on
+/// distinct-pair (1 target/source) workloads.
+#[allow(clippy::type_complexity)]
+fn group_pairs(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    pairs: &[[f64; 4]],
+    parallel: bool,
+) -> (Vec<(u32, Vec<GroupedTarget>)>, Vec<PerPairWork>) {
+    use super::types::SnapRole;
+
+    // Resolve K=1 src/dst ranks for every pair FIRST — embarrassingly parallel,
+    // and on a zero-sharing (all-singleton) workload ~half the total work, so
+    // running it sequentially before the parallel process phase was an Amdahl
+    // bottleneck (#438-review perf cliff). Parallelise it when the batch is
+    // parallel; the cheap HashMap grouping afterwards stays sequential.
+    let resolve = |idx: usize, pair: &[f64; 4]| {
+        let s = resolve_k1_rank(state, mode_data, mode, pair[0], pair[1], SnapRole::Src);
+        let d = resolve_k1_rank(state, mode_data, mode, pair[2], pair[3], SnapRole::Dst);
+        (idx as u32, *pair, s, d)
+    };
+    let resolved: Vec<(u32, [f64; 4], Option<u32>, Option<u32>)> = if parallel {
+        pairs
+            .par_iter()
+            .enumerate()
+            .map(|(idx, pair)| resolve(idx, pair))
+            .collect()
+    } else {
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(idx, pair)| resolve(idx, pair))
+            .collect()
+    };
+
+    let mut groups: std::collections::HashMap<u32, Vec<GroupedTarget>> =
+        std::collections::HashMap::new();
+    let mut per_pair: Vec<PerPairWork> = Vec::new();
+    for (query_idx, pair, src, dst) in resolved {
+        match src {
+            Some(src_rank) => {
+                groups.entry(src_rank).or_default().push(GroupedTarget {
+                    query_idx,
+                    pair,
+                    dst_rank: dst,
+                });
+            }
+            // K=1 source miss → per-pair with no precomputed ranks (full snap).
+            None => per_pair.push(PerPairWork {
+                query_idx,
+                pair,
+                src_rank: None,
+                dst_rank: None,
+            }),
+        }
+    }
+    // Singleton groups don't amortise the shared forward → run them per-pair,
+    // but CARRY the already-resolved K=1 ranks so the per-pair path skips the
+    // redundant snap (#438-review double-snap fix).
+    let mut multi: Vec<(u32, Vec<GroupedTarget>)> = Vec::with_capacity(groups.len());
+    for (src_rank, targets) in groups {
+        if targets.len() >= 2 {
+            multi.push((src_rank, targets));
+        } else {
+            for t in targets {
+                per_pair.push(PerPairWork {
+                    query_idx: t.query_idx,
+                    pair: t.pair,
+                    src_rank: Some(src_rank),
+                    dst_rank: t.dst_rank,
+                });
+            }
+        }
+    }
+    (multi, per_pair)
+}
+
+/// #438: resolve + source-group + process every pair into per-pair edge lists,
+/// sorted by `query_idx`. The OSRM-gap fix — the forward CCH search depends only
+/// on the SOURCE, so pairs are grouped by their resolved K=1 source rank and
+/// share ONE forward settle across the source's targets ([`process_source_group`]);
+/// singletons + K=1-source-misses run per-pair ([`process_per_pair_work`]).
+/// `parallel` fans the resolve, the groups, and the per-pair work across rayon.
+///
+/// Shared by [`do_edges_batch`] (which streams the result in chunks) and the
+/// equivalence test / bench. Returns the SAME `PairEdges` shape as the per-pair
+/// path; min-cost distance is identical, equal-cost paths may differ on ties.
+pub fn compute_edges_grouped(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    pairs: &[[f64; 4]],
+    parallel: bool,
+) -> Vec<PairEdges> {
+    let (group_vec, per_pair_work) = group_pairs(state, mode_data, mode, pairs, parallel);
+
+    // Source GROUPS are the parallel unit (one shared forward settle per rayon
+    // task); per-pair work runs individually. flat_map keeps each group's
+    // settle_forward + its targets on a single thread so the frozen forward
+    // tree (thread-local) is valid for the whole group.
+    let mut per_pair: Vec<PairEdges> = if parallel {
+        let mut v: Vec<PairEdges> = group_vec
+            .par_iter()
+            .flat_map(|(src_rank, targets)| {
+                process_source_group(state, mode_data, mode, *src_rank, targets)
+            })
+            .collect();
+        let from_per_pair: Vec<PairEdges> = per_pair_work
+            .par_iter()
+            .map(|w| {
+                let query = super::query::CchQuery::new(mode_data);
+                process_per_pair_work(state, mode_data, mode, &query, w)
+            })
+            .collect();
+        v.extend(from_per_pair);
+        v
+    } else {
+        let mut v: Vec<PairEdges> = Vec::with_capacity(pairs.len());
+        for (src_rank, targets) in &group_vec {
+            v.extend(process_source_group(
+                state, mode_data, mode, *src_rank, targets,
+            ));
+        }
+        let query = super::query::CchQuery::new(mode_data);
+        for w in &per_pair_work {
+            v.push(process_per_pair_work(state, mode_data, mode, &query, w));
+        }
+        v
+    };
+    per_pair.sort_unstable_by_key(|p| p.query_idx);
+    per_pair
+}
+
+/// #438: the pre-grouping per-pair path (each pair an independent bidirectional
+/// CCH query). Kept as the equivalence oracle + bench baseline.
+pub fn compute_edges_flat(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    pairs: &[[f64; 4]],
+    parallel: bool,
+) -> Vec<PairEdges> {
+    let mut per_pair: Vec<PairEdges> = if parallel {
+        pairs
+            .par_iter()
+            .enumerate()
+            .map(|(i, pair)| {
+                let query = super::query::CchQuery::new(mode_data);
+                edges_for_pair(state, mode_data, mode, &query, i as u32, pair)
+            })
+            .collect()
+    } else {
+        let query = super::query::CchQuery::new(mode_data);
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(i, pair)| edges_for_pair(state, mode_data, mode, &query, i as u32, pair))
+            .collect()
+    };
+    per_pair.sort_unstable_by_key(|p| p.query_idx);
+    per_pair
+}
+
 pub fn do_edges_batch(
     state: &Arc<ServerState>,
     mode: Mode,
@@ -1886,125 +2221,147 @@ pub fn do_edges_batch(
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(edges_batch_schema());
-        // #436: edges_batch was single-threaded (one spawn_blocking loop)
-        // while the sibling `matrix` / `route_batch` endpoints parallelise —
-        // that alone was the bulk of the 31× gap vs OSRM. We now process the
-        // pairs in chunks, fan each chunk across rayon's GLOBAL pool, and
-        // stream the chunk's RecordBatch so memory stays bounded even at the
-        // 500k cap. CHUNK_PAIRS is larger than the old 256 so rayon dispatch
-        // amortises over more pairs (~1024 × ~20 edges ≈ 20k rows/batch).
-        //
-        // Concurrency = the shared global rayon pool (sized by
-        // `RAYON_NUM_THREADS`, default = all cores). We deliberately do NOT
-        // size a per-request pool from an env knob: a shared work-stealing
-        // pool means concurrent edges_batch requests can't oversubscribe the
-        // CPU, whereas N per-request pools of K threads would. Tiny batches
-        // skip the pool entirely to avoid dispatch overhead.
         const MIN_PARALLEL_PAIRS: usize = 256;
         let parallel = params.pairs.len() >= MIN_PARALLEL_PAIRS;
-        const CHUNK_PAIRS: usize = 1024;
 
-        for (chunk_start, chunk) in params
-            .pairs
-            .chunks(CHUNK_PAIRS)
-            .enumerate()
-            .map(|(ci, c)| (ci * CHUNK_PAIRS, c))
-        {
-            // Per-pair edge lists, in pair order (rayon's indexed
-            // `par_iter().map().collect()` preserves order, so query_idx
-            // stays monotonic within the batch).
+        // #438: partition into multi-target source GROUPS (shared forward) +
+        // per-pair pairs (singletons + K=1-src misses), then process + STREAM in
+        // work-chunks of ~CHUNK_PAIRS. Chunked streaming keeps resident memory
+        // bounded to one chunk even at the 500k-pair cap — the #438-review
+        // BLOCKER fix: we no longer materialise EVERY pair's edge rows before
+        // emitting (which was unbounded by the pair cap for long routes).
+        let (group_vec, per_pair_work) =
+            group_pairs(&state, &mode_data, mode, &params.pairs, parallel);
+        // Work-chunk size in PAIRS. Bounds peak ≈ CHUNK_PAIRS × path_len × 32B
+        // (~2 MB typical, ~200 MB worst-case long routes) vs unbounded before.
+        const CHUNK_PAIRS: usize = 2048;
+        const ROWS_PER_BATCH: usize = 20_000;
+
+        // Build + stream row-bounded RecordBatches from one work-chunk's results
+        // (sorted by query_idx). Returns false on client disconnect / Arrow
+        // error so the caller stops. `per_pair` is dropped after emit, freeing
+        // the chunk's rows before the next chunk is computed.
+        let emit = |mut per_pair: Vec<PairEdges>| -> bool {
+            per_pair.sort_unstable_by_key(|p| p.query_idx);
+            let mut idx = 0usize;
+            while idx < per_pair.len() {
+                let mut end = idx;
+                let mut rows_in_batch = 0usize;
+                while end < per_pair.len() && rows_in_batch < ROWS_PER_BATCH {
+                    rows_in_batch += per_pair[end].rows.len().max(1);
+                    end += 1;
+                }
+                let mut query_idx_b = UInt32Builder::with_capacity(rows_in_batch);
+                let mut target_idx_b = UInt32Builder::with_capacity(rows_in_batch);
+                let mut edge_seq_b = UInt32Builder::with_capacity(rows_in_batch);
+                let mut osm_from_b = Int64Builder::with_capacity(rows_in_batch);
+                let mut osm_to_b = Int64Builder::with_capacity(rows_in_batch);
+                let mut dur_ms_b = UInt32Builder::with_capacity(rows_in_batch);
+                let mut dist_m_b = UInt32Builder::with_capacity(rows_in_batch);
+
+                for pe in &per_pair[idx..end] {
+                    if pe.rows.is_empty() {
+                        query_idx_b.append_value(pe.query_idx);
+                        target_idx_b.append_value(0);
+                        edge_seq_b.append_null();
+                        osm_from_b.append_null();
+                        osm_to_b.append_null();
+                        dur_ms_b.append_null();
+                        dist_m_b.append_null();
+                    } else {
+                        for row in &pe.rows {
+                            query_idx_b.append_value(pe.query_idx);
+                            target_idx_b.append_value(0);
+                            edge_seq_b.append_value(row.edge_seq);
+                            osm_from_b.append_value(row.osm_from);
+                            osm_to_b.append_value(row.osm_to);
+                            dur_ms_b.append_value(row.dur_ms);
+                            dist_m_b.append_value(row.dist_m);
+                        }
+                    }
+                }
+                idx = end;
+
+                let batch = match RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(query_idx_b.finish()) as ArrayRef,
+                        Arc::new(target_idx_b.finish()),
+                        Arc::new(edge_seq_b.finish()),
+                        Arc::new(osm_from_b.finish()),
+                        Arc::new(osm_to_b.finish()),
+                        Arc::new(dur_ms_b.finish()),
+                        Arc::new(dist_m_b.finish()),
+                    ],
+                ) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(Status::internal(format!(
+                            "edges_batch Arrow build: {e}"
+                        ))));
+                        return false;
+                    }
+                };
+                if tx.blocking_send(Ok(batch)).is_err() {
+                    return false; // Client disconnected.
+                }
+            }
+            true
+        };
+
+        // Phase A: multi-target groups, chunked by accumulated target count so
+        // each chunk holds ~CHUNK_PAIRS pairs. flat_map keeps each group's
+        // settle_forward + its targets on one rayon thread (frozen tree valid).
+        let mut gi = 0usize;
+        while gi < group_vec.len() {
+            let mut pairs_in_chunk = 0usize;
+            let mut gj = gi;
+            while gj < group_vec.len() && pairs_in_chunk < CHUNK_PAIRS {
+                pairs_in_chunk += group_vec[gj].1.len();
+                gj += 1;
+            }
+            let chunk = &group_vec[gi..gj];
+            gi = gj;
             let per_pair: Vec<PairEdges> = if parallel {
                 chunk
                     .par_iter()
-                    .enumerate()
-                    .map(|(local_i, pair)| {
-                        let query = super::query::CchQuery::new(&mode_data);
-                        edges_for_pair(
-                            &state,
-                            &mode_data,
-                            mode,
-                            &query,
-                            (chunk_start + local_i) as u32,
-                            pair,
-                        )
+                    .flat_map(|(src_rank, targets)| {
+                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             } else {
-                // Small-batch fast path: no pool overhead for tiny calls.
-                let query = super::query::CchQuery::new(&mode_data);
                 chunk
                     .iter()
-                    .enumerate()
-                    .map(|(local_i, pair)| {
-                        edges_for_pair(
-                            &state,
-                            &mode_data,
-                            mode,
-                            &query,
-                            (chunk_start + local_i) as u32,
-                            pair,
-                        )
+                    .flat_map(|(src_rank, targets)| {
+                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             };
-
-            // Flatten into Arrow builders. An unreachable pair (no rows)
-            // contributes one all-null edge row so it stays identifiable
-            // via query_idx with edge_seq IS NULL.
-            let total_rows: usize = per_pair.iter().map(|p| p.rows.len().max(1)).sum();
-            let mut query_idx_b = UInt32Builder::with_capacity(total_rows);
-            let mut target_idx_b = UInt32Builder::with_capacity(total_rows);
-            let mut edge_seq_b = UInt32Builder::with_capacity(total_rows);
-            let mut osm_from_b = Int64Builder::with_capacity(total_rows);
-            let mut osm_to_b = Int64Builder::with_capacity(total_rows);
-            let mut dur_ms_b = UInt32Builder::with_capacity(total_rows);
-            let mut dist_m_b = UInt32Builder::with_capacity(total_rows);
-
-            for pe in &per_pair {
-                if pe.rows.is_empty() {
-                    query_idx_b.append_value(pe.query_idx);
-                    target_idx_b.append_value(0);
-                    edge_seq_b.append_null();
-                    osm_from_b.append_null();
-                    osm_to_b.append_null();
-                    dur_ms_b.append_null();
-                    dist_m_b.append_null();
-                } else {
-                    for row in &pe.rows {
-                        query_idx_b.append_value(pe.query_idx);
-                        target_idx_b.append_value(0);
-                        edge_seq_b.append_value(row.edge_seq);
-                        osm_from_b.append_value(row.osm_from);
-                        osm_to_b.append_value(row.osm_to);
-                        dur_ms_b.append_value(row.dur_ms);
-                        dist_m_b.append_value(row.dist_m);
-                    }
-                }
+            if !emit(per_pair) {
+                return;
             }
+        }
 
-            let batch = match RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(query_idx_b.finish()) as ArrayRef,
-                    Arc::new(target_idx_b.finish()),
-                    Arc::new(edge_seq_b.finish()),
-                    Arc::new(osm_from_b.finish()),
-                    Arc::new(osm_to_b.finish()),
-                    Arc::new(dur_ms_b.finish()),
-                    Arc::new(dist_m_b.finish()),
-                ],
-            ) {
-                Ok(b) => b,
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(Status::internal(format!(
-                        "edges_batch Arrow build: {e}"
-                    ))));
-                    return;
-                }
+        // Phase B: per-pair work (singletons with cached ranks + K=1-src
+        // misses), chunked.
+        for chunk in per_pair_work.chunks(CHUNK_PAIRS) {
+            let per_pair: Vec<PairEdges> = if parallel {
+                chunk
+                    .par_iter()
+                    .map(|w| {
+                        let query = super::query::CchQuery::new(&mode_data);
+                        process_per_pair_work(&state, &mode_data, mode, &query, w)
+                    })
+                    .collect()
+            } else {
+                let query = super::query::CchQuery::new(&mode_data);
+                chunk
+                    .iter()
+                    .map(|w| process_per_pair_work(&state, &mode_data, mode, &query, w))
+                    .collect()
             };
-
-            if tx.blocking_send(Ok(batch)).is_err() {
-                return; // Client disconnected.
+            if !emit(per_pair) {
+                return;
             }
         }
     });
@@ -2889,5 +3246,123 @@ impl FlightService for ButterflyFlight {
         Err(Status::unimplemented(
             "DoAction not supported. Use DoGet with tickets.",
         ))
+    }
+}
+
+#[cfg(test)]
+mod edges_batch_grouping_tests {
+    use super::{compute_edges_flat, compute_edges_grouped};
+    use crate::model::types::Mode;
+    use crate::server::state::{LoadOptions, ServerState};
+    use std::path::PathBuf;
+
+    /// #438: equivalence oracle — the source-GROUPED edges path must produce
+    /// the SAME result as the per-pair FLAT path: identical reachability and
+    /// identical per-pair total duration (the optimised metric). Equal-cost
+    /// ties may pick a different (still-shortest) edge sequence, so byte-
+    /// identity is asserted as a high rate, not 100%.
+    ///
+    /// Skipped unless `BT_EDGES_CONTAINER` points at a Belgium `.butterfly`
+    /// (the step4-7 CCH is large and not committed). Run with:
+    /// ```text
+    /// BT_EDGES_CONTAINER=/path/belgium.butterfly \
+    ///   cargo test -p butterfly-route edges_grouped_matches_flat -- --nocapture
+    /// ```
+    #[test]
+    fn edges_grouped_matches_flat() {
+        let Some(path) = std::env::var("BT_EDGES_CONTAINER").ok().map(PathBuf::from) else {
+            eprintln!(
+                "skipping edges_grouped_matches_flat: set BT_EDGES_CONTAINER to a Belgium .butterfly"
+            );
+            return;
+        };
+
+        let state = ServerState::load_from_container_with_options(
+            &path,
+            Some(&["car".to_string()]),
+            &LoadOptions {
+                eager_verify: false,
+                warmup_on_boot: false,
+            },
+        )
+        .expect("load container");
+        let mode_idx = *state.mode_lookup.get("car").expect("car mode loaded");
+        let mode = Mode(mode_idx);
+        let mode_data = state.get_mode(mode);
+
+        // Source-sharing workload: 60 sources × 25 nearby targets, plus a few
+        // deliberate edge cases (source==target, a non-contiguous interleave).
+        let mut rng_state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            rng_state
+        };
+        let unit = |r: u64| (r as f64) / (u64::MAX as f64);
+        let mut pairs: Vec<[f64; 4]> = Vec::new();
+        for _ in 0..60 {
+            let slon = 2.6 + unit(next()) * 3.7;
+            let slat = 49.6 + unit(next()) * 1.8;
+            for _ in 0..25 {
+                let dlon = (slon + (unit(next()) - 0.5) * 0.5).clamp(2.55, 6.40);
+                let dlat = (slat + (unit(next()) - 0.5) * 0.5).clamp(49.50, 51.50);
+                pairs.push([slon, slat, dlon, dlat]);
+            }
+            // source==target edge case for this source.
+            pairs.push([slon, slat, slon, slat]);
+        }
+
+        for parallel in [false, true] {
+            let flat = compute_edges_flat(&state, &mode_data, mode, &pairs, parallel);
+            let grouped = compute_edges_grouped(&state, &mode_data, mode, &pairs, parallel);
+            assert_eq!(flat.len(), pairs.len());
+            assert_eq!(grouped.len(), pairs.len());
+
+            let mut byte_identical = 0usize;
+            for (f, g) in flat.iter().zip(grouped.iter()) {
+                assert_eq!(
+                    f.query_idx, g.query_idx,
+                    "query_idx order (parallel={parallel})"
+                );
+                assert_eq!(
+                    f.rows.is_empty(),
+                    g.rows.is_empty(),
+                    "reachability for query_idx {} (parallel={parallel})",
+                    f.query_idx
+                );
+                let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
+                let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+                assert_eq!(
+                    f_dur, g_dur,
+                    "total duration for query_idx {} (parallel={parallel})",
+                    f.query_idx
+                );
+                let same = f.rows.len() == g.rows.len()
+                    && f.rows.iter().zip(g.rows.iter()).all(|(a, b)| {
+                        a.edge_seq == b.edge_seq
+                            && a.osm_from == b.osm_from
+                            && a.osm_to == b.osm_to
+                            && a.dur_ms == b.dur_ms
+                            && a.dist_m == b.dist_m
+                    });
+                if same {
+                    byte_identical += 1;
+                }
+            }
+            let rate = byte_identical as f64 / pairs.len() as f64;
+            eprintln!(
+                "edges_grouped_matches_flat parallel={parallel}: byte-identical {byte_identical}/{} ({:.2}%)",
+                pairs.len(),
+                rate * 100.0
+            );
+            // Reachability + total-duration are exact (asserted above). Edge
+            // sequences match for all but rare equal-cost ties.
+            assert!(
+                rate > 0.95,
+                "byte-identity {:.2}% too low (parallel={parallel}) — ties should be rare",
+                rate * 100.0
+            );
+        }
     }
 }
