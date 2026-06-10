@@ -44,6 +44,7 @@ pub mod snap_index;
 
 // Server-only flat edge geometry sections (#155)
 pub mod edge_geom;
+pub mod edge_osm;
 
 // Multi-region coarse tile coverage set (#142)
 pub mod region_tiles;
@@ -68,6 +69,7 @@ pub use ebg_csr::{EbgCsr, EbgCsrFile};
 pub use ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
 pub use ebg_turn_table::{TurnEntry, TurnKind, TurnTable, TurnTableFile};
 pub use edge_geom::{EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile};
+pub use edge_osm::{EdgeOsmIds, EdgeOsmIdsFile, EdgeOsmOffsets, EdgeOsmOffsetsFile};
 pub use filtered_ebg::{FilteredEbg, FilteredEbgFile};
 pub use hybrid_state::{HybridState, HybridStateFile};
 pub use mmap::ArcCow;

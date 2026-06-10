@@ -284,6 +284,11 @@ pub struct ServerState {
     /// `EdgeGeometry::from_legacy_polylines` at boot. The accessors are
     /// identical either way.
     pub edge_geom: EdgeGeometry,
+    /// #460: per-NBG-edge OSM node id chains (same `geom_idx` space as
+    /// `edge_geom`). Empty when the container pre-dates the sections —
+    /// `edges_flow` then emits NBG-endpoint rows instead of
+    /// per-OSM-segment rows.
+    pub edge_osm: crate::server::edge_osm::EdgeOsmChains,
     /// NBG compact node id → OSM node id. Indexed by `compact_id`,
     /// loaded once at startup from `step3*/nbg.node_map`. Used by the
     /// Flight `edges_batch` action (#125) to expose per-edge OSM node
@@ -643,6 +648,9 @@ impl ServerState {
             ebg_csr,
             nbg_geo,
             edge_geom,
+            // #460: chains only ship in containers; the dir-tree boot
+            // path serves NBG-endpoint rows.
+            edge_osm: crate::server::edge_osm::EdgeOsmChains::empty(),
             nbg_node_to_osm,
             modes: modes_slots,
             mode_names,
@@ -1526,6 +1534,24 @@ impl ServerState {
         };
         crate::server::rss::checkpoint("load.edge_geom");
 
+        // #460: per-edge OSM node id chains — optional sections (absent
+        // in pre-#460 containers; edges_flow then emits NBG-endpoint
+        // rows and logs once).
+        let edge_osm = match try_load_edge_osm(&container, &mmap_for_bytes, &lazy_arc)? {
+            Some(chains) => {
+                tracing::info!("loaded per-edge OSM id chains zero-copy (#460)");
+                chains
+            }
+            None => {
+                tracing::warn!(
+                    "edge_osm sections missing — edges_flow emits NBG-endpoint rows \
+                     (re-run step3 + pack for per-OSM-segment expansion, #460)"
+                );
+                crate::server::edge_osm::EdgeOsmChains::empty()
+            }
+        };
+        crate::server::rss::checkpoint("load.edge_osm");
+
         // #160: optionally schedule a background warmup pass to walk
         // every still-`Unverified` section's CRC in parallel. This
         // matches pre-#160 total-coverage at the cost of a transient
@@ -1581,6 +1607,7 @@ impl ServerState {
             ebg_csr,
             nbg_geo,
             edge_geom,
+            edge_osm,
             nbg_node_to_osm,
             modes: modes_slots,
             mode_names,
@@ -3801,6 +3828,44 @@ fn try_load_packed_snap_index(
 /// falls back to building from the heap polylines.
 ///
 /// #160: per-section CRC verification is gated by [`LazyContainer`].
+/// #460: load the optional per-edge OSM id chain sections. `Ok(None)`
+/// when the container pre-dates them.
+fn try_load_edge_osm(
+    container: &crate::formats::butterfly_dat::Container,
+    mmap: &std::sync::Arc<memmap2::Mmap>,
+    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
+) -> Result<Option<crate::server::edge_osm::EdgeOsmChains>> {
+    use crate::formats::edge_osm::{EdgeOsmIdsFile, EdgeOsmOffsetsFile};
+
+    let off_entry = match container.get("shared/edge_osm_offsets") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let ids_entry = match container.get("shared/edge_osm_ids") {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    lazy.verify_now("shared/edge_osm_offsets")?;
+    lazy.verify_now("shared/edge_osm_ids")?;
+
+    let off = EdgeOsmOffsetsFile::read_from_mmap_unverified(
+        std::sync::Arc::clone(mmap),
+        off_entry.offset as usize,
+        off_entry.len as usize,
+    )
+    .with_context(|| "reading shared/edge_osm_offsets zero-copy")?;
+    let ids = EdgeOsmIdsFile::read_from_mmap_unverified(
+        std::sync::Arc::clone(mmap),
+        ids_entry.offset as usize,
+        ids_entry.len as usize,
+    )
+    .with_context(|| "reading shared/edge_osm_ids zero-copy")?;
+
+    let chains = crate::server::edge_osm::EdgeOsmChains::from_sections(off, ids)
+        .with_context(|| "stitching edge_osm sections")?;
+    Ok(Some(chains))
+}
+
 fn try_load_edge_geometry(
     container: &crate::formats::butterfly_dat::Container,
     mmap: &std::sync::Arc<memmap2::Mmap>,
