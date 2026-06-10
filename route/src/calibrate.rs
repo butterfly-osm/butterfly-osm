@@ -1312,6 +1312,138 @@ mod tests {
         // Profile is schema-valid and writeable.
         TrafficProfile::from_json(&res.profile.to_json_string().unwrap()).unwrap();
     }
+
+    /// #428 matrix counterpart of the e2e test above: end-to-end through the
+    /// production CRC-validated `way_attrs.<mode>.bin` v2 writer + reader and
+    /// the CSV adapter, with DISTINCT highway_class codes and per-cell
+    /// observed ratios planted. Proves `run_calibration` with
+    /// `fit_matrix: true` emits a matrix that SEPARATES two cells inside the
+    /// same density class (motorway×rural 0.95 vs trunk×rural 0.70 — exactly
+    /// what the per-density vector cannot express) while a starved cell is
+    /// omitted and falls back to the density marginal at application time.
+    #[test]
+    fn run_calibration_end_to_end_matrix_on_real_way_attrs_format() {
+        use crate::formats::way_attrs::{self as wa, WayAttr};
+        use crate::profile_abi::{Mode, WayOutput};
+
+        const MOTORWAY: u16 = 1;
+        const TRUNK: u16 = 3;
+        const RESIDENTIAL: u16 = 12;
+        const SERVICE: u16 = 13;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mmps = |kmh: f32| (kmh / 0.003_6) as u32;
+        let mut attrs: Vec<WayAttr> = Vec::new();
+        let mut plant = |ids: std::ops::Range<i64>, kmh: f32, density: DensityClass, hw: u16| {
+            for id in ids {
+                attrs.push(WayAttr {
+                    way_id: id,
+                    output: WayOutput {
+                        base_speed_mmps: mmps(kmh),
+                        density_class: density.to_u8(),
+                        highway_class: hw,
+                        ..Default::default()
+                    },
+                });
+            }
+        };
+        // Two highway codes inside the SAME density class (Rural) — the
+        // separation the per-density vector cannot express.
+        plant(0..150, 120.0, DensityClass::Rural, MOTORWAY);
+        plant(1000..1150, 100.0, DensityClass::Rural, TRUNK);
+        // A well-sampled UrbanHigh cell pins the density marginal at 0.50...
+        plant(2000..2150, 50.0, DensityClass::UrbanHigh, RESIDENTIAL);
+        // ...and a starved cell (5 obs < min_samples 100) at ratio 0.30 must
+        // NOT be emitted: lookups for it fall back to that 0.50 marginal.
+        plant(3000..3005, 50.0, DensityClass::UrbanHigh, SERVICE);
+
+        let wa_path = dir.path().join("way_attrs.car.bin");
+        wa::write(&wa_path, Mode(0), &attrs, &[0u8; 32], &[0u8; 32]).unwrap();
+
+        let obs_path = dir.path().join("obs.csv");
+        let mut f = std::fs::File::create(&obs_path).unwrap();
+        writeln!(f, "way_id,observed_avg_speed_kmh,sample_count").unwrap();
+        for id in 0..150i64 {
+            writeln!(f, "{id},114.0,1").unwrap(); // 114 / 120 = 0.95
+        }
+        for id in 1000..1150i64 {
+            writeln!(f, "{id},70.0,1").unwrap(); // 70 / 100 = 0.70
+        }
+        for id in 2000..2150i64 {
+            writeln!(f, "{id},25.0,1").unwrap(); // 25 / 50 = 0.50
+        }
+        for id in 3000..3005i64 {
+            writeln!(f, "{id},15.0,1").unwrap(); // 15 / 50 = 0.30, starved
+        }
+        f.flush().unwrap();
+
+        let params = CalibrationParams {
+            fit_matrix: true,
+            ..Default::default()
+        };
+        let res = run_calibration(&obs_path, &wa_path, &params).unwrap();
+        assert_eq!(res.matched, 455);
+        assert_eq!(res.unmatched, 0);
+
+        // The matrix separates motorway×rural from trunk×rural.
+        assert!(res.profile.has_matrix());
+        assert!(res.profile.matrix.contains_key(&MOTORWAY));
+        assert!(res.profile.matrix.contains_key(&TRUNK));
+        assert!(res.profile.matrix.contains_key(&RESIDENTIAL));
+        let cell = |hw: u16, c: DensityClass| res.profile.factor_for_cell(hw, c);
+        assert!(
+            (cell(MOTORWAY, DensityClass::Rural) - 0.95).abs() < 1e-3,
+            "motorway×rural: {}",
+            cell(MOTORWAY, DensityClass::Rural)
+        );
+        assert!(
+            (cell(TRUNK, DensityClass::Rural) - 0.70).abs() < 1e-3,
+            "trunk×rural: {}",
+            cell(TRUNK, DensityClass::Rural)
+        );
+        assert!(
+            (cell(RESIDENTIAL, DensityClass::UrbanHigh) - 0.50).abs() < 1e-3,
+            "residential×urban_high: {}",
+            cell(RESIDENTIAL, DensityClass::UrbanHigh)
+        );
+        // The vector's Rural marginal is a blend — it cannot carry both.
+        let rural_vec = res.profile.factor_for(DensityClass::Rural);
+        assert!(
+            (0.70 - 1e-3..=0.95 + 1e-3).contains(&rural_vec),
+            "rural marginal {rural_vec} should blend 0.70 and 0.95"
+        );
+
+        // The starved service×urban_high cell is OMITTED (no row for code 13)
+        // and application-time lookup falls back to the density marginal —
+        // NOT the starved cell's own 0.30 ratio.
+        assert!(!res.profile.matrix.contains_key(&SERVICE));
+        let urban_high_vec = res.profile.factor_for(DensityClass::UrbanHigh);
+        assert_eq!(
+            cell(SERVICE, DensityClass::UrbanHigh),
+            urban_high_vec,
+            "starved cell must fall back to the density marginal"
+        );
+        assert!(
+            (urban_high_vec - 0.50).abs() < 1e-3,
+            "urban_high marginal {urban_high_vec} pinned by the residential mass"
+        );
+        // Diagnostics record the starved cell, marked not-emitted.
+        let starved = res
+            .per_cell
+            .iter()
+            .find(|c| c.highway_class == SERVICE && c.class == DensityClass::UrbanHigh)
+            .unwrap();
+        assert!(!starved.emitted);
+        assert_eq!(starved.factor, None);
+        assert_eq!(starved.n_obs, 5);
+
+        // The emitted profile passes the exact schema step 8 validates.
+        let json = res.profile.to_json_string().unwrap();
+        let reparsed = TrafficProfile::from_json(&json).unwrap();
+        assert_eq!(reparsed, res.profile);
+        assert!(json.contains("\"matrix\""));
+    }
 }
 
 // =====================================================================
