@@ -2223,7 +2223,13 @@ pub fn compute_edges_tree(
 ) -> Vec<PairEdges> {
     let (group_vec, per_pair_work) = group_pairs(state, mode_data, mode, pairs, parallel);
 
-    let group_refs: Vec<&(u32, Vec<GroupedTarget>)> = group_vec.iter().collect();
+    // Locality batching: CCH ranks come from nested dissection, so
+    // rank-adjacent sources are spatially close. Sorting groups by source
+    // rank before chunking keeps each K-lane batch's union selection tight
+    // (an arrival-order batch can mix sources from different cities, and
+    // every lane then pays the scan over the union's full ancestry).
+    let mut group_refs: Vec<&(u32, Vec<GroupedTarget>)> = group_vec.iter().collect();
+    group_refs.sort_unstable_by_key(|(src, _)| *src);
     let batches: Vec<Vec<&(u32, Vec<GroupedTarget>)>> = group_refs
         .chunks(crate::range::tree_phast::TREE_LANES)
         .map(|c| c.to_vec())
@@ -2268,9 +2274,7 @@ fn process_tree_batch(
     mode: Mode,
     batch: &[&(u32, Vec<GroupedTarget>)],
 ) -> Vec<PairEdges> {
-    use crate::range::tree_phast::{
-        TreeSettle, tree_lane_backtrack, tree_resweep, tree_settle_restricted_batch,
-    };
+    use crate::range::tree_phast::{TreeSettle, tree_lane_backtrack, tree_settle_restricted_batch};
     let sources: Vec<u32> = batch.iter().map(|(s, _)| *s).collect();
     let union_targets: Vec<u32> = batch
         .iter()
@@ -2290,14 +2294,6 @@ fn process_tree_batch(
         ) == TreeSettle::Ok;
 
     for (k, (src_rank, targets)) in batch.iter().enumerate() {
-        if settled {
-            tree_resweep(
-                &mode_data.cch_topo,
-                &mode_data.cch_weights,
-                &mode_data.down_rev_flat,
-                *src_rank,
-            );
-        }
         for t in targets {
             let hit = if settled {
                 t.dst_rank
