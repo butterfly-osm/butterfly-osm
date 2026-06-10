@@ -3850,61 +3850,6 @@ fn try_load_edge_geometry(
     Ok(Some(eg))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::build_role_masks;
-    use crate::formats::FilteredEbg;
-    use crate::profile_abi::Mode;
-
-    fn tiny_filtered_ebg(offsets: Vec<u64>, heads: Vec<u32>) -> FilteredEbg {
-        let n = offsets.len() - 1;
-        FilteredEbg {
-            mode: Mode(1),
-            n_filtered_nodes: n as u32,
-            n_filtered_arcs: heads.len() as u64,
-            n_original_nodes: n as u32,
-            inputs_sha: [0; 32],
-            offsets: crate::formats::ArcCow::from_vec(offsets),
-            heads: crate::formats::ArcCow::from_vec(heads.clone()),
-            original_arc_idx: crate::formats::ArcCow::from_vec((0..heads.len() as u32).collect()),
-            filtered_to_original: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
-            original_to_filtered: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
-        }
-    }
-
-    fn bit(mask: &[u64], node: usize) -> bool {
-        (mask[node / 64] & (1u64 << (node % 64))) != 0
-    }
-
-    #[test]
-    fn role_masks_keep_core_reachable_stubs_and_drop_small_sccs() {
-        // 0 -> 1, 1 <-> 2 <-> 6, 2 -> 3, plus isolated 4 <-> 5.
-        // The largest SCC is {1,2,6}. Sources may include 0 because it
-        // can reach the core; destinations may include 3 because the
-        // core can reach it. The isolated SCC looks internally valid
-        // but is not useful for Belgium-wide table/route snaps.
-        let fe = tiny_filtered_ebg(vec![0, 1, 2, 5, 5, 6, 7, 8], vec![1, 2, 1, 6, 3, 5, 4, 1]);
-
-        let (src, dst) = build_role_masks(&fe);
-
-        assert!(bit(&src, 0));
-        assert!(bit(&src, 1));
-        assert!(bit(&src, 2));
-        assert!(!bit(&src, 3));
-        assert!(!bit(&src, 4));
-        assert!(!bit(&src, 5));
-        assert!(bit(&src, 6));
-
-        assert!(!bit(&dst, 0));
-        assert!(bit(&dst, 1));
-        assert!(bit(&dst, 2));
-        assert!(bit(&dst, 3));
-        assert!(!bit(&dst, 4));
-        assert!(!bit(&dst, 5));
-        assert!(bit(&dst, 6));
-    }
-}
-
 /// #450: field-clone a loaded ModeData. Cheap on the container path — every
 /// heavy field is Arc/mmap-backed (ArcCow / WeightArray / flats borrowed from
 /// the container mapping); only small Vecs copy. Used to register
@@ -4100,5 +4045,60 @@ fn read_recustomize_cache(
             tracing::info!(error = %e, path = %path.display(), "recustomize cache unusable — recomputing");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_role_masks;
+    use crate::formats::FilteredEbg;
+    use crate::profile_abi::Mode;
+
+    fn tiny_filtered_ebg(offsets: Vec<u64>, heads: Vec<u32>) -> FilteredEbg {
+        let n = offsets.len() - 1;
+        FilteredEbg {
+            mode: Mode(1),
+            n_filtered_nodes: n as u32,
+            n_filtered_arcs: heads.len() as u64,
+            n_original_nodes: n as u32,
+            inputs_sha: [0; 32],
+            offsets: crate::formats::ArcCow::from_vec(offsets),
+            heads: crate::formats::ArcCow::from_vec(heads.clone()),
+            original_arc_idx: crate::formats::ArcCow::from_vec((0..heads.len() as u32).collect()),
+            filtered_to_original: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
+            original_to_filtered: crate::formats::ArcCow::from_vec((0..n as u32).collect()),
+        }
+    }
+
+    fn bit(mask: &[u64], node: usize) -> bool {
+        (mask[node / 64] & (1u64 << (node % 64))) != 0
+    }
+
+    #[test]
+    fn role_masks_keep_core_reachable_stubs_and_drop_small_sccs() {
+        // 0 -> 1, 1 <-> 2 <-> 6, 2 -> 3, plus isolated 4 <-> 5.
+        // The largest SCC is {1,2,6}. Sources may include 0 because it
+        // can reach the core; destinations may include 3 because the
+        // core can reach it. The isolated SCC looks internally valid
+        // but is not useful for Belgium-wide table/route snaps.
+        let fe = tiny_filtered_ebg(vec![0, 1, 2, 5, 5, 6, 7, 8], vec![1, 2, 1, 6, 3, 5, 4, 1]);
+
+        let (src, dst) = build_role_masks(&fe);
+
+        assert!(bit(&src, 0));
+        assert!(bit(&src, 1));
+        assert!(bit(&src, 2));
+        assert!(!bit(&src, 3));
+        assert!(!bit(&src, 4));
+        assert!(!bit(&src, 5));
+        assert!(bit(&src, 6));
+
+        assert!(!bit(&dst, 0));
+        assert!(bit(&dst, 1));
+        assert!(bit(&dst, 2));
+        assert!(bit(&dst, 3));
+        assert!(!bit(&dst, 4));
+        assert!(!bit(&dst, 5));
+        assert!(bit(&dst, 6));
     }
 }
