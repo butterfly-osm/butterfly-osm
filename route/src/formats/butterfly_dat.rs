@@ -213,6 +213,13 @@ pub enum SectionKind {
     /// geometry (#155). `[i32; 2 * n_points]`. Indexed via
     /// `EdgeGeomOffsets`.
     EdgeGeomPoints = 0x000C_0002,
+    /// CSR offsets over per-NBG-edge OSM node ID chains (#460).
+    /// `[u32; n_edges + 1]`, same edge indexing space (and identical
+    /// per-edge counts) as `EdgeGeomOffsets`.
+    EdgeOsmOffsets = 0x000C_0003,
+    /// Flat per-vertex OSM node IDs (#460). `[i64; n_ids]`, canonical
+    /// u→v direction. Indexed via `EdgeOsmOffsets`.
+    EdgeOsmIds = 0x000C_0004,
 
     /// Cross-region overlay manifest (#91 Phase 2). JSON metadata:
     /// region order, mode list, border-crossing count, build provenance.
@@ -318,6 +325,8 @@ impl SectionKind {
 
             0x000C_0001 => Self::EdgeGeomOffsets,
             0x000C_0002 => Self::EdgeGeomPoints,
+            0x000C_0003 => Self::EdgeOsmOffsets,
+            0x000C_0004 => Self::EdgeOsmIds,
 
             0x000D_0001 => Self::OverlayManifest,
             0x000D_0002 => Self::OverlayBorderNodes,
@@ -371,6 +380,8 @@ impl SectionKind {
             Self::SnapModeMask => "mode/snap_mask",
             Self::EdgeGeomOffsets => "shared/edge_geom_offsets",
             Self::EdgeGeomPoints => "shared/edge_geom_points",
+            Self::EdgeOsmOffsets => "shared/edge_osm_offsets",
+            Self::EdgeOsmIds => "shared/edge_osm_ids",
             Self::OverlayManifest => "overlay/manifest.json",
             Self::OverlayBorderNodes => "overlay/border_nodes",
             Self::OverlayMatrix => "overlay/matrix",

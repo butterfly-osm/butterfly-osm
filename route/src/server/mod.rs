@@ -36,6 +36,7 @@ pub mod border;
 pub mod catchment;
 pub mod cross_region;
 pub mod edge_geom;
+pub mod edge_osm;
 pub mod elevation;
 pub mod evictable;
 pub mod exclude;
