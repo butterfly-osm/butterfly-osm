@@ -1515,6 +1515,14 @@ impl ServerState {
             modes_data.push(freeflow);
             mode_lookup.insert("car_freeflow".to_string(), new_index as u8);
             mode_names.push("car_freeflow".to_string());
+            // Snap masks are indexed by mode_idx — the synthetic mode shares
+            // car's eligible-edges mask (same fix as the traffic variants;
+            // without it every snap for this mode returns None → no routes).
+            if let Some(base_mask) = snap_index.masks.get(car_idx as usize).cloned() {
+                snap_index.masks.push(base_mask);
+            } else {
+                tracing::warn!("car snap mask missing — car_freeflow snapping degraded");
+            }
             tracing::info!("registered car_freeflow (clean legal-limit base) alongside car (#450)");
         }
 
