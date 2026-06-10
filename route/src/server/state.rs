@@ -1502,6 +1502,22 @@ impl ServerState {
             lazy_arc.spawn_warmup();
         }
 
+        // #450: register `car_freeflow` — an alias of the clean legal-limit
+        // base car AS LOADED. When the #433 boot recustomization later swaps
+        // the `car` slot to calibrated/flow-derived weights, this mode keeps
+        // serving free-flow (maxspeed-honoring) — required by traffic
+        // simulation consumers (congested speeds are circular for a sim).
+        // Field-clone is cheap (mmap/Arc-backed sections); the slot is
+        // non-evictable (no container section backs the synthetic name).
+        if let Some(&car_idx) = mode_lookup.get("car") {
+            let freeflow = clone_mode_data(&modes_data[car_idx as usize]);
+            let new_index = modes_data.len();
+            modes_data.push(freeflow);
+            mode_lookup.insert("car_freeflow".to_string(), new_index as u8);
+            mode_names.push("car_freeflow".to_string());
+            tracing::info!("registered car_freeflow (clean legal-limit base) alongside car (#450)");
+        }
+
         // #402: wrap each ModeData in a lazy/evictable slot. The
         // container path retains _mmap_arc + lazy, so the slow path
         // in `get_mode` (lazy reload after compactor eviction) can
@@ -3602,6 +3618,37 @@ mod tests {
         assert!(!bit(&dst, 4));
         assert!(!bit(&dst, 5));
         assert!(bit(&dst, 6));
+    }
+}
+
+/// #450: field-clone a loaded ModeData. Cheap on the container path — every
+/// heavy field is Arc/mmap-backed (ArcCow / WeightArray / flats borrowed from
+/// the container mapping); only small Vecs copy. Used to register
+/// `car_freeflow` as an alias of the pre-recustomization base car.
+fn clone_mode_data(base: &ModeData) -> ModeData {
+    ModeData {
+        mode: base.mode,
+        cch_topo: base.cch_topo.clone(),
+        cch_weights: base.cch_weights.clone(),
+        cch_weights_dist: base.cch_weights_dist.clone(),
+        cch_weights_len_along_time: base.cch_weights_len_along_time.clone(),
+        orig_to_rank: base.orig_to_rank.clone(),
+        filtered_to_original: base.filtered_to_original.clone(),
+        n_filtered_nodes: base.n_filtered_nodes,
+        n_original_nodes: base.n_original_nodes,
+        node_weights: base.node_weights.clone(),
+        mask: base.mask.clone(),
+        has_outbound: base.has_outbound.clone(),
+        has_inbound: base.has_inbound.clone(),
+        up_adj_flat: base.up_adj_flat.clone(),
+        down_rev_flat: base.down_rev_flat.clone(),
+        down_adj_flat: base.down_adj_flat.clone(),
+        up_adj_flat_dist: base.up_adj_flat_dist.clone(),
+        down_rev_flat_dist: base.down_rev_flat_dist.clone(),
+        down_adj_flat_dist: base.down_adj_flat_dist.clone(),
+        up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
+        down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
+        exclude_cache: super::exclude::ExcludeWeightCache::default(),
     }
 }
 
