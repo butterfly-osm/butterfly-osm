@@ -542,7 +542,7 @@ pub fn customize_cch_time_in_memory(
         &[way_attrs::WayAttr],
         &crate::formats::NbgGeo,
     )>,
-) -> Result<CchWeights> {
+) -> Result<(CchWeights, Vec<u32>)> {
     let n_nodes = topo.n_nodes as usize;
 
     // Apply traffic to a private copy of the node time-weights — the caller's
@@ -595,12 +595,15 @@ pub fn customize_cch_time_in_memory(
 
     sanity_check_weights(topo, &time_up, &time_down, "Time", 95.0)?;
 
-    Ok(CchWeights {
-        up: WeightArray::from_vec_u32(time_up),
-        down: WeightArray::from_vec_u32(time_down),
-        up_middle: ArcCow::from_vec(time_up_mid),
-        down_middle: ArcCow::from_vec(time_down_mid),
-    })
+    Ok((
+        CchWeights {
+            up: WeightArray::from_vec_u32(time_up),
+            down: WeightArray::from_vec_u32(time_down),
+            up_middle: ArcCow::from_vec(time_up_mid),
+            down_middle: ArcCow::from_vec(time_down_mid),
+        },
+        node_weights,
+    ))
 }
 
 /// Apply per-density-class speed factors to the in-memory time-weight array.
@@ -1677,7 +1680,7 @@ mod determinism_tests {
         let turns = mod_turns::read_all(&paths[3]).unwrap();
         let ebg_nodes = EbgNodesFile::read(&paths[4]).unwrap();
 
-        let got = customize_cch_time_in_memory(
+        let (got, _adjusted_node_weights) = customize_cch_time_in_memory(
             &topo,
             &filtered_ebg,
             &weights.weights,
