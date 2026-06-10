@@ -883,29 +883,3 @@ The issue is that even with strict relax, the graph structure causes natural re-
 3. **Memory layout** (e.g., SoA vs AoS, rank-alignment)
 4. **Allocation reduction** (e.g., buffer reuse)
 5. **Parallelism** (only after above are exhausted)
-
-## Repo Boundaries (do not conflate)
-
-Four repos, one rule: **the only things that cross between them are data
-artifacts with documented contracts — never code, file-name conventions, or
-provider names.**
-
-| Repo | Visibility | Owns |
-|---|---|---|
-| **butterfly-osm** (this repo) | OPEN | the engine: pipeline, CCH, serve, calibration MATH (`calibrate-traffic`, boot recustomization) |
-| **butterfly-deploy** | private | build/precompute/deploy scripts, MinIO shipping, registry tags, `artifact-info` |
-| **infra** | private | k8s/Argo manifests, init containers, PVC layout (GitOps) |
-| **butterfly-speeds** | private | provider-coupled observed-speeds production: licensed feeds, segment→way_id matching, publishing `s3://butterfly-speeds/<env>/observed_speeds.parquet` |
-
-Rules for THIS repo:
-- May only consume: the `.butterfly` container + its sections, generic runtime
-  inputs at documented paths (`observed_speeds.parquet`, 3 columns: `way_id`,
-  `observed_avg_speed_kmh`, `sample_count`), and env vars.
-- Deploy-side names (`artifact-info`, MinIO buckets/keys, `mc` commands,
-  registry tags) must NOT appear in engine code. For provenance/invalidation,
-  use container-internal identity (`SectionEntry.crc`, `inputs_sha`) — the
-  #444 recustomize cache is the worked example (an `artifact-info` dependency
-  was a review-caught stale-cache bug for generic users).
-- No provider names or provider-specific logic here — that's butterfly-speeds;
-  conversely the calibration math never moves there (its docs/CONTRACT.md is
-  the seam).
