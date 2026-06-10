@@ -5018,7 +5018,7 @@ fn run_edges_batch_bench(
             / expect_assigned.abs().max(1.0);
         assert!(rel < 1e-9, "conservation drift: {rel}");
         println!();
-        println!("  EDGES_FLOW (#460): oracle vs TREE aggregate EXACT (max rel {max_rel:.1e})");
+        println!("  EDGES_FLOW (#460): oracle PASSED (mode-specific asserts above)");
         println!(
             "    ✓ conservation: assigned {:.2} / in {:.2}, unreachable {}",
             summary.total_weight_assigned, summary.total_weight_in, summary.n_unreachable
