@@ -4955,29 +4955,54 @@ fn run_edges_batch_bench(
                 *ref_map.entry((g, r.osm_from, r.osm_to)).or_default() += w;
             }
         }
-        assert_eq!(
-            flow_rows.len(),
-            ref_map.len(),
-            "FLOW distinct-edge count mismatch vs aggregated TREE rows"
-        );
-        let mut max_rel = 0.0_f64;
-        for r in &flow_rows {
-            let reference = ref_map
-                .get(&(r.group, r.osm_from, r.osm_to))
-                .copied()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "FLOW edge ({},{},{}) absent from TREE aggregate",
-                        r.group, r.osm_from, r.osm_to
-                    )
-                });
-            let rel = (r.flow - reference).abs() / reference.abs().max(1.0);
-            max_rel = max_rel.max(rel);
+        if state.edge_osm.is_empty() {
+            // No id chains in the container → flow rows are NBG-level and
+            // must EXACTLY equal the aggregated tree rows.
+            assert_eq!(
+                flow_rows.len(),
+                ref_map.len(),
+                "FLOW distinct-edge count mismatch vs aggregated TREE rows"
+            );
+            let mut max_rel = 0.0_f64;
+            for r in &flow_rows {
+                let reference = ref_map
+                    .get(&(r.group, r.osm_from, r.osm_to))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "FLOW edge ({},{},{}) absent from TREE aggregate",
+                            r.group, r.osm_from, r.osm_to
+                        )
+                    });
+                let rel = (r.flow - reference).abs() / reference.abs().max(1.0);
+                max_rel = max_rel.max(rel);
+            }
+            assert!(
+                max_rel < 1e-9,
+                "FLOW value drift vs TREE aggregate: {max_rel}"
+            );
+            println!("  EDGES_FLOW oracle mode: NBG-exact (no id chains in container)");
+        } else {
+            // Chains present → flow rows are per-OSM-segment (#460); the
+            // NBG-keyed tree aggregate is not key-comparable. Assert the
+            // expansion band (~3.3 segments per NBG edge on Belgium) and
+            // mass conservation; the authoritative per-segment validation
+            // is the consumer's reference-table join gate.
+            let expansion = flow_rows.len() as f64 / ref_map.len().max(1) as f64;
+            assert!(
+                (1.0..=8.0).contains(&expansion),
+                "per-OSM-segment expansion factor {expansion:.2} outside sanity band"
+            );
+            let flow_mass: f64 = flow_rows.iter().map(|r| r.flow).sum();
+            let nbg_mass: f64 = ref_map.values().sum();
+            assert!(
+                flow_mass >= nbg_mass * 0.999,
+                "expanded mass {flow_mass:.1} below NBG mass {nbg_mass:.1} — segments lost"
+            );
+            println!(
+                "  EDGES_FLOW oracle mode: per-OSM-segment (expansion {expansion:.2}x, mass {flow_mass:.0} vs NBG {nbg_mass:.0})"
+            );
         }
-        assert!(
-            max_rel < 1e-9,
-            "FLOW value drift vs TREE aggregate: {max_rel}"
-        );
 
         // Summary invariants vs the FLAT ground truth (reachability is
         // already asserted identical across variants above).
