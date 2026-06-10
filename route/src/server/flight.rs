@@ -314,6 +314,22 @@ pub fn edges_batch_schema() -> Schema {
     ])
 }
 
+/// Schema for the `edges_flow` DoExchange action (#460).
+///
+/// ONE row per `(group, directed edge)` with the accumulated flow —
+/// the server-side replacement for streaming per-pair edge lists that the
+/// consumer immediately re-aggregates. A trailing empty FlightData carries
+/// the conservation summary as JSON `app_metadata`:
+/// `{"n_pairs", "n_unreachable", "total_weight_in", "total_weight_assigned"}`.
+pub fn edges_flow_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("group", DataType::UInt32, false),
+        Field::new("osm_node_from", DataType::Int64, false),
+        Field::new("osm_node_to", DataType::Int64, false),
+        Field::new("flow", DataType::Float64, false),
+    ])
+}
+
 /// Schema for `transit_bulk` Flight action (#119).
 ///
 /// One row per query in the batch. Successful queries carry the full
@@ -1731,7 +1747,7 @@ pub struct PairEdges {
 /// the first try. `CchQuery::new` is free (just references + a
 /// thread-local scratch reused across pairs on the same worker), so
 /// constructing it per pair carries no allocation.
-fn edges_for_pair(
+pub(crate) fn edges_for_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
@@ -1920,10 +1936,10 @@ fn resolve_k1_rank(
 /// #438: one target of a source group: its original flat `query_idx`, the raw
 /// coords (for the per-pair escalation fallback), and its K=1 destination rank
 /// (`None` ⇒ the K=1 dst snap missed → must fall back to per-pair).
-struct GroupedTarget {
-    query_idx: u32,
-    pair: [f64; 4],
-    dst_rank: Option<u32>,
+pub(crate) struct GroupedTarget {
+    pub(crate) query_idx: u32,
+    pub(crate) pair: [f64; 4],
+    pub(crate) dst_rank: Option<u32>,
 }
 
 /// #438: process one source group — settle the forward CCH search ONCE for
@@ -1987,8 +2003,8 @@ fn process_source_group(
 /// source (K=1 resolved but only 1 target, so no forward-sharing benefit) or a
 /// K=1-source-miss (needs K=64 escalation). Carries any already-resolved K=1
 /// ranks so `process_per_pair_work` can skip the redundant snap.
-struct PerPairWork {
-    query_idx: u32,
+pub(crate) struct PerPairWork {
+    pub(crate) query_idx: u32,
     pair: [f64; 4],
     /// K=1 source rank, if it resolved (singleton); `None` ⇒ K=1 src missed.
     src_rank: Option<u32>,
@@ -2002,7 +2018,7 @@ struct PerPairWork {
 /// double-snap fix). Anything that misses (no precomputed ranks, or the K=1
 /// query doesn't connect) falls through to the full per-pair `edges_for_pair`
 /// (K=1 snap + K=64 + 16-combo escalation), byte-identical to today.
-fn process_per_pair_work(
+pub(crate) fn process_per_pair_work(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
@@ -2037,7 +2053,7 @@ fn process_per_pair_work(
 /// the early-terminated bidirectional cost and avoids a regression on
 /// distinct-pair (1 target/source) workloads.
 #[allow(clippy::type_complexity)]
-fn group_pairs(
+pub(crate) fn group_pairs(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
@@ -2755,6 +2771,152 @@ fn catchment_schema() -> Schema {
 ///
 /// Input: flat denormalized Arrow table (store_id, store_lon, store_lat, client_lon, client_lat).
 /// Output: per-store × per-percentile polygon results.
+/// #460 `edges_flow` DoExchange: weighted OD pairs in, accumulated
+/// per-edge flow out. Input columns: `src_lon, src_lat, dst_lon, dst_lat`
+/// (f64, required), `weight` (f64, optional — default 1.0), `group`
+/// (u32, optional — default 0). Output: [`edges_flow_schema`] rows sorted
+/// by `(group, osm_node_from, osm_node_to)`, then one empty FlightData
+/// whose `app_metadata` is the JSON conservation summary.
+async fn do_exchange_edges_flow(
+    state: Arc<ServerState>,
+    mode: Mode,
+    batches: &[RecordBatch],
+) -> std::result::Result<
+    Response<Pin<Box<dyn futures::Stream<Item = std::result::Result<FlightData, Status>> + Send>>>,
+    Status,
+> {
+    const MAX_FLOW_PAIRS: usize = 2_000_000;
+
+    let mut pairs: Vec<[f64; 4]> = Vec::new();
+    let mut weights: Vec<f64> = Vec::new();
+    let mut groups: Vec<u32> = Vec::new();
+
+    for batch in batches {
+        let f64_col = |name: &str| -> std::result::Result<&Float64Array, Status> {
+            batch
+                .column_by_name(name)
+                .ok_or_else(|| Status::invalid_argument(format!("missing '{name}'")))?
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .ok_or_else(|| Status::invalid_argument(format!("{name} must be f64")))
+        };
+        let slon = f64_col("src_lon")?;
+        let slat = f64_col("src_lat")?;
+        let dlon = f64_col("dst_lon")?;
+        let dlat = f64_col("dst_lat")?;
+        // weight / group are optional with documented defaults.
+        let weight = match batch.column_by_name("weight") {
+            Some(c) => Some(
+                c.as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| Status::invalid_argument("weight must be f64"))?,
+            ),
+            None => None,
+        };
+        let group = match batch.column_by_name("group") {
+            Some(c) => Some(
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .ok_or_else(|| Status::invalid_argument("group must be u32"))?,
+            ),
+            None => None,
+        };
+
+        for i in 0..batch.num_rows() {
+            let pair = [slon.value(i), slat.value(i), dlon.value(i), dlat.value(i)];
+            validate_coord(pair[0], pair[1], &format!("row[{i}].src"))?;
+            validate_coord(pair[2], pair[3], &format!("row[{i}].dst"))?;
+            let w = weight.map(|a| a.value(i)).unwrap_or(1.0);
+            if !w.is_finite() || w < 0.0 {
+                return Err(Status::invalid_argument(format!(
+                    "row[{i}].weight must be finite and >= 0 (got {w})"
+                )));
+            }
+            pairs.push(pair);
+            weights.push(w);
+            groups.push(group.map(|a| a.value(i)).unwrap_or(0));
+        }
+        if pairs.len() > MAX_FLOW_PAIRS {
+            return Err(Status::invalid_argument(format!(
+                "max {MAX_FLOW_PAIRS} pairs per edges_flow request"
+            )));
+        }
+    }
+    if pairs.is_empty() {
+        return Err(Status::invalid_argument("no input rows"));
+    }
+
+    let schema = Arc::new(edges_flow_schema());
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(32);
+    let (sum_tx, sum_rx) = tokio::sync::oneshot::channel::<String>();
+
+    let schema_clone = schema.clone();
+    tokio::task::spawn_blocking(move || {
+        let start = std::time::Instant::now();
+        let n_pairs = pairs.len();
+        let mode_data = state.get_mode(mode);
+        let (rows, summary) = super::flow::compute_edges_flow(
+            &state, &mode_data, mode, &pairs, &weights, &groups, true,
+        );
+        tracing::info!(
+            n_pairs,
+            n_rows = rows.len(),
+            n_unreachable = summary.n_unreachable,
+            total_weight_in = summary.total_weight_in,
+            total_weight_assigned = summary.total_weight_assigned,
+            elapsed_s = start.elapsed().as_secs_f64(),
+            "do_exchange edges_flow"
+        );
+
+        const ROWS_PER_BATCH: usize = 65_536;
+        for chunk in rows.chunks(ROWS_PER_BATCH) {
+            let mut g_b = UInt32Builder::with_capacity(chunk.len());
+            let mut from_b = Int64Builder::with_capacity(chunk.len());
+            let mut to_b = Int64Builder::with_capacity(chunk.len());
+            let mut flow_b = Float64Builder::with_capacity(chunk.len());
+            for r in chunk {
+                g_b.append_value(r.group);
+                from_b.append_value(r.osm_from);
+                to_b.append_value(r.osm_to);
+                flow_b.append_value(r.flow);
+            }
+            let batch = RecordBatch::try_new(
+                schema_clone.clone(),
+                vec![
+                    Arc::new(g_b.finish()),
+                    Arc::new(from_b.finish()),
+                    Arc::new(to_b.finish()),
+                    Arc::new(flow_b.finish()),
+                ],
+            )
+            .map_err(|e| Status::internal(format!("batch build error: {e}")));
+            if tx.blocking_send(batch).is_err() {
+                return; // client went away — cooperative cancel
+            }
+        }
+        let summary_json = format!(
+            r#"{{"n_pairs":{},"n_unreachable":{},"total_weight_in":{},"total_weight_assigned":{}}}"#,
+            summary.n_pairs,
+            summary.n_unreachable,
+            summary.total_weight_in,
+            summary.total_weight_assigned
+        );
+        let _ = sum_tx.send(summary_json);
+    });
+
+    let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+    let flight_stream = batches_to_flight_data(schema, batch_stream);
+    // Trailing summary message: empty body, JSON app_metadata.
+    let trailer = futures::stream::once(async move {
+        let json = sum_rx.await.unwrap_or_default();
+        Ok(FlightData {
+            app_metadata: json.into_bytes().into(),
+            ..Default::default()
+        })
+    });
+    Ok(Response::new(Box::pin(flight_stream.chain(trailer))))
+}
+
 async fn do_exchange_catchment(
     state: Arc<ServerState>,
     mode: Mode,
@@ -3343,18 +3505,16 @@ impl FlightService for ButterflyFlight {
         let cmd = std::str::from_utf8(&descriptor_cmd)
             .map_err(|_| Status::invalid_argument("cmd must be UTF-8"))?;
 
-        // Parse: catchment:profile:params_json
+        // Parse: <action>:profile:params_json
         let parts: Vec<&str> = cmd.splitn(3, ':').collect();
-        if parts.is_empty() || parts[0] != "catchment" {
+        if parts.is_empty() || !matches!(parts[0], "catchment" | "edges_flow") {
             return Err(Status::invalid_argument(
-                "do_exchange supports 'catchment:profile[:params_json]'",
+                "do_exchange supports 'catchment:profile[:params_json]' and 'edges_flow:profile'",
             ));
         }
+        let action = parts[0];
         let profile = parts.get(1).copied().unwrap_or("car");
         let params_json = parts.get(2).copied().unwrap_or("{}");
-
-        let cp = super::catchment::parse_exchange_params(params_json)
-            .map_err(Status::invalid_argument)?;
 
         // Decode FlightData into RecordBatches
         let ipc_messages: Vec<FlightData> = all_fds
@@ -3373,19 +3533,49 @@ impl FlightService for ButterflyFlight {
             return Err(Status::invalid_argument("no data received"));
         }
 
-        // #336: snap the first store coordinate to pick the region.
-        // Catchment input schema: (store_id, store_lon, store_lat,
-        // client_lon, client_lat). Mixed-region inputs in a single
-        // batch are a follow-up — for now the first row picks.
-        let (store_lon, store_lat) = first_store_lonlat(&batches).ok_or_else(|| {
-            Status::invalid_argument(
-                "no rows in input batches — need at least one (store_lon, store_lat)",
-            )
-        })?;
-        let (state, _region) = self.dispatch_for_point(store_lon, store_lat, profile)?;
-        let mode = resolve_mode(profile, &state)?;
+        match action {
+            "edges_flow" => {
+                // #336: first src coordinate picks the region.
+                let (lon, lat) = batches
+                    .iter()
+                    .find(|b| b.num_rows() > 0)
+                    .and_then(|b| {
+                        let lon = b
+                            .column_by_name("src_lon")?
+                            .as_any()
+                            .downcast_ref::<Float64Array>()?;
+                        let lat = b
+                            .column_by_name("src_lat")?
+                            .as_any()
+                            .downcast_ref::<Float64Array>()?;
+                        Some((lon.value(0), lat.value(0)))
+                    })
+                    .ok_or_else(|| {
+                        Status::invalid_argument("need at least one row with (src_lon, src_lat)")
+                    })?;
+                let (state, _region) = self.dispatch_for_point(lon, lat, profile)?;
+                let mode = resolve_mode(profile, &state)?;
+                do_exchange_edges_flow(state, mode, &batches).await
+            }
+            _ => {
+                let cp = super::catchment::parse_exchange_params(params_json)
+                    .map_err(Status::invalid_argument)?;
 
-        do_exchange_catchment(state, mode, cp, &batches).await
+                // #336: snap the first store coordinate to pick the region.
+                // Catchment input schema: (store_id, store_lon, store_lat,
+                // client_lon, client_lat). Mixed-region inputs in a single
+                // batch are a follow-up — for now the first row picks.
+                let (store_lon, store_lat) = first_store_lonlat(&batches).ok_or_else(|| {
+                    Status::invalid_argument(
+                        "no rows in input batches — need at least one (store_lon, store_lat)",
+                    )
+                })?;
+                let (state, _region) = self.dispatch_for_point(store_lon, store_lat, profile)?;
+                let mode = resolve_mode(profile, &state)?;
+
+                do_exchange_catchment(state, mode, cp, &batches).await
+            }
+        }
     }
 
     async fn do_action(
