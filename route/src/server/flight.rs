@@ -1944,28 +1944,31 @@ fn process_source_group(
     targets: &[GroupedTarget],
 ) -> Vec<PairEdges> {
     let query = super::query::CchQuery::new(mode_data);
-    query.settle_forward(src_rank);
 
     let mut out = Vec::with_capacity(targets.len());
     let mut fallbacks: Vec<&GroupedTarget> = Vec::new();
-    for t in targets {
-        match t.dst_rank {
-            Some(dst_rank) => match query.backward_meet_and_paths(src_rank, dst_rank) {
-                Some(result) => {
-                    out.push(emit_pair_rows(
-                        state,
-                        mode_data,
-                        src_rank,
-                        dst_rank,
-                        &result,
-                        t.query_idx,
-                    ));
-                }
+    // #438: settle + ALL per-target meets under ONE thread-local borrow
+    // (per-call EvictableCell ceremony was ~26% of profile samples).
+    query.with_meet_group(src_rank, |g| {
+        for t in targets {
+            match t.dst_rank {
+                Some(dst_rank) => match g.meet(dst_rank) {
+                    Some(result) => {
+                        out.push(emit_pair_rows(
+                            state,
+                            mode_data,
+                            src_rank,
+                            dst_rank,
+                            &result,
+                            t.query_idx,
+                        ));
+                    }
+                    None => fallbacks.push(t),
+                },
                 None => fallbacks.push(t),
-            },
-            None => fallbacks.push(t),
+            }
         }
-    }
+    });
     // Fallbacks LAST — they destroy the frozen forward via query.query().
     for t in fallbacks {
         out.push(edges_for_pair(
