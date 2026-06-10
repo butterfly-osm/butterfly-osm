@@ -2563,7 +2563,8 @@ pub fn do_edges_batch(
 
         // Phase A: multi-target groups, chunked by accumulated target count so
         // each chunk holds ~CHUNK_PAIRS pairs. flat_map keeps each group's
-        // settle_forward + its targets on one rayon thread (frozen tree valid).
+        // each group's settle (grouped OR tree, per the adaptive dispatch) +
+        // its targets on one rayon thread (thread-local state stays valid).
         let mut gi = 0usize;
         while gi < group_vec.len() {
             let mut pairs_in_chunk = 0usize;
