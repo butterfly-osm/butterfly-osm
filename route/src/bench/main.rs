@@ -486,6 +486,61 @@ enum Commands {
         #[arg(long)]
         region: Option<String>,
     },
+
+    /// #438: P2P edges_batch-style query benchmark against a `.butterfly`
+    /// container (snap + bidirectional CCH query) — the OSRM-gap loop. Runs
+    /// in-process (no server), so it's reliable where a background serve isn't.
+    P2p {
+        /// Path to a `.butterfly` container.
+        #[arg(long)]
+        data: PathBuf,
+        /// Transport mode (car, bike, foot).
+        #[arg(long, default_value = "car")]
+        mode: String,
+        /// Number of pairs to run.
+        #[arg(long, default_value_t = 5000)]
+        n: usize,
+        /// Random seed (random-coord mode).
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Fan pairs across rayon (matches the serve). Else sequential —
+        /// isolates per-query CPU cost.
+        #[arg(long, default_value_t = false)]
+        parallel: bool,
+        /// Use the 12-city OSRM-parity workload (132 ordered pairs tiled to
+        /// `n`) instead of random Belgium-bbox coords.
+        #[arg(long, default_value_t = false)]
+        cities: bool,
+        /// Max snap-combo fallback attempts for the escalation path (#438:
+        /// unreachable pairs exhaust this many failed CCH queries). Default
+        /// mirrors the engine's DEFAULT_MAX_FALLBACK_COMBOS=200.
+        #[arg(long, default_value_t = 200)]
+        max_combos: usize,
+    },
+
+    /// #438: edges_batch FLAT (per-pair) vs source-GROUPED throughput +
+    /// equivalence, on a `.butterfly` container. Builds a source-sharing
+    /// workload (n_sources sources × targets_per_source nearby targets,
+    /// mirroring traffic-flow's origin→PoIs shape), runs BOTH paths, asserts
+    /// they are equivalent (same reachability + same per-pair total duration),
+    /// reports the byte-identity rate, and times flat vs grouped. Server-free.
+    EdgesBatch {
+        /// Path to a `.butterfly` container.
+        #[arg(long)]
+        data: PathBuf,
+        /// Transport mode (car, bike, foot).
+        #[arg(long, default_value = "car")]
+        mode: String,
+        /// Number of distinct sources.
+        #[arg(long, default_value_t = 200)]
+        n_sources: usize,
+        /// Targets per source (the source-sharing factor).
+        #[arg(long, default_value_t = 30)]
+        targets_per_source: usize,
+        /// Random seed.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+    },
 }
 
 /// Aggregated statistics across multiple runs
@@ -723,6 +778,24 @@ fn main() -> anyhow::Result<()> {
             output,
             region,
         } => weight_profile::run_weight_profile(&data_dir, &output, region.as_deref()),
+
+        Commands::P2p {
+            data,
+            mode,
+            n,
+            seed,
+            parallel,
+            cities,
+            max_combos,
+        } => run_p2p_bench(&data, &mode, n, seed, parallel, cities, max_combos),
+
+        Commands::EdgesBatch {
+            data,
+            mode,
+            n_sources,
+            targets_per_source,
+            seed,
+        } => run_edges_batch_bench(&data, &mode, n_sources, targets_per_source, seed),
     }
 }
 
@@ -4417,5 +4490,430 @@ fn run_detail_compare(data_dir: &Path, mode: &str, threshold_min: u32) -> anyhow
     println!("└──────────────────┴────────┴────────┴────────┴────────────┘");
     println!();
 
+    Ok(())
+}
+
+/// #438: in-process P2P query benchmark against a `.butterfly` container.
+///
+/// Mirrors `flight::edges_for_pair`'s snap+query path (K=1 fast path +
+/// K=64/combo escalation, default-weight CCH query) over `n` pairs, so it
+/// measures exactly the work that dominates `edges_batch` (99% query per the
+/// #436 profiling). Runs entirely in-process — no HTTP/Flight server — which
+/// makes it the reliable loop for iterating on the core-search optimization.
+fn run_p2p_bench(
+    data: &Path,
+    mode_name: &str,
+    n: usize,
+    seed: u64,
+    parallel: bool,
+    cities: bool,
+    max_combos: usize,
+) -> anyhow::Result<()> {
+    use butterfly_route::model::types::Mode;
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::snap_kbest;
+    use butterfly_route::server::state::{LoadOptions, ServerState};
+    use butterfly_route::server::types::SnapRole;
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  P2P QUERY BENCHMARK (#438) — edges_batch snap+query path");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!(
+        "  container: {}\n  mode: {}  pairs: {}  parallel: {}  workload: {}",
+        data.display(),
+        mode_name,
+        n,
+        parallel,
+        if cities {
+            "12-city OSRM-parity"
+        } else {
+            "random bbox"
+        }
+    );
+
+    let t = Instant::now();
+    let state = ServerState::load_from_container_with_options(
+        data,
+        Some(&[mode_name.to_string()]),
+        &LoadOptions {
+            eager_verify: false,
+            warmup_on_boot: false,
+        },
+    )?;
+    println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
+
+    let mode_idx = *state
+        .mode_lookup
+        .get(mode_name)
+        .ok_or_else(|| anyhow::anyhow!("mode '{}' not loaded", mode_name))?;
+    let mode = Mode(mode_idx);
+    let mode_data = state.get_mode(mode);
+
+    // Build the pair list.
+    let pairs: Vec<[f64; 4]> = if cities {
+        let c = [
+            [4.3517, 50.8503],
+            [4.4025, 51.2194],
+            [3.7250, 51.0500],
+            [5.5667, 50.6333],
+            [3.2200, 50.4100],
+            [4.0300, 50.4500],
+            [4.4400, 50.4100],
+            [5.3400, 50.2700],
+            [4.8700, 50.4700],
+            [4.3600, 50.8200],
+            [3.7500, 50.3200],
+            [4.0000, 51.0000],
+        ];
+        let base: Vec<[f64; 4]> = (0..c.len())
+            .flat_map(|i| {
+                (0..c.len())
+                    .filter(move |&j| i != j)
+                    .map(move |j| [c[i][0], c[i][1], c[j][0], c[j][1]])
+            })
+            .collect();
+        (0..n).map(|k| base[k % base.len()]).collect()
+    } else {
+        let mut rng = StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                [
+                    rng.random_range(2.55..6.40),
+                    rng.random_range(49.50..51.50),
+                    rng.random_range(2.55..6.40),
+                    rng.random_range(49.50..51.50),
+                ]
+            })
+            .collect()
+    };
+
+    // Per-pair snap+query — identical shape to flight::edges_for_pair (minus the
+    // unpack, which is 0.4% and not what we're optimizing). Returns reachable.
+    let run_pair = |pair: &[f64; 4]| -> bool {
+        let query = CchQuery::new(&mode_data);
+        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+        let src_role = SnapRole::Src.role_filter(&mode_data);
+        let dst_role = SnapRole::Dst.role_filter(&mode_data);
+        if let (Some(s_id), Some(d_id)) = (
+            state
+                .snap_index
+                .snap_filtered_role(slon, slat, mode.0, None, src_role),
+            state
+                .snap_index
+                .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+        ) && let (Some(s), Some(d)) = (
+            mode_data.orig_to_rank.get(s_id as usize).copied(),
+            mode_data.orig_to_rank.get(d_id as usize).copied(),
+        ) && s != u32::MAX
+            && d != u32::MAX
+            && query.query(s, d).is_some()
+        {
+            return true;
+        }
+        let ss = snap_kbest::snap_k_pair_role(
+            &state,
+            &mode_data,
+            mode,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+            64,
+        );
+        let ds = snap_kbest::snap_k_pair_role(
+            &state,
+            &mode_data,
+            mode,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+            64,
+        );
+        if !ss.ranks.is_empty() && !ds.ranks.is_empty() {
+            return snap_kbest::p2p_with_kbest_fallback(&query, &ss.ranks, &ds.ranks, max_combos)
+                .is_some();
+        }
+        false
+    };
+
+    if pairs.is_empty() {
+        anyhow::bail!("p2p bench: no pairs to run (check --n)");
+    }
+    // Warm one query (pages in hot sections so the timing is steady-state).
+    let _ = run_pair(&pairs[0]);
+
+    let reachable = AtomicU64::new(0);
+    let t0 = Instant::now();
+    if parallel {
+        pairs.par_iter().for_each(|p| {
+            if run_pair(p) {
+                reachable.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    } else {
+        for p in &pairs {
+            if run_pair(p) {
+                reachable.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    let dt = t0.elapsed().as_secs_f64();
+    println!();
+    println!(
+        "  RESULT: {} pairs in {:.3}s → {:.0} pairs/s  (reachable {}/{}, {:.2} ms/pair wall)",
+        pairs.len(),
+        dt,
+        pairs.len() as f64 / dt,
+        reachable.load(Ordering::Relaxed),
+        pairs.len(),
+        dt * 1000.0 / pairs.len() as f64
+    );
+    println!("═══════════════════════════════════════════════════════════════");
+    Ok(())
+}
+
+/// #438: edges_batch FLAT (per-pair) vs source-GROUPED — throughput + the
+/// equivalence oracle. Builds n_sources × targets_per_source pairs (the
+/// source-sharing shape of the real traffic-flow workload), runs both
+/// `compute_edges_flat` and `compute_edges_grouped` in-process, asserts they
+/// agree (reachability + per-pair total duration), reports byte-identity, and
+/// times them. The grouped path shares one forward CCH search per source.
+fn run_edges_batch_bench(
+    data: &Path,
+    mode_name: &str,
+    n_sources: usize,
+    targets_per_source: usize,
+    seed: u64,
+) -> anyhow::Result<()> {
+    use butterfly_route::model::types::Mode;
+    use butterfly_route::server::flight::{
+        compute_edges_flat, compute_edges_grouped, compute_edges_tree,
+    };
+    use butterfly_route::server::state::{LoadOptions, ServerState};
+    use std::time::Instant;
+
+    let n_pairs = n_sources * targets_per_source;
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("  EDGES_BATCH FLAT vs SOURCE-GROUPED (#438)");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!(
+        "  container: {}\n  mode: {}  sources: {}  targets/source: {}  pairs: {}",
+        data.display(),
+        mode_name,
+        n_sources,
+        targets_per_source,
+        n_pairs
+    );
+
+    let t = Instant::now();
+    let state = ServerState::load_from_container_with_options(
+        data,
+        Some(&[mode_name.to_string()]),
+        &LoadOptions {
+            eager_verify: false,
+            warmup_on_boot: false,
+        },
+    )?;
+    println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
+    let mode_idx = *state
+        .mode_lookup
+        .get(mode_name)
+        .ok_or_else(|| anyhow::anyhow!("mode '{}' not loaded", mode_name))?;
+    let mode = Mode(mode_idx);
+    let mode_data = state.get_mode(mode);
+
+    // Build a source-sharing workload mirroring traffic-flow's shape:
+    // sources jittered around real Belgian cities (street sections are always
+    // on-network — pure random bbox points land in the sea / outside the
+    // Belgium graph and skew the run toward unreachable-escalation cost),
+    // targets near the source (origin→top-k-nearest-PoIs).
+    const CITIES: [[f64; 2]; 12] = [
+        [4.3517, 50.8503],
+        [4.4025, 51.2194],
+        [3.7250, 51.0500],
+        [5.5667, 50.6333],
+        [3.2200, 50.4100],
+        [4.0300, 50.4500],
+        [4.4400, 50.4100],
+        [5.3400, 50.2700],
+        [4.8700, 50.4700],
+        [4.3600, 50.8200],
+        [3.7500, 50.3200],
+        [4.0000, 51.0000],
+    ];
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut pairs: Vec<[f64; 4]> = Vec::with_capacity(n_pairs);
+    for k in 0..n_sources {
+        let c = CITIES[k % CITIES.len()];
+        let slon = (c[0] + rng.random_range(-0.15_f64..0.15)).clamp(2.55, 6.40);
+        let slat = (c[1] + rng.random_range(-0.15_f64..0.15)).clamp(49.50, 51.50);
+        for _ in 0..targets_per_source {
+            // Targets NEAR the source (±~25 km).
+            let dlon = (slon + rng.random_range(-0.30_f64..0.30)).clamp(2.55, 6.40);
+            let dlat = (slat + rng.random_range(-0.30_f64..0.30)).clamp(49.50, 51.50);
+            pairs.push([slon, slat, dlon, dlat]);
+        }
+    }
+
+    // ---- Equivalence oracle ----
+    let flat = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+    let grouped = compute_edges_grouped(&state, &mode_data, mode, &pairs, true);
+    assert_eq!(flat.len(), grouped.len(), "pair count mismatch");
+    let mut reach_mismatch = 0usize;
+    let mut dur_mismatch = 0usize;
+    let mut byte_identical = 0usize;
+    let mut reachable = 0usize;
+    for (f, g) in flat.iter().zip(grouped.iter()) {
+        assert_eq!(f.query_idx, g.query_idx, "query_idx order mismatch");
+        let f_reach = !f.rows.is_empty();
+        let g_reach = !g.rows.is_empty();
+        if f_reach {
+            reachable += 1;
+        }
+        if f_reach != g_reach {
+            reach_mismatch += 1;
+        }
+        let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
+        let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+        if f_dur != g_dur {
+            dur_mismatch += 1;
+        }
+        // Byte-identity: same edge rows (seq, osm ids, dur, dist).
+        let same = f.rows.len() == g.rows.len()
+            && f.rows.iter().zip(g.rows.iter()).all(|(a, b)| {
+                a.edge_seq == b.edge_seq
+                    && a.osm_from == b.osm_from
+                    && a.osm_to == b.osm_to
+                    && a.dur_ms == b.dur_ms
+                    && a.dist_m == b.dist_m
+            });
+        if same {
+            byte_identical += 1;
+        }
+    }
+    println!();
+    println!("  EQUIVALENCE:");
+    println!(
+        "    reachable {}/{}  | reachability mismatches: {}  | total-duration mismatches: {}",
+        reachable, n_pairs, reach_mismatch, dur_mismatch
+    );
+    println!(
+        "    byte-identical pairs: {}/{} ({:.2}%)  [equal-cost ties may differ]",
+        byte_identical,
+        n_pairs,
+        100.0 * byte_identical as f64 / n_pairs.max(1) as f64
+    );
+    assert_eq!(
+        reach_mismatch, 0,
+        "CORRECTNESS: grouped path changed reachability for {reach_mismatch} pairs"
+    );
+    assert_eq!(
+        dur_mismatch, 0,
+        "CORRECTNESS: grouped path changed total duration for {dur_mismatch} pairs"
+    );
+    println!("    ✓ reachability + total-duration IDENTICAL (correctness verified)");
+
+    // ---- TREE variant (#438 Phase 1) oracle ----
+    let tree = compute_edges_tree(&state, &mode_data, mode, &pairs, true);
+    assert_eq!(tree.len(), flat.len(), "tree pair count mismatch");
+    let mut t_reach_mismatch = 0usize;
+    let mut t_dur_mismatch = 0usize;
+    let mut t_byte_identical = 0usize;
+    for (f, g) in flat.iter().zip(tree.iter()) {
+        assert_eq!(f.query_idx, g.query_idx, "tree query_idx order mismatch");
+        if f.rows.is_empty() != g.rows.is_empty() {
+            t_reach_mismatch += 1;
+        }
+        let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
+        let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+        if f_dur != g_dur {
+            t_dur_mismatch += 1;
+        }
+        let same = f.rows.len() == g.rows.len()
+            && f.rows.iter().zip(g.rows.iter()).all(|(a, b)| {
+                a.edge_seq == b.edge_seq
+                    && a.osm_from == b.osm_from
+                    && a.osm_to == b.osm_to
+                    && a.dur_ms == b.dur_ms
+                    && a.dist_m == b.dist_m
+            });
+        if same {
+            t_byte_identical += 1;
+        }
+    }
+    println!(
+        "  TREE EQUIVALENCE: reach mismatches {} | duration mismatches {} | byte-identical {}/{} ({:.2}%)",
+        t_reach_mismatch,
+        t_dur_mismatch,
+        t_byte_identical,
+        n_pairs,
+        100.0 * t_byte_identical as f64 / n_pairs.max(1) as f64
+    );
+    assert_eq!(t_reach_mismatch, 0, "TREE changed reachability");
+    assert_eq!(t_dur_mismatch, 0, "TREE changed total duration");
+    println!("    ✓ TREE reachability + total-duration IDENTICAL");
+
+    // Codex audit: row-chain continuity (osm_to[i] == osm_from[i+1]) on every
+    // variant — a malformed but duration-equal path must not slip through.
+    for (label, set) in [("flat", &flat), ("grouped", &grouped), ("tree", &tree)] {
+        for p in set.iter() {
+            for w in p.rows.windows(2) {
+                assert_eq!(
+                    w[0].osm_to, w[1].osm_from,
+                    "{label}: continuity break in query_idx {}",
+                    p.query_idx
+                );
+            }
+        }
+    }
+    println!("    ✓ row-chain continuity holds on all variants");
+
+    // ---- Throughput (best of 2, after a warm run) ----
+    let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+    let mut flat_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
+        flat_dt = flat_dt.min(t0.elapsed().as_secs_f64());
+    }
+    let mut grouped_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_grouped(&state, &mode_data, mode, &pairs, true);
+        grouped_dt = grouped_dt.min(t0.elapsed().as_secs_f64());
+    }
+    println!();
+    println!("  THROUGHPUT (parallel, best of 2):");
+    println!(
+        "    FLAT    {:.3}s  {:.0} pairs/s",
+        flat_dt,
+        n_pairs as f64 / flat_dt
+    );
+    println!(
+        "    GROUPED {:.3}s  {:.0} pairs/s",
+        grouped_dt,
+        n_pairs as f64 / grouped_dt
+    );
+    let mut tree_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_tree(&state, &mode_data, mode, &pairs, true);
+        tree_dt = tree_dt.min(t0.elapsed().as_secs_f64());
+    }
+    println!(
+        "    TREE    {:.3}s  {:.0} pairs/s",
+        tree_dt,
+        n_pairs as f64 / tree_dt
+    );
+    println!(
+        "    speedup: grouped {:.2}× | tree {:.2}× (vs flat), tree {:.2}× (vs grouped)",
+        flat_dt / grouped_dt,
+        flat_dt / tree_dt,
+        grouped_dt / tree_dt
+    );
+    println!("═══════════════════════════════════════════════════════════════");
     Ok(())
 }

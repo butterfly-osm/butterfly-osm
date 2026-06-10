@@ -53,8 +53,14 @@ struct CchQueryState {
     gen_fwd: Vec<u32>,
     /// Version stamp per node for backward search
     gen_bwd: Vec<u32>,
-    /// Current generation (incremented per query)
-    current_gen: u32,
+    /// Per-direction generation epochs (#438). Split from a single
+    /// `current_gen` so the shared-forward edges_batch path can FREEZE a
+    /// forward tree (`gen_fwd_epoch` fixed) while resetting the backward
+    /// search once per target (`gen_bwd_epoch` bumped). `start_query`
+    /// bumps BOTH, so every existing bidirectional caller is byte-identical;
+    /// `start_backward_only` bumps only the backward epoch.
+    gen_fwd_epoch: u32,
+    gen_bwd_epoch: u32,
     /// Forward 4-ary heap (decrease-key) — replaces PriorityQueue
     /// (codex #291). Heap entries are `(weight, node_id)` where node_id
     /// is a usize-cast u32. `handles_fwd[node]` is the heap position
@@ -94,7 +100,8 @@ impl CchQueryState {
             parent_bwd: vec![(u32::MAX, 0); n_nodes],
             gen_fwd: vec![0; n_nodes],
             gen_bwd: vec![0; n_nodes],
-            current_gen: 0,
+            gen_fwd_epoch: 0,
+            gen_bwd_epoch: 0,
             pq_fwd: DAryHeap::new(1024),
             pq_bwd: DAryHeap::new(1024),
             handles_fwd: vec![HANDLE_NONE; n_nodes],
@@ -102,11 +109,16 @@ impl CchQueryState {
         }
     }
 
-    /// Start a new query (O(1) instead of O(n))
+    /// Start a new bidirectional query (O(1) instead of O(n)).
+    ///
+    /// Bumps BOTH direction epochs, so the behaviour for the existing
+    /// bidirectional callers (`query_with_debug`, `distance_bounded`) is
+    /// byte-identical to the pre-#438 single-`current_gen` design.
     #[inline]
     fn start_query(&mut self) {
-        self.current_gen = self.current_gen.wrapping_add(1);
-        if self.current_gen == 0 {
+        self.gen_fwd_epoch = self.gen_fwd_epoch.wrapping_add(1);
+        self.gen_bwd_epoch = self.gen_bwd_epoch.wrapping_add(1);
+        if self.gen_fwd_epoch == 0 || self.gen_bwd_epoch == 0 {
             // Overflow — reset all versions (rare, every ~4B queries).
             // After reset we also wipe the handle arrays so the
             // post-overflow first query starts fully clean (otherwise
@@ -119,12 +131,42 @@ impl CchQueryState {
             self.gen_bwd.iter_mut().for_each(|v| *v = 0);
             self.handles_fwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
             self.handles_bwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
-            self.current_gen = 1;
+            self.gen_fwd_epoch = 1;
+            self.gen_bwd_epoch = 1;
         }
         self.pq_fwd.clear();
         self.pq_bwd.clear();
         // handles_fwd / handles_bwd carry over: set_* clears stale
         // entries on first touch this query.
+    }
+
+    /// #438: reset ONLY the backward search, preserving a frozen forward
+    /// tree (`gen_fwd_epoch` and the forward arrays untouched). Used by
+    /// `backward_meet_and_paths` to run many per-target backward searches
+    /// against one shared `settle_forward` result.
+    #[inline]
+    fn start_backward_only(&mut self) {
+        self.gen_bwd_epoch = self.gen_bwd_epoch.wrapping_add(1);
+        if self.gen_bwd_epoch == 0 {
+            self.gen_bwd.iter_mut().for_each(|v| *v = 0);
+            self.handles_bwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
+            self.gen_bwd_epoch = 1;
+        }
+        self.pq_bwd.clear();
+    }
+
+    /// #438: start a fresh FORWARD-only search (bump only the forward
+    /// epoch), leaving the backward arrays for `start_backward_only` to
+    /// reset per target. Used by `settle_forward`.
+    #[inline]
+    fn start_forward_only(&mut self) {
+        self.gen_fwd_epoch = self.gen_fwd_epoch.wrapping_add(1);
+        if self.gen_fwd_epoch == 0 {
+            self.gen_fwd.iter_mut().for_each(|v| *v = 0);
+            self.handles_fwd.iter_mut().for_each(|h| *h = HANDLE_NONE);
+            self.gen_fwd_epoch = 1;
+        }
+        self.pq_fwd.clear();
     }
 
     /// Push `node` onto the forward heap with weight `dist`. Caller
@@ -171,7 +213,7 @@ impl CchQueryState {
     // Forward distance accessors
     #[inline]
     fn get_fwd(&self, node: usize) -> u32 {
-        if self.gen_fwd[node] == self.current_gen {
+        if self.gen_fwd[node] == self.gen_fwd_epoch {
             self.dist_fwd[node]
         } else {
             u32::MAX
@@ -184,18 +226,18 @@ impl CchQueryState {
         // handle slot. Any push that follows then correctly observes
         // HANDLE_NONE and pushes fresh instead of decrease-keying a
         // dead handle from a previous query's heap.
-        if self.gen_fwd[node] != self.current_gen {
+        if self.gen_fwd[node] != self.gen_fwd_epoch {
             self.handles_fwd[node] = HANDLE_NONE;
         }
         self.dist_fwd[node] = dist;
         self.parent_fwd[node] = parent;
-        self.gen_fwd[node] = self.current_gen;
+        self.gen_fwd[node] = self.gen_fwd_epoch;
     }
 
     // Backward distance accessors
     #[inline]
     fn get_bwd(&self, node: usize) -> u32 {
-        if self.gen_bwd[node] == self.current_gen {
+        if self.gen_bwd[node] == self.gen_bwd_epoch {
             self.dist_bwd[node]
         } else {
             u32::MAX
@@ -204,12 +246,12 @@ impl CchQueryState {
 
     #[inline]
     fn set_bwd(&mut self, node: usize, dist: u32, parent: (u32, u32)) {
-        if self.gen_bwd[node] != self.current_gen {
+        if self.gen_bwd[node] != self.gen_bwd_epoch {
             self.handles_bwd[node] = HANDLE_NONE;
         }
         self.dist_bwd[node] = dist;
         self.parent_bwd[node] = parent;
-        self.gen_bwd[node] = self.current_gen;
+        self.gen_bwd[node] = self.gen_bwd_epoch;
     }
 }
 
@@ -444,7 +486,7 @@ impl<'a> CchQuery<'a> {
             if stalled {
                 return;
             }
-            if state.gen_fwd[x as usize] == state.current_gen {
+            if state.gen_fwd[x as usize] == state.gen_fwd_epoch {
                 let dx = state.dist_fwd[x as usize];
                 if dx != u32::MAX && dx.saturating_add(w) < d {
                     stalled = true;
@@ -468,7 +510,7 @@ impl<'a> CchQuery<'a> {
             if stalled {
                 return;
             }
-            if state.gen_bwd[v as usize] == state.current_gen {
+            if state.gen_bwd[v as usize] == state.gen_bwd_epoch {
                 let dv = state.dist_bwd[v as usize];
                 if dv != u32::MAX && dv.saturating_add(w) < d {
                     stalled = true;
@@ -548,7 +590,7 @@ impl<'a> CchQuery<'a> {
                                     if stalled {
                                         return;
                                     }
-                                    if state.gen_fwd[x as usize] == state.current_gen {
+                                    if state.gen_fwd[x as usize] == state.gen_fwd_epoch {
                                         let dx = state.dist_fwd[x as usize];
                                         if dx != u32::MAX && dx.saturating_add(w) < d {
                                             stalled = true;
@@ -621,7 +663,7 @@ impl<'a> CchQuery<'a> {
                                     if stalled {
                                         return;
                                     }
-                                    if state.gen_bwd[v as usize] == state.current_gen {
+                                    if state.gen_bwd[v as usize] == state.gen_bwd_epoch {
                                         let dv = state.dist_bwd[v as usize];
                                         if dv != u32::MAX && dv.saturating_add(w) < d {
                                             stalled = true;
@@ -704,18 +746,217 @@ impl<'a> CchQuery<'a> {
                     let forward_parent = reconstruct_path_versioned(
                         &state.parent_fwd,
                         &state.gen_fwd,
-                        state.current_gen,
+                        state.gen_fwd_epoch,
                         source,
                         meeting_node,
                     );
                     let backward_parent = reconstruct_path_versioned(
                         &state.parent_bwd,
                         &state.gen_bwd,
-                        state.current_gen,
+                        state.gen_bwd_epoch,
                         target,
                         meeting_node,
                     );
 
+                    Some(QueryResult {
+                        distance: best_dist,
+                        meeting_node,
+                        forward_parent,
+                        backward_parent,
+                    })
+                },
+            )
+        })
+    }
+
+    /// #438: forward-only UP settle to EXHAUSTION from `source`, frozen in
+    /// the thread-local query state for reuse across many targets via
+    /// [`Self::backward_meet_and_paths`]. No early termination (no target
+    /// yet) and no meeting checks. The relax + stall-on-demand body mirrors
+    /// the forward branch of [`Self::query_with_debug`] exactly, so the
+    /// settled distances + parent pointers are identical to a per-pair
+    /// forward — only computed ONCE and reused for all of the source's
+    /// targets.
+    ///
+    /// MUST be followed (same thread, no intervening `query`/`settle_forward`)
+    /// by one or more `backward_meet_and_paths(source, target)` calls.
+    ///
+    /// Invariant (relied on by the source-grouped edges path): the whole group
+    /// — this settle + all its `backward_meet_and_paths` — must finish before
+    /// the #402 idle-compactor could evict the thread-local `CchQueryState`. In
+    /// practice that holds trivially (the compactor threshold is seconds; a
+    /// group's targets complete in microseconds, and each call re-stamps the
+    /// cell's last-touch). If eviction ever did fire mid-group it is only a
+    /// performance loss, not a correctness bug: the frozen forward is gone, so
+    /// each target returns `None` and falls back to the per-pair path, which
+    /// recomputes the same result.
+    pub fn settle_forward(&self, source: u32) {
+        let n = self.n_nodes;
+        CCH_QUERY_STATE.with(|cell| {
+            cell.with_or_init(
+                || CchQueryState::new(n),
+                |state| {
+                    if state.dist_fwd.len() != n {
+                        *state = CchQueryState::new(n);
+                    }
+                    state.start_forward_only();
+                    state.set_fwd(source as usize, 0, (source, 0));
+                    state.push_fwd(source, 0);
+
+                    while let Some((d, u)) = state.pop_fwd() {
+                        if d > state.get_fwd(u as usize) {
+                            continue; // stale
+                        }
+                        // Stall-on-demand (mirrors query_with_debug fwd branch).
+                        let mut stalled = false;
+                        self.for_down_rev_edges(u, |x, w, _| {
+                            if stalled {
+                                return;
+                            }
+                            if state.gen_fwd[x as usize] == state.gen_fwd_epoch {
+                                let dx = state.dist_fwd[x as usize];
+                                if dx != u32::MAX && dx.saturating_add(w) < d {
+                                    stalled = true;
+                                }
+                            }
+                        });
+                        if stalled {
+                            continue;
+                        }
+                        self.for_up_edges(u, |v, w, edge_idx| {
+                            let new_dist = d.saturating_add(w);
+                            if new_dist < state.get_fwd(v as usize) {
+                                state.set_fwd(v as usize, new_dist, (u, edge_idx));
+                                state.push_fwd(v, new_dist);
+                            }
+                        });
+                    }
+                },
+            )
+        });
+    }
+
+    /// #438: run a BACKWARD search from `target` against the frozen forward
+    /// tree left by [`Self::settle_forward`]`(source)`, find the min-cost
+    /// meeting node, and reconstruct the forward + backward parent chains.
+    /// Returns the same [`QueryResult`] shape as [`Self::query`] (so the
+    /// edges_batch unpack is unchanged), or `None` if unreachable.
+    ///
+    /// Cost: this pays only the backward half + reconstruct — the forward
+    /// half is amortised across all of the source's targets. The min-cost
+    /// DISTANCE is identical to the per-pair `query`; the exact equal-cost
+    /// path may differ on ties (both are valid time-shortest paths).
+    ///
+    /// MUST be called after `settle_forward(source)` on the SAME thread with
+    /// no intervening `query`/`settle_forward` (those bump the forward epoch
+    /// and erase the frozen tree).
+    pub fn backward_meet_and_paths(&self, source: u32, target: u32) -> Option<QueryResult> {
+        if source == target {
+            return Some(QueryResult {
+                distance: 0,
+                meeting_node: source,
+                forward_parent: vec![],
+                backward_parent: vec![],
+            });
+        }
+        let n = self.n_nodes;
+        CCH_QUERY_STATE.with(|cell| {
+            cell.with_or_init(
+                || CchQueryState::new(n),
+                |state| {
+                    // #438 review: guard against a graph swap between the
+                    // settle_forward and this call (matches settle_forward /
+                    // query_with_debug), AND (Copilot review) fail closed when
+                    // the frozen forward tree doesn't belong to `source` —
+                    // out-of-sequence call, evicted scratch, or a different
+                    // source. Reading a foreign tree would compute garbage
+                    // meets (or loop on a foreign root sentinel during
+                    // reconstruct). The settled root always has dist 0, so the
+                    // guard is one stamped read. `None` → the caller's
+                    // per-pair fallback recomputes correctly.
+                    if state.dist_fwd.len() != n || state.get_fwd(source as usize) != 0 {
+                        return None;
+                    }
+                    state.start_backward_only();
+                    state.set_bwd(target as usize, 0, (target, 0));
+                    state.push_bwd(target, 0);
+
+                    let mut best_dist = u32::MAX;
+                    let mut meeting_node = u32::MAX;
+
+                    // The target may itself sit in the frozen forward tree.
+                    let fwd_t = state.get_fwd(target as usize);
+                    if fwd_t != u32::MAX {
+                        best_dist = fwd_t;
+                        meeting_node = target;
+                    }
+
+                    while let Some((d, u)) = state.pop_bwd() {
+                        if d >= best_dist {
+                            break; // early termination — frontier can't improve
+                        }
+                        if d > state.get_bwd(u as usize) {
+                            continue; // stale
+                        }
+                        // Backward stall-on-demand (mirrors query_with_debug bwd branch).
+                        let mut stalled = false;
+                        self.for_up_edges(u, |v, w, _| {
+                            if stalled {
+                                return;
+                            }
+                            if state.gen_bwd[v as usize] == state.gen_bwd_epoch {
+                                let dv = state.dist_bwd[v as usize];
+                                if dv != u32::MAX && dv.saturating_add(w) < d {
+                                    stalled = true;
+                                }
+                            }
+                        });
+                        if stalled {
+                            continue;
+                        }
+                        // Meet against the frozen forward at settle.
+                        let fwd_d = state.get_fwd(u as usize);
+                        if fwd_d != u32::MAX {
+                            let total = d.saturating_add(fwd_d);
+                            if total < best_dist {
+                                best_dist = total;
+                                meeting_node = u;
+                            }
+                        }
+                        self.for_down_rev_edges(u, |x, w, edge_idx| {
+                            let new_dist = d.saturating_add(w);
+                            if new_dist < state.get_bwd(x as usize) {
+                                state.set_bwd(x as usize, new_dist, (u, edge_idx));
+                                state.push_bwd(x, new_dist);
+                                let fwd_x = state.get_fwd(x as usize);
+                                if fwd_x != u32::MAX {
+                                    let total = new_dist.saturating_add(fwd_x);
+                                    if total < best_dist {
+                                        best_dist = total;
+                                        meeting_node = x;
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    if best_dist == u32::MAX {
+                        return None;
+                    }
+                    let forward_parent = reconstruct_path_versioned(
+                        &state.parent_fwd,
+                        &state.gen_fwd,
+                        state.gen_fwd_epoch,
+                        source,
+                        meeting_node,
+                    );
+                    let backward_parent = reconstruct_path_versioned(
+                        &state.parent_bwd,
+                        &state.gen_bwd,
+                        state.gen_bwd_epoch,
+                        target,
+                        meeting_node,
+                    );
                     Some(QueryResult {
                         distance: best_dist,
                         meeting_node,
@@ -835,7 +1076,7 @@ impl CchQuery<'_> {
                                 if stalled {
                                     return;
                                 }
-                                if state.gen_fwd[x as usize] == state.current_gen {
+                                if state.gen_fwd[x as usize] == state.gen_fwd_epoch {
                                     let dx = state.dist_fwd[x as usize];
                                     if dx != u32::MAX && dx.saturating_add(w) < d {
                                         stalled = true;
@@ -876,7 +1117,7 @@ impl CchQuery<'_> {
                                 if stalled {
                                     return;
                                 }
-                                if state.gen_bwd[v as usize] == state.current_gen {
+                                if state.gen_bwd[v as usize] == state.gen_bwd_epoch {
                                     let dv = state.dist_bwd[v as usize];
                                     if dv != u32::MAX && dv.saturating_add(w) < d {
                                         stalled = true;

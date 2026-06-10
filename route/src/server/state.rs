@@ -1727,14 +1727,19 @@ impl ServerState {
         );
 
         // 3. Re-run TIME-only customization in memory (triangle-relax always on).
-        let new_weights = crate::customization::customize_cch_time_in_memory(
-            &base.cch_topo,
-            &filtered_ebg,
-            &base.node_weights,
-            &turns.penalties,
-            &self.ebg_nodes,
-            Some((&profile, &way_attrs_vec, &self.nbg_geo)),
-        )?;
+        // Codex audit (#438): also take the traffic-ADJUSTED per-node time
+        // weights — edges_batch derives per-edge durations from
+        // ModeData.node_weights, so cloning the base (legal-limit) weights
+        // here would emit wrong durations along calibrated paths.
+        let (new_weights, adjusted_node_weights) =
+            crate::customization::customize_cch_time_in_memory(
+                &base.cch_topo,
+                &filtered_ebg,
+                &base.node_weights,
+                &turns.penalties,
+                &self.ebg_nodes,
+                Some((&profile, &way_attrs_vec, &self.nbg_geo)),
+            )?;
 
         // 4. Fresh TIME flats (mirrors load_traffic_variant_mode_data).
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -1754,7 +1759,7 @@ impl ServerState {
             filtered_to_original: base.filtered_to_original.clone(),
             n_filtered_nodes: base.n_filtered_nodes,
             n_original_nodes: base.n_original_nodes,
-            node_weights: base.node_weights.clone(),
+            node_weights: std::borrow::Cow::Owned(adjusted_node_weights),
             mask: base.mask.clone(),
             has_outbound: base.has_outbound.clone(),
             has_inbound: base.has_inbound.clone(),

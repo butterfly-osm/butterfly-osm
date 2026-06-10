@@ -19,6 +19,9 @@ use crate::profile_abi::Mode;
 pub mod phast;
 pub use phast::{BLOCK_SIZE, PhastEngine, PhastResult, PhastStats};
 
+pub mod tree_phast;
+pub use tree_phast::{TreePath, TreeSettle, tree_backtrack, tree_settle};
+
 pub mod frontier;
 pub use frontier::{
     FrontierCutPoint, FrontierExtractor, ReachablePoint, ReachableSegment, run_frontier_extraction,
