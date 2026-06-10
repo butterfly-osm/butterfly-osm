@@ -698,8 +698,10 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
     // (highway_class × density) matrix rows resolved to inverse factors, with
     // unspecified cells pre-filled from the vector (#428). Empty when the
     // profile has no matrix — the per-node lookup then always falls through
-    // to `inv_factors`, reproducing the pre-#428 behavior bit-for-bit.
-    let inv_matrix: HashMap<u16, [f64; 5]> = profile
+    // to `inv_factors`, reproducing the pre-#428 behavior bit-for-bit. Each
+    // row carries a hit counter so rows whose highway code never occurs in
+    // this graph can be flagged after the pass.
+    let mut inv_matrix: HashMap<u16, ([f64; 5], u64)> = profile
         .matrix
         .iter()
         .map(|(code, row)| {
@@ -709,7 +711,7 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
                     inv[i] = 1.0 / *f as f64;
                 }
             }
-            (*code, inv)
+            (*code, (inv, 0u64))
         })
         .collect();
 
@@ -737,8 +739,11 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
         let inv = match way_cell.get(&way_id) {
             Some((highway, class)) => {
                 let class_idx = (*class as usize).min(4);
-                match inv_matrix.get(highway) {
-                    Some(row) => row[class_idx],
+                match inv_matrix.get_mut(highway) {
+                    Some((row, hits)) => {
+                        *hits += 1;
+                        row[class_idx]
+                    }
                     None => inv_factors[class_idx],
                 }
             }
@@ -771,6 +776,21 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
         100.0 * adjusted as f64 / weights.len() as f64,
         missing_way
     );
+
+    // Flag matrix rows whose highway code matched zero ways: the row is dead
+    // weight, and a profile full of dead rows usually means it was calibrated
+    // against a different model's highway_class table. Iterate the profile's
+    // BTreeMap so the output order is deterministic.
+    for code in profile.matrix.keys() {
+        let hits = inv_matrix.get(code).map_or(0, |(_, h)| *h);
+        if hits == 0 {
+            eprintln!(
+                "  ⚠️  traffic matrix row {code} matched zero ways — highway_class \
+                 code {code} does not occur in this graph's way_attrs (profile \
+                 calibrated against a different model, or stale?)"
+            );
+        }
+    }
 
     Ok(())
 }
