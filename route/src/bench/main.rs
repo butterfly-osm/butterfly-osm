@@ -4758,7 +4758,7 @@ fn run_edges_batch_bench(
         let slon = (c[0] + rng.random_range(-0.15_f64..0.15)).clamp(2.55, 6.40);
         let slat = (c[1] + rng.random_range(-0.15_f64..0.15)).clamp(49.50, 51.50);
         for _ in 0..targets_per_source {
-            // Targets NEAR the source (±~25 km).
+            // Targets NEAR the source (within ±`radius` degrees).
             let dlon = (slon + rng.random_range(-radius..radius)).clamp(2.55, 6.40);
             let dlat = (slat + rng.random_range(-radius..radius)).clamp(49.50, 51.50);
             pairs.push([slon, slat, dlon, dlat]);
