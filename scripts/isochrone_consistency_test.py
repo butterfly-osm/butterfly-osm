@@ -59,7 +59,7 @@ def get_isochrone(lon: float, lat: float, time_s: int, mode: str = "car") -> Opt
             return None
         data = resp.json()
         contours = data.get("contours", [])
-        polygon_coords = contours[0].get("polygon_geojson") or [] if contours else []
+        polygon_coords = (contours[0].get("polygon_geojson") or []) if contours else []
         if len(polygon_coords) < 3:
             print(f"  Isochrone has < 3 points")
             return None

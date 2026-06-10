@@ -2312,7 +2312,8 @@ pub fn compute_edges_tree(
 
 /// #438 K-lane: process up to TREE_LANES source groups per task — one union
 /// selection + ONE restricted scan shared by all lanes (the scan was 73% of
-/// tree CPU). Per lane: resweep (UP parents) then backtrack its targets.
+/// tree CPU). Per lane: backtrack its targets off the UP-tree snapshot
+/// taken at settle time (no resweep — PR #461).
 /// Misses fall back to the per-pair path (separate scratch, safe after the
 /// lane work).
 fn process_tree_batch(
@@ -2499,7 +2500,7 @@ pub fn do_edges_batch(
 
         // Phase A: multi-target groups, chunked by accumulated target count so
         // each chunk holds ~CHUNK_PAIRS pairs. flat_map keeps each group's
-        // each group's settle (grouped OR tree, per the adaptive dispatch) +
+        // each group's settle (K-lane tree — the adaptive dispatch is retired) +
         // its targets on one rayon thread (thread-local state stays valid).
         let mut gi = 0usize;
         while gi < group_vec.len() {
@@ -2853,11 +2854,30 @@ async fn do_exchange_edges_flow(
             None => None,
         };
 
+        // Null handling (Copilot review on #463): coordinate columns must
+        // be null-free (Arrow `.value()` on a null slot returns garbage);
+        // a null weight/group falls back to its documented default.
+        for (name, arr) in [
+            ("src_lon", slon),
+            ("src_lat", slat),
+            ("dst_lon", dlon),
+            ("dst_lat", dlat),
+        ] {
+            if arr.null_count() > 0 {
+                return Err(Status::invalid_argument(format!(
+                    "{name} must not contain nulls ({} null rows)",
+                    arr.null_count()
+                )));
+            }
+        }
         for i in 0..batch.num_rows() {
             let pair = [slon.value(i), slat.value(i), dlon.value(i), dlat.value(i)];
             validate_coord(pair[0], pair[1], &format!("row[{i}].src"))?;
             validate_coord(pair[2], pair[3], &format!("row[{i}].dst"))?;
-            let w = weight.map(|a| a.value(i)).unwrap_or(1.0);
+            let w = match weight {
+                Some(a) if !a.is_null(i) => a.value(i),
+                _ => 1.0,
+            };
             if !w.is_finite() || w < 0.0 {
                 return Err(Status::invalid_argument(format!(
                     "row[{i}].weight must be finite and >= 0 (got {w})"
@@ -2865,7 +2885,10 @@ async fn do_exchange_edges_flow(
             }
             pairs.push(pair);
             weights.push(w);
-            groups.push(group.map(|a| a.value(i)).unwrap_or(0));
+            groups.push(match group {
+                Some(a) if !a.is_null(i) => a.value(i),
+                _ => 0,
+            });
         }
         if pairs.len() > MAX_FLOW_PAIRS {
             return Err(Status::invalid_argument(format!(
@@ -3398,9 +3421,10 @@ impl FlightService for ButterflyFlight {
             "catchment" => catchment_schema(),
             "transit_bulk" => transit_bulk_schema(),
             "edges_batch" => edges_batch_schema(),
+            "edges_flow" => edges_flow_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch, edges_flow",
                     other
                 )));
             }
@@ -3436,9 +3460,10 @@ impl FlightService for ButterflyFlight {
             "catchment" => catchment_schema(),
             "transit_bulk" => transit_bulk_schema(),
             "edges_batch" => edges_batch_schema(),
+            "edges_flow" => edges_flow_schema(),
             other => {
                 return Err(Status::invalid_argument(format!(
-                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch",
+                    "Unknown action '{}'. Available: matrix, route_batch, isochrone, catchment, transit_bulk, edges_batch, edges_flow",
                     other
                 )));
             }

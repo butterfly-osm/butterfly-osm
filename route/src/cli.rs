@@ -2197,10 +2197,12 @@ impl Cli {
                 }
                 // Lean-deploy transit toggle: CLI flag or BUTTERFLY_TRANSIT
                 // env; "off"/"0"/"false"/"no" disables.
-                let transit_off = matches!(transit.to_lowercase().as_str(), "off" | "0" | "false")
-                    || std::env::var("BUTTERFLY_TRANSIT")
-                        .map(|v| matches!(v.to_lowercase().as_str(), "off" | "0" | "false" | "no"))
-                        .unwrap_or(false);
+                let transit_off = matches!(
+                    transit.to_lowercase().as_str(),
+                    "off" | "0" | "false" | "no"
+                ) || std::env::var("BUTTERFLY_TRANSIT")
+                    .map(|v| matches!(v.to_lowercase().as_str(), "off" | "0" | "false" | "no"))
+                    .unwrap_or(false);
                 if transit_off {
                     crate::server::set_transit_enabled(false);
                 }
