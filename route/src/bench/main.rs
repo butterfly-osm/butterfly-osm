@@ -4686,7 +4686,9 @@ fn run_edges_batch_bench(
     seed: u64,
 ) -> anyhow::Result<()> {
     use butterfly_route::model::types::Mode;
-    use butterfly_route::server::flight::{compute_edges_flat, compute_edges_grouped};
+    use butterfly_route::server::flight::{
+        compute_edges_flat, compute_edges_grouped, compute_edges_tree,
+    };
     use butterfly_route::server::state::{LoadOptions, ServerState};
     use std::time::Instant;
 
@@ -4720,17 +4722,33 @@ fn run_edges_batch_bench(
     let mode = Mode(mode_idx);
     let mode_data = state.get_mode(mode);
 
-    // Build a source-sharing workload: each source has `targets_per_source`
-    // random Belgium-bbox targets (mirrors origin→nearby-PoIs). Sources are
-    // random too; the K=1 snap groups pairs by resolved source rank.
+    // Build a source-sharing workload mirroring traffic-flow's shape:
+    // sources jittered around real Belgian cities (street sections are always
+    // on-network — pure random bbox points land in the sea / outside the
+    // Belgium graph and skew the run toward unreachable-escalation cost),
+    // targets near the source (origin→top-k-nearest-PoIs).
+    const CITIES: [[f64; 2]; 12] = [
+        [4.3517, 50.8503],
+        [4.4025, 51.2194],
+        [3.7250, 51.0500],
+        [5.5667, 50.6333],
+        [3.2200, 50.4100],
+        [4.0300, 50.4500],
+        [4.4400, 50.4100],
+        [5.3400, 50.2700],
+        [4.8700, 50.4700],
+        [4.3600, 50.8200],
+        [3.7500, 50.3200],
+        [4.0000, 51.0000],
+    ];
     let mut rng = StdRng::seed_from_u64(seed);
     let mut pairs: Vec<[f64; 4]> = Vec::with_capacity(n_pairs);
-    for _ in 0..n_sources {
-        let slon = rng.random_range(2.55..6.40);
-        let slat = rng.random_range(49.50..51.50);
+    for k in 0..n_sources {
+        let c = CITIES[k % CITIES.len()];
+        let slon = (c[0] + rng.random_range(-0.15_f64..0.15)).clamp(2.55, 6.40);
+        let slat = (c[1] + rng.random_range(-0.15_f64..0.15)).clamp(49.50, 51.50);
         for _ in 0..targets_per_source {
-            // Targets NEAR the source (±~25 km), mirroring traffic-flow's
-            // origin→top-k-nearest-PoIs shape — keeps reachability realistic.
+            // Targets NEAR the source (±~25 km).
             let dlon = (slon + rng.random_range(-0.30_f64..0.30)).clamp(2.55, 6.40);
             let dlat = (slat + rng.random_range(-0.30_f64..0.30)).clamp(49.50, 51.50);
             pairs.push([slon, slat, dlon, dlat]);
@@ -4795,6 +4813,46 @@ fn run_edges_batch_bench(
     );
     println!("    ✓ reachability + total-duration IDENTICAL (correctness verified)");
 
+    // ---- TREE variant (#438 Phase 1) oracle ----
+    let tree = compute_edges_tree(&state, &mode_data, mode, &pairs, true);
+    assert_eq!(tree.len(), flat.len(), "tree pair count mismatch");
+    let mut t_reach_mismatch = 0usize;
+    let mut t_dur_mismatch = 0usize;
+    let mut t_byte_identical = 0usize;
+    for (f, g) in flat.iter().zip(tree.iter()) {
+        assert_eq!(f.query_idx, g.query_idx, "tree query_idx order mismatch");
+        if f.rows.is_empty() != g.rows.is_empty() {
+            t_reach_mismatch += 1;
+        }
+        let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
+        let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+        if f_dur != g_dur {
+            t_dur_mismatch += 1;
+        }
+        let same = f.rows.len() == g.rows.len()
+            && f.rows.iter().zip(g.rows.iter()).all(|(a, b)| {
+                a.edge_seq == b.edge_seq
+                    && a.osm_from == b.osm_from
+                    && a.osm_to == b.osm_to
+                    && a.dur_ms == b.dur_ms
+                    && a.dist_m == b.dist_m
+            });
+        if same {
+            t_byte_identical += 1;
+        }
+    }
+    println!(
+        "  TREE EQUIVALENCE: reach mismatches {} | duration mismatches {} | byte-identical {}/{} ({:.2}%)",
+        t_reach_mismatch,
+        t_dur_mismatch,
+        t_byte_identical,
+        n_pairs,
+        100.0 * t_byte_identical as f64 / n_pairs.max(1) as f64
+    );
+    assert_eq!(t_reach_mismatch, 0, "TREE changed reachability");
+    assert_eq!(t_dur_mismatch, 0, "TREE changed total duration");
+    println!("    ✓ TREE reachability + total-duration IDENTICAL");
+
     // ---- Throughput (best of 2, after a warm run) ----
     let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);
     let mut flat_dt = f64::MAX;
@@ -4821,7 +4879,23 @@ fn run_edges_batch_bench(
         grouped_dt,
         n_pairs as f64 / grouped_dt
     );
-    println!("    speedup: {:.2}×", flat_dt / grouped_dt);
+    let mut tree_dt = f64::MAX;
+    for _ in 0..2 {
+        let t0 = Instant::now();
+        let _ = compute_edges_tree(&state, &mode_data, mode, &pairs, true);
+        tree_dt = tree_dt.min(t0.elapsed().as_secs_f64());
+    }
+    println!(
+        "    TREE    {:.3}s  {:.0} pairs/s",
+        tree_dt,
+        n_pairs as f64 / tree_dt
+    );
+    println!(
+        "    speedup: grouped {:.2}× | tree {:.2}× (vs flat), tree {:.2}× (vs grouped)",
+        flat_dt / grouped_dt,
+        flat_dt / tree_dt,
+        grouped_dt / tree_dt
+    );
     println!("═══════════════════════════════════════════════════════════════");
     Ok(())
 }

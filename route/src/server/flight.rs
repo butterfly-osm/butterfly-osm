@@ -2195,6 +2195,134 @@ pub fn compute_edges_flat(
     per_pair
 }
 
+/// #438 Phase 1: per-source predecessor-tracking PHAST TREE. One bounded tree
+/// settle per source replaces the per-target backward searches entirely — each
+/// target's path is a backtrack + the existing shortcut unpack
+/// ([`crate::range::tree_phast`]).
+///
+/// Bounding: the threshold per source group is `max great-circle distance to
+/// any of its targets × DETOUR / SPEED_FLOOR` (a duration metric has no
+/// principled geometric bound — codex's #1 risk). Targets the bounded tree
+/// misses are retried once at 4× the bound, then fall back to the per-pair
+/// path. The equivalence oracle (reachability + total duration identical)
+/// gates correctness; retry rate is the number to watch in the bench.
+pub fn compute_edges_tree(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    pairs: &[[f64; 4]],
+    parallel: bool,
+) -> Vec<PairEdges> {
+    let (group_vec, per_pair_work) = group_pairs(state, mode_data, mode, pairs, parallel);
+
+    let mut per_pair: Vec<PairEdges> = if parallel {
+        let mut v: Vec<PairEdges> = group_vec
+            .par_iter()
+            .flat_map(|(src_rank, targets)| {
+                process_source_group_tree(state, mode_data, mode, *src_rank, targets)
+            })
+            .collect();
+        let from_per_pair: Vec<PairEdges> = per_pair_work
+            .par_iter()
+            .map(|w| {
+                let query = super::query::CchQuery::new(mode_data);
+                process_per_pair_work(state, mode_data, mode, &query, w)
+            })
+            .collect();
+        v.extend(from_per_pair);
+        v
+    } else {
+        let mut v: Vec<PairEdges> = Vec::with_capacity(pairs.len());
+        for (src_rank, targets) in &group_vec {
+            v.extend(process_source_group_tree(
+                state, mode_data, mode, *src_rank, targets,
+            ));
+        }
+        let query = super::query::CchQuery::new(mode_data);
+        for w in &per_pair_work {
+            v.push(process_per_pair_work(state, mode_data, mode, &query, w));
+        }
+        v
+    };
+    per_pair.sort_unstable_by_key(|p| p.query_idx);
+    per_pair
+}
+
+/// #438: process one source group via the RPHAST-restricted predecessor tree.
+/// One exact restricted settle per source (selection = reverse-DOWN ancestry
+/// of the group's resolved targets — no distance bound, no retries), then
+/// every target is a backtrack + unpack. Misses (unreachable, or dst
+/// unresolved at K=1) fall back to the full per-pair path, which uses the
+/// separate `CCH_QUERY_STATE` scratch and so cannot corrupt the tree.
+fn process_source_group_tree(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    src_rank: u32,
+    targets: &[GroupedTarget],
+) -> Vec<PairEdges> {
+    use crate::range::tree_phast::{tree_backtrack, tree_settle_restricted};
+
+    let mut out = Vec::with_capacity(targets.len());
+    let mut fallbacks: Vec<usize> = Vec::new();
+
+    // Resolved target ranks drive the selection; unresolved go per-pair.
+    let mut dst_ranks: Vec<u32> = Vec::with_capacity(targets.len());
+    for (idx, t) in targets.iter().enumerate() {
+        match t.dst_rank {
+            Some(r) => dst_ranks.push(r),
+            None => fallbacks.push(idx),
+        }
+    }
+
+    if !dst_ranks.is_empty() {
+        tree_settle_restricted(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &mode_data.down_rev_flat,
+            src_rank,
+            &dst_ranks,
+        );
+        for (idx, t) in targets.iter().enumerate() {
+            let Some(dst_rank) = t.dst_rank else { continue };
+            match tree_backtrack(&mode_data.cch_topo, src_rank, dst_rank) {
+                Some(tp) => {
+                    let result = super::query::QueryResult {
+                        distance: tp.distance,
+                        meeting_node: tp.apex,
+                        forward_parent: tp.forward_parent,
+                        backward_parent: tp.backward_parent,
+                    };
+                    out.push(emit_pair_rows(
+                        state,
+                        mode_data,
+                        src_rank,
+                        dst_rank,
+                        &result,
+                        t.query_idx,
+                    ));
+                }
+                None => fallbacks.push(idx),
+            }
+        }
+    }
+
+    // Leftovers: full per-pair path (separate scratch; tree no longer needed).
+    let query = super::query::CchQuery::new(mode_data);
+    for idx in fallbacks {
+        let t = &targets[idx];
+        out.push(edges_for_pair(
+            state,
+            mode_data,
+            mode,
+            &query,
+            t.query_idx,
+            &t.pair,
+        ));
+    }
+    out
+}
+
 pub fn do_edges_batch(
     state: &Arc<ServerState>,
     mode: Mode,
