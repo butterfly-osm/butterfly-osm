@@ -513,22 +513,6 @@ fn arc_owner(offsets: &[u64], arc: usize) -> usize {
     offsets.partition_point(|&o| o <= a) - 1
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arc_owner_basics() {
-        let offsets: Vec<u64> = vec![0, 3, 3, 7, 10];
-        assert_eq!(arc_owner(&offsets, 0), 0);
-        assert_eq!(arc_owner(&offsets, 2), 0);
-        assert_eq!(arc_owner(&offsets, 3), 2); // node 1 is empty
-        assert_eq!(arc_owner(&offsets, 6), 2);
-        assert_eq!(arc_owner(&offsets, 7), 3);
-        assert_eq!(arc_owner(&offsets, 9), 3);
-    }
-}
-
 /// #438 K-lane: lanes per batch (matches the matrix subsystem's K).
 pub const TREE_LANES: usize = 8;
 const LANE_NONE: u32 = u32::MAX;
@@ -824,5 +808,21 @@ fn upward_sweep_body(
                 s.push_up(v, nd);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arc_owner_basics() {
+        let offsets: Vec<u64> = vec![0, 3, 3, 7, 10];
+        assert_eq!(arc_owner(&offsets, 0), 0);
+        assert_eq!(arc_owner(&offsets, 2), 0);
+        assert_eq!(arc_owner(&offsets, 3), 2); // node 1 is empty
+        assert_eq!(arc_owner(&offsets, 6), 2);
+        assert_eq!(arc_owner(&offsets, 7), 3);
+        assert_eq!(arc_owner(&offsets, 9), 3);
     }
 }
