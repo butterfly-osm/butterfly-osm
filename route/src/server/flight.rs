@@ -2459,14 +2459,14 @@ pub fn do_edges_batch(
                 chunk
                     .par_iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             } else {
                 chunk
                     .iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             };
