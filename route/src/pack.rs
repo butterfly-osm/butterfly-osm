@@ -847,6 +847,17 @@ pub fn pack_with_options(
         );
     }
 
+    // ---- Per-edge OSM node ID chains (#460) -------------------------
+    // Carried from step 3 so the serve path can expand NBG edges to
+    // per-OSM-segment rows. Absent in pre-#460 step3 dirs — skip with a
+    // notice; edges_flow then falls back to NBG-endpoint rows.
+    if let Err(e) = pack_edge_osm(&mut w, &step3) {
+        eprintln!(
+            "  ! [skip edge_osm] {}; edges_flow will emit NBG-endpoint rows (re-run step3 to enable per-OSM-segment expansion)",
+            e
+        );
+    }
+
     // ---- Way-name lookup index (#282) ------------------------------
     // Build a compact mmap-able way-name table from `step1/ways.raw`.
     // Saves ~30 MB heap on Belgium vs the HashMap<i64, String> path
@@ -1244,6 +1255,65 @@ fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
         &pts_bytes,
     )
     .with_context(|| "packing shared/edge_geom_points".to_string())?;
+
+    Ok(())
+}
+
+/// #460: carry the step-3 per-edge OSM node ID chains into the container
+/// as `shared/edge_osm_offsets` + `shared/edge_osm_ids`. The step-3 files
+/// already use the section encodings, so this validates (full CRC +
+/// header parse + monotonicity) and re-emits the verified bytes.
+fn pack_edge_osm(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
+    use crate::formats::edge_osm::{EdgeOsmIdsFile, EdgeOsmOffsetsFile};
+
+    let off_path = step3.join("nbg.edge_osm.offsets");
+    let ids_path = step3.join("nbg.edge_osm.ids");
+    if !off_path.exists() || !ids_path.exists() {
+        anyhow::bail!(
+            "nbg.edge_osm.{{offsets,ids}} missing under {} (pre-#460 step3 output)",
+            step3.display()
+        );
+    }
+
+    let off_bytes =
+        std::fs::read(&off_path).with_context(|| format!("reading {}", off_path.display()))?;
+    let ids_bytes =
+        std::fs::read(&ids_path).with_context(|| format!("reading {}", ids_path.display()))?;
+
+    // Full validation before emission (CRC, header, monotonic offsets,
+    // cross-file n_ids agreement).
+    let off = EdgeOsmOffsetsFile::read_from_bytes(&off_bytes)
+        .with_context(|| format!("validating {}", off_path.display()))?;
+    let ids = EdgeOsmIdsFile::read_from_bytes(&ids_bytes)
+        .with_context(|| format!("validating {}", ids_path.display()))?;
+    anyhow::ensure!(
+        off.n_ids == ids.n_ids,
+        "edge_osm n_ids mismatch: offsets say {}, ids say {}",
+        off.n_ids,
+        ids.n_ids
+    );
+
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (edge_osm_offsets, n_edges={})",
+        off_bytes.len() / (1024 * 1024),
+        "shared/edge_osm_offsets",
+        off.n_edges,
+    );
+    w.append_bytes(
+        SectionKind::EdgeOsmOffsets,
+        "shared/edge_osm_offsets",
+        &off_bytes,
+    )
+    .with_context(|| "packing shared/edge_osm_offsets".to_string())?;
+
+    println!(
+        "  + [{:>5} MiB] {:<28} <- (edge_osm_ids, n_ids={})",
+        ids_bytes.len() / (1024 * 1024),
+        "shared/edge_osm_ids",
+        ids.n_ids,
+    );
+    w.append_bytes(SectionKind::EdgeOsmIds, "shared/edge_osm_ids", &ids_bytes)
+        .with_context(|| "packing shared/edge_osm_ids".to_string())?;
 
     Ok(())
 }

@@ -1755,11 +1755,32 @@ pub(crate) fn edges_for_pair(
     query_idx: u32,
     pair: &[f64; 4],
 ) -> PairEdges {
+    match route_for_pair(state, mode_data, mode, query, pair) {
+        Some((src_rank, dst_rank, result)) => {
+            emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx)
+        }
+        None => PairEdges {
+            query_idx,
+            rows: Vec::new(),
+        },
+    }
+}
+
+/// #460: the routing core of [`edges_for_pair`] WITHOUT row emission —
+/// K=1 fast path + K=64/16-combo escalation, returning the raw
+/// `(src_rank, dst_rank, QueryResult)` so flow accumulation can fold
+/// ranks instead of materialized rows. `None` ⇒ unreachable.
+pub(crate) fn route_for_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    pair: &[f64; 4],
+) -> Option<(u32, u32, super::query::QueryResult)> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
 
     // K=1 fast path (same shape as compute_route_pair).
-    let mut p2p: Option<(u32, u32, super::query::QueryResult)> = None;
     let src_role = SnapRole::Src.role_filter(mode_data);
     let dst_role = SnapRole::Dst.role_filter(mode_data);
     if let (Some(src_id), Some(dst_id)) = (
@@ -1776,32 +1797,28 @@ pub(crate) fn edges_for_pair(
         && d != u32::MAX
         && let Some(r) = query.query(s, d)
     {
-        p2p = Some((s, d, r));
-    }
-
-    if let Some((src_rank, dst_rank, result)) = p2p {
-        return emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx);
+        return Some((s, d, r));
     }
     // K=1 didn't connect → K=64 escalation.
-    escalate_pair(state, mode_data, mode, query, query_idx, pair)
+    escalate_route(state, mode_data, mode, query, pair)
 }
 
 /// #438: K=64 + 16-combo escalation for a pair the K=1 fast path could not
 /// connect. Snaps both ends to 64 candidates and tries the closest-sum-first
-/// combos; emits the path or one unreachable null row.
+/// combos. Routing only (#460 split — callers emit rows via
+/// [`emit_pair_rows`] or fold ranks); `None` ⇒ unreachable.
 ///
 /// Split out of `edges_for_pair` so the source-grouped per-pair path
 /// (`process_per_pair_work`) can escalate WITHOUT re-doing the K=1 snap+query
 /// it already attempted with the precomputed ranks (#438-review: avoids the
 /// redundant K=1 work that made the all-singleton workload regress).
-fn escalate_pair(
+fn escalate_route(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
     query: &super::query::CchQuery<'_>,
-    query_idx: u32,
     pair: &[f64; 4],
-) -> PairEdges {
+) -> Option<(u32, u32, super::query::QueryResult)> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
     const SNAP_K: usize = 64;
@@ -1836,20 +1853,16 @@ fn escalate_pair(
         // (reachable count identical at 8 / 16 / 200) while bounding the
         // worst-case cost of a pair whose K=64 candidates don't connect.
         const EDGES_BATCH_MAX_COMBOS: usize = 16;
-        if let Some((src_rank, dst_rank, result)) = super::snap_kbest::p2p_with_kbest_fallback(
+        if let Some(hit) = super::snap_kbest::p2p_with_kbest_fallback(
             query,
             &src_snap.ranks,
             &dst_snap.ranks,
             EDGES_BATCH_MAX_COMBOS,
         ) {
-            return emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx);
+            return Some(hit);
         }
     }
-    // Unreachable.
-    PairEdges {
-        query_idx,
-        rows: Vec::new(),
-    }
+    None // unreachable
 }
 
 /// #438: shared unpack + per-edge row emit. Used by BOTH the per-pair
@@ -2025,21 +2038,39 @@ pub(crate) fn process_per_pair_work(
     query: &super::query::CchQuery<'_>,
     work: &PerPairWork,
 ) -> PairEdges {
-    if let (Some(src_rank), Some(dst_rank)) = (work.src_rank, work.dst_rank)
-        && let Some(result) = query.query(src_rank, dst_rank)
-    {
-        return emit_pair_rows(
+    match route_per_pair_work(state, mode_data, mode, query, work) {
+        Some((src_rank, dst_rank, result)) => emit_pair_rows(
             state,
             mode_data,
             src_rank,
             dst_rank,
             &result,
             work.query_idx,
-        );
+        ),
+        None => PairEdges {
+            query_idx: work.query_idx,
+            rows: Vec::new(),
+        },
+    }
+}
+
+/// #460: routing core of [`process_per_pair_work`] WITHOUT row emission —
+/// carried-K=1-ranks query, then K=64 escalation. `None` ⇒ unreachable.
+pub(crate) fn route_per_pair_work(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    work: &PerPairWork,
+) -> Option<(u32, u32, super::query::QueryResult)> {
+    if let (Some(src_rank), Some(dst_rank)) = (work.src_rank, work.dst_rank)
+        && let Some(result) = query.query(src_rank, dst_rank)
+    {
+        return Some((src_rank, dst_rank, result));
     }
     // K=1 missed (or didn't connect) → escalate WITHOUT re-doing the K=1 that
     // the precomputed-rank query above already covered.
-    escalate_pair(state, mode_data, mode, query, work.query_idx, &work.pair)
+    escalate_route(state, mode_data, mode, query, &work.pair)
 }
 
 /// #438: resolve each pair's K=1 source/dest rank and partition into
