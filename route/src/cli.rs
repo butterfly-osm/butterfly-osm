@@ -725,6 +725,15 @@ pub enum Commands {
         #[arg(long)]
         modes: Option<String>,
 
+        /// Transit subsystem toggle: "on" (default) or "off". With "off",
+        /// `transit/` directories are ignored entirely — no feed parse, no
+        /// transfer-graph build/load — even when the foot mode is loaded.
+        /// Lean road-only deployments iterate much faster this way; flip
+        /// back to "on" (or drop the flag) to re-enable multimodal.
+        /// Env override: `BUTTERFLY_TRANSIT=off`.
+        #[arg(long, default_value = "on")]
+        transit: String,
+
         /// Load only specific regions (comma-separated). Default: every
         /// `*.butterfly` container in `--data-dir` is loaded.
         /// Example: `--regions BE,LU`. Ignored when `--data` is used
@@ -2124,6 +2133,7 @@ impl Cli {
                 grpc_port,
                 transport,
                 modes,
+                transit,
                 regions,
                 eager_regions,
                 rss_budget_gb,
@@ -2160,6 +2170,15 @@ impl Cli {
                 // so the compactor reads it without growing serve()'s sig.
                 if let Some(secs) = idle_compact_secs {
                     crate::server::set_idle_compact_secs(secs);
+                }
+                // Lean-deploy transit toggle: CLI flag or BUTTERFLY_TRANSIT
+                // env; "off"/"0"/"false"/"no" disables.
+                let transit_off = matches!(transit.to_lowercase().as_str(), "off" | "0" | "false")
+                    || std::env::var("BUTTERFLY_TRANSIT")
+                        .map(|v| matches!(v.to_lowercase().as_str(), "off" | "0" | "false" | "no"))
+                        .unwrap_or(false);
+                if transit_off {
+                    crate::server::set_transit_enabled(false);
                 }
 
                 let transport_mode = server::Transport::parse(&transport)?;
