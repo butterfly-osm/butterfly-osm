@@ -1910,7 +1910,31 @@ impl Cli {
                         })?;
                         let profile = crate::traffic::TrafficProfile::load(&traffic_path)?;
                         // Validate base_model matches the mode we're customizing.
+                        // For profiles carrying a (highway_class × density)
+                        // matrix this is a HARD error: matrix keys are the
+                        // model-specific highway_class codes from
+                        // way_attrs.<mode>.bin (e.g. code 12 is residential in
+                        // the car model but maps to a different road type in
+                        // bike/foot), so applying the matrix to another mode
+                        // would silently scale the wrong roads. Vector-only
+                        // profiles key on the shared density classes, so a
+                        // mismatch stays a warning.
                         if profile.base_model != mode_name_str {
+                            if profile.has_matrix() {
+                                anyhow::bail!(
+                                    "traffic profile base_model='{}' but customizing mode='{}': \
+                                     the profile carries a (highway_class × density) matrix, and \
+                                     matrix highway-class codes are model-specific (the same code \
+                                     names different road types in different models), so applying \
+                                     it to another mode would scale the wrong roads. Re-run \
+                                     calibrate-traffic against way_attrs.{}.bin (emitting \
+                                     base_model='{}') or use a vector-only profile.",
+                                    profile.base_model,
+                                    mode_name_str,
+                                    mode_name_str,
+                                    mode_name_str
+                                );
+                            }
                             println!(
                                 "⚠️  warning: traffic profile base_model='{}' but customizing mode='{}'. Proceeding.",
                                 profile.base_model, mode_name_str
