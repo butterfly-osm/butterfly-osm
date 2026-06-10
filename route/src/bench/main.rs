@@ -4928,6 +4928,96 @@ fn run_edges_batch_bench(
         flat_dt / tree_dt,
         grouped_dt / tree_dt
     );
+
+    // ---- #460 edges_flow: exact oracle vs aggregated TREE rows ----
+    // The flow path walks the SAME lane chains as compute_edges_tree and
+    // rides the SAME per-pair fallback, so aggregating tree rows × weight
+    // must reproduce the flow table EXACTLY (f64 addition order aside).
+    {
+        use butterfly_route::server::flow::compute_edges_flow;
+        use std::collections::HashMap;
+
+        let weights: Vec<f64> = (0..n_pairs).map(|i| 1.0 + (i % 7) as f64 * 0.25).collect();
+        let groups: Vec<u32> = (0..n_pairs).map(|i| (i % 3) as u32).collect();
+        let (flow_rows, summary) =
+            compute_edges_flow(&state, &mode_data, mode, &pairs, &weights, &groups, true);
+
+        let mut ref_map: HashMap<(u32, i64, i64), f64> = HashMap::new();
+        let mut tree_total_rows = 0usize;
+        for p in &tree {
+            if p.rows.is_empty() {
+                continue;
+            }
+            tree_total_rows += p.rows.len();
+            let w = weights[p.query_idx as usize];
+            let g = groups[p.query_idx as usize];
+            for r in &p.rows {
+                *ref_map.entry((g, r.osm_from, r.osm_to)).or_default() += w;
+            }
+        }
+        assert_eq!(
+            flow_rows.len(),
+            ref_map.len(),
+            "FLOW distinct-edge count mismatch vs aggregated TREE rows"
+        );
+        let mut max_rel = 0.0_f64;
+        for r in &flow_rows {
+            let reference = ref_map
+                .get(&(r.group, r.osm_from, r.osm_to))
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "FLOW edge ({},{},{}) absent from TREE aggregate",
+                        r.group, r.osm_from, r.osm_to
+                    )
+                });
+            let rel = (r.flow - reference).abs() / reference.abs().max(1.0);
+            max_rel = max_rel.max(rel);
+        }
+        assert!(
+            max_rel < 1e-9,
+            "FLOW value drift vs TREE aggregate: {max_rel}"
+        );
+
+        // Summary invariants vs the FLAT ground truth (reachability is
+        // already asserted identical across variants above).
+        let flat_unreachable = flat.iter().filter(|p| p.rows.is_empty()).count() as u64;
+        assert_eq!(summary.n_pairs, n_pairs as u64);
+        assert_eq!(summary.n_unreachable, flat_unreachable, "unreachable count");
+        let expect_assigned: f64 = flat
+            .iter()
+            .filter(|p| !p.rows.is_empty())
+            .map(|p| weights[p.query_idx as usize])
+            .sum();
+        let rel = (summary.total_weight_assigned - expect_assigned).abs()
+            / expect_assigned.abs().max(1.0);
+        assert!(rel < 1e-9, "conservation drift: {rel}");
+        println!();
+        println!("  EDGES_FLOW (#460): oracle vs TREE aggregate EXACT (max rel {max_rel:.1e})");
+        println!(
+            "    ✓ conservation: assigned {:.2} / in {:.2}, unreachable {}",
+            summary.total_weight_assigned, summary.total_weight_in, summary.n_unreachable
+        );
+        println!(
+            "    wire rows: {} flow rows vs {} per-pair rows ({:.0}× compression)",
+            flow_rows.len(),
+            tree_total_rows,
+            tree_total_rows as f64 / flow_rows.len().max(1) as f64
+        );
+
+        let mut flow_dt = f64::MAX;
+        for _ in 0..2 {
+            let t0 = Instant::now();
+            let _ = compute_edges_flow(&state, &mode_data, mode, &pairs, &weights, &groups, true);
+            flow_dt = flow_dt.min(t0.elapsed().as_secs_f64());
+        }
+        println!(
+            "    FLOW    {:.3}s  {:.0} pairs/s  ({:.2}× vs TREE-with-rows)",
+            flow_dt,
+            n_pairs as f64 / flow_dt,
+            tree_dt / flow_dt
+        );
+    }
     println!("═══════════════════════════════════════════════════════════════");
     Ok(())
 }
