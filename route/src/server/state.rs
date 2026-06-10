@@ -1702,11 +1702,17 @@ impl ServerState {
 
         // #444: PVC-cached recustomization. The ~5-min calibrate+customize is
         // pure recompute when neither the observed table nor the artifact
-        // changed — key the cached weights on crc64(parquet) ⊕
-        // crc64(artifact-info) ⊕ algo version and skip straight to the flats
-        // on a hit. Cache failures are non-fatal in both directions.
+        // changed — key the cached weights on crc64(algo version ⊕ parquet ⊕
+        // the container's car TIME-weights section CRC) and skip straight to
+        // the flats on a hit. The section CRC is ENGINE-INTERNAL provenance
+        // (repo-boundary rule: no deploy-side file conventions in the open
+        // engine). Cache failures are non-fatal in both directions.
         let cache_path = observed_path.with_file_name("recustomize_cache.car.v1.bin");
-        let cache_key = recustomize_cache_key(observed_path);
+        let car_weights_crc = container
+            .get("mode/car/weights.time")
+            .map(|e| e.crc)
+            .unwrap_or(0);
+        let cache_key = recustomize_cache_key(observed_path, car_weights_crc);
         let cached = cache_key.and_then(|k| read_recustomize_cache(&cache_path, k));
 
         let (profile, new_weights, adjusted_node_weights) = if let Some(hit) = cached {
@@ -3601,15 +3607,15 @@ mod tests {
 const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
 
 /// Provenance key: crc64 over (algo version ⊕ observed parquet bytes ⊕ the
-/// sibling artifact-info, which changes with every artifact build). `None`
-/// (unreadable parquet) disables the cache for this boot.
-fn recustomize_cache_key(observed_path: &std::path::Path) -> Option<u64> {
+/// container's car TIME-weights section CRC). The section CRC is engine-
+/// internal — it changes with every rebuilt artifact, so the cache
+/// invalidates correctly without depending on deploy-side conventions.
+/// `None` (unreadable parquet) disables the cache for this boot.
+fn recustomize_cache_key(observed_path: &std::path::Path, car_weights_crc: u64) -> Option<u64> {
     let mut d = crate::formats::crc::Digest::new();
     d.update(RECUSTOMIZE_CACHE_VERSION);
     d.update(&std::fs::read(observed_path).ok()?);
-    if let Ok(info) = std::fs::read(observed_path.with_file_name("artifact-info")) {
-        d.update(&info);
-    }
+    d.update(&car_weights_crc.to_le_bytes());
     Some(d.finalize())
 }
 
