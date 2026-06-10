@@ -466,8 +466,10 @@ impl SparseContourConfig {
     /// a gap-filling closing must erode exactly what it dilated, or every
     /// un-eroded round leaves a net +1-cell uniform outward grow that is
     /// never reclaimed (~+19 m/side for car at the 300 s tier). Gap
-    /// bridging strength is set by the dilation count alone; the matching
-    /// erosion cannot re-open a bridged gap (closing is idempotent there).
+    /// bridging strength is set by the dilation count alone; closing is
+    /// extensive (result ⊇ original stamped set), so erosion can thin a
+    /// dilation-created bridge but never disconnect original geometry —
+    /// confirmed empirically on Belgium urban + rural origins (#431).
     pub fn for_car() -> Self {
         Self {
             cell_size_m: 30.0,
