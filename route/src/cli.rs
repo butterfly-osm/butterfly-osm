@@ -1312,6 +1312,14 @@ pub enum Commands {
         #[arg(long, default_value_t = 1.20)]
         clamp_max: f32,
 
+        /// #428: additionally fit a (highway_class × density) factor matrix.
+        /// The highway axis is the model-defined u16 code stored per way in
+        /// way_attrs.<mode>.bin. Only cells clearing --min-samples are
+        /// emitted; omitted cells fall back to the per-density vector at
+        /// application time. Off by default (vector-only profile).
+        #[arg(long)]
+        matrix: bool,
+
         /// Output `*.traffic.json` path.
         #[arg(long)]
         out: PathBuf,
@@ -2915,6 +2923,7 @@ impl Cli {
                 min_samples,
                 clamp_min,
                 clamp_max,
+                matrix,
                 out,
             } => {
                 let wa_path = match (way_attrs, data_dir) {
@@ -2936,6 +2945,7 @@ impl Cli {
                     min_samples,
                     clamp_min,
                     clamp_max,
+                    fit_matrix: matrix,
                 };
                 let result = crate::calibrate::run_calibration(&observations, &wa_path, &params)?;
 
@@ -2970,6 +2980,35 @@ impl Cli {
                         source,
                         cf.factor
                     );
+                }
+
+                if matrix {
+                    let emitted = result.per_cell.iter().filter(|c| c.emitted).count();
+                    eprintln!(
+                        "matrix (#428): {} highway rows, {}/{} cells emitted (omitted cells fall back to the density vector)",
+                        result.profile.matrix.len(),
+                        emitted,
+                        result.per_cell.len()
+                    );
+                    eprintln!(
+                        "{:>8} {:<14} {:>10} {:>12} {:>10} {:>10}",
+                        "highway", "density", "n_obs", "samples", "raw", "factor"
+                    );
+                    for cell in &result.per_cell {
+                        let factor = cell
+                            .factor
+                            .map(|f| format!("{f:.3}"))
+                            .unwrap_or_else(|| "(vector)".to_string());
+                        eprintln!(
+                            "{:>8} {:<14} {:>10} {:>12} {:>10.3} {:>10}",
+                            cell.highway_class,
+                            cell.class.as_str(),
+                            cell.n_obs,
+                            cell.total_samples,
+                            cell.raw_factor,
+                            factor
+                        );
+                    }
                 }
 
                 let json = result.profile.to_json_string()?;
