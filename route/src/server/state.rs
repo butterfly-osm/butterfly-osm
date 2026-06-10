@@ -2040,6 +2040,7 @@ impl ServerState {
                     name: format!("edge_speeds:{matched}"),
                     base_model: "car".to_string(),
                     factors: [1.0; 5],
+                    matrix: std::collections::BTreeMap::new(),
                 };
                 if let Err(e) =
                     write_recustomize_cache(&cache_path, k, &marker, &new_weights, &adjusted)

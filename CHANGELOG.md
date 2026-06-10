@@ -10,7 +10,29 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
-### 2026-05-27 — Drivetime distance consistency (2-channel bucket-M2M)
+### 2026-06-10 — Traffic profiles: (highway_class × density) modifier matrix (#428)
+
+Traffic profiles (`traffic/*.traffic.json`) may now carry an opt-in 2-D
+`matrix` section refining the per-density speed-factor vector with
+per-`(highway_class × density)` cells:
+
+- **Schema**: `"matrix": {"<highway_class_code>": {"<density>": factor, ...}}`.
+  Outer keys are the numeric `highway_class` codes stored per way in
+  `way_attrs.<mode>.bin` (assigned by the build model's `highway_class`
+  table — model-defined, so the code rather than a name is the exact value
+  available at customization time). Rows may be partial: a missing
+  `(highway, density)` cell falls back to the per-density `speed_factors`
+  vector, which stays required and complete. Factors validated in
+  `[0.1, 1.5]`; unknown keys, non-canonical codes, empty matrices/rows
+  rejected. Vector-only profiles are unchanged and round-trip
+  byte-for-byte (the `matrix` key is omitted when absent).
+- **Application**: step 8 `--traffic` and the serve-boot car
+  recustomization both resolve `factor_for_cell(highway, density)` —
+  identical to the pre-#428 behavior when no matrix is present.
+- **Calibration**: `calibrate-traffic --matrix` fits the matrix from the
+  same observed table — per-cell sample-count-weighted median, same
+  clamp band, cells emitted only above `--min-samples` (omitted cells
+  fall back cell → density-marginal → global). Deterministic output.
 
 Closed #371/#372 — the matrix endpoints (`/table`, `/trip`, Flight)
 now report distance values that belong to the SAME path as the
