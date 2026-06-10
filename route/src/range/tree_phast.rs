@@ -277,6 +277,15 @@ pub fn tree_settle(
 ///
 /// `down_rev` supplies the reverse-DOWN adjacency for the selection DFS (INF
 /// arcs are filtered at its build — they can't carry a shortest path).
+/// TEMP #438 instrumentation: summed ns per phase across all restricted
+/// settles (selection DFS / upward sweep / restricted scan). Read+reset by
+/// the bench; near-zero overhead when not read.
+pub static TREE_PHASE_NS: [std::sync::atomic::AtomicU64; 3] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
 pub fn tree_settle_restricted(
     topo: &CchTopo,
     weights: &CchWeights,
@@ -300,6 +309,7 @@ pub fn tree_settle_restricted(
                 s.set(origin as usize, 0, 0);
 
                 // ---- Selection: reverse-DOWN ancestry of the targets ----
+                let _t = std::time::Instant::now();
                 s.start_selection();
                 let mut stack: Vec<u32> = Vec::with_capacity(targets.len() * 4);
                 for &t in targets {
@@ -325,6 +335,8 @@ pub fn tree_settle_restricted(
                 }
                 // Descending rank order for the scan.
                 s.sel.sort_unstable_by(|a, b| b.cmp(a));
+                TREE_PHASE_NS[0].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                let _t = std::time::Instant::now();
 
                 // ---- Phase 1: exhaustive upward sweep (UP parents) ----
                 // Lever-1 (#438): reused 4-ary decrease-key heap (no lazy
@@ -371,6 +383,8 @@ pub fn tree_settle_restricted(
                     }
                 }
 
+                TREE_PHASE_NS[1].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                let _t = std::time::Instant::now();
                 // ---- Phase 2: restricted downward scan (DOWN parents) ----
                 // s.sel is moved out to appease the borrow checker (s is
                 // mutably borrowed inside the loop), then restored.
@@ -396,6 +410,7 @@ pub fn tree_settle_restricted(
                     }
                 }
                 s.sel = sel;
+                TREE_PHASE_NS[2].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
                 TreeSettle::Ok
             },
         )

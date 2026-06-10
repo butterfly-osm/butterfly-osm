@@ -4915,6 +4915,13 @@ fn run_edges_batch_bench(
         tree_dt,
         n_pairs as f64 / tree_dt
     );
+    {
+        use butterfly_route::range::tree_phast::TREE_PHASE_NS;
+        let sel = TREE_PHASE_NS[0].swap(0, std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        let up = TREE_PHASE_NS[1].swap(0, std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        let scan = TREE_PHASE_NS[2].swap(0, std::sync::atomic::Ordering::Relaxed) / 1_000_000;
+        println!("    TREE phases (summed CPU ms): selection={sel} upward={up} scan={scan}");
+    }
     println!(
         "    speedup: grouped {:.2}× | tree {:.2}× (vs flat), tree {:.2}× (vs grouped)",
         flat_dt / grouped_dt,
