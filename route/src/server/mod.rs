@@ -44,6 +44,7 @@ pub mod overlay;
 // Every gRPC function returns Result<_, Status>; boxing adds indirection with no benefit.
 #[allow(clippy::result_large_err)]
 pub mod flight;
+pub mod flow;
 pub mod geometry;
 pub mod health_handler;
 pub mod height_handler;
@@ -136,6 +137,19 @@ static IDLE_COMPACT_SECS_OVERRIDE: std::sync::OnceLock<u64> = std::sync::OnceLoc
 
 pub fn set_idle_compact_secs(secs: u64) {
     let _ = IDLE_COMPACT_SECS_OVERRIDE.set(secs);
+}
+
+/// Lean-deploy transit toggle (`--transit off` / `BUTTERFLY_TRANSIT=off`):
+/// when disabled, `transit/` directories are ignored at boot — no feed
+/// parse, no transfer-graph build/load — even with the foot mode loaded.
+static TRANSIT_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn set_transit_enabled(on: bool) {
+    let _ = TRANSIT_ENABLED.set(on);
+}
+
+fn transit_enabled() -> bool {
+    *TRANSIT_ENABLED.get().unwrap_or(&true)
 }
 
 fn idle_compact_secs() -> u64 {
@@ -428,7 +442,12 @@ pub async fn serve(
     // origin/destination pairs.
     let mut regions_state = regions_state;
     let mut transit_loaded_count = 0usize;
-    let n_regions = regions_state.regions.len();
+    let n_regions = if transit_enabled() {
+        regions_state.regions.len()
+    } else {
+        tracing::info!("transit disabled (--transit off / BUTTERFLY_TRANSIT) — road-only serve");
+        0
+    };
     for idx in 0..n_regions {
         let region_id_lower = regions_state.regions[idx].id.to_lowercase();
         let per_region_dir = data_dir_for_transit.join(&region_id_lower);

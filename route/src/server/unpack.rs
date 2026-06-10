@@ -108,7 +108,7 @@ fn unpack_down_edge_into(
 }
 
 /// Find UP edge index from source to target
-fn find_up_edge(topo: &CchTopo, source: usize, target: u32) -> Option<usize> {
+pub(crate) fn find_up_edge(topo: &CchTopo, source: usize, target: u32) -> Option<usize> {
     let start = topo.up_offsets[source] as usize;
     let end = topo.up_offsets[source + 1] as usize;
     let slice = &topo.up_targets[start..end];
@@ -116,7 +116,7 @@ fn find_up_edge(topo: &CchTopo, source: usize, target: u32) -> Option<usize> {
 }
 
 /// Find DOWN edge index from source to target
-fn find_down_edge(topo: &CchTopo, source: usize, target: u32) -> Option<usize> {
+pub(crate) fn find_down_edge(topo: &CchTopo, source: usize, target: u32) -> Option<usize> {
     let start = topo.down_offsets[source] as usize;
     let end = topo.down_offsets[source + 1] as usize;
     let slice = &topo.down_targets[start..end];
