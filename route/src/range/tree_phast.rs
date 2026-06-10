@@ -61,6 +61,11 @@ struct TreeScratch {
     sel_gen: Vec<u32>,
     sel_epoch: u32,
     sel: Vec<u32>,
+    /// #438 K-lane: selection-position map (pos+1, valid where sel_gen ==
+    /// sel_epoch) + compact per-selection lane arrays (K × |sel|).
+    sel_pos: Vec<u32>,
+    lane_dist: Vec<u32>,
+    lane_parent: Vec<u32>,
     /// Lever-1 (#438): reused 4-ary decrease-key heap + handle slots for the
     /// upward sweep (replaces a per-settle std::BinaryHeap with lazy dupes).
     pq: DAryHeap,
@@ -79,6 +84,9 @@ impl TreeScratch {
             sel_gen: vec![0; n],
             sel_epoch: 0,
             sel: Vec::new(),
+            sel_pos: vec![0; n],
+            lane_dist: Vec::new(),
+            lane_parent: Vec::new(),
             pq: DAryHeap::new(1024),
             handles: vec![HANDLE_NONE; n],
         }
@@ -335,55 +343,18 @@ pub fn tree_settle_restricted(
                 }
                 // Descending rank order for the scan.
                 s.sel.sort_unstable_by(|a, b| b.cmp(a));
-                TREE_PHASE_NS[0].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                TREE_PHASE_NS[0].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 let _t = std::time::Instant::now();
 
                 // ---- Phase 1: exhaustive upward sweep (UP parents) ----
-                // Lever-1 (#438): reused 4-ary decrease-key heap (no lazy
-                // duplicate pops) + stall-on-demand against the reverse-DOWN
-                // adjacency, mirroring the tuned bidirectional query (#272).
-                // Stalling prunes nodes whose distance is witnessed shorter
-                // via a higher-rank neighbour — distances on shortest paths
-                // are unaffected.
-                s.pq.clear();
-                s.push_up(origin, 0);
-                while let Some((d, u)) = s.pop_up() {
-                    if d > s.get(u as usize) {
-                        continue; // stale
-                    }
-                    let rs = down_rev.offsets[u as usize] as usize;
-                    let re = down_rev.offsets[u as usize + 1] as usize;
-                    let mut stalled = false;
-                    for slot in rs..re {
-                        let x = down_rev.sources[slot] as usize;
-                        if s.generation[x] == s.epoch {
-                            let dx = s.dist[x];
-                            if dx != u32::MAX && dx.saturating_add(down_rev.weights.get(slot)) < d {
-                                stalled = true;
-                                break;
-                            }
-                        }
-                    }
-                    if stalled {
-                        continue;
-                    }
-                    let start = topo.up_offsets[u as usize] as usize;
-                    let end = topo.up_offsets[u as usize + 1] as usize;
-                    for i in start..end {
-                        let w = weights.up.get(i);
-                        if w == u32::MAX {
-                            continue;
-                        }
-                        let v = topo.up_targets[i];
-                        let nd = d.saturating_add(w);
-                        if nd < s.get(v as usize) {
-                            s.set(v as usize, nd, i as u32); // UP arc
-                            s.push_up(v, nd);
-                        }
-                    }
-                }
-
-                TREE_PHASE_NS[1].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                upward_sweep_body(s, topo, weights, down_rev, origin);
+                TREE_PHASE_NS[1].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 let _t = std::time::Instant::now();
                 // ---- Phase 2: restricted downward scan (DOWN parents) ----
                 // s.sel is moved out to appease the borrow checker (s is
@@ -410,7 +381,10 @@ pub fn tree_settle_restricted(
                     }
                 }
                 s.sel = sel;
-                TREE_PHASE_NS[2].fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                TREE_PHASE_NS[2].fetch_add(
+                    _t.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 TreeSettle::Ok
             },
         )
@@ -552,5 +526,283 @@ mod tests {
         assert_eq!(arc_owner(&offsets, 6), 2);
         assert_eq!(arc_owner(&offsets, 7), 3);
         assert_eq!(arc_owner(&offsets, 9), 3);
+    }
+}
+
+/// #438 K-lane: lanes per batch (matches the matrix subsystem's K).
+pub const TREE_LANES: usize = 8;
+const LANE_NONE: u32 = u32::MAX;
+
+/// #438 K-lane batched settle: up to [`TREE_LANES`] sources share ONE union
+/// selection and ONE restricted descending-rank scan — each DOWN arc's topo
+/// data is read once and relaxed for all lanes (the scan was 73% of tree CPU).
+/// Per-source UP sweeps seed the lanes; UP parent chains are NOT retained —
+/// before backtracking lane `k`, the caller MUST [`tree_resweep`]`(sources[k])`
+/// (sweeps are ~14%, paid twice by design).
+pub fn tree_settle_restricted_batch(
+    topo: &CchTopo,
+    weights: &CchWeights,
+    down_rev: &DownReverseAdjFlat,
+    sources: &[u32],
+    union_targets: &[u32],
+) -> TreeSettle {
+    let n = topo.n_nodes as usize;
+    let k_lanes = sources.len();
+    if k_lanes == 0 || k_lanes > TREE_LANES || sources.iter().any(|&s| (s as usize) >= n) {
+        return TreeSettle::BadOrigin;
+    }
+    TREE_SCRATCH.with(|cell| {
+        cell.with_or_init(
+            || TreeScratch::new(n),
+            |s| {
+                if s.dist.len() != n {
+                    *s = TreeScratch::new(n);
+                }
+                // Selection: union reverse-DOWN ancestry of ALL lanes' targets.
+                s.start_selection();
+                let mut stack: Vec<u32> = Vec::with_capacity(union_targets.len() * 4);
+                for &t in union_targets {
+                    let ti = t as usize;
+                    if ti < n && s.sel_gen[ti] != s.sel_epoch {
+                        s.sel_gen[ti] = s.sel_epoch;
+                        s.sel.push(t);
+                        stack.push(t);
+                    }
+                }
+                while let Some(v) = stack.pop() {
+                    let start = down_rev.offsets[v as usize] as usize;
+                    let end = down_rev.offsets[v as usize + 1] as usize;
+                    for slot in start..end {
+                        let u = down_rev.sources[slot];
+                        let ui = u as usize;
+                        if s.sel_gen[ui] != s.sel_epoch {
+                            s.sel_gen[ui] = s.sel_epoch;
+                            s.sel.push(u);
+                            stack.push(u);
+                        }
+                    }
+                }
+                s.sel.sort_unstable_by(|a, b| b.cmp(a));
+                let sel_n = s.sel.len();
+                // Positions AFTER sorting (sel_pos[node] = idx+1, sel_gen-gated).
+                for (i, &u) in s.sel.iter().enumerate() {
+                    s.sel_pos[u as usize] = (i + 1) as u32;
+                }
+
+                // Lane arrays (compact, cache-resident).
+                s.lane_dist.clear();
+                s.lane_dist.resize(k_lanes * sel_n, u32::MAX);
+                s.lane_parent.clear();
+                s.lane_parent.resize(k_lanes * sel_n, LANE_NONE);
+
+                // Seed: per-source UP sweep (single-lane scratch), copy dists
+                // of selection nodes into the lane.
+                let sel_snapshot = std::mem::take(&mut s.sel);
+                for (k, &src) in sources.iter().enumerate() {
+                    s.start_tree(src, u32::MAX);
+                    s.set(src as usize, 0, 0);
+                    upward_sweep_body(s, topo, weights, down_rev, src);
+                    let base = k * sel_n;
+                    for (i, &u) in sel_snapshot.iter().enumerate() {
+                        let d = s.get(u as usize);
+                        if d != u32::MAX {
+                            s.lane_dist[base + i] = d;
+                        }
+                    }
+                }
+                s.sel = sel_snapshot;
+
+                // ONE restricted scan, all lanes per arc.
+                let sel_view = std::mem::take(&mut s.sel);
+                for (i, &u) in sel_view.iter().enumerate() {
+                    let ui = u as usize;
+                    let start = topo.down_offsets[ui] as usize;
+                    let end = topo.down_offsets[ui + 1] as usize;
+                    for arc in start..end {
+                        let w = weights.down.get(arc);
+                        if w == u32::MAX {
+                            continue;
+                        }
+                        let v = topo.down_targets[arc] as usize;
+                        if s.sel_gen[v] != s.sel_epoch {
+                            continue; // outside selection — dead end
+                        }
+                        let j = (s.sel_pos[v] - 1) as usize;
+                        for k in 0..k_lanes {
+                            let di = k * sel_n + i;
+                            let d = s.lane_dist[di];
+                            if d == u32::MAX {
+                                continue;
+                            }
+                            let nd = d.saturating_add(w);
+                            let dj = k * sel_n + j;
+                            if nd < s.lane_dist[dj] {
+                                s.lane_dist[dj] = nd;
+                                s.lane_parent[dj] = arc as u32;
+                            }
+                        }
+                    }
+                }
+                s.sel = sel_view;
+                TreeSettle::Ok
+            },
+        )
+    })
+}
+
+/// #438 K-lane: re-run the UP sweep for ONE lane's source into the
+/// single-lane scratch so [`tree_lane_backtrack`] can reconstruct UP parent
+/// chains. MUST be called (same thread) after the batch settle and before
+/// that lane's backtracks; does NOT touch the lane arrays or selection.
+pub fn tree_resweep(
+    topo: &CchTopo,
+    weights: &CchWeights,
+    down_rev: &DownReverseAdjFlat,
+    source: u32,
+) {
+    let n = topo.n_nodes as usize;
+    TREE_SCRATCH.with(|cell| {
+        cell.with_or_init(
+            || TreeScratch::new(n),
+            |s| {
+                if s.dist.len() != n {
+                    *s = TreeScratch::new(n);
+                }
+                s.start_tree(source, u32::MAX);
+                s.set(source as usize, 0, 0);
+                upward_sweep_body(s, topo, weights, down_rev, source);
+            },
+        )
+    });
+}
+
+/// #438 K-lane: backtrack `target` out of lane `k` (DOWN chain from the lane
+/// arrays; UP chain from the single-lane scratch left by [`tree_resweep`]).
+pub fn tree_lane_backtrack(topo: &CchTopo, k: usize, source: u32, target: u32) -> Option<TreePath> {
+    let n = topo.n_nodes as usize;
+    TREE_SCRATCH.with(|cell| {
+        cell.with_or_init(
+            || TreeScratch::new(n),
+            |s| {
+                if s.dist.len() != n || s.origin != source {
+                    return None; // resweep missing/mismatched — caller falls back
+                }
+                let sel_n = s.sel.len();
+                let ti = target as usize;
+                if ti >= n || s.sel_gen[ti] != s.sel_epoch {
+                    return None;
+                }
+                let tpos = (s.sel_pos[ti] - 1) as usize;
+                let dist = s.lane_dist[k * sel_n + tpos];
+                if dist == u32::MAX {
+                    return None;
+                }
+                if source == target {
+                    return Some(TreePath {
+                        distance: 0,
+                        apex: source,
+                        forward_parent: vec![],
+                        backward_parent: vec![],
+                    });
+                }
+                // DOWN chain: walk lane parents target→apex.
+                let mut backward: Vec<(u32, u32)> = Vec::new();
+                let mut cur_pos = tpos;
+                let mut cur_node = target;
+                for _ in 0..100_000 {
+                    let lp = s.lane_parent[k * sel_n + cur_pos];
+                    if lp == LANE_NONE {
+                        break; // apex (seeded by the UP sweep)
+                    }
+                    let arc = lp as usize;
+                    let src = arc_owner(&topo.down_offsets, arc) as u32;
+                    backward.push((src, lp));
+                    cur_node = src;
+                    if s.sel_gen[cur_node as usize] != s.sel_epoch {
+                        return None; // corrupt
+                    }
+                    cur_pos = (s.sel_pos[cur_node as usize] - 1) as usize;
+                }
+                let apex = cur_node;
+                // UP chain: from the resweep's single-lane parents apex→source.
+                if s.get(apex as usize) == u32::MAX {
+                    return None; // resweep didn't reach apex — inconsistent
+                }
+                let mut forward_rev: Vec<(u32, u32)> = Vec::new();
+                let mut cur = apex;
+                for _ in 0..100_000 {
+                    if cur == source {
+                        forward_rev.reverse();
+                        return Some(TreePath {
+                            distance: dist,
+                            apex,
+                            forward_parent: forward_rev,
+                            backward_parent: backward,
+                        });
+                    }
+                    if s.generation[cur as usize] != s.epoch {
+                        return None;
+                    }
+                    let tagged = s.parent[cur as usize];
+                    if tagged & DOWN_BIT != 0 {
+                        return None; // UP chain can't contain DOWN arcs
+                    }
+                    let arc = (tagged & ARC_MASK) as usize;
+                    let srcn = arc_owner(&topo.up_offsets, arc) as u32;
+                    forward_rev.push((srcn, tagged & ARC_MASK));
+                    cur = srcn;
+                }
+                None
+            },
+        )
+    })
+}
+
+/// #438: the exhaustive UP sweep (lever-1: reused 4-ary decrease-key heap +
+/// stall-on-demand) against the single-lane scratch. Shared by the
+/// single-source settle, the K-lane seeding pass, and [`tree_resweep`].
+fn upward_sweep_body(
+    s: &mut TreeScratch,
+    topo: &CchTopo,
+    weights: &CchWeights,
+    down_rev: &DownReverseAdjFlat,
+    origin: u32,
+) {
+    s.pq.clear();
+    s.push_up(origin, 0);
+    while let Some((d, u)) = s.pop_up() {
+        if d > s.get(u as usize) {
+            continue; // stale
+        }
+        let rs = down_rev.offsets[u as usize] as usize;
+        let re = down_rev.offsets[u as usize + 1] as usize;
+        let mut stalled = false;
+        for slot in rs..re {
+            let x = down_rev.sources[slot] as usize;
+            if s.generation[x] == s.epoch {
+                let dx = s.dist[x];
+                if dx != u32::MAX && dx.saturating_add(down_rev.weights.get(slot)) < d {
+                    stalled = true;
+                    break;
+                }
+            }
+        }
+        if stalled {
+            continue;
+        }
+        let start = topo.up_offsets[u as usize] as usize;
+        let end = topo.up_offsets[u as usize + 1] as usize;
+        for i in start..end {
+            let w = weights.up.get(i);
+            if w == u32::MAX {
+                continue;
+            }
+            let v = topo.up_targets[i];
+            let nd = d.saturating_add(w);
+            if nd < s.get(v as usize) {
+                s.set(v as usize, nd, i as u32); // UP arc
+                s.push_up(v, nd);
+            }
+        }
     }
 }
