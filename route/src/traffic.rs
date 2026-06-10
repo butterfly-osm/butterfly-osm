@@ -32,13 +32,53 @@
 //! above 1.0 represents a road that's faster than the OSM speed limit
 //! (rare — bounded at 1.5 to keep the search hierarchy stable).
 //!
+//! ## Optional `matrix` section (#428)
+//!
+//! A profile may additionally carry a 2-D **(highway_class × density)**
+//! factor matrix that refines the per-density vector:
+//!
+//! ```json
+//! {
+//!   "name": "rush_hour",
+//!   "base_model": "car",
+//!   "speed_factors": { "urban_high": 0.55, "urban_medium": 0.70,
+//!                      "urban_low": 0.85, "suburban": 0.90, "rural": 0.95 },
+//!   "matrix": {
+//!     "1":  { "rural": 0.98, "suburban": 0.92 },
+//!     "12": { "urban_high": 0.45, "urban_medium": 0.60 }
+//!   }
+//! }
+//! ```
+//!
+//! - **Outer keys are the numeric `highway_class` codes** stored per way in
+//!   `way_attrs.<mode>.bin` — i.e. the values assigned by the build model's
+//!   `highway_class` table in `models/<base_model>.model.json` (shipped car
+//!   model: 1=motorway, 2=motorway_link, 3=trunk, …, 12=residential,
+//!   20=footway/path group, 99=construction). The codes are model-defined,
+//!   NOT a fixed engine enumeration, which is why the schema uses the code
+//!   rather than a name: the code is the exact value available at
+//!   customization time, in every context (CLI step 8 and serve-boot
+//!   recustomization), without needing the model JSON at hand.
+//! - Keys must be canonical decimal `u16` strings (`"12"`, not `"012"`).
+//! - Inner objects map density-class labels to factors and may be
+//!   **partial**: a missing `(highway, density)` cell falls back to the
+//!   per-density `speed_factors` vector, which therefore stays REQUIRED and
+//!   complete — the matrix only overrides cells it specifies. A way whose
+//!   highway code has no matrix row uses the vector as before.
+//! - `matrix` is opt-in: profiles without it behave exactly as today, and
+//!   [`TrafficProfile::to_json_string`] omits the key when no matrix is set,
+//!   so existing files round-trip byte-for-byte.
+//!
 //! ## Schema validation
 //!
 //! - `name` and `base_model` must be non-empty.
 //! - `speed_factors` MUST contain all five density-class keys
 //!   (urban_high, urban_medium, urban_low, suburban, rural).
-//! - Each factor MUST be in `[0.1, 1.5]`.
-//! - Unknown keys are rejected (typo guard).
+//! - Each factor (vector or matrix cell) MUST be in `[0.1, 1.5]`.
+//! - Unknown keys are rejected (typo guard) — at the top level, inside
+//!   `speed_factors`, and inside every `matrix` row.
+//! - When present, `matrix` must be non-empty and every row must contain at
+//!   least one density cell.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -51,6 +91,11 @@ use crate::density::DensityClass;
 pub const MIN_FACTOR: f32 = 0.1;
 pub const MAX_FACTOR: f32 = 1.5;
 
+/// One matrix row: per-density factors for a single highway-class code.
+/// Indexed by `DensityClass::to_u8() as usize`; `None` = cell not specified,
+/// fall back to the profile's per-density vector.
+pub type MatrixRow = [Option<f32>; 5];
+
 /// Parsed traffic profile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrafficProfile {
@@ -58,13 +103,26 @@ pub struct TrafficProfile {
     pub base_model: String,
     /// Indexed by `DensityClass::to_u8() as usize`.
     pub factors: [f32; 5],
+    /// Optional (highway_class × density) overrides (#428). Outer key is the
+    /// numeric `highway_class` code stored per way in `way_attrs.<mode>.bin`
+    /// (model-defined — see the module docs). Empty map = no matrix; lookups
+    /// resolve through [`TrafficProfile::factor_for_cell`], which falls back
+    /// to `factors` for absent rows/cells. `BTreeMap` keeps iteration and
+    /// serialization deterministic.
+    pub matrix: BTreeMap<u16, MatrixRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrafficProfileJson {
     name: String,
     base_model: String,
     speed_factors: BTreeMap<String, f32>,
+    /// Optional (highway_class × density) factor matrix. Absent on legacy
+    /// profiles; omitted on output when empty so vector-only profiles
+    /// round-trip byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    matrix: Option<BTreeMap<String, BTreeMap<String, f32>>>,
 }
 
 impl TrafficProfile {
@@ -75,18 +133,47 @@ impl TrafficProfile {
             name: "freeflow".to_string(),
             base_model: base_model.to_string(),
             factors: [1.0; 5],
+            matrix: BTreeMap::new(),
         }
     }
 
-    /// Returns true iff every factor equals 1.0 within float tolerance.
+    /// Returns true iff every factor equals 1.0 within float tolerance —
+    /// including every specified matrix cell.
     pub fn is_freeflow(&self) -> bool {
         self.factors.iter().all(|f| (f - 1.0).abs() < 1e-6)
+            && self
+                .matrix
+                .values()
+                .flatten()
+                .flatten()
+                .all(|f| (f - 1.0).abs() < 1e-6)
     }
 
-    /// Lookup factor for a density class.
+    /// Lookup factor for a density class (per-density vector only — ignores
+    /// the matrix; use [`Self::factor_for_cell`] when the way's highway class
+    /// is known).
     #[inline]
     pub fn factor_for(&self, class: DensityClass) -> f32 {
         self.factors[class.to_u8() as usize]
+    }
+
+    /// Lookup factor for a `(highway_class, density)` cell: the matrix cell
+    /// when specified, else the per-density vector. With an empty matrix this
+    /// is exactly [`Self::factor_for`].
+    #[inline]
+    pub fn factor_for_cell(&self, highway_class: u16, class: DensityClass) -> f32 {
+        if let Some(row) = self.matrix.get(&highway_class)
+            && let Some(f) = row[class.to_u8() as usize]
+        {
+            return f;
+        }
+        self.factors[class.to_u8() as usize]
+    }
+
+    /// True iff the profile carries a (highway × density) matrix.
+    #[inline]
+    pub fn has_matrix(&self) -> bool {
+        !self.matrix.is_empty()
     }
 
     /// Load + validate a profile from a JSON file on disk.
@@ -152,14 +239,96 @@ impl TrafficProfile {
             );
         }
 
+        // Optional (highway_class × density) matrix.
+        let mut matrix: BTreeMap<u16, MatrixRow> = BTreeMap::new();
+        if let Some(raw_matrix) = &parsed.matrix {
+            anyhow::ensure!(
+                !raw_matrix.is_empty(),
+                "traffic profile '{}': 'matrix' must be non-empty when present (omit the key for a vector-only profile)",
+                parsed.name
+            );
+            for (key, raw_row) in raw_matrix {
+                let code: u16 = key.parse().with_context(|| {
+                    format!(
+                        "traffic profile '{}': matrix key '{}' is not a u16 highway_class code (the per-way value from way_attrs.<mode>.bin, assigned by the build model's highway_class table)",
+                        parsed.name, key
+                    )
+                })?;
+                // Canonical decimal form only: rejects "012"/"+1"-style keys
+                // (and with it any aliasing of two spellings onto one code).
+                anyhow::ensure!(
+                    code.to_string() == *key,
+                    "traffic profile '{}': matrix key '{}' is not in canonical decimal form (write it as '{}')",
+                    parsed.name,
+                    key,
+                    code
+                );
+                anyhow::ensure!(
+                    !raw_row.is_empty(),
+                    "traffic profile '{}': matrix.{} must contain at least one density cell",
+                    parsed.name,
+                    key
+                );
+                let mut row: MatrixRow = [None; 5];
+                for (dkey, value) in raw_row {
+                    let class = DensityClass::parse(dkey).with_context(|| {
+                        format!(
+                            "traffic profile '{}': unknown matrix.{} key '{}' (allowed: urban_high, urban_medium, urban_low, suburban, rural)",
+                            parsed.name, key, dkey
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        value.is_finite(),
+                        "traffic profile '{}': matrix.{}.{} = {} is not finite",
+                        parsed.name,
+                        key,
+                        dkey,
+                        value
+                    );
+                    anyhow::ensure!(
+                        (MIN_FACTOR..=MAX_FACTOR).contains(value),
+                        "traffic profile '{}': matrix.{}.{} = {} out of range [{}, {}]",
+                        parsed.name,
+                        key,
+                        dkey,
+                        value,
+                        MIN_FACTOR,
+                        MAX_FACTOR
+                    );
+                    // `DensityClass::parse` accepts spelling aliases (e.g.
+                    // "urban_high" and "urbanHigh"), so two distinct JSON keys
+                    // can land on the same cell. Without this guard the
+                    // lexicographically last key would win silently.
+                    anyhow::ensure!(
+                        row[class.to_u8() as usize].is_none(),
+                        "traffic profile '{}': matrix.{} specifies density '{}' more than once \
+                         (key '{}' aliases a key given earlier in the row — write each density \
+                         exactly once, canonical spelling '{}')",
+                        parsed.name,
+                        key,
+                        class.as_str(),
+                        dkey,
+                        class.as_str()
+                    );
+                    row[class.to_u8() as usize] = Some(*value);
+                }
+                matrix.insert(code, row);
+            }
+        }
+
         Ok(Self {
             name: parsed.name,
             base_model: parsed.base_model,
             factors,
+            matrix,
         })
     }
 
-    /// Serialize back out (used by lock-file provenance).
+    /// Serialize back out (used by lock-file provenance). Deterministic:
+    /// `BTreeMap` ordering throughout (matrix keys sort lexicographically on
+    /// their decimal form). The `matrix` key is omitted entirely when the
+    /// profile has none, so vector-only profiles serialize exactly as before
+    /// #428.
     pub fn to_json_string(&self) -> Result<String> {
         let mut speed_factors = BTreeMap::new();
         for class in DensityClass::ALL {
@@ -168,10 +337,28 @@ impl TrafficProfile {
                 self.factors[class.to_u8() as usize],
             );
         }
+        let matrix = if self.matrix.is_empty() {
+            None
+        } else {
+            let mut out: BTreeMap<String, BTreeMap<String, f32>> = BTreeMap::new();
+            for (code, row) in &self.matrix {
+                let mut raw_row = BTreeMap::new();
+                for class in DensityClass::ALL {
+                    if let Some(f) = row[class.to_u8() as usize] {
+                        raw_row.insert(class.as_str().to_string(), f);
+                    }
+                }
+                // Rows are non-empty by construction (validation rejects empty
+                // rows on parse; the calibrator omits all-None rows).
+                out.insert(code.to_string(), raw_row);
+            }
+            Some(out)
+        };
         let payload = TrafficProfileJson {
             name: self.name.clone(),
             base_model: self.base_model.clone(),
             speed_factors,
+            matrix,
         };
         Ok(serde_json::to_string_pretty(&payload)?)
     }
@@ -334,6 +521,195 @@ mod tests {
                 p.factors
             );
         }
+    }
+
+    fn matrix_json() -> &'static str {
+        r#"{
+          "name": "rush_hour_matrix",
+          "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55,
+            "urban_medium": 0.70,
+            "urban_low": 0.85,
+            "suburban": 0.90,
+            "rural": 0.95
+          },
+          "matrix": {
+            "1": { "rural": 0.98, "suburban": 0.92 },
+            "12": {
+              "urban_high": 0.45, "urban_medium": 0.60,
+              "urban_low": 0.70, "suburban": 0.80, "rural": 0.90
+            }
+          }
+        }"#
+    }
+
+    #[test]
+    fn parses_matrix_profile_with_partial_rows() {
+        let p = TrafficProfile::from_json(matrix_json()).unwrap();
+        assert!(p.has_matrix());
+        assert_eq!(p.matrix.len(), 2);
+        // Specified cells take precedence over the vector.
+        assert!((p.factor_for_cell(1, DensityClass::Rural) - 0.98).abs() < 1e-6);
+        assert!((p.factor_for_cell(1, DensityClass::Suburban) - 0.92).abs() < 1e-6);
+        assert!((p.factor_for_cell(12, DensityClass::UrbanHigh) - 0.45).abs() < 1e-6);
+        // Missing cell in a present row falls back to the vector.
+        assert!((p.factor_for_cell(1, DensityClass::UrbanHigh) - 0.55).abs() < 1e-6);
+        // Absent row falls back to the vector for every density.
+        for c in DensityClass::ALL {
+            assert!((p.factor_for_cell(7, c) - p.factor_for(c)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn vector_only_profile_has_no_matrix_and_cell_lookup_matches_vector() {
+        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
+        assert!(!p.has_matrix());
+        for code in [0u16, 1, 12, 99, u16::MAX] {
+            for c in DensityClass::ALL {
+                assert_eq!(p.factor_for_cell(code, c), p.factor_for(c));
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_profile_round_trips_through_json() {
+        let p = TrafficProfile::from_json(matrix_json()).unwrap();
+        let s = p.to_json_string().unwrap();
+        let p2 = TrafficProfile::from_json(&s).unwrap();
+        assert_eq!(p, p2);
+        // Determinism: serializing again yields identical bytes.
+        assert_eq!(s, p2.to_json_string().unwrap());
+    }
+
+    #[test]
+    fn vector_only_profile_serializes_without_matrix_key() {
+        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
+        let s = p.to_json_string().unwrap();
+        assert!(!s.contains("matrix"), "unexpected matrix key in {s}");
+    }
+
+    #[test]
+    fn rejects_non_numeric_matrix_key() {
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "motorway": { "rural": 0.9 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        assert!(format!("{err:#}").contains("not a u16 highway_class code"));
+    }
+
+    #[test]
+    fn rejects_non_canonical_matrix_key() {
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "012": { "rural": 0.9 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        assert!(format!("{err:#}").contains("canonical decimal form"));
+    }
+
+    #[test]
+    fn rejects_unknown_density_key_in_matrix_row() {
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "1": { "suburbann": 0.9 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        assert!(format!("{err:#}").contains("unknown matrix.1 key"));
+    }
+
+    #[test]
+    fn rejects_duplicate_density_key_in_matrix_row() {
+        // "urban_high" and "urbanHigh" are distinct JSON keys that both parse
+        // to UrbanHigh — without the guard the lexicographically last one
+        // would win silently.
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "1": { "urban_high": 0.5, "urbanHigh": 0.6 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("more than once"), "got: {msg}");
+        assert!(msg.contains("urban_high"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_out_of_range_matrix_cell() {
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "1": { "rural": 1.6 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        assert!(format!("{err:#}").contains("out of range"));
+    }
+
+    #[test]
+    fn rejects_empty_matrix_and_empty_row() {
+        let empty_matrix = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": {}
+        }"#;
+        let err = TrafficProfile::from_json(empty_matrix).unwrap_err();
+        assert!(format!("{err:#}").contains("must be non-empty"));
+
+        let empty_row = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "1": {} }
+        }"#;
+        let err = TrafficProfile::from_json(empty_row).unwrap_err();
+        assert!(format!("{err:#}").contains("at least one density cell"));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrxi": { "1": { "rural": 0.9 } }
+        }"#;
+        assert!(TrafficProfile::from_json(s).is_err());
+    }
+
+    #[test]
+    fn is_freeflow_accounts_for_matrix_cells() {
+        let mut p = TrafficProfile::freeflow("car");
+        assert!(p.is_freeflow());
+        p.matrix.insert(1, [None, None, None, None, Some(1.0)]);
+        assert!(p.is_freeflow(), "all-1.0 matrix is still freeflow");
+        p.matrix.insert(12, [Some(0.5), None, None, None, None]);
+        assert!(!p.is_freeflow(), "a non-1.0 cell breaks freeflow");
     }
 
     #[test]

@@ -40,8 +40,25 @@
 //! the global all-class median — a closer proxy than a primary-road blend; only
 //! when *no* class clears the gate do we fall back to the global median. All
 //! five keys are always emitted.
+//!
+//! ## Optional matrix fit (#428)
+//!
+//! With [`CalibrationParams::fit_matrix`] (CLI `--matrix`), the fit
+//! additionally buckets the same ratios by **(highway_class × density)** —
+//! the highway axis being the model-defined u16 code step 2 stored per way in
+//! `way_attrs.<mode>.bin` — and emits a profile `matrix` section. Per cell:
+//! sample-count-weighted median, clamped to the same sanity band, **emitted
+//! only when the cell clears `min_samples`** (sum of `sample_count`). An
+//! under-sampled or unobserved cell is simply omitted: at application time it
+//! falls back to the per-density vector (the density marginal), which itself
+//! falls back own-median → nearest-class → global — giving the
+//! cell → density-marginal → global hierarchy without ever duplicating a
+//! fallback value into the matrix. The per-density vector is always fitted
+//! and emitted regardless, so a matrix profile degrades gracefully to the
+//! vector everywhere the matrix is silent. Output is deterministic
+//! (`BTreeMap` bucketing + stable sorts).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -78,6 +95,12 @@ pub struct CalibrationParams {
     /// profile schema's hard bounds `[MIN_FACTOR, MAX_FACTOR]`.
     pub clamp_min: f32,
     pub clamp_max: f32,
+    /// #428: when true, additionally fit a (highway_class × density) factor
+    /// matrix (see the module docs). Only cells clearing `min_samples` are
+    /// emitted; everything else falls back to the per-density vector at
+    /// application time. Off by default — the per-density profile stays the
+    /// default output.
+    pub fit_matrix: bool,
 }
 
 impl Default for CalibrationParams {
@@ -88,6 +111,7 @@ impl Default for CalibrationParams {
             min_samples: 100,
             clamp_min: 0.30,
             clamp_max: 1.20,
+            fit_matrix: false,
         }
     }
 }
@@ -159,12 +183,36 @@ pub struct ClassFit {
     pub factor: f32,
 }
 
+/// #428: per-(highway_class × density) cell diagnostic for the matrix fit.
+/// One entry per cell with at least one joined observation, ordered by
+/// (highway code, density) — deterministic.
+#[derive(Debug, Clone)]
+pub struct CellFit {
+    /// Model-defined highway-class code from `way_attrs.<mode>.bin`.
+    pub highway_class: u16,
+    pub class: DensityClass,
+    /// Joined observation rows landing in this cell.
+    pub n_obs: usize,
+    /// Sum of `sample_count` over those rows.
+    pub total_samples: u64,
+    /// Weighted-median ratio from this cell's own observations, before clamping.
+    pub raw_factor: f32,
+    /// True when the cell cleared `min_samples` and was written to the
+    /// profile matrix; false → omitted, falls back to the per-density vector.
+    pub emitted: bool,
+    /// Clamped factor written to the matrix; `None` when not emitted.
+    pub factor: Option<f32>,
+}
+
 /// Result of a fit: the ready-to-write profile plus diagnostics.
 #[derive(Debug, Clone)]
 pub struct CalibrationResult {
     pub profile: TrafficProfile,
     /// One entry per density class, in [`DensityClass::ALL`] order.
     pub per_class: Vec<ClassFit>,
+    /// #428: matrix-fit diagnostics; empty unless
+    /// [`CalibrationParams::fit_matrix`] was set.
+    pub per_cell: Vec<CellFit>,
     /// Observation rows joined to a way in the index.
     pub matched: usize,
     /// Observation rows whose `way_id` was absent from the index.
@@ -177,16 +225,21 @@ pub struct CalibrationResult {
     pub global_factor: f32,
 }
 
-/// Build the `way_id -> (base_speed_kmh, density_class_u8)` lookup from a
-/// loaded `way_attrs.<mode>.bin`. Base speed is converted from mm/s to km/h
-/// once here (`mm/s * 3600 / 1e6 = km/h`).
-pub fn index_ways(attrs: &[way_attrs::WayAttr]) -> HashMap<i64, (f32, u8)> {
-    let mut map: HashMap<i64, (f32, u8)> = HashMap::with_capacity(attrs.len());
+/// Build the `way_id -> (base_speed_kmh, density_class_u8, highway_class_u16)`
+/// lookup from a loaded `way_attrs.<mode>.bin`. Base speed is converted from
+/// mm/s to km/h once here (`mm/s * 3600 / 1e6 = km/h`). The highway class is
+/// the model-defined code step 2 stored per way — the matrix fit's highway
+/// axis (#428).
+pub fn index_ways(attrs: &[way_attrs::WayAttr]) -> HashMap<i64, (f32, u8, u16)> {
+    let mut map: HashMap<i64, (f32, u8, u16)> = HashMap::with_capacity(attrs.len());
     for wa in attrs {
         let base_kmh = wa.output.base_speed_mmps as f32 * 0.003_6;
         // way_attrs is sorted by way_id and ids are unique per mode, so the
         // last-writer-wins of insert is irrelevant; keep it simple.
-        map.insert(wa.way_id, (base_kmh, wa.output.density_class));
+        map.insert(
+            wa.way_id,
+            (base_kmh, wa.output.density_class, wa.output.highway_class),
+        );
     }
     map
 }
@@ -218,26 +271,32 @@ fn weighted_median(samples: &mut [(f32, u64)]) -> Option<f32> {
 /// Pure fitting core — no I/O. Buckets observations by the density class of
 /// their way, computes a sample-count-weighted median of `observed/base`
 /// ratios per class, clamps, and falls back to the global median for
-/// under-sampled classes.
+/// under-sampled classes. With [`CalibrationParams::fit_matrix`] the same
+/// ratios are additionally bucketed by (highway_class × density) and a
+/// profile `matrix` section is emitted (#428, see the module docs).
 ///
 /// Errors only when *nothing* joins (no way in the index matched any
 /// observation, or every matched row had a non-positive base/observed speed),
 /// since then there is no signal to fit and no defensible profile to emit.
 pub fn fit(
     observations: &[Observation],
-    way_index: &HashMap<i64, (f32, u8)>,
+    way_index: &HashMap<i64, (f32, u8, u16)>,
     params: &CalibrationParams,
 ) -> Result<CalibrationResult> {
     params.validate()?;
 
     let mut buckets: [Vec<(f32, u64)>; 5] = Default::default();
+    // #428: (highway_class, density) cell buckets — BTreeMap for
+    // deterministic iteration order. Only populated when fitting the matrix.
+    let mut cell_buckets: BTreeMap<u16, [Vec<(f32, u64)>; 5]> = BTreeMap::new();
     let mut global: Vec<(f32, u64)> = Vec::new();
     let mut matched = 0usize;
     let mut unmatched = 0usize;
     let mut skipped_bad = 0usize;
 
     for obs in observations {
-        let Some((base_kmh, density_u8)) = way_index.get(&obs.way_id).copied() else {
+        let Some((base_kmh, density_u8, highway_class)) = way_index.get(&obs.way_id).copied()
+        else {
             unmatched += 1;
             continue;
         };
@@ -257,6 +316,9 @@ pub fn fit(
         let class = DensityClass::from_u8(density_u8);
         let w = obs.sample_count.max(1) as u64;
         buckets[class.to_u8() as usize].push((ratio, w));
+        if params.fit_matrix {
+            cell_buckets.entry(highway_class).or_default()[class.to_u8() as usize].push((ratio, w));
+        }
         global.push((ratio, w));
         matched += 1;
     }
@@ -326,16 +388,62 @@ pub fn fit(
         });
     }
 
+    // #428: matrix fit — per (highway_class, density) cell weighted median,
+    // emitted only when the cell clears `min_samples`. Untrusted/unobserved
+    // cells are OMITTED so application falls back to the per-density vector
+    // (the density marginal), which itself carries the own → nearest-class →
+    // global hierarchy resolved above. Deterministic: cell_buckets is a
+    // BTreeMap and densities iterate in canonical order.
+    let mut matrix: BTreeMap<u16, crate::traffic::MatrixRow> = BTreeMap::new();
+    let mut per_cell: Vec<CellFit> = Vec::new();
+    for (highway_class, rows) in cell_buckets.iter_mut() {
+        let mut row: crate::traffic::MatrixRow = [None; 5];
+        let mut any = false;
+        for class in DensityClass::ALL {
+            let idx = class.to_u8() as usize;
+            let bucket = &mut rows[idx];
+            if bucket.is_empty() {
+                continue;
+            }
+            let n_obs = bucket.len();
+            let total_samples: u64 = bucket.iter().map(|(_, w)| *w).sum();
+            let raw = weighted_median(bucket).expect("non-empty bucket has a median");
+            let emitted = total_samples >= params.min_samples as u64;
+            let factor = if emitted {
+                let f = raw.clamp(params.clamp_min, params.clamp_max);
+                row[idx] = Some(f);
+                any = true;
+                Some(f)
+            } else {
+                None
+            };
+            per_cell.push(CellFit {
+                highway_class: *highway_class,
+                class,
+                n_obs,
+                total_samples,
+                raw_factor: raw,
+                emitted,
+                factor,
+            });
+        }
+        if any {
+            matrix.insert(*highway_class, row);
+        }
+    }
+
     let profile = TrafficProfile {
         name: params.name.clone(),
         base_model: params.base_model.clone(),
         factors,
+        matrix,
     };
 
     // Defensive guarantee: the emitted profile must satisfy the exact schema
-    // step 8 validates (all five keys, each in [0.1, 1.5]). Round-tripping it
-    // here turns any future drift in the clamp logic into a loud failure at
-    // calibration time rather than a silent reject at customization time.
+    // step 8 validates (all five keys + any matrix cells, each in [0.1, 1.5]).
+    // Round-tripping it here turns any future drift in the clamp logic into a
+    // loud failure at calibration time rather than a silent reject at
+    // customization time.
     let json = profile.to_json_string()?;
     TrafficProfile::from_json(&json)
         .context("internal error: calibrated profile failed its own schema validation")?;
@@ -343,6 +451,7 @@ pub fn fit(
     Ok(CalibrationResult {
         profile,
         per_class,
+        per_cell,
         matched,
         unmatched,
         skipped_bad,
@@ -611,10 +720,19 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Build a way index from `(way_id, base_kmh, class)` triples.
-    fn idx(rows: &[(i64, f32, DensityClass)]) -> HashMap<i64, (f32, u8)> {
+    /// Build a way index from `(way_id, base_kmh, class)` triples
+    /// (highway_class 0 — fine for vector-only fits).
+    fn idx(rows: &[(i64, f32, DensityClass)]) -> HashMap<i64, (f32, u8, u16)> {
         rows.iter()
-            .map(|(id, base, c)| (*id, (*base, c.to_u8())))
+            .map(|(id, base, c)| (*id, (*base, c.to_u8(), 0u16)))
+            .collect()
+    }
+
+    /// Build a way index from `(way_id, base_kmh, class, highway_class)`
+    /// quadruples — for matrix fits (#428).
+    fn idx_hw(rows: &[(i64, f32, DensityClass, u16)]) -> HashMap<i64, (f32, u8, u16)> {
+        rows.iter()
+            .map(|(id, base, c, hw)| (*id, (*base, c.to_u8(), *hw)))
             .collect()
     }
 
@@ -974,6 +1092,160 @@ mod tests {
         assert_eq!(obs[2].sample_count, 1);
     }
 
+    // ---- #428 matrix fit -------------------------------------------------
+
+    fn matrix_params() -> CalibrationParams {
+        CalibrationParams {
+            fit_matrix: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matrix_fit_recovers_known_per_cell_ratios() {
+        // Two highway codes inside the SAME density class with different
+        // observed ratios — exactly what the per-density vector cannot
+        // express and the matrix can. motorway(1)×Rural at 0.95,
+        // trunk(3)×Rural at 0.70, residential(12)×UrbanHigh at 0.50.
+        let index = idx_hw(&[
+            (1, 100.0, DensityClass::Rural, 1),
+            (2, 100.0, DensityClass::Rural, 3),
+            (3, 100.0, DensityClass::UrbanHigh, 12),
+        ]);
+        let mut observations = Vec::new();
+        for _ in 0..150 {
+            observations.push(obs(1, 95.0, 1));
+            observations.push(obs(2, 70.0, 1));
+            observations.push(obs(3, 50.0, 1));
+        }
+        let res = fit(&observations, &index, &matrix_params()).unwrap();
+        assert!(res.profile.has_matrix());
+        assert_eq!(res.profile.matrix.len(), 3);
+        let f = |hw: u16, c: DensityClass| res.profile.factor_for_cell(hw, c);
+        assert!((f(1, DensityClass::Rural) - 0.95).abs() < 1e-4);
+        assert!((f(3, DensityClass::Rural) - 0.70).abs() < 1e-4);
+        assert!((f(12, DensityClass::UrbanHigh) - 0.50).abs() < 1e-4);
+        // The vector's Rural marginal blends both motorway and trunk ratios.
+        let rural_vec = res.profile.factor_for(DensityClass::Rural);
+        assert!(
+            (0.70..=0.95).contains(&rural_vec),
+            "rural marginal {rural_vec} should blend 0.70 and 0.95"
+        );
+        // Cell diagnostics present, all emitted.
+        assert_eq!(res.per_cell.len(), 3);
+        assert!(res.per_cell.iter().all(|c| c.emitted));
+    }
+
+    #[test]
+    fn matrix_fit_omits_undersampled_cells_falling_back_to_vector() {
+        // motorway(1)×Rural well-sampled at 0.95; trunk(3)×Rural starved
+        // (5 obs < min_samples 100) → the cell must NOT be emitted, and the
+        // application-time lookup for trunk×Rural must return the density
+        // marginal (the vector's Rural factor).
+        let index = idx_hw(&[
+            (1, 100.0, DensityClass::Rural, 1),
+            (2, 100.0, DensityClass::Rural, 3),
+        ]);
+        let mut observations = Vec::new();
+        for _ in 0..200 {
+            observations.push(obs(1, 95.0, 1));
+        }
+        for _ in 0..5 {
+            observations.push(obs(2, 40.0, 1));
+        }
+        let res = fit(&observations, &index, &matrix_params()).unwrap();
+        // Code 3's only cell is untrusted → no row for code 3 at all.
+        assert!(res.profile.matrix.contains_key(&1));
+        assert!(!res.profile.matrix.contains_key(&3));
+        let rural_vec = res.profile.factor_for(DensityClass::Rural);
+        assert_eq!(
+            res.profile.factor_for_cell(3, DensityClass::Rural),
+            rural_vec,
+            "untrusted cell must fall back to the density marginal"
+        );
+        // Diagnostics still record the starved cell, marked not-emitted.
+        let starved = res
+            .per_cell
+            .iter()
+            .find(|c| c.highway_class == 3 && c.class == DensityClass::Rural)
+            .unwrap();
+        assert!(!starved.emitted);
+        assert_eq!(starved.factor, None);
+        assert_eq!(starved.n_obs, 5);
+    }
+
+    #[test]
+    fn matrix_fit_is_deterministic() {
+        let index = idx_hw(&[
+            (1, 100.0, DensityClass::Rural, 1),
+            (2, 100.0, DensityClass::Suburban, 3),
+            (3, 50.0, DensityClass::UrbanHigh, 12),
+            (4, 80.0, DensityClass::UrbanMedium, 7),
+        ]);
+        let mut observations = Vec::new();
+        for i in 0..400 {
+            observations.push(obs(1 + (i % 4) as i64, 30.0 + (i % 50) as f32, 1 + (i % 3)));
+        }
+        let a = fit(&observations, &index, &matrix_params()).unwrap();
+        let b = fit(&observations, &index, &matrix_params()).unwrap();
+        assert_eq!(a.profile, b.profile);
+        assert_eq!(
+            a.profile.to_json_string().unwrap(),
+            b.profile.to_json_string().unwrap(),
+            "two fits over the same input must serialize byte-identically"
+        );
+    }
+
+    #[test]
+    fn matrix_fit_clamps_cells_into_the_sanity_band() {
+        let p = CalibrationParams {
+            min_samples: 1,
+            fit_matrix: true,
+            ..Default::default()
+        };
+        let index = idx_hw(&[
+            (1, 100.0, DensityClass::UrbanHigh, 12),
+            (2, 100.0, DensityClass::Rural, 1),
+        ]);
+        // ratio 5.0 → clamp 1.20; ratio 0.02 → clamp 0.30.
+        let observations = vec![obs(1, 500.0, 10), obs(2, 2.0, 10)];
+        let res = fit(&observations, &index, &p).unwrap();
+        assert_eq!(
+            res.profile.factor_for_cell(12, DensityClass::UrbanHigh),
+            1.20
+        );
+        assert_eq!(res.profile.factor_for_cell(1, DensityClass::Rural), 0.30);
+    }
+
+    #[test]
+    fn matrix_off_by_default_emits_vector_only_profile() {
+        let index = idx_hw(&[(1, 100.0, DensityClass::UrbanHigh, 12)]);
+        let observations: Vec<_> = (0..200).map(|_| obs(1, 60.0, 1)).collect();
+        let res = fit(&observations, &index, &CalibrationParams::default()).unwrap();
+        assert!(!res.profile.has_matrix());
+        assert!(res.per_cell.is_empty());
+        let json = res.profile.to_json_string().unwrap();
+        assert!(!json.contains("matrix"), "unexpected matrix key in {json}");
+    }
+
+    #[test]
+    fn emitted_matrix_profile_passes_schema_validation() {
+        let index = idx_hw(&[
+            (1, 100.0, DensityClass::Rural, 1),
+            (2, 100.0, DensityClass::UrbanHigh, 12),
+        ]);
+        let mut observations = Vec::new();
+        for _ in 0..150 {
+            observations.push(obs(1, 95.0, 1));
+            observations.push(obs(2, 50.0, 1));
+        }
+        let res = fit(&observations, &index, &matrix_params()).unwrap();
+        let json = res.profile.to_json_string().unwrap();
+        let reparsed = TrafficProfile::from_json(&json).unwrap();
+        assert_eq!(reparsed, res.profile);
+        assert!(json.contains("\"matrix\""));
+    }
+
     /// End-to-end through the production `way_attrs.<mode>.bin` writer +
     /// reader and the CSV adapter: proves `run_calibration` joins observed
     /// speeds to real on-disk way attributes and recovers the planted ratio.
@@ -1039,6 +1311,138 @@ mod tests {
         );
         // Profile is schema-valid and writeable.
         TrafficProfile::from_json(&res.profile.to_json_string().unwrap()).unwrap();
+    }
+
+    /// #428 matrix counterpart of the e2e test above: end-to-end through the
+    /// production CRC-validated `way_attrs.<mode>.bin` v2 writer + reader and
+    /// the CSV adapter, with DISTINCT highway_class codes and per-cell
+    /// observed ratios planted. Proves `run_calibration` with
+    /// `fit_matrix: true` emits a matrix that SEPARATES two cells inside the
+    /// same density class (motorway×rural 0.95 vs trunk×rural 0.70 — exactly
+    /// what the per-density vector cannot express) while a starved cell is
+    /// omitted and falls back to the density marginal at application time.
+    #[test]
+    fn run_calibration_end_to_end_matrix_on_real_way_attrs_format() {
+        use crate::formats::way_attrs::{self as wa, WayAttr};
+        use crate::profile_abi::{Mode, WayOutput};
+
+        const MOTORWAY: u16 = 1;
+        const TRUNK: u16 = 3;
+        const RESIDENTIAL: u16 = 12;
+        const SERVICE: u16 = 13;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let mmps = |kmh: f32| (kmh / 0.003_6) as u32;
+        let mut attrs: Vec<WayAttr> = Vec::new();
+        let mut plant = |ids: std::ops::Range<i64>, kmh: f32, density: DensityClass, hw: u16| {
+            for id in ids {
+                attrs.push(WayAttr {
+                    way_id: id,
+                    output: WayOutput {
+                        base_speed_mmps: mmps(kmh),
+                        density_class: density.to_u8(),
+                        highway_class: hw,
+                        ..Default::default()
+                    },
+                });
+            }
+        };
+        // Two highway codes inside the SAME density class (Rural) — the
+        // separation the per-density vector cannot express.
+        plant(0..150, 120.0, DensityClass::Rural, MOTORWAY);
+        plant(1000..1150, 100.0, DensityClass::Rural, TRUNK);
+        // A well-sampled UrbanHigh cell pins the density marginal at 0.50...
+        plant(2000..2150, 50.0, DensityClass::UrbanHigh, RESIDENTIAL);
+        // ...and a starved cell (5 obs < min_samples 100) at ratio 0.30 must
+        // NOT be emitted: lookups for it fall back to that 0.50 marginal.
+        plant(3000..3005, 50.0, DensityClass::UrbanHigh, SERVICE);
+
+        let wa_path = dir.path().join("way_attrs.car.bin");
+        wa::write(&wa_path, Mode(0), &attrs, &[0u8; 32], &[0u8; 32]).unwrap();
+
+        let obs_path = dir.path().join("obs.csv");
+        let mut f = std::fs::File::create(&obs_path).unwrap();
+        writeln!(f, "way_id,observed_avg_speed_kmh,sample_count").unwrap();
+        for id in 0..150i64 {
+            writeln!(f, "{id},114.0,1").unwrap(); // 114 / 120 = 0.95
+        }
+        for id in 1000..1150i64 {
+            writeln!(f, "{id},70.0,1").unwrap(); // 70 / 100 = 0.70
+        }
+        for id in 2000..2150i64 {
+            writeln!(f, "{id},25.0,1").unwrap(); // 25 / 50 = 0.50
+        }
+        for id in 3000..3005i64 {
+            writeln!(f, "{id},15.0,1").unwrap(); // 15 / 50 = 0.30, starved
+        }
+        f.flush().unwrap();
+
+        let params = CalibrationParams {
+            fit_matrix: true,
+            ..Default::default()
+        };
+        let res = run_calibration(&obs_path, &wa_path, &params).unwrap();
+        assert_eq!(res.matched, 455);
+        assert_eq!(res.unmatched, 0);
+
+        // The matrix separates motorway×rural from trunk×rural.
+        assert!(res.profile.has_matrix());
+        assert!(res.profile.matrix.contains_key(&MOTORWAY));
+        assert!(res.profile.matrix.contains_key(&TRUNK));
+        assert!(res.profile.matrix.contains_key(&RESIDENTIAL));
+        let cell = |hw: u16, c: DensityClass| res.profile.factor_for_cell(hw, c);
+        assert!(
+            (cell(MOTORWAY, DensityClass::Rural) - 0.95).abs() < 1e-3,
+            "motorway×rural: {}",
+            cell(MOTORWAY, DensityClass::Rural)
+        );
+        assert!(
+            (cell(TRUNK, DensityClass::Rural) - 0.70).abs() < 1e-3,
+            "trunk×rural: {}",
+            cell(TRUNK, DensityClass::Rural)
+        );
+        assert!(
+            (cell(RESIDENTIAL, DensityClass::UrbanHigh) - 0.50).abs() < 1e-3,
+            "residential×urban_high: {}",
+            cell(RESIDENTIAL, DensityClass::UrbanHigh)
+        );
+        // The vector's Rural marginal is a blend — it cannot carry both.
+        let rural_vec = res.profile.factor_for(DensityClass::Rural);
+        assert!(
+            (0.70 - 1e-3..=0.95 + 1e-3).contains(&rural_vec),
+            "rural marginal {rural_vec} should blend 0.70 and 0.95"
+        );
+
+        // The starved service×urban_high cell is OMITTED (no row for code 13)
+        // and application-time lookup falls back to the density marginal —
+        // NOT the starved cell's own 0.30 ratio.
+        assert!(!res.profile.matrix.contains_key(&SERVICE));
+        let urban_high_vec = res.profile.factor_for(DensityClass::UrbanHigh);
+        assert_eq!(
+            cell(SERVICE, DensityClass::UrbanHigh),
+            urban_high_vec,
+            "starved cell must fall back to the density marginal"
+        );
+        assert!(
+            (urban_high_vec - 0.50).abs() < 1e-3,
+            "urban_high marginal {urban_high_vec} pinned by the residential mass"
+        );
+        // Diagnostics record the starved cell, marked not-emitted.
+        let starved = res
+            .per_cell
+            .iter()
+            .find(|c| c.highway_class == SERVICE && c.class == DensityClass::UrbanHigh)
+            .unwrap();
+        assert!(!starved.emitted);
+        assert_eq!(starved.factor, None);
+        assert_eq!(starved.n_obs, 5);
+
+        // The emitted profile passes the exact schema step 8 validates.
+        let json = res.profile.to_json_string().unwrap();
+        let reparsed = TrafficProfile::from_json(&json).unwrap();
+        assert_eq!(reparsed, res.profile);
+        assert!(json.contains("\"matrix\""));
     }
 }
 

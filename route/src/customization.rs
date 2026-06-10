@@ -193,6 +193,21 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
                 t.profile.factor_for(class)
             );
         }
+        if t.profile.has_matrix() {
+            println!(
+                "  + (highway_class × density) matrix: {} highway rows (cells override the vector; missing cells fall back)",
+                t.profile.matrix.len()
+            );
+            for (code, row) in &t.profile.matrix {
+                let cells: Vec<String> = crate::density::DensityClass::ALL
+                    .iter()
+                    .filter_map(|c| {
+                        row[c.to_u8() as usize].map(|f| format!("{}={:.3}", c.as_str(), f))
+                    })
+                    .collect();
+                println!("    matrix[{}]: {}", code, cells.join(", "));
+            }
+        }
     } else {
         println!("\n🎨 Step 8: Customizing CCH for {}...\n", mode_name);
     }
@@ -610,8 +625,10 @@ pub fn customize_cch_time_in_memory(
 ///
 /// For every accessible EBG node `n`:
 ///   - `way_id = nbg_geo.edges[ebg_nodes[n].geom_idx].first_osm_way_id`
-///   - `class  = way_attrs[way_id].density_class`
-///   - `factor = profile.factor_for(class)`
+///   - `(highway, class) = way_attrs[way_id].{highway_class, density_class}`
+///   - `factor = profile.factor_for_cell(highway, class)` — the
+///     `(highway_class × density)` matrix cell when the profile has one
+///     (#428), else the per-density vector factor
 ///   - `weights[n] = round(weights[n] / factor)` saturating at u32::MAX,
 ///     preserving the `0 = inaccessible` sentinel.
 ///
@@ -663,10 +680,11 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
     use crate::density::DensityClass;
     use std::collections::HashMap;
 
-    // way_id -> density class lookup
-    let way_density: HashMap<i64, u8> = way_attrs_slice
+    // way_id -> (highway_class, density_class) lookup. The highway class is
+    // the model-defined u16 code step 2 stored in way_attrs (#428).
+    let way_cell: HashMap<i64, (u16, u8)> = way_attrs_slice
         .iter()
-        .map(|w| (w.way_id, w.output.density_class))
+        .map(|w| (w.way_id, (w.output.highway_class, w.output.density_class)))
         .collect();
 
     // Pre-compute the inverse factors as fixed-point rationals to avoid f32
@@ -676,6 +694,26 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
         let class = DensityClass::from_u8(i as u8);
         1.0 / profile.factor_for(class) as f64
     });
+
+    // (highway_class × density) matrix rows resolved to inverse factors, with
+    // unspecified cells pre-filled from the vector (#428). Empty when the
+    // profile has no matrix — the per-node lookup then always falls through
+    // to `inv_factors`, reproducing the pre-#428 behavior bit-for-bit. Each
+    // row carries a hit counter so rows whose highway code never occurs in
+    // this graph can be flagged after the pass.
+    let mut inv_matrix: HashMap<u16, ([f64; 5], u64)> = profile
+        .matrix
+        .iter()
+        .map(|(code, row)| {
+            let mut inv = inv_factors;
+            for (i, cell) in row.iter().enumerate() {
+                if let Some(f) = cell {
+                    inv[i] = 1.0 / *f as f64;
+                }
+            }
+            (*code, (inv, 0u64))
+        })
+        .collect();
 
     let mut adjusted = 0usize;
     let mut missing_way = 0usize;
@@ -698,15 +736,24 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
             continue;
         }
         let way_id = nbg_geo.edges[geom_idx].first_osm_way_id;
-        let class_idx = match way_density.get(&way_id) {
-            Some(c) => *c as usize,
+        let inv = match way_cell.get(&way_id) {
+            Some((highway, class)) => {
+                let class_idx = (*class as usize).min(4);
+                match inv_matrix.get_mut(highway) {
+                    Some((row, hits)) => {
+                        *hits += 1;
+                        row[class_idx]
+                    }
+                    None => inv_factors[class_idx],
+                }
+            }
             None => {
-                // Treat unknown ways as Suburban (neutral).
+                // Treat unknown ways as Suburban (neutral) on the vector —
+                // their highway class is unknown, so no matrix row applies.
                 missing_way += 1;
-                3
+                inv_factors[3]
             }
         };
-        let inv = inv_factors[class_idx.min(4)];
         // weight / factor = weight * (1 / factor). Keep ≥ 1 to preserve the
         // accessibility invariant (only 0 means inaccessible).
         let scaled = (weights[i] as f64 * inv).round();
@@ -729,6 +776,21 @@ pub(crate) fn apply_traffic_to_node_weights_in_memory(
         100.0 * adjusted as f64 / weights.len() as f64,
         missing_way
     );
+
+    // Flag matrix rows whose highway code matched zero ways: the row is dead
+    // weight, and a profile full of dead rows usually means it was calibrated
+    // against a different model's highway_class table. Iterate the profile's
+    // BTreeMap so the output order is deterministic.
+    for code in profile.matrix.keys() {
+        let hits = inv_matrix.get(code).map_or(0, |(_, h)| *h);
+        if hits == 0 {
+            eprintln!(
+                "  ⚠️  traffic matrix row {code} matched zero ways — highway_class \
+                 code {code} does not occur in this graph's way_attrs (profile \
+                 calibrated against a different model, or stale?)"
+            );
+        }
+    }
 
     Ok(())
 }
@@ -1714,5 +1776,151 @@ mod determinism_tests {
             got_dm, want_dm,
             "down middles diverged from CLI customize_cch"
         );
+    }
+}
+
+#[cfg(test)]
+mod traffic_apply_tests {
+    use super::*;
+    use crate::density::DensityClass;
+    use crate::formats::{EbgNode, NbgEdge, NbgGeo};
+    use crate::profile_abi::WayOutput;
+    use crate::traffic::TrafficProfile;
+    use std::collections::BTreeMap;
+
+    /// Synthetic 4-node fixture: one EBG node per way, ways spanning two
+    /// highway classes × two density classes, all weights 1000.
+    ///
+    /// | node | way | highway_class | density    |
+    /// |------|-----|---------------|------------|
+    /// | 0    | 10  | 1 (motorway)  | Rural      |
+    /// | 1    | 11  | 12 (resid.)   | UrbanHigh  |
+    /// | 2    | 12  | 12 (resid.)   | Rural      |
+    /// | 3    | 13  | 7 (secondary) | Suburban   |
+    fn fixture() -> (EbgNodes, NbgGeo, Vec<way_attrs::WayAttr>) {
+        let mk_node = |geom_idx: u32| EbgNode {
+            tail_nbg: 0,
+            head_nbg: 1,
+            geom_idx,
+            length_m: 10,
+            class_bits: 0,
+            primary_way: 0,
+        };
+        let ebg_nodes = EbgNodes {
+            n_nodes: 4,
+            created_unix: 0,
+            inputs_sha: [0; 32],
+            nodes: ArcCow::from_vec(vec![mk_node(0), mk_node(1), mk_node(2), mk_node(3)]),
+        };
+        let mk_edge = |way_id: i64| NbgEdge {
+            u_node: 0,
+            v_node: 1,
+            length_mm: 10_000,
+            bearing_deci_deg: 0,
+            n_poly_pts: 0,
+            poly_off: 0,
+            first_osm_way_id: way_id,
+            flags: 0,
+        };
+        let nbg_geo = NbgGeo {
+            n_edges_und: 4,
+            edges: vec![mk_edge(10), mk_edge(11), mk_edge(12), mk_edge(13)],
+            polylines: vec![],
+        };
+        let mk_attr = |way_id: i64, highway: u16, density: DensityClass| way_attrs::WayAttr {
+            way_id,
+            output: WayOutput {
+                access_fwd: true,
+                base_speed_mmps: 10_000,
+                highway_class: highway,
+                density_class: density.to_u8(),
+                ..Default::default()
+            },
+        };
+        let attrs = vec![
+            mk_attr(10, 1, DensityClass::Rural),
+            mk_attr(11, 12, DensityClass::UrbanHigh),
+            mk_attr(12, 12, DensityClass::Rural),
+            mk_attr(13, 7, DensityClass::Suburban),
+        ];
+        (ebg_nodes, nbg_geo, attrs)
+    }
+
+    fn vector_profile() -> TrafficProfile {
+        TrafficProfile {
+            name: "vec".to_string(),
+            base_model: "car".to_string(),
+            factors: [0.5, 0.6, 0.7, 0.8, 0.9],
+            matrix: BTreeMap::new(),
+        }
+    }
+
+    fn apply(profile: &TrafficProfile) -> Vec<u32> {
+        let (ebg_nodes, nbg_geo, attrs) = fixture();
+        let mut weights = vec![1000u32; 4];
+        apply_traffic_to_node_weights_in_memory(
+            &mut weights,
+            &ebg_nodes,
+            profile,
+            &attrs,
+            &nbg_geo,
+        )
+        .unwrap();
+        weights
+    }
+
+    #[test]
+    fn vector_profile_scales_by_density_class() {
+        let w = apply(&vector_profile());
+        // weight / factor, rounded: rural 1000/0.9, urban_high 1000/0.5,
+        // rural 1000/0.9, suburban 1000/0.8.
+        assert_eq!(w, vec![1111, 2000, 1111, 1250]);
+    }
+
+    #[test]
+    fn matrix_replicating_the_vector_is_bit_identical_to_vector_only() {
+        let base = vector_profile();
+        let mut replicated = base.clone();
+        // Full rows for every highway code in the fixture, each cell copying
+        // the vector value for its density.
+        for code in [1u16, 7, 12] {
+            let row: crate::traffic::MatrixRow = std::array::from_fn(|i| Some(base.factors[i]));
+            replicated.matrix.insert(code, row);
+        }
+        assert!(replicated.has_matrix());
+        assert_eq!(
+            apply(&base),
+            apply(&replicated),
+            "a matrix that replicates the vector must produce identical weights"
+        );
+    }
+
+    #[test]
+    fn matrix_cell_overrides_only_its_highway_density_cell() {
+        let mut p = vector_profile();
+        // residential (12) × Rural slowed to 0.4; every other cell falls back.
+        let mut row: crate::traffic::MatrixRow = [None; 5];
+        row[DensityClass::Rural.to_u8() as usize] = Some(0.4);
+        p.matrix.insert(12, row);
+
+        let w = apply(&p);
+        // node 0: motorway×Rural → vector 0.9 → 1111 (no row for code 1)
+        // node 1: residential×UrbanHigh → vector 0.5 → 2000 (cell absent in row)
+        // node 2: residential×Rural → matrix 0.4 → 2500 (overridden)
+        // node 3: secondary×Suburban → vector 0.8 → 1250
+        assert_eq!(w, vec![1111, 2000, 2500, 1250]);
+    }
+
+    #[test]
+    fn inaccessible_sentinel_preserved_with_matrix() {
+        let (ebg_nodes, nbg_geo, attrs) = fixture();
+        let mut p = vector_profile();
+        p.matrix.insert(12, std::array::from_fn(|_| Some(0.4)));
+        let mut weights = vec![1000u32, 0, 1000, 0];
+        apply_traffic_to_node_weights_in_memory(&mut weights, &ebg_nodes, &p, &attrs, &nbg_geo)
+            .unwrap();
+        assert_eq!(weights[1], 0, "0 = inaccessible must survive");
+        assert_eq!(weights[3], 0, "0 = inaccessible must survive");
+        assert_eq!(weights[2], 2500, "accessible node scaled by matrix cell");
     }
 }
