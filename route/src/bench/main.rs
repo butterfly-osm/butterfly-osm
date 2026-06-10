@@ -540,6 +540,11 @@ enum Commands {
         /// Random seed.
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        /// Target jitter radius in degrees (~111 km/deg). Small radius around
+        /// city anchors ⇒ ~100% reachable (isolates tree-core cost from
+        /// unreachable-escalation cost).
+        #[arg(long, default_value_t = 0.30)]
+        radius: f64,
     },
 }
 
@@ -795,7 +800,8 @@ fn main() -> anyhow::Result<()> {
             n_sources,
             targets_per_source,
             seed,
-        } => run_edges_batch_bench(&data, &mode, n_sources, targets_per_source, seed),
+            radius,
+        } => run_edges_batch_bench(&data, &mode, n_sources, targets_per_source, seed, radius),
     }
 }
 
@@ -4687,6 +4693,7 @@ fn run_edges_batch_bench(
     n_sources: usize,
     targets_per_source: usize,
     seed: u64,
+    radius: f64,
 ) -> anyhow::Result<()> {
     use butterfly_route::model::types::Mode;
     use butterfly_route::server::flight::{
@@ -4752,8 +4759,8 @@ fn run_edges_batch_bench(
         let slat = (c[1] + rng.random_range(-0.15_f64..0.15)).clamp(49.50, 51.50);
         for _ in 0..targets_per_source {
             // Targets NEAR the source (±~25 km).
-            let dlon = (slon + rng.random_range(-0.30_f64..0.30)).clamp(2.55, 6.40);
-            let dlat = (slat + rng.random_range(-0.30_f64..0.30)).clamp(49.50, 51.50);
+            let dlon = (slon + rng.random_range(-radius..radius)).clamp(2.55, 6.40);
+            let dlat = (slat + rng.random_range(-radius..radius)).clamp(49.50, 51.50);
             pairs.push([slon, slat, dlon, dlat]);
         }
     }

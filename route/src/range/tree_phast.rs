@@ -31,7 +31,9 @@
 //! Belgium, freed when idle).
 
 use crate::formats::{CchTopo, CchWeights};
+use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat};
 use crate::server::evictable::EvictableCell;
+use crate::server::query::HANDLE_NONE;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -59,6 +61,10 @@ struct TreeScratch {
     sel_gen: Vec<u32>,
     sel_epoch: u32,
     sel: Vec<u32>,
+    /// Lever-1 (#438): reused 4-ary decrease-key heap + handle slots for the
+    /// upward sweep (replaces a per-settle std::BinaryHeap with lazy dupes).
+    pq: DAryHeap,
+    handles: Vec<u32>,
 }
 
 impl TreeScratch {
@@ -73,6 +79,8 @@ impl TreeScratch {
             sel_gen: vec![0; n],
             sel_epoch: 0,
             sel: Vec::new(),
+            pq: DAryHeap::new(1024),
+            handles: vec![HANDLE_NONE; n],
         }
     }
 
@@ -106,8 +114,28 @@ impl TreeScratch {
         }
     }
 
+    /// Push-or-decrease into the reused 4-ary heap (mirrors
+    /// CchQueryState::push_fwd; `set` clears stale handles on first touch).
+    #[inline]
+    fn push_up(&mut self, node: u32, dist: u32) {
+        if self.handles[node as usize] != HANDLE_NONE {
+            let h = self.handles[node as usize];
+            self.pq.decrease(h, dist, node, &mut self.handles);
+        } else {
+            self.pq.push(dist, node, &mut self.handles);
+        }
+    }
+
+    #[inline]
+    fn pop_up(&mut self) -> Option<(u32, u32)> {
+        self.pq.pop(&mut self.handles)
+    }
+
     #[inline]
     fn set(&mut self, node: usize, dist: u32, tagged_arc: u32) {
+        if self.generation[node] != self.epoch {
+            self.handles[node] = HANDLE_NONE;
+        }
         self.dist[node] = dist;
         self.parent[node] = tagged_arc;
         self.generation[node] = self.epoch;
@@ -252,7 +280,7 @@ pub fn tree_settle(
 pub fn tree_settle_restricted(
     topo: &CchTopo,
     weights: &CchWeights,
-    down_rev: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    down_rev: &DownReverseAdjFlat,
     origin: u32,
     targets: &[u32],
 ) -> TreeSettle {
@@ -298,12 +326,34 @@ pub fn tree_settle_restricted(
                 // Descending rank order for the scan.
                 s.sel.sort_unstable_by(|a, b| b.cmp(a));
 
-                // ---- Phase 1: exhaustive upward PQ sweep (UP parents) ----
-                let mut pq: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-                pq.push(Reverse((0, origin)));
-                while let Some(Reverse((d, u))) = pq.pop() {
+                // ---- Phase 1: exhaustive upward sweep (UP parents) ----
+                // Lever-1 (#438): reused 4-ary decrease-key heap (no lazy
+                // duplicate pops) + stall-on-demand against the reverse-DOWN
+                // adjacency, mirroring the tuned bidirectional query (#272).
+                // Stalling prunes nodes whose distance is witnessed shorter
+                // via a higher-rank neighbour — distances on shortest paths
+                // are unaffected.
+                s.pq.clear();
+                s.push_up(origin, 0);
+                while let Some((d, u)) = s.pop_up() {
                     if d > s.get(u as usize) {
                         continue; // stale
+                    }
+                    let rs = down_rev.offsets[u as usize] as usize;
+                    let re = down_rev.offsets[u as usize + 1] as usize;
+                    let mut stalled = false;
+                    for slot in rs..re {
+                        let x = down_rev.sources[slot] as usize;
+                        if s.generation[x] == s.epoch {
+                            let dx = s.dist[x];
+                            if dx != u32::MAX && dx.saturating_add(down_rev.weights.get(slot)) < d {
+                                stalled = true;
+                                break;
+                            }
+                        }
+                    }
+                    if stalled {
+                        continue;
                     }
                     let start = topo.up_offsets[u as usize] as usize;
                     let end = topo.up_offsets[u as usize + 1] as usize;
@@ -316,7 +366,7 @@ pub fn tree_settle_restricted(
                         let nd = d.saturating_add(w);
                         if nd < s.get(v as usize) {
                             s.set(v as usize, nd, i as u32); // UP arc
-                            pq.push(Reverse((nd, v)));
+                            s.push_up(v, nd);
                         }
                     }
                 }
