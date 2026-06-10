@@ -2253,6 +2253,115 @@ pub fn compute_edges_tree(
     per_pair
 }
 
+/// #438 lever-4: escalation for a TREE-mode miss. The settled tree is EXACT
+/// and unbounded for the group's root, so every escalation combo whose source
+/// IS the tree root is decidable by a free tree probe — provably-dead combos
+/// skip their full bidirectional query (each of which explores both cones
+/// exhaustively before failing). Combos with ALTERNATE source candidates run
+/// the real query as before, in the same closest-sum-first order, so the
+/// first CONNECTING combo (the result) is identical to `escalate_pair`'s.
+fn escalate_pair_with_tree(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &super::query::CchQuery<'_>,
+    query_idx: u32,
+    pair: &[f64; 4],
+    tree_root: u32,
+) -> PairEdges {
+    use super::types::SnapRole;
+    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+    const SNAP_K: usize = 64;
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        slon,
+        slat,
+        SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dlon,
+        dlat,
+        SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
+    if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
+        const EDGES_BATCH_MAX_COMBOS: usize = 16;
+        for (i, j) in super::snap_kbest::combo_order(
+            src_snap.ranks.len(),
+            dst_snap.ranks.len(),
+            EDGES_BATCH_MAX_COMBOS,
+        ) {
+            let s_rank = src_snap.ranks[i];
+            let d_rank = dst_snap.ranks[j];
+            if s_rank == d_rank {
+                continue;
+            }
+            if s_rank == tree_root {
+                // Free, exact decision from the settled tree.
+                match crate::range::tree_phast::tree_backtrack(
+                    &mode_data.cch_topo,
+                    tree_root,
+                    d_rank,
+                ) {
+                    Some(tp) => {
+                        let result = super::query::QueryResult {
+                            distance: tp.distance,
+                            meeting_node: tp.apex,
+                            forward_parent: tp.forward_parent,
+                            backward_parent: tp.backward_parent,
+                        };
+                        return emit_pair_rows(
+                            state, mode_data, s_rank, d_rank, &result, query_idx,
+                        );
+                    }
+                    None => continue, // provably dead — skip the full query
+                }
+            }
+            if let Some(result) = query.query(s_rank, d_rank) {
+                return emit_pair_rows(state, mode_data, s_rank, d_rank, &result, query_idx);
+            }
+        }
+    }
+    PairEdges {
+        query_idx,
+        rows: Vec::new(),
+    }
+}
+
+/// #438: shape-adaptive group dispatch. Short-radius groups (all targets
+/// within ~GC_SWITCH_M of the source) run the GROUPED path — early-terminated
+/// backward searches are so cheap there that the tree's exhaustive sweep +
+/// selection overhead isn't repaid (measured: grouped 31.8k vs tree 24.5k
+/// pairs/s at radius 0.08°). Long-radius groups run the TREE (tree 16.8k vs
+/// grouped 10.5k at 0.30°). Both paths are oracle-proven identical, so the
+/// dispatch is purely a cost choice.
+fn process_source_group_adaptive(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    src_rank: u32,
+    targets: &[GroupedTarget],
+) -> Vec<PairEdges> {
+    const GC_SWITCH_M: f64 = 15_000.0;
+    let max_gc = targets
+        .iter()
+        .map(|t| crate::nbg::haversine_distance(t.pair[1], t.pair[0], t.pair[3], t.pair[2]))
+        .fold(0.0_f64, f64::max);
+    if max_gc <= GC_SWITCH_M {
+        process_source_group(state, mode_data, mode, src_rank, targets)
+    } else {
+        process_source_group_tree(state, mode_data, mode, src_rank, targets)
+    }
+}
+
 /// #438: process one source group via the RPHAST-restricted predecessor tree.
 /// One exact restricted settle per source (selection = reverse-DOWN ancestry
 /// of the group's resolved targets — no distance bound, no retries), then
@@ -2312,18 +2421,28 @@ fn process_source_group_tree(
         }
     }
 
-    // Leftovers: full per-pair path (separate scratch; tree no longer needed).
+    // Leftovers. CAUTION on ordering: escalate_pair_with_tree PROBES the
+    // settled tree, but edges_for_pair (and the probe's own alternate-source
+    // queries) only touch the separate CCH_QUERY_STATE scratch — the tree
+    // stays valid throughout this loop. Tree-miss targets (resolved dst, no
+    // path via the root) take the probe escalation (lever-4: provably-dead
+    // combos skipped for free); dst-unresolved targets take the plain
+    // per-pair path as before.
     let query = super::query::CchQuery::new(mode_data);
     for idx in fallbacks {
         let t = &targets[idx];
-        out.push(edges_for_pair(
-            state,
-            mode_data,
-            mode,
-            &query,
-            t.query_idx,
-            &t.pair,
-        ));
+        out.push(match t.dst_rank {
+            Some(_) => escalate_pair_with_tree(
+                state,
+                mode_data,
+                mode,
+                &query,
+                t.query_idx,
+                &t.pair,
+                src_rank,
+            ),
+            None => edges_for_pair(state, mode_data, mode, &query, t.query_idx, &t.pair),
+        });
     }
     out
 }
@@ -2459,14 +2578,14 @@ pub fn do_edges_batch(
                 chunk
                     .par_iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_adaptive(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             } else {
                 chunk
                     .iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_adaptive(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             };
