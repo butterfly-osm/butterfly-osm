@@ -2336,6 +2336,32 @@ fn escalate_pair_with_tree(
     }
 }
 
+/// #438: shape-adaptive group dispatch. Short-radius groups (all targets
+/// within ~GC_SWITCH_M of the source) run the GROUPED path — early-terminated
+/// backward searches are so cheap there that the tree's exhaustive sweep +
+/// selection overhead isn't repaid (measured: grouped 31.8k vs tree 24.5k
+/// pairs/s at radius 0.08°). Long-radius groups run the TREE (tree 16.8k vs
+/// grouped 10.5k at 0.30°). Both paths are oracle-proven identical, so the
+/// dispatch is purely a cost choice.
+fn process_source_group_adaptive(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    src_rank: u32,
+    targets: &[GroupedTarget],
+) -> Vec<PairEdges> {
+    const GC_SWITCH_M: f64 = 15_000.0;
+    let max_gc = targets
+        .iter()
+        .map(|t| crate::nbg::haversine_distance(t.pair[1], t.pair[0], t.pair[3], t.pair[2]))
+        .fold(0.0_f64, f64::max);
+    if max_gc <= GC_SWITCH_M {
+        process_source_group(state, mode_data, mode, src_rank, targets)
+    } else {
+        process_source_group_tree(state, mode_data, mode, src_rank, targets)
+    }
+}
+
 /// #438: process one source group via the RPHAST-restricted predecessor tree.
 /// One exact restricted settle per source (selection = reverse-DOWN ancestry
 /// of the group's resolved targets — no distance bound, no retries), then
@@ -2552,14 +2578,14 @@ pub fn do_edges_batch(
                 chunk
                     .par_iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_adaptive(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             } else {
                 chunk
                     .iter()
                     .flat_map(|(src_rank, targets)| {
-                        process_source_group_tree(&state, &mode_data, mode, *src_rank, targets)
+                        process_source_group_adaptive(&state, &mode_data, mode, *src_rank, targets)
                     })
                     .collect()
             };
