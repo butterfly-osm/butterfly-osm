@@ -295,6 +295,21 @@ impl TrafficProfile {
                         MIN_FACTOR,
                         MAX_FACTOR
                     );
+                    // `DensityClass::parse` accepts spelling aliases (e.g.
+                    // "urban_high" and "urbanHigh"), so two distinct JSON keys
+                    // can land on the same cell. Without this guard the
+                    // lexicographically last key would win silently.
+                    anyhow::ensure!(
+                        row[class.to_u8() as usize].is_none(),
+                        "traffic profile '{}': matrix.{} specifies density '{}' more than once \
+                         (key '{}' aliases a key given earlier in the row — write each density \
+                         exactly once, canonical spelling '{}')",
+                        parsed.name,
+                        key,
+                        class.as_str(),
+                        dkey,
+                        class.as_str()
+                    );
                     row[class.to_u8() as usize] = Some(*value);
                 }
                 matrix.insert(code, row);
@@ -614,6 +629,25 @@ mod tests {
         }"#;
         let err = TrafficProfile::from_json(s).unwrap_err();
         assert!(format!("{err:#}").contains("unknown matrix.1 key"));
+    }
+
+    #[test]
+    fn rejects_duplicate_density_key_in_matrix_row() {
+        // "urban_high" and "urbanHigh" are distinct JSON keys that both parse
+        // to UrbanHigh — without the guard the lexicographically last one
+        // would win silently.
+        let s = r#"{
+          "name": "bad", "base_model": "car",
+          "speed_factors": {
+            "urban_high": 0.55, "urban_medium": 0.7,
+            "urban_low": 0.85, "suburban": 0.9, "rural": 0.95
+          },
+          "matrix": { "1": { "urban_high": 0.5, "urbanHigh": 0.6 } }
+        }"#;
+        let err = TrafficProfile::from_json(s).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("more than once"), "got: {msg}");
+        assert!(msg.contains("urban_high"), "got: {msg}");
     }
 
     #[test]
