@@ -505,6 +505,21 @@ pub async fn serve(
         );
     }
 
+    // #450: BUTTERFLY_BOOT_RECUSTOMIZE=off serves the clean legal-limit
+    // (free-flow, maxspeed-honoring) car even when an observed-speeds table is
+    // staged. Needed when the consumer is a traffic SIMULATION: congested
+    // speeds are circular there (congestion is the sim's own output), and the
+    // per-density calibration derates motorways below the level where the
+    // road hierarchy routes correctly (E411 at ~56 km/h). Default: on.
+    let recustomize_enabled = std::env::var("BUTTERFLY_BOOT_RECUSTOMIZE")
+        .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "off" | "0" | "false"))
+        .unwrap_or(true);
+    if !recustomize_enabled {
+        tracing::info!(
+            "BUTTERFLY_BOOT_RECUSTOMIZE=off — serving the clean legal-limit car (free-flow); observed_speeds.parquet ignored (#450)"
+        );
+    }
+
     // ---- Serve-boot car traffic recustomization (#433) -------------
     //
     // If a generic observed-speeds table is staged next to the data —
@@ -542,6 +557,9 @@ pub async fn serve(
         let Some(observed) = observed else {
             continue;
         };
+        if !recustomize_enabled {
+            continue;
+        }
 
         let region_id = regions_state.regions[idx].id.clone();
         regions_state.regions[idx].with_loaded_state_mut(|state_owned| {
