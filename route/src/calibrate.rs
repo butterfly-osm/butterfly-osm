@@ -1041,3 +1041,98 @@ mod tests {
         TrafficProfile::from_json(&res.profile.to_json_string().unwrap()).unwrap();
     }
 }
+
+// =====================================================================
+// #450/#454: directed per-edge speeds contract (generic)
+// =====================================================================
+
+/// One directed junction-edge speed: the edge from OSM node `from` to OSM
+/// node `to` (the same keys `edges_batch` emits), observed/derived mean speed
+/// in km/h. The producer is irrelevant to the engine — any table with these
+/// three columns works.
+#[derive(Debug, Clone, Copy)]
+pub struct EdgeSpeed {
+    pub from: i64,
+    pub to: i64,
+    pub speed_kmh: f32,
+}
+
+const FROM_ALIASES: &[&str] = &["osm_node_from", "node_from", "from", "u"];
+const TO_ALIASES: &[&str] = &["osm_node_to", "node_to", "to", "v"];
+const EDGE_SPEED_ALIASES: &[&str] = &[
+    "speed_kmh",
+    "speed",
+    "avg_speed_kmh",
+    "observed_avg_speed_kmh",
+];
+
+/// Read the generic per-edge speeds parquet:
+/// `(osm_node_from i64, osm_node_to i64, speed_kmh double)`.
+/// Rows with nulls or non-positive/absurd speeds (outside (0, 200] km/h)
+/// are skipped with a tally — a malformed table degrades, never aborts.
+pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("opening parquet edge speeds {}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("reading parquet metadata of {}", path.display()))?;
+    let schema = builder.schema().clone();
+    let names = || schema.fields().iter().map(|f| f.name().as_str());
+    let from_col = find_col(names(), FROM_ALIASES).with_context(|| {
+        format!(
+            "{}: missing a from-node column (one of: {})",
+            path.display(),
+            FROM_ALIASES.join(", ")
+        )
+    })?;
+    let to_col = find_col(names(), TO_ALIASES).with_context(|| {
+        format!(
+            "{}: missing a to-node column (one of: {})",
+            path.display(),
+            TO_ALIASES.join(", ")
+        )
+    })?;
+    let speed_col = find_col(names(), EDGE_SPEED_ALIASES).with_context(|| {
+        format!(
+            "{}: missing a speed column (one of: {})",
+            path.display(),
+            EDGE_SPEED_ALIASES.join(", ")
+        )
+    })?;
+
+    let reader = builder
+        .build()
+        .with_context(|| format!("building parquet reader for {}", path.display()))?;
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    for batch in reader {
+        let batch =
+            batch.with_context(|| format!("reading a parquet batch from {}", path.display()))?;
+        let from_arr = batch.column(from_col).as_ref();
+        let to_arr = batch.column(to_col).as_ref();
+        let speed_arr = batch.column(speed_col).as_ref();
+        for row in 0..batch.num_rows() {
+            if from_arr.is_null(row) || to_arr.is_null(row) || speed_arr.is_null(row) {
+                skipped += 1;
+                continue;
+            }
+            let from = arr_as_i64(from_arr, row)?;
+            let to = arr_as_i64(to_arr, row)?;
+            let speed_kmh = arr_as_f32(speed_arr, row)?;
+            if !(speed_kmh.is_finite() && speed_kmh > 0.0 && speed_kmh <= 200.0) {
+                skipped += 1;
+                continue;
+            }
+            out.push(EdgeSpeed {
+                from,
+                to,
+                speed_kmh,
+            });
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(skipped, "edge speeds: skipped null/out-of-range rows");
+    }
+    Ok(out)
+}

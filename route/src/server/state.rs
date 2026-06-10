@@ -1860,6 +1860,188 @@ impl ServerState {
         Ok(profile)
     }
 
+    /// #450/#454: serve-boot car recustomization from a DIRECTED per-edge
+    /// speeds table — the generic contract for flow-derived (or any
+    /// per-edge-measured) speeds:
+    /// `edge_speeds.parquet (osm_node_from i64, osm_node_to i64, speed_kmh)`.
+    ///
+    /// Each EBG node IS a directed junction-edge (tail→head NBG nodes); rows
+    /// matching `(osm(tail), osm(head))` set that edge's time to
+    /// `length_m / speed`; unmatched edges keep their clean legal-limit time
+    /// (free-flow fallback). Then the standard tail: in-memory TIME
+    /// customization → flats → hot-swap the `car` slot → pin (car_freeflow
+    /// keeps serving the untouched base). Uses the #444 cache with its own
+    /// file + version tag. Every failure is the CALLER's to treat as
+    /// non-fatal.
+    pub fn recustomize_car_from_edge_speeds(
+        &self,
+        edge_speeds_path: &std::path::Path,
+    ) -> Result<usize> {
+        let t0 = std::time::Instant::now();
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize: no 'car' mode loaded"))?
+            as usize;
+        let base: std::sync::Arc<ModeData> = self.modes[car_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize: car slot not resident"))?;
+        let mmap = self
+            ._mmap_arc
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize requires container-backed state"))?;
+        let lazy = self
+            .lazy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize requires LazyContainer"))?;
+        let container = lazy.container();
+
+        // #444 cache (own file + tag so the per-way cache can't collide).
+        let cache_path = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir).join("recustomize_cache.car-edge.v1.bin"),
+            None => edge_speeds_path.with_file_name("recustomize_cache.car-edge.v1.bin"),
+        };
+        let car_weights_crc = container
+            .get("mode/car/weights.time")
+            .map(|e| e.crc)
+            .unwrap_or(0);
+        let cache_key = recustomize_edge_cache_key(edge_speeds_path, car_weights_crc);
+        let cached = cache_key.and_then(|k| read_recustomize_cache(&cache_path, k));
+
+        let (matched, new_weights, adjusted_node_weights) = if let Some((p, w, nw)) = cached {
+            tracing::info!(
+                path = %cache_path.display(),
+                "edge recustomize: cache HIT — skipping mapping + customization (#444)"
+            );
+            // The marker profile name carries the matched count for logging.
+            let matched = p
+                .name
+                .strip_prefix("edge_speeds:")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            (matched, w, nw)
+        } else {
+            // 1. Read the table + build the directed lookup.
+            let rows = crate::calibrate::read_edge_speeds(edge_speeds_path)?;
+            anyhow::ensure!(!rows.is_empty(), "edge recustomize: empty table");
+            let mut lut: std::collections::HashMap<(i64, i64), f32> =
+                std::collections::HashMap::with_capacity(rows.len());
+            for r in &rows {
+                lut.insert((r.from, r.to), r.speed_kmh);
+            }
+
+            // 2. Map onto per-EBG-node times (free-flow fallback elsewhere).
+            let mut weights: Vec<u32> = base.node_weights.to_vec();
+            anyhow::ensure!(
+                weights.len() == self.ebg_nodes.nodes.len(),
+                "weights/EBG length mismatch"
+            );
+            let mut matched = 0usize;
+            for (i, node) in self.ebg_nodes.nodes.iter().enumerate() {
+                if weights[i] == 0 {
+                    continue; // inaccessible sentinel
+                }
+                let from = match self.nbg_node_to_osm.get(node.tail_nbg as usize) {
+                    Some(&v) => v,
+                    None => continue,
+                };
+                let to = match self.nbg_node_to_osm.get(node.head_nbg as usize) {
+                    Some(&v) => v,
+                    None => continue,
+                };
+                if let Some(&kmh) = lut.get(&(from, to)) {
+                    let secs = (node.length_m as f64 * 3.6 / kmh as f64).round();
+                    weights[i] = (secs.max(1.0) as u32).max(1);
+                    matched += 1;
+                }
+            }
+            tracing::info!(
+                rows = rows.len(),
+                matched,
+                total_edges = weights.len(),
+                "edge recustomize: applied directed per-edge speeds"
+            );
+            anyhow::ensure!(matched > 0, "edge recustomize: 0 rows matched the graph");
+
+            // 3. Customize on the modified weights (no profile scaling).
+            let (fe_mmap, fe_off, fe_len) = {
+                let name = "mode/car/filtered_ebg";
+                let entry = container
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("missing section '{}'", name))?;
+                lazy.verify_now(name)?;
+                (
+                    std::sync::Arc::clone(mmap),
+                    entry.offset as usize,
+                    entry.len as usize,
+                )
+            };
+            let filtered_ebg = crate::formats::FilteredEbgFile::read_from_mmap_unverified(
+                fe_mmap, fe_off, fe_len,
+            )?;
+            let turns = {
+                let name = "mode/car/node_weights.turn";
+                let entry = container
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("missing section '{}'", name))?;
+                lazy.verify_now(name)?;
+                let bytes = &mmap[entry.offset as usize..(entry.offset + entry.len) as usize];
+                crate::formats::mod_turns::read_all_from_bytes(bytes)?
+            };
+            let (new_weights, adjusted) = crate::customization::customize_cch_time_in_memory(
+                &base.cch_topo,
+                &filtered_ebg,
+                &weights,
+                &turns.penalties,
+                &self.ebg_nodes,
+                None,
+            )?;
+
+            if let Some(k) = cache_key {
+                // Marker profile (factors 1.0 — scaling already baked into the
+                // node weights) so the cache format round-trips unchanged.
+                let marker = crate::traffic::TrafficProfile {
+                    name: format!("edge_speeds:{matched}"),
+                    base_model: "car".to_string(),
+                    factors: [1.0; 5],
+                };
+                if let Err(e) =
+                    write_recustomize_cache(&cache_path, k, &marker, &new_weights, &adjusted)
+                {
+                    tracing::warn!(error = %e, "edge recustomize: cache write failed (non-fatal)");
+                }
+            }
+            (matched, new_weights, adjusted)
+        };
+
+        // 4. Flats + swap + pin (same as the per-way path).
+        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        let mut new_car = clone_mode_data(&base);
+        new_car.cch_weights = new_weights;
+        new_car.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
+        new_car.up_adj_flat = up_adj_flat;
+        new_car.down_rev_flat = down_rev_flat;
+        new_car.down_adj_flat = down_adj_flat;
+        let slot = &self.modes[car_idx];
+        {
+            let mut w = slot.state.write();
+            *w = Some(std::sync::Arc::new(new_car));
+        }
+        slot.evictable
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            matched,
+            elapsed_s = t0.elapsed().as_secs_f64(),
+            "edge recustomize: hot-swapped + pinned flow-derived car (#454)"
+        );
+        Ok(matched)
+    }
+
     /// #402: evict a single mode slot if it has been idle for at least
     /// `threshold_ms`. Drops the inner `Arc<ModeData>`; any in-flight
     /// query holding its own Arc clone keeps the data alive until that
@@ -3673,6 +3855,14 @@ const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
 /// internal — it changes with every rebuilt artifact, so the cache
 /// invalidates correctly without depending on deploy-side conventions.
 /// `None` (unreadable parquet) disables the cache for this boot.
+fn recustomize_edge_cache_key(path: &std::path::Path, car_weights_crc: u64) -> Option<u64> {
+    let mut d = crate::formats::crc::Digest::new();
+    d.update(b"recustomize-car-edge-v1");
+    d.update(&std::fs::read(path).ok()?);
+    d.update(&car_weights_crc.to_le_bytes());
+    Some(d.finalize())
+}
+
 fn recustomize_cache_key(observed_path: &std::path::Path, car_weights_crc: u64) -> Option<u64> {
     let mut d = crate::formats::crc::Digest::new();
     d.update(RECUSTOMIZE_CACHE_VERSION);
