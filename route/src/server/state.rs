@@ -1700,46 +1700,79 @@ impl ServerState {
             Ok((std::sync::Arc::clone(mmap), off, len))
         };
 
-        // 1. Raw inputs from the container.
-        let way_attrs_vec =
-            crate::formats::way_attrs::read_all_from_bytes(fetch_bytes("way_attrs")?)?;
-        let turns =
-            crate::formats::mod_turns::read_all_from_bytes(fetch_bytes("node_weights.turn")?)?;
-        let (fe_mmap, fe_off, fe_len) = fetch_arc("filtered_ebg")?;
-        let filtered_ebg =
-            crate::formats::FilteredEbgFile::read_from_mmap_unverified(fe_mmap, fe_off, fe_len)?;
+        // #444: PVC-cached recustomization. The ~5-min calibrate+customize is
+        // pure recompute when neither the observed table nor the artifact
+        // changed — key the cached weights on crc64(parquet) ⊕
+        // crc64(artifact-info) ⊕ algo version and skip straight to the flats
+        // on a hit. Cache failures are non-fatal in both directions.
+        let cache_path = observed_path.with_file_name("recustomize_cache.car.v1.bin");
+        let cache_key = recustomize_cache_key(observed_path);
+        let cached = cache_key.and_then(|k| read_recustomize_cache(&cache_path, k));
 
-        // 2. Calibrate ONE car profile from the observed speeds.
-        let observations = crate::calibrate::read_observations(observed_path)?;
-        anyhow::ensure!(
-            !observations.is_empty(),
-            "recustomize: 0 observations in {}",
-            observed_path.display()
-        );
-        let way_index = crate::calibrate::index_ways(&way_attrs_vec);
-        let params = crate::calibrate::CalibrationParams::default();
-        let result = crate::calibrate::fit(&observations, &way_index, &params)?;
-        let profile = result.profile;
-        tracing::info!(
-            profile = profile.name.as_str(),
-            observations = observations.len(),
-            "recustomize: calibrated car profile"
-        );
-
-        // 3. Re-run TIME-only customization in memory (triangle-relax always on).
-        // Codex audit (#438): also take the traffic-ADJUSTED per-node time
-        // weights — edges_batch derives per-edge durations from
-        // ModeData.node_weights, so cloning the base (legal-limit) weights
-        // here would emit wrong durations along calibrated paths.
-        let (new_weights, adjusted_node_weights) =
-            crate::customization::customize_cch_time_in_memory(
-                &base.cch_topo,
-                &filtered_ebg,
-                &base.node_weights,
-                &turns.penalties,
-                &self.ebg_nodes,
-                Some((&profile, &way_attrs_vec, &self.nbg_geo)),
+        let (profile, new_weights, adjusted_node_weights) = if let Some(hit) = cached {
+            tracing::info!(
+                path = %cache_path.display(),
+                "recustomize: cache HIT — skipping calibration + customization (#444)"
+            );
+            hit
+        } else {
+            // 1. Raw inputs from the container.
+            let way_attrs_vec =
+                crate::formats::way_attrs::read_all_from_bytes(fetch_bytes("way_attrs")?)?;
+            let turns =
+                crate::formats::mod_turns::read_all_from_bytes(fetch_bytes("node_weights.turn")?)?;
+            let (fe_mmap, fe_off, fe_len) = fetch_arc("filtered_ebg")?;
+            let filtered_ebg = crate::formats::FilteredEbgFile::read_from_mmap_unverified(
+                fe_mmap, fe_off, fe_len,
             )?;
+
+            // 2. Calibrate ONE car profile from the observed speeds.
+            let observations = crate::calibrate::read_observations(observed_path)?;
+            anyhow::ensure!(
+                !observations.is_empty(),
+                "recustomize: 0 observations in {}",
+                observed_path.display()
+            );
+            let way_index = crate::calibrate::index_ways(&way_attrs_vec);
+            let params = crate::calibrate::CalibrationParams::default();
+            let result = crate::calibrate::fit(&observations, &way_index, &params)?;
+            let profile = result.profile;
+            tracing::info!(
+                profile = profile.name.as_str(),
+                observations = observations.len(),
+                "recustomize: calibrated car profile"
+            );
+
+            // 3. Re-run TIME-only customization in memory (triangle-relax always on).
+            // Codex audit (#438): also take the traffic-ADJUSTED per-node time
+            // weights — edges_batch derives per-edge durations from
+            // ModeData.node_weights, so cloning the base (legal-limit) weights
+            // here would emit wrong durations along calibrated paths.
+            let (new_weights, adjusted_node_weights) =
+                crate::customization::customize_cch_time_in_memory(
+                    &base.cch_topo,
+                    &filtered_ebg,
+                    &base.node_weights,
+                    &turns.penalties,
+                    &self.ebg_nodes,
+                    Some((&profile, &way_attrs_vec, &self.nbg_geo)),
+                )?;
+
+            if let Some(k) = cache_key {
+                if let Err(e) = write_recustomize_cache(
+                    &cache_path,
+                    k,
+                    &profile,
+                    &new_weights,
+                    &adjusted_node_weights,
+                ) {
+                    tracing::warn!(error = %e, "recustomize: cache write failed (non-fatal)");
+                } else {
+                    tracing::info!(path = %cache_path.display(), "recustomize: cache written (#444)");
+                }
+            }
+            (profile, new_weights, adjusted_node_weights)
+        };
 
         // 4. Fresh TIME flats (mirrors load_traffic_variant_mode_data).
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -3556,5 +3589,164 @@ mod tests {
         assert!(!bit(&dst, 4));
         assert!(!bit(&dst, 5));
         assert!(bit(&dst, 6));
+    }
+}
+
+// =====================================================================
+// #444: serve-boot recustomization cache (PVC-resident)
+// =====================================================================
+
+/// Cache algo version — bump on ANY change to the calibration or
+/// customization algorithm so stale caches self-invalidate.
+const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
+
+/// Provenance key: crc64 over (algo version ⊕ observed parquet bytes ⊕ the
+/// sibling artifact-info, which changes with every artifact build). `None`
+/// (unreadable parquet) disables the cache for this boot.
+fn recustomize_cache_key(observed_path: &std::path::Path) -> Option<u64> {
+    let mut d = crate::formats::crc::Digest::new();
+    d.update(RECUSTOMIZE_CACHE_VERSION);
+    d.update(&std::fs::read(observed_path).ok()?);
+    if let Ok(info) = std::fs::read(observed_path.with_file_name("artifact-info")) {
+        d.update(&info);
+    }
+    Some(d.finalize())
+}
+
+fn write_u32s(
+    w: &mut impl std::io::Write,
+    d: &mut crate::formats::crc::Digest,
+    v: &[u32],
+) -> anyhow::Result<()> {
+    let len = (v.len() as u64).to_le_bytes();
+    d.update(&len);
+    w.write_all(&len)?;
+    let bytes: &[u8] = bytemuck::cast_slice(v);
+    d.update(bytes);
+    w.write_all(bytes)?;
+    Ok(())
+}
+
+fn read_u32s(
+    r: &mut impl std::io::Read,
+    d: &mut crate::formats::crc::Digest,
+) -> anyhow::Result<Vec<u32>> {
+    let mut lb = [0u8; 8];
+    r.read_exact(&mut lb)?;
+    d.update(&lb);
+    let len = u64::from_le_bytes(lb) as usize;
+    anyhow::ensure!(len < 200_000_000, "cache array len implausible: {len}");
+    let mut v = vec![0u32; len];
+    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut v);
+    r.read_exact(bytes)?;
+    d.update(bytes);
+    Ok(v)
+}
+
+/// Write the recustomized car (profile + TIME CchWeights + adjusted node
+/// weights) atomically (tmp + rename). Layout: magic, key, profile JSON, five
+/// length-prefixed u32 arrays (up, down, up_middle, down_middle,
+/// node_weights), crc64 footer over everything before it.
+fn write_recustomize_cache(
+    path: &std::path::Path,
+    key: u64,
+    profile: &crate::traffic::TrafficProfile,
+    weights: &crate::formats::CchWeights,
+    node_weights: &[u32],
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("bin.tmp");
+    let mut d = crate::formats::crc::Digest::new();
+    let f = std::fs::File::create(&tmp)?;
+    let mut w = std::io::BufWriter::new(f);
+
+    let mut hdr = Vec::with_capacity(16);
+    hdr.extend_from_slice(b"RCWC");
+    hdr.extend_from_slice(&1u32.to_le_bytes());
+    hdr.extend_from_slice(&key.to_le_bytes());
+    d.update(&hdr);
+    w.write_all(&hdr)?;
+
+    let pj = profile.to_json_string()?;
+    let pl = (pj.len() as u32).to_le_bytes();
+    d.update(&pl);
+    w.write_all(&pl)?;
+    d.update(pj.as_bytes());
+    w.write_all(pj.as_bytes())?;
+
+    write_u32s(&mut w, &mut d, &weights.up.to_vec_u32())?;
+    write_u32s(&mut w, &mut d, &weights.down.to_vec_u32())?;
+    let um: Vec<u32> = weights.up_middle.iter().copied().collect();
+    let dm: Vec<u32> = weights.down_middle.iter().copied().collect();
+    write_u32s(&mut w, &mut d, &um)?;
+    write_u32s(&mut w, &mut d, &dm)?;
+    write_u32s(&mut w, &mut d, node_weights)?;
+
+    w.write_all(&d.finalize().to_le_bytes())?;
+    w.into_inner()?.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Load + validate the cache. Any mismatch (key, magic, CRC, truncation) ⇒
+/// `None` (recompute path) — never fatal.
+fn read_recustomize_cache(
+    path: &std::path::Path,
+    key: u64,
+) -> Option<(
+    crate::traffic::TrafficProfile,
+    crate::formats::CchWeights,
+    Vec<u32>,
+)> {
+    use std::io::Read;
+    let inner = || -> anyhow::Result<_> {
+        let f = std::fs::File::open(path)?;
+        let mut r = std::io::BufReader::new(f);
+        let mut d = crate::formats::crc::Digest::new();
+
+        let mut hdr = [0u8; 16];
+        r.read_exact(&mut hdr)?;
+        anyhow::ensure!(&hdr[0..4] == b"RCWC", "bad magic");
+        anyhow::ensure!(u32::from_le_bytes(hdr[4..8].try_into()?) == 1, "bad ver");
+        anyhow::ensure!(
+            u64::from_le_bytes(hdr[8..16].try_into()?) == key,
+            "key mismatch"
+        );
+        d.update(&hdr);
+
+        let mut pl = [0u8; 4];
+        r.read_exact(&mut pl)?;
+        d.update(&pl);
+        let plen = u32::from_le_bytes(pl) as usize;
+        anyhow::ensure!(plen < 1_000_000, "profile len implausible");
+        let mut pj = vec![0u8; plen];
+        r.read_exact(&mut pj)?;
+        d.update(&pj);
+        let profile = crate::traffic::TrafficProfile::from_json(std::str::from_utf8(&pj)?)?;
+
+        let up = read_u32s(&mut r, &mut d)?;
+        let down = read_u32s(&mut r, &mut d)?;
+        let um = read_u32s(&mut r, &mut d)?;
+        let dm = read_u32s(&mut r, &mut d)?;
+        let nw = read_u32s(&mut r, &mut d)?;
+
+        let mut fb = [0u8; 8];
+        r.read_exact(&mut fb)?;
+        anyhow::ensure!(u64::from_le_bytes(fb) == d.finalize(), "crc mismatch");
+
+        let weights = crate::formats::CchWeights {
+            up: crate::formats::WeightArray::from_vec_u32(up),
+            down: crate::formats::WeightArray::from_vec_u32(down),
+            up_middle: crate::formats::ArcCow::from_vec(um),
+            down_middle: crate::formats::ArcCow::from_vec(dm),
+        };
+        Ok((profile, weights, nw))
+    };
+    match inner() {
+        Ok(x) => Some(x),
+        Err(e) => {
+            tracing::info!(error = %e, path = %path.display(), "recustomize cache unusable — recomputing");
+            None
+        }
     }
 }
