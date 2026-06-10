@@ -2464,53 +2464,27 @@ pub fn do_edges_batch(
             }
             let chunk = &group_vec[gi..gj];
             gi = gj;
-            // #438 K-lane: shorts ride the grouped path per-group; longs are
-            // batched TREE_LANES at a time (shared selection + one scan).
-            let (shorts, longs): (Vec<_>, Vec<_>) = chunk
-                .iter()
-                .partition::<Vec<&(u32, Vec<GroupedTarget>)>, _>(|(_, targets)| {
-                    const GC_SWITCH_M: f64 = 15_000.0;
-                    targets
-                        .iter()
-                        .map(|t| {
-                            crate::nbg::haversine_distance(
-                                t.pair[1], t.pair[0], t.pair[3], t.pair[2],
-                            )
-                        })
-                        .fold(0.0_f64, f64::max)
-                        <= GC_SWITCH_M
-                });
-            let long_batches: Vec<Vec<(u32, Vec<GroupedTarget>)>> = Vec::new();
-            let _ = &long_batches; // replaced below
-            let long_refs: Vec<&(u32, Vec<GroupedTarget>)> = longs;
-            let long_batches: Vec<Vec<&(u32, Vec<GroupedTarget>)>> = long_refs
+            // #438: every group rides the K-lane tree — post-interleave/
+            // snapshot/locality the tree beats the grouped path on BOTH
+            // workload shapes (B 2.55×, C 1.40× vs grouped, oracle green),
+            // so the old 15 km adaptive dispatch is retired. Rank-sort for
+            // locality (ND ranks are spatially coherent → tight unions).
+            let mut group_refs: Vec<&(u32, Vec<GroupedTarget>)> = chunk.iter().collect();
+            group_refs.sort_unstable_by_key(|(src, _)| *src);
+            let batches: Vec<Vec<&(u32, Vec<GroupedTarget>)>> = group_refs
                 .chunks(crate::range::tree_phast::TREE_LANES)
                 .map(|c| c.to_vec())
                 .collect();
             let per_pair: Vec<PairEdges> = if parallel {
-                let mut v: Vec<PairEdges> = shorts
+                batches
                     .par_iter()
-                    .flat_map(|(src_rank, targets)| {
-                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
-                    })
-                    .collect();
-                v.par_extend(
-                    long_batches
-                        .par_iter()
-                        .flat_map_iter(|b| process_tree_batch(&state, &mode_data, mode, b)),
-                );
-                v
+                    .flat_map_iter(|b| process_tree_batch(&state, &mode_data, mode, b))
+                    .collect()
             } else {
-                let mut v: Vec<PairEdges> = shorts
+                batches
                     .iter()
-                    .flat_map(|(src_rank, targets)| {
-                        process_source_group(&state, &mode_data, mode, *src_rank, targets)
-                    })
-                    .collect();
-                for b in &long_batches {
-                    v.extend(process_tree_batch(&state, &mode_data, mode, b));
-                }
-                v
+                    .flat_map(|b| process_tree_batch(&state, &mode_data, mode, b))
+                    .collect()
             };
             if !emit(per_pair) {
                 return;
