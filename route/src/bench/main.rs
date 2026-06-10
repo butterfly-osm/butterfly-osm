@@ -4639,6 +4639,9 @@ fn run_p2p_bench(
         false
     };
 
+    if pairs.is_empty() {
+        anyhow::bail!("p2p bench: no pairs to run (check --n)");
+    }
     // Warm one query (pages in hot sections so the timing is steady-state).
     let _ = run_pair(&pairs[0]);
 
@@ -4852,6 +4855,21 @@ fn run_edges_batch_bench(
     assert_eq!(t_reach_mismatch, 0, "TREE changed reachability");
     assert_eq!(t_dur_mismatch, 0, "TREE changed total duration");
     println!("    ✓ TREE reachability + total-duration IDENTICAL");
+
+    // Codex audit: row-chain continuity (osm_to[i] == osm_from[i+1]) on every
+    // variant — a malformed but duration-equal path must not slip through.
+    for (label, set) in [("flat", &flat), ("grouped", &grouped), ("tree", &tree)] {
+        for p in set.iter() {
+            for w in p.rows.windows(2) {
+                assert_eq!(
+                    w[0].osm_to, w[1].osm_from,
+                    "{label}: continuity break in query_idx {}",
+                    p.query_idx
+                );
+            }
+        }
+    }
+    println!("    ✓ row-chain continuity holds on all variants");
 
     // ---- Throughput (best of 2, after a warm run) ----
     let _ = compute_edges_flat(&state, &mode_data, mode, &pairs, true);

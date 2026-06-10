@@ -866,11 +866,16 @@ impl<'a> CchQuery<'a> {
                 |state| {
                     // #438 review: guard against a graph swap between the
                     // settle_forward and this call (matches settle_forward /
-                    // query_with_debug). If the state was re-sized the frozen
-                    // forward is gone anyway → all targets return None and fall
-                    // back to the per-pair path, which is result-preserving.
-                    if state.dist_fwd.len() != n {
-                        *state = CchQueryState::new(n);
+                    // query_with_debug), AND (Copilot review) fail closed when
+                    // the frozen forward tree doesn't belong to `source` —
+                    // out-of-sequence call, evicted scratch, or a different
+                    // source. Reading a foreign tree would compute garbage
+                    // meets (or loop on a foreign root sentinel during
+                    // reconstruct). The settled root always has dist 0, so the
+                    // guard is one stamped read. `None` → the caller's
+                    // per-pair fallback recomputes correctly.
+                    if state.dist_fwd.len() != n || state.get_fwd(source as usize) != 0 {
+                        return None;
                     }
                     state.start_backward_only();
                     state.set_bwd(target as usize, 0, (target, 0));

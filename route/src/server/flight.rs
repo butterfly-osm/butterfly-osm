@@ -2106,6 +2106,11 @@ fn group_pairs(
             }
         }
     }
+    // Deterministic work order (Copilot review): HashMap iteration order is
+    // random per run; sorting keeps the streamed batch order stable without
+    // affecting results (each batch is internally sorted by query_idx already).
+    multi.sort_unstable_by_key(|(src_rank, _)| *src_rank);
+    per_pair.sort_unstable_by_key(|w| w.query_idx);
     (multi, per_pair)
 }
 
