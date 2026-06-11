@@ -1933,22 +1933,19 @@ impl ServerState {
     /// keeps serving the untouched base). Uses the #444 cache with its own
     /// file + version tag. Every failure is the CALLER's to treat as
     /// non-fatal.
-    pub fn recustomize_car_from_edge_speeds(
+    /// #454/#467 core: read a per-edge speeds/ratios table, map it onto a
+    /// BASE car-family mode's per-EBG-node time weights (chain-aware per-
+    /// segment matching with junction fallback), and run in-memory CCH
+    /// customization — with the #444 on-disk cache (one file per table
+    /// flavor via `cache_file`). Returns `(matched, cch_weights,
+    /// adjusted_node_weights)`; the caller decides what to do with them
+    /// (hot-swap `car`, register a variant, ...).
+    fn recustomized_weights_from_edge_table(
         &self,
+        base: &ModeData,
         edge_speeds_path: &std::path::Path,
-    ) -> Result<usize> {
-        let t0 = std::time::Instant::now();
-        let car_idx = *self
-            .mode_lookup
-            .get("car")
-            .ok_or_else(|| anyhow::anyhow!("edge recustomize: no 'car' mode loaded"))?
-            as usize;
-        let base: std::sync::Arc<ModeData> = self.modes[car_idx]
-            .state
-            .read()
-            .as_ref()
-            .map(std::sync::Arc::clone)
-            .ok_or_else(|| anyhow::anyhow!("edge recustomize: car slot not resident"))?;
+        cache_file: &str,
+    ) -> Result<(usize, crate::formats::CchWeights, Vec<u32>)> {
         let mmap = self
             ._mmap_arc
             .as_ref()
@@ -1959,10 +1956,10 @@ impl ServerState {
             .ok_or_else(|| anyhow::anyhow!("edge recustomize requires LazyContainer"))?;
         let container = lazy.container();
 
-        // #444 cache (own file + tag so the per-way cache can't collide).
+        // #444 cache (own file + tag so table flavors can't collide).
         let cache_path = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
-            Some(dir) => std::path::PathBuf::from(dir).join("recustomize_cache.car-edge.v1.bin"),
-            None => edge_speeds_path.with_file_name("recustomize_cache.car-edge.v1.bin"),
+            Some(dir) => std::path::PathBuf::from(dir).join(cache_file),
+            None => edge_speeds_path.with_file_name(cache_file),
         };
         let car_weights_crc = container
             .get("mode/car/weights.time")
@@ -2113,6 +2110,103 @@ impl ServerState {
             }
             (matched, new_weights, adjusted)
         };
+
+        Ok((matched, new_weights, adjusted_node_weights))
+    }
+
+    /// #467: register `car_rush_hour` — the PEAK cut of the flow-derived
+    /// ratios (w=1.0 table) applied to the CLEAN base (`car_freeflow`),
+    /// exposed as its own mode alongside the typical-day `car`. Pinned
+    /// non-evictable (synthetic mode, no container section backs it).
+    pub fn register_car_rush_hour_from_edge_speeds(
+        &mut self,
+        edge_speeds_path: &std::path::Path,
+    ) -> Result<usize> {
+        let t0 = std::time::Instant::now();
+        anyhow::ensure!(
+            !self.mode_lookup.contains_key("car_rush_hour"),
+            "car_rush_hour already registered"
+        );
+        let ff_idx = *self
+            .mode_lookup
+            .get("car_freeflow")
+            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car_freeflow' base"))?
+            as usize;
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car' mode"))?
+            as usize;
+        let base: std::sync::Arc<ModeData> = self.modes[ff_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("rush registration: car_freeflow not resident"))?;
+
+        let (matched, new_weights, adjusted_node_weights) = self
+            .recustomized_weights_from_edge_table(
+                &base,
+                edge_speeds_path,
+                "recustomize_cache.car-edge-rush.v1.bin",
+            )?;
+
+        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        let mut rush = clone_mode_data(&base);
+        rush.cch_weights = new_weights;
+        rush.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
+        rush.up_adj_flat = up_adj_flat;
+        rush.down_rev_flat = down_rev_flat;
+        rush.down_adj_flat = down_adj_flat;
+
+        let new_index = self.modes.len();
+        let slot = ModeSlot::new_loaded_variant("car_rush_hour".to_string(), rush);
+        // Variant slots are non-evictable by construction; assert the
+        // invariant rather than trusting it silently.
+        slot.evictable
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.modes.push(slot);
+        self.mode_lookup
+            .insert("car_rush_hour".to_string(), new_index as u8);
+        self.mode_names.push("car_rush_hour".to_string());
+        // Snap mask: share car's eligible-edge mask (same graph shape).
+        if let Some(mask) = self.snap_index.masks.get(car_idx).cloned() {
+            self.snap_index.masks.push(mask);
+        } else {
+            tracing::warn!("car snap mask missing — car_rush_hour snapping degraded");
+        }
+        tracing::info!(
+            matched,
+            elapsed_s = t0.elapsed().as_secs_f64(),
+            "registered car_rush_hour (peak flow-derived ratios on the clean base, #467)"
+        );
+        Ok(matched)
+    }
+
+    pub fn recustomize_car_from_edge_speeds(
+        &self,
+        edge_speeds_path: &std::path::Path,
+    ) -> Result<usize> {
+        let t0 = std::time::Instant::now();
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize: no 'car' mode loaded"))?
+            as usize;
+        let base: std::sync::Arc<ModeData> = self.modes[car_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("edge recustomize: car slot not resident"))?;
+        let (matched, new_weights, adjusted_node_weights) = self
+            .recustomized_weights_from_edge_table(
+                &base,
+                edge_speeds_path,
+                "recustomize_cache.car-edge.v1.bin",
+            )?;
 
         // 4. Flats + swap + pin (same as the per-way path).
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
