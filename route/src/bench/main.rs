@@ -4685,8 +4685,11 @@ fn run_p2p_bench(
 /// equivalence oracle. Builds n_sources × targets_per_source pairs (the
 /// source-sharing shape of the real traffic-flow workload), runs both
 /// `compute_edges_flat` and `compute_edges_grouped` in-process, asserts they
-/// agree (reachability + per-pair total duration), reports byte-identity, and
-/// times them. The grouped path shares one forward CCH search per source.
+/// agree (reachability + per-pair CCH distance — the OPTIMIZED metric, #468),
+/// reports byte-identity, and times them. The summed row-duration comparison
+/// (post-unpack `node_weights` basis) is a tie-tolerant WARNING only:
+/// equal-CCH-cost alternative paths legitimately differ on it. The grouped
+/// path shares one forward CCH search per source.
 fn run_edges_batch_bench(
     data: &Path,
     mode_name: &str,
@@ -4770,6 +4773,7 @@ fn run_edges_batch_bench(
     let grouped = compute_edges_grouped(&state, &mode_data, mode, &pairs, true);
     assert_eq!(flat.len(), grouped.len(), "pair count mismatch");
     let mut reach_mismatch = 0usize;
+    let mut cch_mismatch = 0usize;
     let mut dur_mismatch = 0usize;
     let mut byte_identical = 0usize;
     let mut reachable = 0usize;
@@ -4782,6 +4786,16 @@ fn run_edges_batch_bench(
         }
         if f_reach != g_reach {
             reach_mismatch += 1;
+        }
+        // #468 CCH-METRIC oracle: compare the variants on the metric the
+        // searches actually OPTIMIZE (`QueryResult::distance`). This is the
+        // hard correctness gate — equal here means both found a shortest path.
+        if f.cch_distance != g.cch_distance {
+            cch_mismatch += 1;
+            println!(
+                "    CCH MISMATCH q{}: flat {:?} vs grouped {:?}, pair {:?}",
+                f.query_idx, f.cch_distance, g.cch_distance, pairs[f.query_idx as usize]
+            );
         }
         let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
         let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
@@ -4813,8 +4827,8 @@ fn run_edges_batch_bench(
     println!();
     println!("  EQUIVALENCE:");
     println!(
-        "    reachable {}/{}  | reachability mismatches: {}  | total-duration mismatches: {}",
-        reachable, n_pairs, reach_mismatch, dur_mismatch
+        "    reachable {}/{}  | reachability mismatches: {}  | CCH-distance mismatches: {}  | row-duration-sum mismatches: {}",
+        reachable, n_pairs, reach_mismatch, cch_mismatch, dur_mismatch
     );
     println!(
         "    byte-identical pairs: {}/{} ({:.2}%)  [equal-cost ties may differ]",
@@ -4826,30 +4840,48 @@ fn run_edges_batch_bench(
         reach_mismatch, 0,
         "CORRECTNESS: grouped path changed reachability for {reach_mismatch} pairs"
     );
+    // #468: HARD assert on the optimized metric — flat and grouped must find
+    // the same shortest-path COST. (The row-duration sum below is NOT asserted:
+    // it is computed from post-unpack `node_weights`, a different basis than
+    // the CCH weights the searches optimize, so equal-CCH-cost ties
+    // legitimately differ on it.)
+    assert_eq!(
+        cch_mismatch, 0,
+        "CORRECTNESS: flat vs grouped disagree on CCH distance for {cch_mismatch} pairs"
+    );
     if dur_mismatch > 0 {
-        // Known latent divergence (#468-to-be): flat's early-terminated
-        // bidirectional vs grouped's exhaustive-forward meet pick different
-        // snap/path combos on rare weight configurations (3/6000 on the
-        // 2026-06-10 rebuild, deltas 0.14-1.6%). The production edges_flow
-        // path is TREE+escalation, asserted hard below. Investigate before
-        // re-tightening.
+        // #468: tie-tolerant drift canary, NOT a correctness gate. With CCH
+        // distances asserted equal above, a row-sum delta means the variants
+        // picked different equal-CCH-cost paths whose node_weights sums differ
+        // (expected on rare weight vintages, 3-48/6000 on the 2026-06-10
+        // rebuild). A sudden JUMP in this count without a CCH mismatch still
+        // signals weight-basis drift worth a look — keep printing it.
         println!(
-            "    ⚠ flat-vs-grouped duration mismatches: {dur_mismatch} (latent bidirectional/meet divergence — see ticket)"
+            "    ⚠ flat-vs-grouped row-duration-sum mismatches: {dur_mismatch} (equal-CCH-cost ties — drift canary, see #468)"
         );
     } else {
-        println!("    ✓ reachability + total-duration IDENTICAL (correctness verified)");
+        println!("    ✓ reachability + CCH distance + row-duration sums IDENTICAL");
     }
 
     // ---- TREE variant (#438 Phase 1) oracle ----
     let tree = compute_edges_tree(&state, &mode_data, mode, &pairs, true);
     assert_eq!(tree.len(), flat.len(), "tree pair count mismatch");
     let mut t_reach_mismatch = 0usize;
+    let mut t_cch_mismatch = 0usize;
     let mut t_dur_mismatch = 0usize;
     let mut t_byte_identical = 0usize;
     for (f, g) in flat.iter().zip(tree.iter()) {
         assert_eq!(f.query_idx, g.query_idx, "tree query_idx order mismatch");
         if f.rows.is_empty() != g.rows.is_empty() {
             t_reach_mismatch += 1;
+        }
+        // #468 CCH-METRIC oracle (same as flat-vs-grouped above).
+        if f.cch_distance != g.cch_distance {
+            t_cch_mismatch += 1;
+            println!(
+                "    TREE CCH MISMATCH q{}: flat {:?} vs tree {:?}, pair {:?}",
+                f.query_idx, f.cch_distance, g.cch_distance, pairs[f.query_idx as usize]
+            );
         }
         let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
         let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
@@ -4875,22 +4907,28 @@ fn run_edges_batch_bench(
         }
     }
     println!(
-        "  TREE EQUIVALENCE: reach mismatches {} | duration mismatches {} | byte-identical {}/{} ({:.2}%)",
+        "  TREE EQUIVALENCE: reach mismatches {} | CCH mismatches {} | row-duration-sum mismatches {} | byte-identical {}/{} ({:.2}%)",
         t_reach_mismatch,
+        t_cch_mismatch,
         t_dur_mismatch,
         t_byte_identical,
         n_pairs,
         100.0 * t_byte_identical as f64 / n_pairs.max(1) as f64
     );
     assert_eq!(t_reach_mismatch, 0, "TREE changed reachability");
+    // #468: HARD assert on the optimized metric (see flat-vs-grouped above).
+    assert_eq!(
+        t_cch_mismatch, 0,
+        "CORRECTNESS: flat vs tree disagree on CCH distance for {t_cch_mismatch} pairs"
+    );
     if t_dur_mismatch > 0 {
-        // #468: flat's early-terminated bidirectional misses optima by
-        // ~1-2 s on ~0.8% of pairs (tree is CHEAPER in most exemplars) —
-        // the tree side is the likely-correct one. Re-tighten to
-        // assert_eq!(t_dur_mismatch, 0) when #468 closes.
-        println!("    ⚠ flat-vs-tree duration mismatches: {t_dur_mismatch} (#468 — flat suspect)");
+        // #468: equal-CCH-cost ties on the node_weights basis — drift canary
+        // only (48/6000 on the 2026-06-10 rebuild, all tie-class).
+        println!(
+            "    ⚠ flat-vs-tree row-duration-sum mismatches: {t_dur_mismatch} (equal-CCH-cost ties — drift canary, see #468)"
+        );
     } else {
-        println!("    ✓ TREE reachability + total-duration IDENTICAL");
+        println!("    ✓ TREE reachability + CCH distance + row-duration sums IDENTICAL");
     }
 
     // Codex audit: row-chain continuity (osm_to[i] == osm_from[i+1]) on every
