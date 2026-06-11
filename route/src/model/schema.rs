@@ -50,6 +50,15 @@ pub struct AccessConfig {
     /// Example: allow track if tracktype=grade1 or tracktype=grade2.
     #[serde(default)]
     pub allow_if: Vec<AllowRule>,
+    /// Unconditional highway-type bans (#470) — legal class bans that no
+    /// way tag or rule may override. Highest precedence in evaluation:
+    /// a highway type listed here is denied even if `highway` maps it to
+    /// `true`, even if an `allow_if` rule matches, and regardless of way
+    /// tags (`foot=yes`, `sidewalk=*`, ...). Example: pedestrians and
+    /// cyclists are banned on `motorway`/`motorway_link` under
+    /// Vienna-convention semantics no matter how the way is tagged.
+    #[serde(default)]
+    pub hard_deny_highways: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +172,11 @@ mod tests {
         assert_eq!(model.name, "bike");
         assert!(!model.oneway.respect);
         assert_eq!(model.turn_penalties.turn_bias, 1.4);
+        // #470: cyclists are hard-banned from motorways regardless of tags.
+        assert_eq!(
+            model.access.hard_deny_highways,
+            vec!["motorway", "motorway_link"]
+        );
     }
 
     #[test]
@@ -177,6 +191,45 @@ mod tests {
         assert!(!model.oneway.respect);
         assert_eq!(model.turn_penalties.turn_bias, 1.0);
         assert_eq!(model.turn_penalties.u_turn_penalty_s, 0);
+        // #470: pedestrians are hard-banned from motorways regardless of
+        // tags (foot=yes / sidewalk=* must not override the class ban).
+        assert_eq!(
+            model.access.hard_deny_highways,
+            vec!["motorway", "motorway_link"]
+        );
+    }
+
+    #[test]
+    fn test_pedestrian_class_models_carry_motorway_hard_deny() {
+        // #470: every non-motorized / moped-class model ships the
+        // unconditional motorway ban. Car/truck/motorcycle must NOT.
+        for name in ["foot", "bike", "wheelchair", "scooter"] {
+            let json = std::fs::read_to_string(format!(
+                "{}/../models/{}.model.json",
+                env!("CARGO_MANIFEST_DIR"),
+                name
+            ))
+            .unwrap();
+            let model: ModelSchema = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                model.access.hard_deny_highways,
+                vec!["motorway", "motorway_link"],
+                "{name} must hard-deny motorway + motorway_link"
+            );
+        }
+        for name in ["car", "truck", "motorcycle"] {
+            let json = std::fs::read_to_string(format!(
+                "{}/../models/{}.model.json",
+                env!("CARGO_MANIFEST_DIR"),
+                name
+            ))
+            .unwrap();
+            let model: ModelSchema = serde_json::from_str(&json).unwrap();
+            assert!(
+                model.access.hard_deny_highways.is_empty(),
+                "{name} must not carry a motorway hard deny"
+            );
+        }
     }
 
     #[test]
