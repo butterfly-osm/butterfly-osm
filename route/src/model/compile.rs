@@ -72,6 +72,10 @@ pub struct CompiledModel {
     pub access_table: Vec<bool>,
     pub deny_rules: Vec<CompiledDenyRule>,
     pub allow_if_rules: Vec<CompiledAllowRule>,
+    /// Unconditional legal class bans (#470), dense by highway value_id.
+    /// Checked FIRST in evaluation — beats `access_table`, `allow_if_rules`,
+    /// and every way tag.
+    pub hard_deny_table: Vec<bool>,
 
     // Oneway
     pub respect_oneway: bool,
@@ -117,6 +121,7 @@ impl CompiledModel {
             access_table: vec![],
             deny_rules: vec![],
             allow_if_rules: vec![],
+            hard_deny_table: vec![],
             respect_oneway: false,
             oneway_key_id: None,
             forward_value_ids: vec![],
@@ -207,6 +212,14 @@ pub fn compile_model(
             })
         })
         .collect();
+
+    // --- Hard-deny table (#470: unconditional legal class bans) ---
+    let mut hard_deny_table = vec![false; table_len];
+    for highway_type in &schema.access.hard_deny_highways {
+        if let Some(&vid) = rev_val.get(highway_type.as_str()) {
+            hard_deny_table[vid as usize] = true;
+        }
+    }
 
     // --- Allow-if rules (conditional access overrides) ---
     let allow_if_rules: Vec<CompiledAllowRule> = schema
@@ -330,6 +343,7 @@ pub fn compile_model(
         access_table,
         deny_rules,
         allow_if_rules,
+        hard_deny_table,
 
         respect_oneway: schema.oneway.respect,
         oneway_key_id,

@@ -49,6 +49,10 @@
           "dismount"
         ]
       }
+    ],
+    "hard_deny_highways": [
+      "motorway",
+      "motorway_link"
     ]
   },
   "oneway": {
