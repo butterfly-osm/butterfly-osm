@@ -74,6 +74,18 @@ pub struct AllowRule {
 pub struct DenyRule {
     pub tag: String,
     pub values: Vec<String>,
+    /// #478: OSM access-hierarchy escape — the deny is SKIPPED when this
+    /// more-specific tag carries one of these values (e.g. the generic
+    /// `access=no` must not deny a car when `motor_vehicle=yes`: per the
+    /// OSM hierarchy, specific transport-mode tags override `access`).
+    #[serde(default)]
+    pub unless: Option<DenyUnless>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenyUnless {
+    pub tag: String,
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
