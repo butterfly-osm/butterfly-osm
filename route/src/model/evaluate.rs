@@ -63,6 +63,15 @@ pub fn evaluate_way(
         if let Some(val_id) = find_value_for_key(kv_keys, kv_vals, deny.key_id) {
             let vidx = val_id as usize;
             if vidx < deny.denied_values.len() && deny.denied_values[vidx] {
+                // #478: OSM specific-over-generic — e.g. `access=no` must
+                // not deny a car when `motor_vehicle=yes` is present.
+                if let Some((ukey, uvals)) = &deny.unless
+                    && let Some(uval) = find_value_for_key(kv_keys, kv_vals, *ukey)
+                    && (uval as usize) < uvals.len()
+                    && uvals[uval as usize]
+                {
+                    continue; // rescued by the more-specific tag
+                }
                 return output; // Explicitly denied
             }
         }
@@ -318,12 +327,17 @@ mod tests {
     const K_FOOT: u32 = 2;
     const K_BICYCLE: u32 = 3;
     const K_SIDEWALK: u32 = 4;
+    const K_ACCESS: u32 = 5;
+    const K_MOTOR_VEHICLE: u32 = 6;
 
     const V_MOTORWAY: u32 = 1;
     const V_MOTORWAY_LINK: u32 = 2;
     const V_RESIDENTIAL: u32 = 3;
     const V_YES: u32 = 4;
     const V_BOTH: u32 = 5;
+    const V_NO: u32 = 6;
+    const V_PRIVATE: u32 = 7;
+    const V_TRUNK: u32 = 8;
 
     fn dicts() -> (HashMap<u32, String>, HashMap<u32, String>) {
         let key_dict: HashMap<u32, String> = [
@@ -331,6 +345,8 @@ mod tests {
             (K_FOOT, "foot"),
             (K_BICYCLE, "bicycle"),
             (K_SIDEWALK, "sidewalk"),
+            (K_ACCESS, "access"),
+            (K_MOTOR_VEHICLE, "motor_vehicle"),
         ]
         .into_iter()
         .map(|(id, s)| (id, s.to_string()))
@@ -341,6 +357,9 @@ mod tests {
             (V_RESIDENTIAL, "residential"),
             (V_YES, "yes"),
             (V_BOTH, "both"),
+            (V_NO, "no"),
+            (V_PRIVATE, "private"),
+            (V_TRUNK, "trunk"),
         ]
         .into_iter()
         .map(|(id, s)| (id, s.to_string()))
@@ -474,5 +493,56 @@ mod tests {
         let out = evaluate_way(&model, &[K_HIGHWAY], &[V_MOTORWAY], &val_dict);
         assert!(out.access_fwd, "car must keep motorway access");
         assert!(out.base_speed_mmps > 0);
+    }
+    /// #478: Belgian expressway pattern `access=no` + `motor_vehicle=yes`
+    /// must be ROUTABLE for car — the specific motor_vehicle tag overrides
+    /// the generic access ban (OSM hierarchy). 645 national edges.
+    #[test]
+    fn car_access_no_motor_vehicle_yes_routable() {
+        let (model, val_dict) = compile_shipped("car");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_ACCESS, K_MOTOR_VEHICLE],
+            &[V_TRUNK, V_NO, V_YES],
+            &val_dict,
+        );
+        assert!(out.access_fwd, "motor_vehicle=yes must rescue access=no");
+        assert!(out.base_speed_mmps > 0);
+    }
+
+    /// #478: `access=no` WITHOUT a rescue tag stays denied.
+    #[test]
+    fn car_access_no_alone_denied() {
+        let (model, val_dict) = compile_shipped("car");
+        let out = evaluate_way(&model, &[K_HIGHWAY, K_ACCESS], &[V_TRUNK, V_NO], &val_dict);
+        assert_no_access(&out);
+    }
+
+    /// #478: the SPECIFIC deny stands — `motor_vehicle=no` denies even on
+    /// an otherwise-allowed highway (no unless on the motor_vehicle rule).
+    #[test]
+    fn car_motor_vehicle_no_denied() {
+        let (model, val_dict) = compile_shipped("car");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_MOTOR_VEHICLE],
+            &[V_RESIDENTIAL, V_NO],
+            &val_dict,
+        );
+        assert_no_access(&out);
+    }
+
+    /// #478: `access=private` + `motor_vehicle=yes` → routable (the
+    /// generic private is overridden by the specific permission).
+    #[test]
+    fn car_access_private_motor_vehicle_yes_routable() {
+        let (model, val_dict) = compile_shipped("car");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_ACCESS, K_MOTOR_VEHICLE],
+            &[V_RESIDENTIAL, V_PRIVATE, V_YES],
+            &val_dict,
+        );
+        assert!(out.access_fwd);
     }
 }
