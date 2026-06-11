@@ -623,18 +623,32 @@ pub async fn serve(
                         // car — registered as `car_rush_hour` when its table
                         // is staged. Failure is non-fatal (typical car keeps
                         // serving).
-                        let rush = edge_path.with_file_name("edge_speeds.rush_hour.parquet");
-                        if rush.exists() {
-                            match state_owned.register_car_rush_hour_from_edge_speeds(&rush) {
+                        for (name, file) in [
+                            ("car_rush_hour", "edge_speeds.rush_hour.parquet"),
+                            ("car_eq", "edge_speeds.eq.parquet"),
+                        ] {
+                            let table = edge_path.with_file_name(file);
+                            if !table.exists() {
+                                continue;
+                            }
+                            let res = match name {
+                                "car_rush_hour" => {
+                                    state_owned.register_car_rush_hour_from_edge_speeds(&table)
+                                }
+                                _ => state_owned.register_car_eq_from_edge_speeds(&table),
+                            };
+                            match res {
                                 Ok(m) => tracing::info!(
                                     region = %region_id,
+                                    mode = name,
                                     matched = m,
-                                    "car_rush_hour registered from peak ratios (#467)"
+                                    "car variant registered from staged ratios (#467)"
                                 ),
                                 Err(e) => tracing::warn!(
                                     region = %region_id,
+                                    mode = name,
                                     error = %e,
-                                    "car_rush_hour registration failed (non-fatal)"
+                                    "car variant registration failed (non-fatal)"
                                 ),
                             }
                         }
