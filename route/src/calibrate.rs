@@ -1450,15 +1450,23 @@ mod tests {
 // #450/#454: directed per-edge speeds contract (generic)
 // =====================================================================
 
-/// One directed junction-edge speed: the edge from OSM node `from` to OSM
-/// node `to` (the same keys `edges_batch` emits), observed/derived mean speed
-/// in km/h. The producer is irrelevant to the engine — any table with these
-/// three columns works.
+/// One directed junction-edge adjustment: the edge from OSM node `from` to
+/// OSM node `to` (the same keys `edges_batch` emits), carrying EXACTLY ONE
+/// of:
+/// - `speed_kmh`: an absolute observed/derived mean speed, or
+/// - `ratio`: a multiplicative factor on the edge's own base speed
+///   (congested/free, in (0.05, 1.5]) — preferred when the producer knows
+///   relative congestion but not the edge's legal/base speed (e.g. a
+///   volume-delay function over assignment flows, #467).
+///
+/// The producer is irrelevant to the engine — any table with the two key
+/// columns plus one value column works.
 #[derive(Debug, Clone, Copy)]
 pub struct EdgeSpeed {
     pub from: i64,
     pub to: i64,
-    pub speed_kmh: f32,
+    pub speed_kmh: Option<f32>,
+    pub ratio: Option<f32>,
 }
 
 const FROM_ALIASES: &[&str] = &["osm_node_from", "node_from", "from", "u"];
@@ -1469,6 +1477,7 @@ const EDGE_SPEED_ALIASES: &[&str] = &[
     "avg_speed_kmh",
     "observed_avg_speed_kmh",
 ];
+const EDGE_RATIO_ALIASES: &[&str] = &["speed_ratio", "ratio", "congestion_factor"];
 
 /// Read the generic per-edge speeds parquet:
 /// `(osm_node_from i64, osm_node_to i64, speed_kmh double)`.
@@ -1497,13 +1506,15 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
             TO_ALIASES.join(", ")
         )
     })?;
-    let speed_col = find_col(names(), EDGE_SPEED_ALIASES).with_context(|| {
-        format!(
-            "{}: missing a speed column (one of: {})",
-            path.display(),
-            EDGE_SPEED_ALIASES.join(", ")
-        )
-    })?;
+    let speed_col = find_col(names(), EDGE_SPEED_ALIASES);
+    let ratio_col = find_col(names(), EDGE_RATIO_ALIASES);
+    anyhow::ensure!(
+        speed_col.is_some() != ratio_col.is_some(),
+        "{}: need EXACTLY ONE of a speed column ({}) or a ratio column ({})",
+        path.display(),
+        EDGE_SPEED_ALIASES.join(", "),
+        EDGE_RATIO_ALIASES.join(", ")
+    );
 
     let reader = builder
         .build()
@@ -1515,23 +1526,31 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
             batch.with_context(|| format!("reading a parquet batch from {}", path.display()))?;
         let from_arr = batch.column(from_col).as_ref();
         let to_arr = batch.column(to_col).as_ref();
-        let speed_arr = batch.column(speed_col).as_ref();
+        let val_idx = speed_col.or(ratio_col).expect("ensured above");
+        let val_arr = batch.column(val_idx).as_ref();
+        let is_ratio = ratio_col.is_some();
         for row in 0..batch.num_rows() {
-            if from_arr.is_null(row) || to_arr.is_null(row) || speed_arr.is_null(row) {
+            if from_arr.is_null(row) || to_arr.is_null(row) || val_arr.is_null(row) {
                 skipped += 1;
                 continue;
             }
             let from = arr_as_i64(from_arr, row)?;
             let to = arr_as_i64(to_arr, row)?;
-            let speed_kmh = arr_as_f32(speed_arr, row)?;
-            if !(speed_kmh.is_finite() && speed_kmh > 0.0 && speed_kmh <= 200.0) {
+            let v = arr_as_f32(val_arr, row)?;
+            let ok = if is_ratio {
+                v.is_finite() && v > 0.05 && v <= 1.5
+            } else {
+                v.is_finite() && v > 0.0 && v <= 200.0
+            };
+            if !ok {
                 skipped += 1;
                 continue;
             }
             out.push(EdgeSpeed {
                 from,
                 to,
-                speed_kmh,
+                speed_kmh: if is_ratio { None } else { Some(v) },
+                ratio: if is_ratio { Some(v) } else { None },
             });
         }
     }
