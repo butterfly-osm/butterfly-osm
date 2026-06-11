@@ -1993,7 +1993,10 @@ impl ServerState {
                 std::collections::HashMap::with_capacity(rows.len());
             let table_is_ratio = rows[0].ratio.is_some();
             for r in &rows {
-                let v = r.ratio.or(r.speed_kmh).expect("reader guarantees one value");
+                let v = r
+                    .ratio
+                    .or(r.speed_kmh)
+                    .expect("reader guarantees one value");
                 lut.insert((r.from, r.to), v);
             }
 
@@ -2043,8 +2046,7 @@ impl ServerState {
                     if table_is_ratio {
                         // Factor on the edge's OWN base time (slower ⇒ v<1
                         // ⇒ time grows). Keeps per-edge legal speeds intact.
-                        weights[i] =
-                            (((weights[i] as f64) / v as f64).round() as u32).max(1);
+                        weights[i] = (((weights[i] as f64) / v as f64).round() as u32).max(1);
                     } else {
                         let secs = (node.length_m as f64 * 3.6 / v as f64).round();
                         weights[i] = (secs.max(1.0) as u32).max(1);
