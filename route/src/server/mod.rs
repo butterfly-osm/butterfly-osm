@@ -443,13 +443,17 @@ pub async fn serve(
     // origin/destination pairs.
     let mut regions_state = regions_state;
     let mut transit_loaded_count = 0usize;
-    let n_regions = if transit_enabled() {
-        regions_state.regions.len()
+    let n_regions = regions_state.regions.len();
+    // Scope the transit toggle to THIS loop only — n_regions is shared by
+    // the boot recustomization + overlay paths below (zeroing it silently
+    // skipped the #467 traffic recustomize; found in production).
+    let transit_regions = if transit_enabled() {
+        n_regions
     } else {
         tracing::info!("transit disabled (--transit off / BUTTERFLY_TRANSIT) — road-only serve");
         0
     };
-    for idx in 0..n_regions {
+    for idx in 0..transit_regions {
         let region_id_lower = regions_state.regions[idx].id.to_lowercase();
         let per_region_dir = data_dir_for_transit.join(&region_id_lower);
 
