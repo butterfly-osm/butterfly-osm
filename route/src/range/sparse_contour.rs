@@ -1469,7 +1469,7 @@ mod tests {
         // ±0.51 ground cells. Corner emission overshot by up to +1 cell
         // (here the segment length is k + 0.1 cells, so the overshoot would
         // be +0.9 cells ≈ +27 m — a deterministic failure pre-#431).
-        let lat = 50.8;
+        let lat = 50.8_f64;
         let cell_m = 30.0;
         // cell_size_m is MERCATOR meters (rank 3 rejected by validation, see
         // generate_sparse_contour) — a cell's GROUND footprint at this
