@@ -31,6 +31,14 @@ pub fn evaluate_way(
 
     let hw_idx = highway_val_id as usize;
 
+    // Hard legal class ban (#470): e.g. pedestrians/cyclists on
+    // motorway/motorway_link (Vienna-convention semantics). Highest
+    // precedence — cannot be overridden by `access.highway`, `allow_if`
+    // rules, or way tags (`foot=yes`, `sidewalk=*`, ...).
+    if hw_idx < model.hard_deny_table.len() && model.hard_deny_table[hw_idx] {
+        return output;
+    }
+
     // Check access
     let highway_allowed = hw_idx < model.access_table.len() && model.access_table[hw_idx];
 
@@ -297,4 +305,174 @@ fn check_conditional_with_key_dict(
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ModelSchema, compile_model};
+    use std::collections::HashMap;
+
+    // Dictionary ids used by every test below.
+    const K_HIGHWAY: u32 = 1;
+    const K_FOOT: u32 = 2;
+    const K_BICYCLE: u32 = 3;
+    const K_SIDEWALK: u32 = 4;
+
+    const V_MOTORWAY: u32 = 1;
+    const V_MOTORWAY_LINK: u32 = 2;
+    const V_RESIDENTIAL: u32 = 3;
+    const V_YES: u32 = 4;
+    const V_BOTH: u32 = 5;
+
+    fn dicts() -> (HashMap<u32, String>, HashMap<u32, String>) {
+        let key_dict: HashMap<u32, String> = [
+            (K_HIGHWAY, "highway"),
+            (K_FOOT, "foot"),
+            (K_BICYCLE, "bicycle"),
+            (K_SIDEWALK, "sidewalk"),
+        ]
+        .into_iter()
+        .map(|(id, s)| (id, s.to_string()))
+        .collect();
+        let val_dict: HashMap<u32, String> = [
+            (V_MOTORWAY, "motorway"),
+            (V_MOTORWAY_LINK, "motorway_link"),
+            (V_RESIDENTIAL, "residential"),
+            (V_YES, "yes"),
+            (V_BOTH, "both"),
+        ]
+        .into_iter()
+        .map(|(id, s)| (id, s.to_string()))
+        .collect();
+        (key_dict, val_dict)
+    }
+
+    /// Compile a SHIPPED model (models/<name>.model.json) against the
+    /// test dictionaries — exactly the path step2 profiling takes.
+    fn compile_shipped(name: &str) -> (CompiledModel, HashMap<u32, String>) {
+        let path = format!(
+            "{}/../models/{}.model.json",
+            env!("CARGO_MANIFEST_DIR"),
+            name
+        );
+        let json = std::fs::read_to_string(&path).unwrap();
+        let schema: ModelSchema = serde_json::from_str(&json).unwrap();
+        let (key_dict, val_dict) = dicts();
+        let compiled = compile_model(&schema, 0, [0u8; 32], &key_dict, &val_dict);
+        (compiled, val_dict)
+    }
+
+    fn assert_no_access(out: &WayOutput) {
+        assert!(!out.access_fwd, "access_fwd must be false");
+        assert!(!out.access_rev, "access_rev must be false");
+        assert_eq!(out.base_speed_mmps, 0, "speed must be 0 for denied way");
+    }
+
+    /// #470: `highway=motorway` + `foot=yes` must still evaluate to
+    /// no-access for foot. Pedestrians are banned on motorways
+    /// regardless of way tags (Vienna-convention semantics).
+    #[test]
+    fn foot_motorway_foot_yes_still_denied() {
+        let (model, val_dict) = compile_shipped("foot");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_FOOT],
+            &[V_MOTORWAY, V_YES],
+            &val_dict,
+        );
+        assert_no_access(&out);
+    }
+
+    /// #470: `highway=motorway_link` + `foot=yes` + `sidewalk=both`
+    /// must still evaluate to no-access for foot.
+    #[test]
+    fn foot_motorway_link_sidewalk_still_denied() {
+        let (model, val_dict) = compile_shipped("foot");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_FOOT, K_SIDEWALK],
+            &[V_MOTORWAY_LINK, V_YES, V_BOTH],
+            &val_dict,
+        );
+        assert_no_access(&out);
+    }
+
+    /// #470: same ban class for bike — `highway=motorway` +
+    /// `bicycle=yes` must still evaluate to no-access.
+    #[test]
+    fn bike_motorway_bicycle_yes_still_denied() {
+        let (model, val_dict) = compile_shipped("bike");
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_BICYCLE],
+            &[V_MOTORWAY, V_YES],
+            &val_dict,
+        );
+        assert_no_access(&out);
+
+        let out = evaluate_way(
+            &model,
+            &[K_HIGHWAY, K_BICYCLE],
+            &[V_MOTORWAY_LINK, V_YES],
+            &val_dict,
+        );
+        assert_no_access(&out);
+    }
+
+    /// #470 precedence proof: even a model that explicitly maps
+    /// `motorway` to accessible AND carries a matching `allow_if` rule
+    /// is overridden by `hard_deny_highways`. This is the structural
+    /// guarantee — no future model edit or rule can re-grant access to
+    /// a hard-denied highway class.
+    #[test]
+    fn hard_deny_beats_class_allow_and_allow_if() {
+        let json = r#"{
+            "name": "adversarial",
+            "version": 1,
+            "speed": {"unit": "km/h", "highway": {"motorway": 5}, "overrides": []},
+            "access": {
+                "highway": {"motorway": true, "motorway_link": true},
+                "allow_if": [{"if": {"foot": "yes"}, "speed_kmh": 5}],
+                "hard_deny_highways": ["motorway", "motorway_link"]
+            },
+            "oneway": {"respect": false, "tag": "oneway", "forward_values": [], "reverse_values": [], "default_oneway_highways": []},
+            "priority": [],
+            "highway_class": {},
+            "class_bits": {},
+            "turn_penalties": {"turn_penalty_s": 0, "turn_bias": 1.0, "u_turn_penalty_s": 0, "min_degree_for_penalty": 3, "signal_delay_s": 0, "class_change_penalty_s_per_diff": 0, "max_class_diff_for_penalty": 0},
+            "turn_restrictions": {"respect": false, "restriction_tag": "restriction", "exception_values": []}
+        }"#;
+        let schema: ModelSchema = serde_json::from_str(json).unwrap();
+        let (key_dict, val_dict) = dicts();
+        let model = compile_model(&schema, 0, [0u8; 32], &key_dict, &val_dict);
+
+        for hw in [V_MOTORWAY, V_MOTORWAY_LINK] {
+            let out = evaluate_way(&model, &[K_HIGHWAY, K_FOOT], &[hw, V_YES], &val_dict);
+            assert_no_access(&out);
+        }
+    }
+
+    /// Positive control: the hard deny must not leak onto ordinary
+    /// roads — `highway=residential` stays accessible for foot/bike.
+    #[test]
+    fn residential_still_allowed_for_foot_and_bike() {
+        for name in ["foot", "bike"] {
+            let (model, val_dict) = compile_shipped(name);
+            let out = evaluate_way(&model, &[K_HIGHWAY], &[V_RESIDENTIAL], &val_dict);
+            assert!(out.access_fwd, "{name}: residential must stay accessible");
+            assert!(out.access_rev, "{name}: residential must stay accessible");
+            assert!(out.base_speed_mmps > 0, "{name}: residential speed > 0");
+        }
+    }
+
+    /// Regression control: car has no hard deny — motorway stays
+    /// accessible for car.
+    #[test]
+    fn car_motorway_still_allowed() {
+        let (model, val_dict) = compile_shipped("car");
+        let out = evaluate_way(&model, &[K_HIGHWAY], &[V_MOTORWAY], &val_dict);
+        assert!(out.access_fwd, "car must keep motorway access");
+        assert!(out.base_speed_mmps > 0);
+    }
 }
