@@ -1987,10 +1987,14 @@ impl ServerState {
             // 1. Read the table + build the directed lookup.
             let rows = crate::calibrate::read_edge_speeds(edge_speeds_path)?;
             anyhow::ensure!(!rows.is_empty(), "edge recustomize: empty table");
+            // Values are either absolute km/h or base-speed ratios —
+            // read_edge_speeds enforces exactly one column type per table.
             let mut lut: std::collections::HashMap<(i64, i64), f32> =
                 std::collections::HashMap::with_capacity(rows.len());
+            let table_is_ratio = rows[0].ratio.is_some();
             for r in &rows {
-                lut.insert((r.from, r.to), r.speed_kmh);
+                let v = r.ratio.or(r.speed_kmh).expect("reader guarantees one value");
+                lut.insert((r.from, r.to), v);
             }
 
             // 2. Map onto per-EBG-node times (free-flow fallback elsewhere).
@@ -2012,9 +2016,39 @@ impl ServerState {
                     Some(&v) => v,
                     None => continue,
                 };
-                if let Some(&kmh) = lut.get(&(from, to)) {
-                    let secs = (node.length_m as f64 * 3.6 / kmh as f64).round();
-                    weights[i] = (secs.max(1.0) as u32).max(1);
+                // Per-OSM-segment tables (e.g. VDF over assignment flows,
+                // #467) key on intermediate nodes — resolve this directed
+                // EBG edge to its segment pairs via the #460 id chains and
+                // average the matched values; junction-pair lookup is the
+                // fallback (single-segment edges / chains absent / older
+                // junction-keyed tables).
+                let mut val: Option<f32> = None;
+                if let Some(segs) = self.edge_osm.directed_segments(node.geom_idx, from) {
+                    let mut sum = 0.0f64;
+                    let mut n = 0u32;
+                    for (a, b) in segs {
+                        if let Some(&v) = lut.get(&(a, b)) {
+                            sum += v as f64;
+                            n += 1;
+                        }
+                    }
+                    if n > 0 {
+                        val = Some((sum / n as f64) as f32);
+                    }
+                }
+                if val.is_none() {
+                    val = lut.get(&(from, to)).copied();
+                }
+                if let Some(v) = val {
+                    if table_is_ratio {
+                        // Factor on the edge's OWN base time (slower ⇒ v<1
+                        // ⇒ time grows). Keeps per-edge legal speeds intact.
+                        weights[i] =
+                            (((weights[i] as f64) / v as f64).round() as u32).max(1);
+                    } else {
+                        let secs = (node.length_m as f64 * 3.6 / v as f64).round();
+                        weights[i] = (secs.max(1.0) as u32).max(1);
+                    }
                     matched += 1;
                 }
             }
