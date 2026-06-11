@@ -24,6 +24,9 @@ pub struct CompiledDenyRule {
     pub key_id: u32,
     /// Dense bool array indexed by value_id — true means denied
     pub denied_values: Vec<bool>,
+    /// #478: when set, the deny is skipped if the way carries this key
+    /// with a value marked true (OSM specific-over-generic hierarchy).
+    pub unless: Option<(u32, Vec<bool>)>,
 }
 
 /// Compiled priority rule
@@ -206,9 +209,20 @@ pub fn compile_model(
                     denied_values[vid as usize] = true;
                 }
             }
+            let unless = rule.unless.as_ref().and_then(|u| {
+                let ukey = *rev_key.get(u.tag.as_str())?;
+                let mut vals = vec![false; table_len];
+                for v in &u.values {
+                    if let Some(&vid) = rev_val.get(v.as_str()) {
+                        vals[vid as usize] = true;
+                    }
+                }
+                Some((ukey, vals))
+            });
             Some(CompiledDenyRule {
                 key_id,
                 denied_values,
+                unless,
             })
         })
         .collect();
