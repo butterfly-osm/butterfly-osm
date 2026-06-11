@@ -450,29 +450,6 @@ fn from_mercator(x: f64, y: f64) -> (f64, f64) {
     (lon, lat)
 }
 
-/// Convert a GROUND cell size (meters) to the Web-Mercator cell size that
-/// spans the same ground distance at the given reference latitude (#431
-/// rank 3).
-///
-/// Web-Mercator meters are inflated by `1/cos(lat)`: one Mercator meter
-/// covers only `cos(lat)` ground meters. Sizing the grid directly in
-/// Mercator meters made a nominal 30 m cell ≈19 m on the ground at Belgian
-/// latitudes (50.8°N) — finer than designed (conservative geometry, slower
-/// morphology, and dilation rounds bridging smaller gaps than intended).
-///
-/// The latitude is clamped to ±85° (the usable Mercator band) and a
-/// non-finite reference falls back to the equator, so the result is always
-/// finite and positive for a positive input. Deterministic: pure function of
-/// its inputs.
-fn mercator_cell_size(ground_cell_m: f64, lat_ref_deg: f64) -> f64 {
-    let lat = if lat_ref_deg.is_finite() {
-        lat_ref_deg.clamp(-85.0, 85.0)
-    } else {
-        0.0
-    };
-    ground_cell_m / lat.to_radians().cos()
-}
-
 /// Configuration for sparse contour generation
 #[derive(Debug, Clone)]
 pub struct SparseContourConfig {
@@ -704,13 +681,17 @@ pub fn generate_sparse_contour(
         })
         .collect();
 
-    // #431 rank 3: `config.cell_size_m` is a GROUND size; the grid lives in
-    // Web-Mercator meters (stretched by 1/cos(lat)). Correct once with the
-    // latitude midpoint of the input — deterministic (min/max are
-    // order-independent), and the residual cos variation across a single
-    // isochrone's latitude span is well under 1%.
-    let lat_ref = 0.5 * (min_lat + max_lat);
-    let cell_size_merc = mercator_cell_size(config.cell_size_m, lat_ref);
+    // #431 rank 3 (cos(lat) ground-sizing) was REJECTED BY VALIDATION:
+    // sizing cells as true ground meters coarsened Belgium's grid from the
+    // de-facto ~19 m (Mercator-inflated "30 m") to a real 30 m, and the
+    // empirically tuned morphology (dilation rounds, simplify tolerance)
+    // grew the polygon ~+1.7% with MORE consistency violations (5→11
+    // inside on the seeded urban+rural A/B). The Mercator-meter sizing is
+    // therefore kept INTENTIONALLY — `cell_size_m` is "Mercator meters at
+    // the region's latitude", i.e. finer ground cells at higher latitude,
+    // which the accuracy budget was tuned around. Revisit only together
+    // with a morphology re-tune (#431 thread has the A/B numbers).
+    let cell_size_merc = config.cell_size_m;
 
     // Add margin
     let margin = cell_size_merc * 3.0;
@@ -1466,39 +1447,6 @@ mod tests {
     // #431 rank 3: cos(lat) ground-meter cell sizing
     // ==================================================================
 
-    #[test]
-    fn test_mercator_cell_size_equator_identity() {
-        assert!((mercator_cell_size(30.0, 0.0) - 30.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_mercator_cell_size_belgium() {
-        // At 50.8°N a 30 m ground cell needs 30/cos(50.8°) ≈ 47.47 Mercator
-        // meters (the issue's "cell ≈19 m ground" was 30·cos(50.8°)).
-        let merc = mercator_cell_size(30.0, 50.8);
-        let expected = 30.0 / 50.8f64.to_radians().cos();
-        assert!(
-            (merc - expected).abs() < 1e-9,
-            "got {merc}, expected {expected}"
-        );
-        assert!(merc > 47.0 && merc < 48.0, "got {merc}");
-    }
-
-    #[test]
-    fn test_mercator_cell_size_clamped_and_finite() {
-        // Poleward latitudes clamp to ±85° (no blow-up), non-finite input
-        // falls back to the equator. Result must stay finite + positive.
-        let at_85 = mercator_cell_size(30.0, 85.0);
-        assert!((mercator_cell_size(30.0, 89.9) - at_85).abs() < 1e-9);
-        assert!((mercator_cell_size(30.0, -89.9) - at_85).abs() < 1e-9);
-        assert!((mercator_cell_size(30.0, f64::NAN) - 30.0).abs() < 1e-12);
-        assert!((mercator_cell_size(30.0, f64::INFINITY) - 30.0).abs() < 1e-12);
-        for lat in [-89.9, -50.0, 0.0, 50.8, 89.9] {
-            let v = mercator_cell_size(30.0, lat);
-            assert!(v.is_finite() && v > 0.0, "lat {lat}: {v}");
-        }
-    }
-
     /// Build a single-segment `ReachableSegment` between two WGS84 points.
     fn segment(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> ReachableSegment {
         ReachableSegment {
@@ -1515,27 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cos_correction_ground_sized_cells_e2e() {
-        // A 300 ground-meter east-west segment at 50.8°N with 30 m cells
-        // must stamp ~11 cells (300/30 = 10 spans). Without the cos(lat)
-        // correction the 30 "meters" were Mercator meters ≈19 m ground, so
-        // the same segment stamped ~16-17 cells.
-        let lat = 50.8;
-        let lon0 = 4.0;
-        let lon1 = lon0 + 300.0 / ground_m_per_lon_deg(lat);
-
-        let config = SparseContourConfig::no_morphology(30.0);
-        let result = generate_sparse_contour(&[segment(lat, lon0, lat, lon1)], &config).unwrap();
-
-        let cells = result.stats.total_cells_set;
-        assert!(
-            (9..=13).contains(&cells),
-            "expected ~11 ground-sized cells for a 300 m segment, got {cells} \
-             (uncorrected Mercator sizing gives ~16-17)"
-        );
-    }
-
-    #[test]
     fn test_e2e_ring_debiased_within_half_cell_of_input() {
         // Full pipeline: a 2-row blob of stamped segments at 50.8°N. The
         // ring's east-west extent must track the input extent to within
@@ -1544,18 +1471,23 @@ mod tests {
         // be +0.9 cells ≈ +27 m — a deterministic failure pre-#431).
         let lat = 50.8;
         let cell_m = 30.0;
+        // cell_size_m is MERCATOR meters (rank 3 rejected by validation, see
+        // generate_sparse_contour) — a cell's GROUND footprint at this
+        // latitude is cell_m * cos(lat) ≈ 18.96 m. The blob and the debias
+        // band are expressed in that footprint.
+        let ground_cell = cell_m * lat.to_radians().cos();
         let m_per_deg = ground_m_per_lon_deg(lat);
         let lon0 = 4.0;
         // 10.1 cells long: the max point sits 0.1 cells into its column.
-        let lon1 = lon0 + 10.1 * cell_m / m_per_deg;
+        let lon1 = lon0 + 10.1 * ground_cell / m_per_deg;
         // Two rows 1.5 ground-cells apart -> two adjacent grid rows. The
         // grid origin sits 3 cells below the y-min input point, so the
         // y-min point lands EXACTLY on a cell boundary and its row would
         // floor unstably (3.0 vs 2.999...). Anchor the blob with a point a
         // quarter cell further south so both long rows sit mid-cell
         // (rows 3.25 and 4.75 -> 3 and 4, robust to float jitter).
-        let dlat = 1.5 * cell_m / 111_320.0;
-        let anchor_lat = lat - 0.25 * cell_m / 111_320.0;
+        let dlat = 1.5 * ground_cell / 111_320.0;
+        let anchor_lat = lat - 0.25 * ground_cell / 111_320.0;
 
         let config = SparseContourConfig::no_morphology(cell_m);
         let segments = vec![
@@ -1581,7 +1513,7 @@ mod tests {
             .map(|p| p.0)
             .fold(f64::INFINITY, f64::min);
 
-        let half_cell_deg = 0.51 * cell_m / m_per_deg;
+        let half_cell_deg = 0.51 * ground_cell / m_per_deg;
         assert!(
             ring_max_lon <= lon1 + half_cell_deg,
             "east edge overshoots: ring {ring_max_lon} vs input {lon1} \
