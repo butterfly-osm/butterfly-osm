@@ -619,6 +619,25 @@ pub async fn serve(
                             matched,
                             "car recustomized from DIRECTED per-edge speeds (#454)"
                         );
+                        // #467: optional PEAK cut alongside the typical-day
+                        // car — registered as `car_rush_hour` when its table
+                        // is staged. Failure is non-fatal (typical car keeps
+                        // serving).
+                        let rush = edge_path.with_file_name("edge_speeds.rush_hour.parquet");
+                        if rush.exists() {
+                            match state_owned.register_car_rush_hour_from_edge_speeds(&rush) {
+                                Ok(m) => tracing::info!(
+                                    region = %region_id,
+                                    matched = m,
+                                    "car_rush_hour registered from peak ratios (#467)"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    region = %region_id,
+                                    error = %e,
+                                    "car_rush_hour registration failed (non-fatal)"
+                                ),
+                            }
+                        }
                         return; // edge contract wins; skip the per-way path
                     }
                     Err(e) => tracing::warn!(
