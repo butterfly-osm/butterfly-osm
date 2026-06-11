@@ -453,6 +453,9 @@ fn from_mercator(x: f64, y: f64) -> (f64, f64) {
 /// Configuration for sparse contour generation
 #[derive(Debug, Clone)]
 pub struct SparseContourConfig {
+    /// Cell size in GROUND meters. The pipeline converts it to Web-Mercator
+    /// meters internally via the cos(lat) correction (#431 rank 3), so a
+    /// 30 m config really is ~30 m on the ground at any latitude.
     pub cell_size_m: f64,
     pub dilation_rounds: usize,
     pub erosion_rounds: usize,
@@ -654,6 +657,8 @@ pub fn generate_sparse_contour(
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_y = f64::NEG_INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
 
     let mercator_segments: Vec<Vec<MercatorPoint>> = segments
         .iter()
@@ -663,6 +668,8 @@ pub fn generate_sparse_contour(
                 .map(|&(lat_fxp, lon_fxp)| {
                     let lat = lat_fxp as f64 / 1e7;
                     let lon = lon_fxp as f64 / 1e7;
+                    min_lat = min_lat.min(lat);
+                    max_lat = max_lat.max(lat);
                     let pt = to_mercator(lat, lon);
                     min_x = min_x.min(pt.x);
                     max_x = max_x.max(pt.x);
@@ -674,13 +681,25 @@ pub fn generate_sparse_contour(
         })
         .collect();
 
+    // #431 rank 3 (cos(lat) ground-sizing) was REJECTED BY VALIDATION:
+    // sizing cells as true ground meters coarsened Belgium's grid from the
+    // de-facto ~19 m (Mercator-inflated "30 m") to a real 30 m, and the
+    // empirically tuned morphology (dilation rounds, simplify tolerance)
+    // grew the polygon ~+1.7% with MORE consistency violations (5→11
+    // inside on the seeded urban+rural A/B). The Mercator-meter sizing is
+    // therefore kept INTENTIONALLY — `cell_size_m` is "Mercator meters at
+    // the region's latitude", i.e. finer ground cells at higher latitude,
+    // which the accuracy budget was tuned around. Revisit only together
+    // with a morphology re-tune (#431 thread has the A/B numbers).
+    let cell_size_merc = config.cell_size_m;
+
     // Add margin
-    let margin = config.cell_size_m * 3.0;
+    let margin = cell_size_merc * 3.0;
     min_x -= margin;
     min_y -= margin;
 
     // Step 2: Create sparse tile map and stamp segments
-    let mut tile_map = SparseTileMap::new(config.cell_size_m, min_x, min_y);
+    let mut tile_map = SparseTileMap::new(cell_size_merc, min_x, min_y);
 
     for seg in &mercator_segments {
         for window in seg.windows(2) {
@@ -731,8 +750,8 @@ pub fn generate_sparse_contour(
     let mut wgs84_contour: Vec<(f64, f64)> = contour
         .iter()
         .map(|&(col, row)| {
-            let x = min_x + col * config.cell_size_m;
-            let y = min_y + row * config.cell_size_m;
+            let x = min_x + col * cell_size_merc;
+            let y = min_y + row * cell_size_merc;
             from_mercator(x, y)
         })
         .collect();
@@ -754,6 +773,7 @@ pub fn generate_sparse_contour(
         verts_before = stats.contour_vertices_before_simplify,
         verts_after = stats.contour_vertices_after_simplify,
         cell_size_m = config.cell_size_m,
+        cell_size_merc_m = cell_size_merc,
         simplify_tolerance_m = config.simplify_tolerance_m,
         "sparse contour pipeline timing"
     );
@@ -782,8 +802,15 @@ fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
     let mut visited_edges: HashSet<(i32, i32, u8)> = HashSet::new();
     let mut all_contours: Vec<Vec<(f64, f64)>> = Vec::new();
 
-    // Find all boundary starts and trace each component
-    let boundary_starts = find_all_boundary_starts(map);
+    // Find all boundary starts and trace each component.
+    //
+    // Sort for determinism (#431): the start list is collected in HashMap
+    // iteration order, which is process-random. The ring's starting vertex
+    // (its rotation) feeds Douglas-Peucker — which pins the first/last
+    // vertex — so an unsorted start list made the simplified polygon vary
+    // across identical runs.
+    let mut boundary_starts = find_all_boundary_starts(map);
+    boundary_starts.sort_unstable();
 
     for (start_col, start_row, start_edge) in boundary_starts {
         // Skip if this edge was already traced
@@ -880,18 +907,27 @@ fn trace_boundary_edges_with_visited(
         // Mark this edge as visited
         visited.insert((col, row, edge));
 
-        // Emit the corner vertex at the START of this edge (clockwise direction)
-        // Edge 0 (North): top-left corner (col, row)
-        // Edge 1 (East): top-right corner (col+1, row)
-        // Edge 2 (South): bottom-right corner (col+1, row+1)
-        // Edge 3 (West): bottom-left corner (col, row+1)
-        let (vx, vy) = match edge {
-            0 => (col as f64, row as f64),
-            1 => (col as f64 + 1.0, row as f64),
-            2 => (col as f64 + 1.0, row as f64 + 1.0),
-            _ => (col as f64, row as f64 + 1.0),
-        };
-        contour.push((vx, vy));
+        // Emit the CENTER of the boundary cell (#431 rank 2).
+        //
+        // Cells are floor-quantisations of the stamped road geometry: a
+        // point anywhere in [col, col+1) lands in cell `col`. The previous
+        // code emitted the cell's OUTER corners, placing the ring at the far
+        // edge of every boundary cell — a systematic +0.5-cell MEAN outward
+        // bias on straight runs (worst +1 cell, plus an extra sqrt(2)/2-cell
+        // spike on convex corners). The center (col+0.5, row+0.5) is the
+        // unbiased inverse of the floor snap (floor + 0.5 == round to
+        // nearest), so the ring passes through the expected position of the
+        // outermost stamped geometry instead of half a cell beyond it.
+        //
+        // All four edges of a cell share one center, so consecutive edges on
+        // the same cell would emit duplicates — dedup as we go. Thin 1-cell
+        // appendages collapse to zero-width out-and-back runs; downstream
+        // consumers already handle self-touching rings, and any half-cell
+        // debias necessarily collapses sub-cell-wide features.
+        let v = (col as f64 + 0.5, row as f64 + 0.5);
+        if contour.last() != Some(&v) {
+            contour.push(v);
+        }
 
         // Find next boundary edge
         let (next_col, next_row, next_edge) = next_boundary_edge(map, col, row, edge);
@@ -904,6 +940,13 @@ fn trace_boundary_edges_with_visited(
         col = next_col;
         row = next_row;
         edge = next_edge;
+    }
+
+    // The walk can close back onto the start cell, re-emitting its center as
+    // the final vertex — trim it so the ring stays open here (closure and
+    // CCW orientation are applied downstream by the handlers).
+    while contour.len() > 1 && contour.last() == contour.first() {
+        contour.pop();
     }
 
     contour
@@ -1258,5 +1301,245 @@ mod tests {
             adaptive.cell_size_m,
             base.cell_size_m * 2.0
         );
+    }
+
+    // ==================================================================
+    // #431 rank 2: cell-center vertex emission (sub-cell debias)
+    // ==================================================================
+
+    fn map_with_cells(cells: &[(i32, i32)]) -> SparseTileMap {
+        let mut map = SparseTileMap::new(1.0, 0.0, 0.0);
+        for &(col, row) in cells {
+            map.set_cell(col, row);
+        }
+        map
+    }
+
+    /// Quantise a ring vertex to half-cell units for exact comparison
+    /// (centers are exact .5 multiples, representable in f64).
+    fn half_cells(ring: &[(f64, f64)]) -> Vec<(i64, i64)> {
+        ring.iter()
+            .map(|&(x, y)| ((x * 2.0).round() as i64, (y * 2.0).round() as i64))
+            .collect()
+    }
+
+    #[test]
+    fn test_center_emission_square_block() {
+        // 3x3 block of cells: the ring must pass through the centers of the
+        // 8 perimeter cells, in boundary-walk order — NOT through the outer
+        // corners (which would span [0,3] instead of [0.5,2.5]).
+        let cells: Vec<(i32, i32)> = (0..3)
+            .flat_map(|row| (0..3).map(move |col| (col, row)))
+            .collect();
+        let ring = extract_contour_sparse(&map_with_cells(&cells));
+
+        let got: HashSet<(i64, i64)> = half_cells(&ring).into_iter().collect();
+        let expected: HashSet<(i64, i64)> = [
+            (1, 1),
+            (3, 1),
+            (5, 1),
+            (5, 3),
+            (5, 5),
+            (3, 5),
+            (1, 5),
+            (1, 3),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            got, expected,
+            "ring must be exactly the 8 perimeter-cell centers, got {ring:?}"
+        );
+        assert_eq!(ring.len(), 8, "no duplicate vertices expected");
+    }
+
+    #[test]
+    fn test_center_emission_no_half_cell_overshoot() {
+        // The old corner emission put the ring bbox at [0, 3]x[0, 3] for a
+        // 3x3 block — +0.5 cell beyond the expected position of the stamped
+        // geometry on every side. Center emission must give [0.5, 2.5].
+        let cells: Vec<(i32, i32)> = (0..3)
+            .flat_map(|row| (0..3).map(move |col| (col, row)))
+            .collect();
+        let ring = extract_contour_sparse(&map_with_cells(&cells));
+        assert!(!ring.is_empty());
+
+        let min_x = ring.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max_x = ring.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        let min_y = ring.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let max_y = ring.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+
+        assert!((min_x - 0.5).abs() < 1e-12, "min_x: {min_x}");
+        assert!((max_x - 2.5).abs() < 1e-12, "max_x: {max_x}");
+        assert!((min_y - 0.5).abs() < 1e-12, "min_y: {min_y}");
+        assert!((max_y - 2.5).abs() < 1e-12, "max_y: {max_y}");
+    }
+
+    #[test]
+    fn test_center_emission_l_shape_dedup() {
+        // L-shape: three cells. Each cell contributes several boundary
+        // edges, but all edges of one cell share its center — the ring must
+        // be exactly the 3 distinct centers with no consecutive duplicates
+        // and no trailing repeat of the first vertex (closure happens
+        // downstream).
+        let ring = extract_contour_sparse(&map_with_cells(&[(0, 0), (1, 0), (0, 1)]));
+        let q = half_cells(&ring);
+
+        assert_eq!(q.len(), 3, "expected 3 distinct centers, got {ring:?}");
+        let got: HashSet<(i64, i64)> = q.iter().copied().collect();
+        let expected: HashSet<(i64, i64)> = [(1, 1), (3, 1), (1, 3)].into_iter().collect();
+        assert_eq!(got, expected);
+
+        for w in q.windows(2) {
+            assert_ne!(w[0], w[1], "consecutive duplicate vertex in {ring:?}");
+        }
+        assert_ne!(
+            q.first(),
+            q.last(),
+            "ring must not be pre-closed (closure is applied downstream)"
+        );
+    }
+
+    #[test]
+    fn test_extract_contour_deterministic() {
+        // Two components (the larger one wins) — repeated extraction over
+        // freshly built maps must yield byte-identical rings. Pre-#431 the
+        // trace start came from HashMap iteration order, so the ring's
+        // rotation (and therefore the Douglas-Peucker output) was
+        // process-random.
+        let mut cells: Vec<(i32, i32)> = (0..5)
+            .flat_map(|row| (0..5).map(move |col| (col, row)))
+            .collect();
+        // Far-away smaller component, in different tiles.
+        cells.extend((200..203).flat_map(|row| (200..203).map(move |col| (col, row))));
+
+        let reference = extract_contour_sparse(&map_with_cells(&cells));
+        assert!(!reference.is_empty());
+        for _ in 0..5 {
+            let again = extract_contour_sparse(&map_with_cells(&cells));
+            assert_eq!(
+                half_cells(&again),
+                half_cells(&reference),
+                "extract_contour_sparse must be deterministic"
+            );
+        }
+    }
+
+    #[test]
+    fn test_largest_component_wins() {
+        // 5x5 block + far 2x2 block: the returned ring must outline the 5x5.
+        let mut cells: Vec<(i32, i32)> = (0..5)
+            .flat_map(|row| (0..5).map(move |col| (col, row)))
+            .collect();
+        cells.extend([(300, 300), (301, 300), (300, 301), (301, 301)]);
+
+        let ring = extract_contour_sparse(&map_with_cells(&cells));
+        assert!(!ring.is_empty());
+        for &(x, y) in &ring {
+            assert!(
+                (0.0..=5.0).contains(&x) && (0.0..=5.0).contains(&y),
+                "vertex ({x}, {y}) outside the largest component"
+            );
+        }
+    }
+
+    // ==================================================================
+    // #431 rank 3: cos(lat) ground-meter cell sizing
+    // ==================================================================
+
+    /// Build a single-segment `ReachableSegment` between two WGS84 points.
+    fn segment(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> ReachableSegment {
+        ReachableSegment {
+            points: vec![
+                ((lat0 * 1e7) as i32, (lon0 * 1e7) as i32),
+                ((lat1 * 1e7) as i32, (lon1 * 1e7) as i32),
+            ],
+        }
+    }
+
+    /// Ground meters per degree of longitude at the given latitude.
+    fn ground_m_per_lon_deg(lat: f64) -> f64 {
+        EARTH_RADIUS * std::f64::consts::PI / 180.0 * lat.to_radians().cos()
+    }
+
+    #[test]
+    fn test_e2e_ring_debiased_within_half_cell_of_input() {
+        // Full pipeline: a 2-row blob of stamped segments at 50.8°N. The
+        // ring's east-west extent must track the input extent to within
+        // ±0.51 ground cells. Corner emission overshot by up to +1 cell
+        // (here the segment length is k + 0.1 cells, so the overshoot would
+        // be +0.9 cells ≈ +27 m — a deterministic failure pre-#431).
+        let lat = 50.8_f64;
+        let cell_m = 30.0;
+        // cell_size_m is MERCATOR meters (rank 3 rejected by validation, see
+        // generate_sparse_contour) — a cell's GROUND footprint at this
+        // latitude is cell_m * cos(lat) ≈ 18.96 m. The blob and the debias
+        // band are expressed in that footprint.
+        let ground_cell = cell_m * lat.to_radians().cos();
+        let m_per_deg = ground_m_per_lon_deg(lat);
+        let lon0 = 4.0;
+        // 10.1 cells long: the max point sits 0.1 cells into its column.
+        let lon1 = lon0 + 10.1 * ground_cell / m_per_deg;
+        // Two rows 1.5 ground-cells apart -> two adjacent grid rows. The
+        // grid origin sits 3 cells below the y-min input point, so the
+        // y-min point lands EXACTLY on a cell boundary and its row would
+        // floor unstably (3.0 vs 2.999...). Anchor the blob with a point a
+        // quarter cell further south so both long rows sit mid-cell
+        // (rows 3.25 and 4.75 -> 3 and 4, robust to float jitter).
+        let dlat = 1.5 * ground_cell / 111_320.0;
+        let anchor_lat = lat - 0.25 * ground_cell / 111_320.0;
+
+        let config = SparseContourConfig::no_morphology(cell_m);
+        let segments = vec![
+            segment(anchor_lat, lon0, anchor_lat, lon0),
+            segment(lat, lon0, lat, lon1),
+            segment(lat + dlat, lon0, lat + dlat, lon1),
+        ];
+        let result = generate_sparse_contour(&segments, &config).unwrap();
+        assert!(
+            result.outer_ring.len() >= 4,
+            "expected a 2-row rectangle ring, got {:?}",
+            result.outer_ring
+        );
+
+        let ring_max_lon = result
+            .outer_ring
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let ring_min_lon = result
+            .outer_ring
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::INFINITY, f64::min);
+
+        let half_cell_deg = 0.51 * ground_cell / m_per_deg;
+        assert!(
+            ring_max_lon <= lon1 + half_cell_deg,
+            "east edge overshoots: ring {ring_max_lon} vs input {lon1} \
+             (+{:.1} m, corner emission would give ~+27 m)",
+            (ring_max_lon - lon1) * m_per_deg
+        );
+        assert!(
+            ring_max_lon >= lon1 - half_cell_deg,
+            "east edge over-shrunk: ring {ring_max_lon} vs input {lon1} \
+             ({:.1} m)",
+            (ring_max_lon - lon1) * m_per_deg
+        );
+        assert!(
+            ring_min_lon >= lon0 - half_cell_deg && ring_min_lon <= lon0 + half_cell_deg,
+            "west edge out of band: ring {ring_min_lon} vs input {lon0} \
+             ({:.1} m)",
+            (ring_min_lon - lon0) * m_per_deg
+        );
+    }
+
+    #[test]
+    fn test_mercator_round_trip() {
+        let (lat, lon) = (50.8503, 4.3517);
+        let pt = to_mercator(lat, lon);
+        let (lon2, lat2) = from_mercator(pt.x, pt.y);
+        assert!((lat - lat2).abs() < 1e-9, "lat: {lat} vs {lat2}");
+        assert!((lon - lon2).abs() < 1e-9, "lon: {lon} vs {lon2}");
     }
 }
