@@ -1735,6 +1735,14 @@ pub struct EdgeRow {
 pub struct PairEdges {
     pub query_idx: u32,
     pub rows: Vec<EdgeRow>,
+    /// #468: the OPTIMIZED CCH metric (`QueryResult::distance` /
+    /// `TreePath::distance`) for this pair; `None` ⇒ unreachable. Bench /
+    /// internal only — the searches optimize CCH weights while the row
+    /// `dur_ms` values come from post-unpack `node_weights`, so equal-CCH-cost
+    /// ties can legitimately differ in summed row durations. The equivalence
+    /// oracle asserts on THIS field. NOT part of the `edges_batch` wire
+    /// schema; the Arrow emission never reads it.
+    pub cch_distance: Option<u32>,
 }
 
 /// Compute the unpacked edge sequence for a single (src,dst) pair.
@@ -1762,6 +1770,7 @@ pub(crate) fn edges_for_pair(
         None => PairEdges {
             query_idx,
             rows: Vec::new(),
+            cch_distance: None,
         },
     }
 }
@@ -1922,7 +1931,11 @@ fn emit_pair_rows(
             dist_m: node.length_m,
         });
     }
-    PairEdges { query_idx, rows }
+    PairEdges {
+        query_idx,
+        rows,
+        cch_distance: Some(result.distance),
+    }
 }
 
 /// #438: resolve a coordinate to its K=1 (closest, role-filtered) CCH rank —
@@ -2050,6 +2063,7 @@ pub(crate) fn process_per_pair_work(
         None => PairEdges {
             query_idx: work.query_idx,
             rows: Vec::new(),
+            cch_distance: None,
         },
     }
 }
@@ -3653,9 +3667,11 @@ mod edges_batch_grouping_tests {
 
     /// #438: equivalence oracle — the source-GROUPED edges path must produce
     /// the SAME result as the per-pair FLAT path: identical reachability and
-    /// identical per-pair total duration (the optimised metric). Equal-cost
-    /// ties may pick a different (still-shortest) edge sequence, so byte-
-    /// identity is asserted as a high rate, not 100%.
+    /// identical per-pair CCH distance (the optimised metric, #468). Equal-cost
+    /// ties may pick a different (still-shortest) edge sequence — so byte-
+    /// identity is asserted as a high rate, not 100%, and the summed row
+    /// durations (post-unpack `node_weights` basis) are NOT asserted at all:
+    /// equal-CCH-cost alternatives legitimately differ on them (#468).
     ///
     /// Skipped unless `BT_EDGES_CONTAINER` points at a Belgium `.butterfly`
     /// (the step4-7 CCH is large and not committed). Run with:
@@ -3726,11 +3742,11 @@ mod edges_batch_grouping_tests {
                     "reachability for query_idx {} (parallel={parallel})",
                     f.query_idx
                 );
-                let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
-                let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+                // #468: assert on the OPTIMIZED metric (CCH distance), not the
+                // post-unpack node_weights row sum — ties differ on the latter.
                 assert_eq!(
-                    f_dur, g_dur,
-                    "total duration for query_idx {} (parallel={parallel})",
+                    f.cch_distance, g.cch_distance,
+                    "CCH distance for query_idx {} (parallel={parallel})",
                     f.query_idx
                 );
                 let same = f.rows.len() == g.rows.len()
@@ -3751,7 +3767,7 @@ mod edges_batch_grouping_tests {
                 pairs.len(),
                 rate * 100.0
             );
-            // Reachability + total-duration are exact (asserted above). Edge
+            // Reachability + CCH distance are exact (asserted above). Edge
             // sequences match for all but rare equal-cost ties.
             assert!(
                 rate > 0.95,
