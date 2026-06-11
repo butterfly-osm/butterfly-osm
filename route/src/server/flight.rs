@@ -299,6 +299,14 @@ fn isochrone_schema() -> Schema {
 /// `edge_seq IS NULL` cleanly. Sentinels like `u32::MAX` are the kind
 /// of decision that bites consumers six months later.
 ///
+/// #462: snap misses are the same failure class — a pair whose source
+/// or destination has no road within snap distance emits the same
+/// all-null row and NEVER fails the request, including when the miss
+/// happens at the region-dispatch stage (e.g. a coordinate far outside
+/// every loaded region). Request-level errors are reserved for
+/// coordinate VALIDATION (NaN / out-of-range), unknown profiles,
+/// cross-region pairs, and the pair-count cap.
+///
 /// Continuity invariant: for every `(query_idx, target_idx)` pair,
 /// consecutive rows satisfy `osm_node_to[i] == osm_node_from[i+1]`.
 /// This is what flow-assignment pipelines rely on to walk paths.
@@ -1735,6 +1743,14 @@ pub struct EdgeRow {
 pub struct PairEdges {
     pub query_idx: u32,
     pub rows: Vec<EdgeRow>,
+    /// #468: the OPTIMIZED CCH metric (`QueryResult::distance` /
+    /// `TreePath::distance`) for this pair; `None` ⇒ unreachable. Bench /
+    /// internal only — the searches optimize CCH weights while the row
+    /// `dur_ms` values come from post-unpack `node_weights`, so equal-CCH-cost
+    /// ties can legitimately differ in summed row durations. The equivalence
+    /// oracle asserts on THIS field. NOT part of the `edges_batch` wire
+    /// schema; the Arrow emission never reads it.
+    pub cch_distance: Option<u32>,
 }
 
 /// Compute the unpacked edge sequence for a single (src,dst) pair.
@@ -1762,6 +1778,7 @@ pub(crate) fn edges_for_pair(
         None => PairEdges {
             query_idx,
             rows: Vec::new(),
+            cch_distance: None,
         },
     }
 }
@@ -1922,7 +1939,11 @@ fn emit_pair_rows(
             dist_m: node.length_m,
         });
     }
-    PairEdges { query_idx, rows }
+    PairEdges {
+        query_idx,
+        rows,
+        cch_distance: Some(result.distance),
+    }
 }
 
 /// #438: resolve a coordinate to its K=1 (closest, role-filtered) CCH rank —
@@ -2050,6 +2071,7 @@ pub(crate) fn process_per_pair_work(
         None => PairEdges {
             query_idx: work.query_idx,
             rows: Vec::new(),
+            cch_distance: None,
         },
     }
 }
@@ -2382,6 +2404,86 @@ fn process_tree_batch(
         ));
     }
     out
+}
+
+/// #462: pick the dispatch result of the FIRST pair whose endpoints both
+/// snap into a region. One unsnappable pair must not poison the batch:
+/// `NoRegion` pairs are skipped here and emit the documented all-null
+/// unreachable row downstream — their per-pair snap against the picked
+/// region misses the same way the region dispatch did (both are bounded
+/// by `MAX_SNAP_DISTANCE_M`). `InvalidMode` and `CrossRegion` keep their
+/// request-level semantics: the former is a caller typo on the whole
+/// request (and fires on the first pair regardless of snapping), the
+/// latter marks a genuinely cross-region workload (#336 follow-up) that
+/// silently emitting nulls would hide.
+///
+/// Returns `Ok(None)` when EVERY pair fails to snap into any region —
+/// the caller emits the all-null row for all pairs instead of erroring.
+///
+/// Generic over the dispatch closure so the skip/stop decision table is
+/// unit-testable without a loaded `RegionsState`.
+fn first_dispatchable_pair<T>(
+    pairs: &[[f64; 4]],
+    mut dispatch: impl FnMut(&[f64; 4]) -> std::result::Result<T, super::regions::DispatchError>,
+) -> std::result::Result<Option<T>, Status> {
+    for pair in pairs {
+        match dispatch(pair) {
+            Ok(hit) => return Ok(Some(hit)),
+            Err(super::regions::DispatchError::NoRegion { .. }) => continue,
+            Err(e) => return Err(dispatch_to_status(e)),
+        }
+    }
+    Ok(None)
+}
+
+/// #462: one all-null unreachable row per pair, chunked into row-bounded
+/// RecordBatches. Used when NO pair in an `edges_batch` request could be
+/// dispatched to any region (e.g. every coordinate outside coverage):
+/// the per-pair contract from [`edges_batch_schema`] ("unreachable pairs
+/// emit a single row with the edge columns null") applies to the whole
+/// batch instead of failing the request.
+fn all_null_edges_batches(n_pairs: usize) -> Vec<std::result::Result<RecordBatch, Status>> {
+    let schema = Arc::new(edges_batch_schema());
+    const ROWS_PER_BATCH: usize = 20_000;
+    let mut batches = Vec::with_capacity(n_pairs.div_ceil(ROWS_PER_BATCH));
+    let mut start = 0usize;
+    while start < n_pairs {
+        let end = (start + ROWS_PER_BATCH).min(n_pairs);
+        let n = end - start;
+        let mut query_idx_b = UInt32Builder::with_capacity(n);
+        let mut target_idx_b = UInt32Builder::with_capacity(n);
+        let mut edge_seq_b = UInt32Builder::with_capacity(n);
+        let mut osm_from_b = Int64Builder::with_capacity(n);
+        let mut osm_to_b = Int64Builder::with_capacity(n);
+        let mut dur_ms_b = UInt32Builder::with_capacity(n);
+        let mut dist_m_b = UInt32Builder::with_capacity(n);
+        for query_idx in start..end {
+            query_idx_b.append_value(query_idx as u32);
+            target_idx_b.append_value(0);
+            edge_seq_b.append_null();
+            osm_from_b.append_null();
+            osm_to_b.append_null();
+            dur_ms_b.append_null();
+            dist_m_b.append_null();
+        }
+        batches.push(
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(query_idx_b.finish()) as ArrayRef,
+                    Arc::new(target_idx_b.finish()),
+                    Arc::new(edge_seq_b.finish()),
+                    Arc::new(osm_from_b.finish()),
+                    Arc::new(osm_to_b.finish()),
+                    Arc::new(dur_ms_b.finish()),
+                    Arc::new(dist_m_b.finish()),
+                ],
+            )
+            .map_err(|e| Status::internal(format!("edges_batch all-null Arrow build: {e}"))),
+        );
+        start = end;
+    }
+    batches
 }
 
 pub fn do_edges_batch(
@@ -3389,9 +3491,25 @@ impl FlightService for ButterflyFlight {
                     validate_coord(pair[0], pair[1], &format!("pair[{}].src", i))?;
                     validate_coord(pair[2], pair[3], &format!("pair[{}].dst", i))?;
                 }
-                let p0 = params.pairs[0];
-                let (state, _region) =
-                    self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
+                // #462: one unsnappable pair must not fail the other
+                // 499,999. The region is picked by the FIRST pair that
+                // dispatches; pairs that snap into no region fall through
+                // to do_edges_batch, where their per-pair snap miss emits
+                // the documented all-null unreachable row.
+                let dispatched = first_dispatchable_pair(&params.pairs, |p| {
+                    self.regions
+                        .dispatch_p2p_id(p[0], p[1], p[2], p[3], &parsed.profile)
+                })?;
+                let Some((state, _region)) = dispatched else {
+                    // No pair snapped into any region: every pair is
+                    // unreachable. Same per-pair contract, applied to the
+                    // whole batch instead of a request-level error.
+                    let schema = Arc::new(edges_batch_schema());
+                    let batch_stream: BatchStream =
+                        Box::pin(stream::iter(all_null_edges_batches(params.pairs.len())));
+                    let flight_stream = batches_to_flight_data(schema, batch_stream);
+                    return Ok(Response::new(flight_stream));
+                };
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let batch_stream = do_edges_batch(&state, mode, params)?;
@@ -3645,6 +3763,165 @@ impl FlightService for ButterflyFlight {
 }
 
 #[cfg(test)]
+mod edges_batch_null_row_tests {
+    use super::{all_null_edges_batches, edges_batch_schema, first_dispatchable_pair};
+    use crate::server::regions::{DispatchError, Endpoint};
+    use arrow::array::{Array, Int64Array, UInt32Array};
+
+    fn no_region(lon: f64, lat: f64) -> DispatchError {
+        DispatchError::NoRegion {
+            endpoint: Endpoint::Source,
+            lon,
+            lat,
+            mode: "car".to_string(),
+            tried: vec!["BE".to_string()],
+        }
+    }
+
+    /// #462: the production failure shape — pair 0 unsnappable (geocoder
+    /// sentinel deep in France), pair 1 fine. The scan must skip pair 0
+    /// and pick pair 1's region instead of failing the request.
+    #[test]
+    fn skips_noregion_pair_and_picks_next() {
+        let pairs = vec![
+            [2.3059, 49.2942, 4.4025, 51.2194], // src ~100 km outside coverage
+            [4.3517, 50.8503, 4.4025, 51.2194], // Brussels → Antwerp
+        ];
+        let mut calls = 0usize;
+        let got = first_dispatchable_pair(&pairs, |p| {
+            calls += 1;
+            if p[0] < 3.0 {
+                Err(no_region(p[0], p[1]))
+            } else {
+                Ok("region-of-pair-1")
+            }
+        })
+        .expect("NoRegion on one pair must not error the request");
+        assert_eq!(got, Some("region-of-pair-1"));
+        assert_eq!(calls, 2, "scan stops at the first dispatchable pair");
+    }
+
+    /// #462: every pair unsnappable → `Ok(None)` (caller emits the
+    /// all-null row for the whole batch), NOT a request-level error.
+    #[test]
+    fn all_noregion_returns_none() {
+        let pairs = vec![[0.0, 0.0, 1.0, 1.0]; 3];
+        let mut calls = 0usize;
+        let got: Option<()> = first_dispatchable_pair(&pairs, |p| {
+            calls += 1;
+            Err(no_region(p[0], p[1]))
+        })
+        .expect("all-NoRegion must not error");
+        assert_eq!(got, None);
+        assert_eq!(calls, 3, "every pair gets a dispatch attempt");
+    }
+
+    /// CrossRegion keeps its request-level semantics (the #336
+    /// follow-up): silently null-rowing a genuinely cross-region pair
+    /// would hide a capability gap, not a bad coordinate.
+    #[test]
+    fn cross_region_stays_request_level() {
+        let pairs = vec![[0.0, 0.0, 1.0, 1.0], [4.35, 50.85, 6.13, 49.61]];
+        let err = first_dispatchable_pair::<()>(&pairs, |p| {
+            if p[0] < 1.0 {
+                Err(no_region(p[0], p[1]))
+            } else {
+                Err(DispatchError::CrossRegion {
+                    src_region: "BE".to_string(),
+                    dst_region: "LU".to_string(),
+                })
+            }
+        })
+        .expect_err("cross-region must stay a request-level error");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    /// InvalidMode keeps its request-level semantics — a profile typo
+    /// applies to the whole request, never to a single pair.
+    #[test]
+    fn invalid_mode_stays_request_level() {
+        let pairs = vec![[4.35, 50.85, 4.40, 51.22]];
+        let err = first_dispatchable_pair::<()>(&pairs, |_| {
+            Err(DispatchError::InvalidMode {
+                mode: "cra".to_string(),
+                available: vec!["car".to_string()],
+            })
+        })
+        .expect_err("invalid mode must stay a request-level error");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// #462: the all-null fallback batch has exactly the documented
+    /// unreachable-row shape — one row per pair, `query_idx` dense,
+    /// `target_idx` 0, every edge column null.
+    #[test]
+    fn all_null_batches_shape() {
+        let batches = all_null_edges_batches(5);
+        assert_eq!(batches.len(), 1);
+        let batch = batches.into_iter().next().unwrap().expect("arrow build");
+        assert_eq!(batch.schema().as_ref(), &edges_batch_schema());
+        assert_eq!(batch.num_rows(), 5);
+
+        let query_idx = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let target_idx = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        assert_eq!(query_idx.null_count(), 0);
+        assert_eq!(target_idx.null_count(), 0);
+        for i in 0..5 {
+            assert_eq!(query_idx.value(i), i as u32);
+            assert_eq!(target_idx.value(i), 0);
+        }
+        // Every edge column is all-null: the `edge_seq IS NULL` filter
+        // documented on the schema matches every row.
+        for (col, name) in [(2, "edge_seq"), (5, "duration_ms"), (6, "distance_m")] {
+            let arr = batch
+                .column(col)
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .unwrap();
+            assert_eq!(arr.null_count(), 5, "{name} must be all-null");
+        }
+        for (col, name) in [(3, "osm_node_from"), (4, "osm_node_to")] {
+            let arr = batch
+                .column(col)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            assert_eq!(arr.null_count(), 5, "{name} must be all-null");
+        }
+    }
+
+    /// #462: chunking — rows are bounded per RecordBatch and `query_idx`
+    /// stays dense across batch boundaries; zero pairs build zero batches.
+    #[test]
+    fn all_null_batches_chunking() {
+        assert!(all_null_edges_batches(0).is_empty());
+
+        let batches = all_null_edges_batches(20_001);
+        assert_eq!(batches.len(), 2);
+        let sizes: Vec<usize> = batches
+            .iter()
+            .map(|b| b.as_ref().expect("arrow build").num_rows())
+            .collect();
+        assert_eq!(sizes, vec![20_000, 1]);
+        let second = batches[1].as_ref().expect("arrow build");
+        let query_idx = second
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        assert_eq!(query_idx.value(0), 20_000, "query_idx dense across chunks");
+    }
+}
+
+#[cfg(test)]
 mod edges_batch_grouping_tests {
     use super::{compute_edges_flat, compute_edges_grouped};
     use crate::model::types::Mode;
@@ -3653,9 +3930,11 @@ mod edges_batch_grouping_tests {
 
     /// #438: equivalence oracle — the source-GROUPED edges path must produce
     /// the SAME result as the per-pair FLAT path: identical reachability and
-    /// identical per-pair total duration (the optimised metric). Equal-cost
-    /// ties may pick a different (still-shortest) edge sequence, so byte-
-    /// identity is asserted as a high rate, not 100%.
+    /// identical per-pair CCH distance (the optimised metric, #468). Equal-cost
+    /// ties may pick a different (still-shortest) edge sequence — so byte-
+    /// identity is asserted as a high rate, not 100%, and the summed row
+    /// durations (post-unpack `node_weights` basis) are NOT asserted at all:
+    /// equal-CCH-cost alternatives legitimately differ on them (#468).
     ///
     /// Skipped unless `BT_EDGES_CONTAINER` points at a Belgium `.butterfly`
     /// (the step4-7 CCH is large and not committed). Run with:
@@ -3726,11 +4005,11 @@ mod edges_batch_grouping_tests {
                     "reachability for query_idx {} (parallel={parallel})",
                     f.query_idx
                 );
-                let f_dur: u64 = f.rows.iter().map(|r| r.dur_ms as u64).sum();
-                let g_dur: u64 = g.rows.iter().map(|r| r.dur_ms as u64).sum();
+                // #468: assert on the OPTIMIZED metric (CCH distance), not the
+                // post-unpack node_weights row sum — ties differ on the latter.
                 assert_eq!(
-                    f_dur, g_dur,
-                    "total duration for query_idx {} (parallel={parallel})",
+                    f.cch_distance, g.cch_distance,
+                    "CCH distance for query_idx {} (parallel={parallel})",
                     f.query_idx
                 );
                 let same = f.rows.len() == g.rows.len()
@@ -3751,7 +4030,7 @@ mod edges_batch_grouping_tests {
                 pairs.len(),
                 rate * 100.0
             );
-            // Reachability + total-duration are exact (asserted above). Edge
+            // Reachability + CCH distance are exact (asserted above). Edge
             // sequences match for all but rare equal-cost ties.
             assert!(
                 rate > 0.95,
