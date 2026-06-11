@@ -67,14 +67,32 @@
         "values": [
           "no",
           "private"
-        ]
+        ],
+        "unless": {
+          "tag": "motor_vehicle",
+          "values": [
+            "yes",
+            "permissive",
+            "designated",
+            "destination"
+          ]
+        }
       },
       {
         "tag": "access",
         "values": [
           "no",
           "private"
-        ]
+        ],
+        "unless": {
+          "tag": "motor_vehicle",
+          "values": [
+            "yes",
+            "permissive",
+            "designated",
+            "destination"
+          ]
+        }
       }
     ],
     "allow_if": [
