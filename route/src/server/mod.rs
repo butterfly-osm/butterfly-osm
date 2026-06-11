@@ -666,6 +666,14 @@ pub async fn serve(
                 ),
             }
         })?;
+        // #467: dynamic mode registrations (car_rush_hour) happen AFTER the
+        // RegionEntry cached its registration-time mode list — refresh it so
+        // the regions dispatch (has_mode / available_modes / the "Invalid
+        // mode across loaded regions" check) sees the live set. Same class
+        // of bug as the #450 car_freeflow 400.
+        let live_modes =
+            regions_state.regions[idx].with_loaded_state_mut(|s| s.mode_names.clone())?;
+        regions_state.regions[idx].mode_names = live_modes;
     }
 
     // ---- Per-region size metrics -----------------------------------
