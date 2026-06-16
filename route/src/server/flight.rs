@@ -268,14 +268,25 @@ fn matrix_schema() -> Schema {
 }
 
 fn route_batch_schema() -> Schema {
+    // #482: `pair_idx` is the index of the pair in the input `pairs`
+    // array. With `max_meters` set, over-bound pairs are DROPPED — so
+    // emitted rows are sparse and pair_idx is the only way to map a row
+    // back to its input. It is the FIRST column and never null.
+    //
+    // `duration_s` and `geometry_wkb` are nullable: the bounded prune
+    // runs a DISTANCE-only query (no time, no path geometry), so those
+    // two columns are null for every row in a bounded request. In the
+    // unbounded path they are always populated (the full time-optimal
+    // route + WKB), exactly as before. `distance_m` is always non-null.
     Schema::new(vec![
+        Field::new("pair_idx", DataType::UInt32, false),
         Field::new("origin_lon", DataType::Float64, false),
         Field::new("origin_lat", DataType::Float64, false),
         Field::new("destination_lon", DataType::Float64, false),
         Field::new("destination_lat", DataType::Float64, false),
-        Field::new("duration_s", DataType::Float32, false),
+        Field::new("duration_s", DataType::Float32, true),
         Field::new("distance_m", DataType::Float32, false),
-        Field::new("geometry_wkb", DataType::Binary, false),
+        Field::new("geometry_wkb", DataType::Binary, true),
     ])
 }
 
@@ -908,8 +919,24 @@ fn do_matrix(
 // =============================================================================
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RouteBatchParams {
     pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
+    /// #482: optional DISTANCE prune (meters). When set, only pairs whose
+    /// distance-metric shortest route is `<= max_meters` emit a row; the
+    /// rest are DROPPED. The bounded CCH search early-terminates at the
+    /// ball, so over-bound pairs are also cheaper to compute. Unbounded
+    /// (absent) behaves exactly as before. There is intentionally no
+    /// `max_seconds` companion — distance is the only bound the reporting
+    /// use case (drive-distance catchment) needs, and adding a time bound
+    /// would force a second metric query per pair for no consumer.
+    ///
+    /// `deny_unknown_fields` (above) is also part of #482: today the
+    /// action silently accepts `max_km`, `prune_max_km`, `radius_km`,
+    /// `zzz`, … with no effect — a footgun the ticket calls out. Unknown
+    /// params now error instead of being ignored.
+    #[serde(default)]
+    max_meters: Option<f64>,
 }
 
 /// #273: in-place WKB encoder — appends bytes to `out`. Clears `out`
@@ -949,13 +976,21 @@ struct RouteScratch {
 /// (source, destination) pair. Named fields — the previous tuple alias
 /// indexed by position (`r.6` for WKB) was brittle.
 struct RoutePairRow {
+    /// #482: index of this pair in the input `pairs` array. In bounded
+    /// mode, over-bound pairs are dropped (no row), so this is the only
+    /// way to map a sparse output back to the request.
+    pair_idx: u32,
     origin_lon: f64,
     origin_lat: f64,
     destination_lon: f64,
     destination_lat: f64,
-    duration_s: f32,
+    /// `None` in bounded mode (distance-only query, no time). `Some` in
+    /// the unbounded path (full time-optimal route).
+    duration_s: Option<f32>,
     distance_m: f32,
-    wkb: Vec<u8>,
+    /// `None` in bounded mode (no path geometry computed). `Some` in the
+    /// unbounded path.
+    wkb: Option<Vec<u8>>,
 }
 
 /// Compute a single pair's `(duration, distance, WKB linestring)`.
@@ -1113,6 +1148,128 @@ fn build_route_output(
     (duration_s as f32, distance_m as f32, wkb)
 }
 
+/// #482: distance-metric bounded shortest-distance for a single pair.
+///
+/// Returns the true shortest road DISTANCE in meters if it is
+/// `<= max_m`, else `None` (pair is over-bound → dropped by the
+/// caller). The bound is enforced inside [`CchQuery::distance_bounded`],
+/// which early-terminates once no unsettled node on either frontier is
+/// within `max_m` — so over-bound pairs are cheaper than a full route,
+/// which is the whole point.
+///
+/// `dist_query` MUST be the DISTANCE metric — i.e. built by the caller
+/// as `CchQuery::with_custom_weights(&topo, &up_adj_flat, &down_rev_flat,
+/// &cch_weights_dist)` (the same flats the time query uses — they carry
+/// `topo_edge_idx`, which the standalone `*_dist` flats omit and which
+/// `distance_bounded` needs to traverse). `cch_weights_dist` is in
+/// meters, so the returned value and the bound are both meters.
+///
+/// Snap strategy MIRRORS `compute_route_pair`: K=1 fast path first
+/// (`snap_filtered_role` → `orig_to_rank`), then on a miss OR an
+/// over-bound K=1 result, escalate to K=64 + closest-sum-first combo
+/// enumeration and keep the MIN bounded distance found. `distance_bounded`
+/// already returns `None` for an over-bound result, so any `Some` is
+/// in-bound by construction; taking the MIN across combos gives the true
+/// shortest distance among the snapped endpoints.
+#[allow(clippy::too_many_arguments)]
+fn compute_distance_bounded(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    dist_query: &CchQuery<'_>,
+    slon: f64,
+    slat: f64,
+    dlon: f64,
+    dlat: f64,
+    max_m: u32,
+) -> Option<f32> {
+    use super::types::SnapRole;
+
+    // Fast path: K=1 single snap + single bounded distance query.
+    let src_role = SnapRole::Src.role_filter(mode_data);
+    let dst_role = SnapRole::Dst.role_filter(mode_data);
+    if let (Some(src_id), Some(dst_id)) = (
+        state
+            .snap_index
+            .snap_filtered_role(slon, slat, mode.0, None, src_role),
+        state
+            .snap_index
+            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    ) {
+        // Bounds-checked: a corrupted snap index must never panic the
+        // request — OOB falls through to the K=64 slow path.
+        let (src_rank, dst_rank) = match (
+            mode_data.orig_to_rank.get(src_id as usize).copied(),
+            mode_data.orig_to_rank.get(dst_id as usize).copied(),
+        ) {
+            (Some(s), Some(d)) => (s, d),
+            _ => (u32::MAX, u32::MAX),
+        };
+        if src_rank != u32::MAX
+            && dst_rank != u32::MAX
+            && let Some(d) = dist_query.distance_bounded(src_rank, dst_rank, max_m)
+        {
+            return Some(d as f32);
+        }
+    }
+
+    // Slow path: K=64 K-best snap + (i+j)-combo enumeration. The K=1
+    // primary may simply not connect, OR it may connect but exceed the
+    // bound via a worse-snapped endpoint while a nearby alternative is
+    // in-bound. Enumerate up to 16 closest-sum-first combos and keep the
+    // minimum in-bound distance.
+    const SNAP_K: usize = 64;
+    const MAX_BOUNDED_COMBOS: usize = 16;
+    let src_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        slon,
+        slat,
+        SnapRole::Src,
+        None,
+        SNAP_K,
+    );
+    let dst_snap = super::snap_kbest::snap_k_pair_role(
+        state,
+        mode_data,
+        mode,
+        dlon,
+        dlat,
+        SnapRole::Dst,
+        None,
+        SNAP_K,
+    );
+
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+        return None;
+    }
+
+    let combos = super::snap_kbest::combo_order(
+        src_snap.ranks.len(),
+        dst_snap.ranks.len(),
+        MAX_BOUNDED_COMBOS,
+    );
+    let mut best: Option<u32> = None;
+    for (i, j) in combos {
+        let s = src_snap.ranks[i];
+        let d = dst_snap.ranks[j];
+        if s == d {
+            continue;
+        }
+        // Tighten the bound to the best in-bound distance found so far —
+        // each subsequent query early-terminates that much sooner.
+        let bound = best.unwrap_or(max_m);
+        if let Some(dist) = dist_query.distance_bounded(s, d, bound) {
+            best = Some(match best {
+                Some(b) => b.min(dist),
+                None => dist,
+            });
+        }
+    }
+    best.map(|d| d as f32)
+}
+
 fn route_batch_worker_threads(n_pairs: usize) -> usize {
     if n_pairs < 512 {
         return 1;
@@ -1164,30 +1321,37 @@ fn route_batch_batch_size() -> usize {
 /// filling NaN + empty WKB on failure (snap miss, unreachable).
 #[inline]
 fn row_of(
+    pair_idx: u32,
     slon: f64,
     slat: f64,
     dlon: f64,
     dlat: f64,
     result: Option<(f32, f32, Vec<u8>)>,
 ) -> RoutePairRow {
+    // Unbounded path: duration + geometry always populated (`Some`), and
+    // EVERY pair emits a row — a snap miss / unreachable pair becomes a
+    // NaN-distance row with empty (but non-null) WKB, preserving the
+    // pre-#482 wire shape exactly (modulo the new leading pair_idx column).
     match result {
         Some((dur, dist, wkb)) => RoutePairRow {
+            pair_idx,
             origin_lon: slon,
             origin_lat: slat,
             destination_lon: dlon,
             destination_lat: dlat,
-            duration_s: dur,
+            duration_s: Some(dur),
             distance_m: dist,
-            wkb,
+            wkb: Some(wkb),
         },
         None => RoutePairRow {
+            pair_idx,
             origin_lon: slon,
             origin_lat: slat,
             destination_lon: dlon,
             destination_lat: dlat,
-            duration_s: f32::NAN,
+            duration_s: Some(f32::NAN),
             distance_m: f32::NAN,
-            wkb: Vec::new(),
+            wkb: Some(Vec::new()),
         },
     }
 }
@@ -1215,29 +1379,37 @@ fn emit_route_batch(
     n: usize,
     results: Vec<RoutePairRow>,
 ) -> EmitOutcome {
+    let mut pair_idx_arr = UInt32Builder::with_capacity(n);
     let mut origin_lon_arr = Float64Builder::with_capacity(n);
     let mut origin_lat_arr = Float64Builder::with_capacity(n);
     let mut destination_lon_arr = Float64Builder::with_capacity(n);
     let mut destination_lat_arr = Float64Builder::with_capacity(n);
     let mut dur_arr = Float32Builder::with_capacity(n);
     let mut dist_arr = Float32Builder::with_capacity(n);
-    let geom_bytes = results.iter().map(|r| r.wkb.len()).sum();
+    // #482: `wkb` is now `Option<Vec<u8>>` (null in bounded mode).
+    let geom_bytes = results
+        .iter()
+        .map(|r| r.wkb.as_ref().map_or(0, |w| w.len()))
+        .sum();
     let mut geom_arr = BinaryBuilder::with_capacity(n, geom_bytes);
 
     for row in results {
+        pair_idx_arr.append_value(row.pair_idx);
         origin_lon_arr.append_value(row.origin_lon);
         origin_lat_arr.append_value(row.origin_lat);
         destination_lon_arr.append_value(row.destination_lon);
         destination_lat_arr.append_value(row.destination_lat);
-        dur_arr.append_value(row.duration_s);
+        // #482: duration + geometry are nullable (null in bounded mode).
+        dur_arr.append_option(row.duration_s);
         dist_arr.append_value(row.distance_m);
-        geom_arr.append_value(&row.wkb);
+        geom_arr.append_option(row.wkb.as_deref());
     }
 
     let batch = match RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(origin_lon_arr.finish()) as ArrayRef,
+            Arc::new(pair_idx_arr.finish()) as ArrayRef,
+            Arc::new(origin_lon_arr.finish()),
             Arc::new(origin_lat_arr.finish()),
             Arc::new(destination_lon_arr.finish()),
             Arc::new(destination_lat_arr.finish()),
@@ -1285,12 +1457,32 @@ fn do_route_batch_blocking(
     let total_pairs = params.pairs.len();
     let n_workers = route_batch_worker_threads(total_pairs);
 
+    // #482: distance bound (meters → u32). `None` means the unbounded
+    // path (full time-optimal route + geometry, every pair emits a row).
+    // The dispatcher already validated `> 0` and finite, so this rounds
+    // cleanly; the `clamp(0.0, u32::MAX)` is belt-and-suspenders.
+    let max_m: Option<u32> = params
+        .max_meters
+        .map(|m| m.round().clamp(0.0, u32::MAX as f64) as u32);
+
     // Small-batch fast path: no pool overhead for tiny calls.
     if n_workers == 1 {
         let query = CchQuery::new(&mode_data);
+        // #482: distance metric query, built ONCE. Same flats as the time
+        // query (they carry topo_edge_idx) but with the meters weights.
+        // Only built when bounded — the unbounded path never touches it.
+        let dist_query = max_m.map(|_| {
+            CchQuery::with_custom_weights(
+                &mode_data.cch_topo,
+                &mode_data.up_adj_flat,
+                &mode_data.down_rev_flat,
+                &mode_data.cch_weights_dist,
+            )
+        });
         let mut scratch = RouteScratch::default();
-        for chunk in params.pairs.chunks(batch_size) {
-            let n = chunk.len();
+        for (chunk_idx, chunk) in params.pairs.chunks(batch_size).enumerate() {
+            // #482: global input index of this chunk's first pair.
+            let base = chunk_idx * batch_size;
             // #275-bench: per-chunk counter incremented by
             // `compute_route_pair` each time the K=1 fast path misses
             // and escalates to the K=64 + (i+j)-combo fallback.
@@ -1298,23 +1490,51 @@ fn do_route_batch_blocking(
             let fb = &fallback_count;
             let results: Vec<RoutePairRow> = chunk
                 .iter()
-                .map(|pair| {
+                .enumerate()
+                .filter_map(|(i, pair)| {
+                    let pair_idx = (base + i) as u32;
                     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                    let r = compute_route_pair(
-                        &state,
-                        &mode_data,
-                        mode,
-                        &query,
-                        slon,
-                        slat,
-                        dlon,
-                        dlat,
-                        fb,
-                        &mut scratch,
-                    );
-                    row_of(slon, slat, dlon, dlat, r)
+                    match (max_m, dist_query.as_ref()) {
+                        // Bounded: DISTANCE-only, DROP over-bound pairs.
+                        (Some(m), Some(dq)) => compute_distance_bounded(
+                            &state, &mode_data, mode, dq, slon, slat, dlon, dlat, m,
+                        )
+                        .map(|dist| RoutePairRow {
+                            pair_idx,
+                            origin_lon: slon,
+                            origin_lat: slat,
+                            destination_lon: dlon,
+                            destination_lat: dlat,
+                            duration_s: None,
+                            distance_m: dist,
+                            wkb: None,
+                        }),
+                        // Unbounded: full route, every pair emits a row.
+                        _ => {
+                            let r = compute_route_pair(
+                                &state,
+                                &mode_data,
+                                mode,
+                                &query,
+                                slon,
+                                slat,
+                                dlon,
+                                dlat,
+                                fb,
+                                &mut scratch,
+                            );
+                            Some(row_of(pair_idx, slon, slat, dlon, dlat, r))
+                        }
+                    }
                 })
                 .collect();
+            let n = results.len();
+            // Bounded mode can drop every pair in a chunk — skip empty
+            // RecordBatches (an empty batch is valid Arrow but pointless
+            // wire traffic).
+            if n == 0 {
+                continue;
+            }
             let fb_count = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
             // #315 Copilot review: drop to DEBUG so production
             // /route_batch traffic doesn't spam logs (this is bench
@@ -1348,13 +1568,21 @@ fn do_route_batch_blocking(
     #[derive(Clone, Copy)]
     struct Work {
         slot: usize,
+        /// #482: global index in the input `pairs` array. Distinct from
+        /// `slot`, which is only this pair's position WITHIN its chunk
+        /// (used to reorder results before emit). `pair_idx` is what the
+        /// caller maps rows back by, and is the only handle on a sparse
+        /// (bounded-mode) output.
+        pair_idx: u32,
         slon: f64,
         slat: f64,
         dlon: f64,
         dlat: f64,
     }
     enum DoneKind {
-        Row(RoutePairRow),
+        /// #482: `None` means the pair was DROPPED (over-bound in bounded
+        /// mode). `Some` carries the emitted row.
+        Row(Option<RoutePairRow>),
         WorkerPanic(String),
     }
     struct Done {
@@ -1385,23 +1613,61 @@ fn do_route_batch_blocking(
             handles.push(scope.spawn(move || {
                 let mode_data = state.get_mode(mode);
                 let query = CchQuery::new(&mode_data);
+                // #482: per-worker distance metric query, built once when
+                // bounded. Same flats as the time query (topo_edge_idx
+                // present) but meters weights. Unbounded → never built.
+                let dist_query = max_m.map(|_| {
+                    CchQuery::with_custom_weights(
+                        &mode_data.cch_topo,
+                        &mode_data.up_adj_flat,
+                        &mode_data.down_rev_flat,
+                        &mode_data.cch_weights_dist,
+                    )
+                });
                 let mut scratch = RouteScratch::default();
                 let fb = fallback_count.as_ref();
                 while let Ok(work) = rx.recv() {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let r = compute_route_pair(
-                            &state,
-                            &mode_data,
-                            mode,
-                            &query,
-                            work.slon,
-                            work.slat,
-                            work.dlon,
-                            work.dlat,
-                            fb,
-                            &mut scratch,
-                        );
-                        row_of(work.slon, work.slat, work.dlon, work.dlat, r)
+                        match (max_m, dist_query.as_ref()) {
+                            // Bounded: DISTANCE-only, DROP over-bound pairs.
+                            (Some(m), Some(dq)) => compute_distance_bounded(
+                                &state, &mode_data, mode, dq, work.slon, work.slat, work.dlon,
+                                work.dlat, m,
+                            )
+                            .map(|dist| RoutePairRow {
+                                pair_idx: work.pair_idx,
+                                origin_lon: work.slon,
+                                origin_lat: work.slat,
+                                destination_lon: work.dlon,
+                                destination_lat: work.dlat,
+                                duration_s: None,
+                                distance_m: dist,
+                                wkb: None,
+                            }),
+                            // Unbounded: full route, every pair emits a row.
+                            _ => {
+                                let r = compute_route_pair(
+                                    &state,
+                                    &mode_data,
+                                    mode,
+                                    &query,
+                                    work.slon,
+                                    work.slat,
+                                    work.dlon,
+                                    work.dlat,
+                                    fb,
+                                    &mut scratch,
+                                );
+                                Some(row_of(
+                                    work.pair_idx,
+                                    work.slon,
+                                    work.slat,
+                                    work.dlon,
+                                    work.dlat,
+                                    r,
+                                ))
+                            }
+                        }
                     }));
                     let kind = match result {
                         Ok(row) => DoneKind::Row(row),
@@ -1436,12 +1702,15 @@ fn do_route_batch_blocking(
         let mut first_panic_msg: Option<String> = None;
         let mut bail_msg: Option<&'static str> = None;
 
-        'chunks: for chunk in params.pairs.chunks(batch_size) {
+        'chunks: for (chunk_idx, chunk) in params.pairs.chunks(batch_size).enumerate() {
             let n = chunk.len();
+            // #482: global input index of this chunk's first pair.
+            let base = chunk_idx * batch_size;
             let fb_before = fallback_count.load(std::sync::atomic::Ordering::Relaxed);
             for (i, pair) in chunk.iter().enumerate() {
                 let work = Work {
                     slot: i,
+                    pair_idx: (base + i) as u32,
                     slon: pair[0],
                     slat: pair[1],
                     dlon: pair[2],
@@ -1453,7 +1722,11 @@ fn do_route_batch_blocking(
                 }
                 next_worker = (next_worker + 1) % n_workers;
             }
-            let mut slots: Vec<Option<RoutePairRow>> = (0..n).map(|_| None).collect();
+            // #482: outer Option = "slot filled" (every dispatched pair
+            // gets a Done back), inner Option = "row present" vs "dropped
+            // (over-bound)". `slot` is the within-chunk position so the
+            // emitted rows keep input order after flattening.
+            let mut slots: Vec<Option<Option<RoutePairRow>>> = (0..n).map(|_| None).collect();
             let mut received = 0usize;
             while received < n {
                 match done_rx.recv() {
@@ -1465,15 +1738,16 @@ fn do_route_batch_blocking(
                                 if first_panic_msg.is_none() {
                                     first_panic_msg = Some(msg);
                                 }
-                                slots[d.slot] = Some(RoutePairRow {
+                                slots[d.slot] = Some(Some(RoutePairRow {
+                                    pair_idx: (base + d.slot) as u32,
                                     origin_lon: f64::NAN,
                                     origin_lat: f64::NAN,
                                     destination_lon: f64::NAN,
                                     destination_lat: f64::NAN,
-                                    duration_s: f32::NAN,
+                                    duration_s: Some(f32::NAN),
                                     distance_m: f32::NAN,
-                                    wkb: Vec::new(),
-                                });
+                                    wkb: Some(Vec::new()),
+                                }));
                             }
                         }
                     }
@@ -1486,8 +1760,18 @@ fn do_route_batch_blocking(
             if first_panic_msg.is_some() {
                 break 'chunks;
             }
-            let results: Vec<RoutePairRow> =
-                slots.into_iter().map(|s| s.expect("slot filled")).collect();
+            // Flatten: drop slots that resolved to `None` (over-bound,
+            // bounded mode). Order preserved by `slot`.
+            let results: Vec<RoutePairRow> = slots
+                .into_iter()
+                .filter_map(|s| s.expect("slot filled"))
+                .collect();
+            let emit_n = results.len();
+            // Bounded mode can drop every pair in a chunk — skip empty
+            // RecordBatches.
+            if emit_n == 0 {
+                continue;
+            }
             let fb_chunk = fallback_count.load(std::sync::atomic::Ordering::Relaxed) - fb_before;
             // #315 Copilot review: drop to DEBUG so production logs
             // aren't spammed by bench instrumentation.
@@ -1497,7 +1781,7 @@ fn do_route_batch_blocking(
                 fallback_pct = (fb_chunk as f64) * 100.0 / (n.max(1) as f64),
                 "route_batch chunk fallback rate"
             );
-            match emit_route_batch(&tx, &schema, n, results) {
+            match emit_route_batch(&tx, &schema, emit_n, results) {
                 EmitOutcome::Sent => {}
                 EmitOutcome::Disconnected => {
                     bail_msg = Some("client disconnected");
@@ -3425,6 +3709,17 @@ impl FlightService for ButterflyFlight {
                 if params.pairs.len() > 100_000 {
                     return Err(Status::invalid_argument("max 100,000 pairs per request"));
                 }
+                // #482: validate the distance bound up front — a negative,
+                // zero, or NaN/inf `max_meters` is a client error, not a
+                // silently-clamped value (the old silent-ignore behaviour
+                // is exactly what the ticket flags).
+                if let Some(m) = params.max_meters
+                    && (!m.is_finite() || m <= 0.0)
+                {
+                    return Err(Status::invalid_argument(
+                        "max_meters must be a finite number > 0",
+                    ));
+                }
                 for (i, pair) in params.pairs.iter().enumerate() {
                     validate_coord(pair[0], pair[1], &format!("pair[{}].src", i))?;
                     validate_coord(pair[2], pair[3], &format!("pair[{}].dst", i))?;
@@ -3604,7 +3899,7 @@ impl FlightService for ButterflyFlight {
             },
             ActionType {
                 r#type: "route_batch".into(),
-                description: "Batch P2P routing with WKB geometry. Ticket: route_batch:<profile>:{\"pairs\":[[origin_lon,origin_lat,destination_lon,destination_lat],...]}".into(),
+                description: "Batch P2P routing with WKB geometry. Ticket: route_batch:<profile>:{\"pairs\":[[origin_lon,origin_lat,destination_lon,destination_lat],...], \"max_meters\": optional}. Every row carries pair_idx = its index in the input pairs array. Without max_meters: one row per pair (full time-optimal route, duration_s + geometry_wkb populated). With max_meters: a DISTANCE prune — pairs whose shortest road distance exceeds the bound are DROPPED (no row, gaps visible via pair_idx), the bounded search early-terminates, and emitted rows carry distance_m only (duration_s + geometry_wkb null). Unknown params are rejected (#482).".into(),
             },
             ActionType {
                 r#type: "isochrone".into(),
@@ -4036,6 +4331,101 @@ mod edges_batch_grouping_tests {
                 rate > 0.95,
                 "byte-identity {:.2}% too low (parallel={parallel}) — ties should be rare",
                 rate * 100.0
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_batch_prune_tests {
+    use super::{RouteBatchParams, route_batch_schema};
+    use arrow::datatypes::DataType;
+
+    /// #482: the route_batch schema gained a leading `pair_idx` column and
+    /// made `duration_s` / `geometry_wkb` nullable (null in bounded mode).
+    /// `distance_m` stays non-null. Column ORDER is load-bearing — the
+    /// emit builders push in this exact order, and clients index by
+    /// position.
+    #[test]
+    fn schema_has_pair_idx_and_nullable_duration_geometry() {
+        let schema = route_batch_schema();
+        let fields = schema.fields();
+        assert_eq!(fields.len(), 8, "pair_idx prepended to the 7 prior cols");
+
+        // pair_idx: FIRST, UInt32, non-null.
+        let pair_idx = &fields[0];
+        assert_eq!(pair_idx.name(), "pair_idx");
+        assert_eq!(pair_idx.data_type(), &DataType::UInt32);
+        assert!(!pair_idx.is_nullable(), "pair_idx must never be null");
+
+        // Coords stay non-null Float64 in cols 1..=4.
+        for (i, name) in [
+            "origin_lon",
+            "origin_lat",
+            "destination_lon",
+            "destination_lat",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let f = &fields[i + 1];
+            assert_eq!(f.name(), name);
+            assert_eq!(f.data_type(), &DataType::Float64);
+            assert!(!f.is_nullable(), "{name} must stay non-null");
+        }
+
+        // duration_s: now NULLABLE Float32 (null in bounded mode).
+        let dur = &fields[5];
+        assert_eq!(dur.name(), "duration_s");
+        assert_eq!(dur.data_type(), &DataType::Float32);
+        assert!(dur.is_nullable(), "duration_s must be nullable (#482)");
+
+        // distance_m: stays NON-null Float32.
+        let dist = &fields[6];
+        assert_eq!(dist.name(), "distance_m");
+        assert_eq!(dist.data_type(), &DataType::Float32);
+        assert!(!dist.is_nullable(), "distance_m stays non-null");
+
+        // geometry_wkb: now NULLABLE Binary (null in bounded mode).
+        let geom = &fields[7];
+        assert_eq!(geom.name(), "geometry_wkb");
+        assert_eq!(geom.data_type(), &DataType::Binary);
+        assert!(geom.is_nullable(), "geometry_wkb must be nullable (#482)");
+    }
+
+    /// #482: `max_meters` defaults to `None` (unbounded) when absent, so
+    /// every pre-existing caller keeps the old full-route behaviour.
+    #[test]
+    fn max_meters_defaults_to_none() {
+        let json = r#"{"pairs":[[4.35,50.85,4.40,51.22]]}"#;
+        let p: RouteBatchParams = serde_json::from_str(json).expect("parse without max_meters");
+        assert!(p.max_meters.is_none());
+        assert_eq!(p.pairs.len(), 1);
+    }
+
+    /// #482: `max_meters` parses when present.
+    #[test]
+    fn max_meters_parses_when_present() {
+        let json = r#"{"pairs":[[4.35,50.85,4.40,51.22]],"max_meters":3000}"#;
+        let p: RouteBatchParams = serde_json::from_str(json).expect("parse with max_meters");
+        assert_eq!(p.max_meters, Some(3000.0));
+    }
+
+    /// #482: `deny_unknown_fields` — the ticket's core complaint is that
+    /// today `max_km`, `prune_max_km`, `radius_km`, `zzz`, … are accepted
+    /// with NO effect. They must now error instead of being ignored.
+    #[test]
+    fn unknown_fields_are_rejected() {
+        for json in [
+            r#"{"pairs":[[4.35,50.85,4.40,51.22]],"max_km":3}"#,
+            r#"{"pairs":[[4.35,50.85,4.40,51.22]],"prune_max_km":3}"#,
+            r#"{"pairs":[[4.35,50.85,4.40,51.22]],"radius_km":3}"#,
+            r#"{"pairs":[[4.35,50.85,4.40,51.22]],"max_minutes":5}"#,
+            r#"{"pairs":[[4.35,50.85,4.40,51.22]],"zzz":1}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<RouteBatchParams>(json).is_err(),
+                "unknown-field params must be rejected, not silently ignored: {json}"
             );
         }
     }
