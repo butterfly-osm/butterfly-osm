@@ -1,0 +1,74 @@
+name: ci
+
+# Merge gate (issue #485). main was silently uncompilable for ~5 days
+# (#480 → #484) because nothing ran `cargo build` on PRs. These are the exact
+# checks that were being run by hand; now they block merge.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same ref cancels the in-flight run — saves runner minutes
+# on rapid pushes without losing coverage of the final commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # NB: deliberately NOT setting `RUSTFLAGS: -D warnings` — that leaks to
+  # dependency crates and would fail CI on an upstream's stray warning. The
+  # workspace `[workspace.lints] warnings = "deny"` already denies warnings
+  # for OUR crates (the correct scope, and exactly #484's class of break).
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin to the repo's rust-version (Cargo.toml `rust-version = "1.95"`,
+      # edition 2024). Bump both together.
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy, rustfmt
+
+      # `gtfs-rt` (transit GTFS-RT decoding) runs `prost-build` at build time,
+      # which shells out to `protoc`. The runner image doesn't ship it, so
+      # `--all-features` clippy/build fail with "Could not find `protoc`".
+      # Pin the version for reproducibility (matches the build rules).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.2"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      # Fast checks first — fail in seconds before the heavy build.
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      # The strict gate: --all-targets --all-features + deny-warnings catches
+      # exactly the class of break that slipped through (#484).
+      - name: clippy (workspace, all targets, all features)
+        run: cargo clippy --workspace --all-targets --all-features
+
+      # Full codegen build — clippy is check-only; this catches monomorphization
+      # / link errors a check pass can miss.
+      - name: build (workspace)
+        run: cargo build --workspace
+
+      # butterfly-route unit tests. The Belgium-container integration tests are
+      # env-gated (BT_*_CONTAINER) and self-skip without the 24 GB artifact, so
+      # this needs no data — it is the ~697 in-process unit tests.
+      - name: test (butterfly-route lib)
+        run: cargo test -p butterfly-route --lib
+
+      # butterfly-dl + butterfly-common unit tests (cheap, complete the gate).
+      - name: test (dl + common)
+        run: cargo test -p butterfly-dl -p butterfly-common
