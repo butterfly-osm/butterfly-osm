@@ -1097,6 +1097,43 @@ fn compute_route_pair(
 /// and hands ownership of the final WKB to the caller via
 /// `std::mem::replace` (the slot is replaced with a same-capacity
 /// `Vec`, preserving the allocation for the next call's encode).
+/// #487: unpack the route + compute its distance (meters) WITHOUT encoding
+/// WKB. Leaves the geometry points in `scratch.points`. This is the exact
+/// same distance metric `build_route_output` returns (it now calls this),
+/// so the `max_meters` prune is a true drop-in on the unbounded
+/// `route_batch` distance — no metric shift, unlike the dropped
+/// distance-optimal approach.
+fn build_route_distance(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    result: &super::query::QueryResult,
+    src_rank: u32,
+    scratch: &mut RouteScratch,
+) -> f32 {
+    super::unpack::unpack_path_into(
+        &mode_data.cch_topo,
+        &mode_data.cch_weights,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        &mut scratch.rank_path,
+    );
+    scratch.ebg_path.clear();
+    scratch.ebg_path.reserve(scratch.rank_path.len());
+    for &rank in &scratch.rank_path {
+        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        scratch
+            .ebg_path
+            .push(mode_data.filtered_to_original[filt_id as usize]);
+    }
+    super::geometry::build_raw_points_into(
+        &scratch.ebg_path,
+        &state.ebg_nodes,
+        &state.edge_geom,
+        &mut scratch.points,
+    ) as f32
+}
+
 fn build_route_output(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -1107,33 +1144,10 @@ fn build_route_output(
 ) -> (f32, f32, Vec<u8>) {
     // #297: result.distance is now seconds (v2 CCH weights).
     let duration_s = result.distance as f64;
-
-    super::unpack::unpack_path_into(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &result.forward_parent,
-        &result.backward_parent,
-        src_rank,
-        &mut scratch.rank_path,
-    );
     let _ = dst_rank; // unpack derives the path from forward+backward parents
 
-    // Translate CCH-rank ids → original EBG ids, reusing scratch.ebg_path.
-    scratch.ebg_path.clear();
-    scratch.ebg_path.reserve(scratch.rank_path.len());
-    for &rank in &scratch.rank_path {
-        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        scratch
-            .ebg_path
-            .push(mode_data.filtered_to_original[filt_id as usize]);
-    }
-
-    let distance_m = super::geometry::build_raw_points_into(
-        &scratch.ebg_path,
-        &state.ebg_nodes,
-        &state.edge_geom,
-        &mut scratch.points,
-    );
+    // distance + geometry points (scratch.points filled).
+    let distance_m = build_route_distance(state, mode_data, result, src_rank, scratch);
 
     encode_linestring_wkb_into(&scratch.points, &mut scratch.wkb);
     // #301: `mem::take` leaves `Vec::new()` behind (zero capacity),
@@ -1145,47 +1159,40 @@ fn build_route_output(
     let cap = scratch.wkb.capacity();
     let wkb = std::mem::replace(&mut scratch.wkb, Vec::with_capacity(cap));
 
-    (duration_s as f32, distance_m as f32, wkb)
+    (duration_s as f32, distance_m, wkb)
 }
 
-/// #482: distance-metric bounded shortest-distance for a single pair.
+/// #487: compute the TIME-optimal route's distance (meters) and keep the
+/// pair only if it is `<= max_m`, else `None` (over-bound or unreachable
+/// → dropped, no row). This is the SAME metric the unbounded `route_batch`
+/// returns in `distance_m`, so the prune is a true drop-in (no
+/// re-validation), and it uses the fast time CCH — not the distance metric
+/// (the dropped #482 approach was ~12x slower AND a different metric, #487).
 ///
-/// Returns the true shortest road DISTANCE in meters if it is
-/// `<= max_m`, else `None` (pair is over-bound → dropped by the
-/// caller). The bound is enforced inside [`CchQuery::distance_bounded`],
-/// which early-terminates once no unsettled node on either frontier is
-/// within `max_m` — so over-bound pairs are cheaper than a full route,
-/// which is the whole point.
-///
-/// `dist_query` MUST be the DISTANCE metric — i.e. built by the caller
-/// as `CchQuery::with_custom_weights(&topo, &up_adj_flat, &down_rev_flat,
-/// &cch_weights_dist)` (the same flats the time query uses — they carry
-/// `topo_edge_idx`, which the standalone `*_dist` flats omit and which
-/// `distance_bounded` needs to traverse). `cch_weights_dist` is in
-/// meters, so the returned value and the bound are both meters.
-///
-/// Snap strategy MIRRORS `compute_route_pair`: K=1 fast path first
-/// (`snap_filtered_role` → `orig_to_rank`), then on a miss OR an
-/// over-bound K=1 result, escalate to K=64 + closest-sum-first combo
-/// enumeration and keep the MIN bounded distance found. `distance_bounded`
-/// already returns `None` for an over-bound result, so any `Some` is
-/// in-bound by construction; taking the MIN across combos gives the true
-/// shortest distance among the snapped endpoints.
+/// Snap MIRRORS `compute_route_pair`: K=1 fast path, then K=64 + 16-combo
+/// fallback ONLY when the K=1 snap misses or the snapped ranks do not
+/// connect — NOT when the route simply exceeds the bound. An over-bound
+/// pair whose endpoints snapped fine is dropped immediately (one time
+/// query), which is the whole point of a prune; the original #482 code's
+/// escalation-on-over-bound made the pruned pairs the SLOWEST (the 12x).
 #[allow(clippy::too_many_arguments)]
-fn compute_distance_bounded(
+fn compute_route_distance_bounded(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
-    dist_query: &CchQuery<'_>,
+    query: &CchQuery<'_>,
     slon: f64,
     slat: f64,
     dlon: f64,
     dlat: f64,
     max_m: u32,
+    fallback_count: &std::sync::atomic::AtomicU64,
+    scratch: &mut RouteScratch,
 ) -> Option<f32> {
     use super::types::SnapRole;
+    let bound = max_m as f32;
 
-    // Fast path: K=1 single snap + single bounded distance query.
+    // K=1 fast path.
     let src_role = SnapRole::Src.role_filter(mode_data);
     let dst_role = SnapRole::Dst.role_filter(mode_data);
     if let (Some(src_id), Some(dst_id)) = (
@@ -1196,8 +1203,6 @@ fn compute_distance_bounded(
             .snap_index
             .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
     ) {
-        // Bounds-checked: a corrupted snap index must never panic the
-        // request — OOB falls through to the K=64 slow path.
         let (src_rank, dst_rank) = match (
             mode_data.orig_to_rank.get(src_id as usize).copied(),
             mode_data.orig_to_rank.get(dst_id as usize).copied(),
@@ -1205,21 +1210,24 @@ fn compute_distance_bounded(
             (Some(s), Some(d)) => (s, d),
             _ => (u32::MAX, u32::MAX),
         };
-        if src_rank != u32::MAX
-            && dst_rank != u32::MAX
-            && let Some(d) = dist_query.distance_bounded(src_rank, dst_rank, max_m)
-        {
-            return Some(d as f32);
+        if src_rank != u32::MAX && dst_rank != u32::MAX {
+            // Both endpoints snapped to valid ranks: the time query is
+            // authoritative for reachability. If it connects, the bound
+            // decides — over-bound DROPS here, no K=64 escalation.
+            if let Some(result) = query.query(src_rank, dst_rank) {
+                let dist = build_route_distance(state, mode_data, &result, src_rank, scratch);
+                return if dist <= bound { Some(dist) } else { None };
+            }
+            // valid ranks but no path between them → fall through to K=64
+            // (same reachability escalation compute_route_pair does).
         }
     }
 
-    // Slow path: K=64 K-best snap + (i+j)-combo enumeration. The K=1
-    // primary may simply not connect, OR it may connect but exceed the
-    // bound via a worse-snapped endpoint while a nearby alternative is
-    // in-bound. Enumerate up to 16 closest-sum-first combos and keep the
-    // minimum in-bound distance.
+    // K=64 escalation — only reached on a K=1 snap miss / non-connecting
+    // ranks, NOT on over-bound. Find the time-optimal route over combos,
+    // then apply the bound ONCE.
+    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     const SNAP_K: usize = 64;
-    const MAX_BOUNDED_COMBOS: usize = 16;
     let src_snap = super::snap_kbest::snap_k_pair_role(
         state,
         mode_data,
@@ -1240,34 +1248,19 @@ fn compute_distance_bounded(
         None,
         SNAP_K,
     );
-
     if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
         return None;
     }
-
-    let combos = super::snap_kbest::combo_order(
-        src_snap.ranks.len(),
-        dst_snap.ranks.len(),
-        MAX_BOUNDED_COMBOS,
-    );
-    let mut best: Option<u32> = None;
-    for (i, j) in combos {
-        let s = src_snap.ranks[i];
-        let d = dst_snap.ranks[j];
-        if s == d {
-            continue;
-        }
-        // Tighten the bound to the best in-bound distance found so far —
-        // each subsequent query early-terminates that much sooner.
-        let bound = best.unwrap_or(max_m);
-        if let Some(dist) = dist_query.distance_bounded(s, d, bound) {
-            best = Some(match best {
-                Some(b) => b.min(dist),
-                None => dist,
-            });
-        }
-    }
-    best.map(|d| d as f32)
+    super::snap_kbest::p2p_with_kbest_fallback(
+        query,
+        &src_snap.ranks,
+        &dst_snap.ranks,
+        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    )
+    .and_then(|(src_rank, _dst_rank, result)| {
+        let dist = build_route_distance(state, mode_data, &result, src_rank, scratch);
+        if dist <= bound { Some(dist) } else { None }
+    })
 }
 
 fn route_batch_worker_threads(n_pairs: usize) -> usize {
@@ -1468,17 +1461,6 @@ fn do_route_batch_blocking(
     // Small-batch fast path: no pool overhead for tiny calls.
     if n_workers == 1 {
         let query = CchQuery::new(&mode_data);
-        // #482: distance metric query, built ONCE. Same flats as the time
-        // query (they carry topo_edge_idx) but with the meters weights.
-        // Only built when bounded — the unbounded path never touches it.
-        let dist_query = max_m.map(|_| {
-            CchQuery::with_custom_weights(
-                &mode_data.cch_topo,
-                &mode_data.up_adj_flat,
-                &mode_data.down_rev_flat,
-                &mode_data.cch_weights_dist,
-            )
-        });
         let mut scratch = RouteScratch::default();
         for (chunk_idx, chunk) in params.pairs.chunks(batch_size).enumerate() {
             // #482: global input index of this chunk's first pair.
@@ -1494,10 +1476,22 @@ fn do_route_batch_blocking(
                 .filter_map(|(i, pair)| {
                     let pair_idx = (base + i) as u32;
                     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-                    match (max_m, dist_query.as_ref()) {
-                        // Bounded: DISTANCE-only, DROP over-bound pairs.
-                        (Some(m), Some(dq)) => compute_distance_bounded(
-                            &state, &mode_data, mode, dq, slon, slat, dlon, dlat, m,
+                    match max_m {
+                        // Bounded (#487): keep the pair only if the
+                        // TIME-optimal route's distance is <= max_m; emit a
+                        // distance-only row. Over-bound / unreachable → drop.
+                        Some(m) => compute_route_distance_bounded(
+                            &state,
+                            &mode_data,
+                            mode,
+                            &query,
+                            slon,
+                            slat,
+                            dlon,
+                            dlat,
+                            m,
+                            fb,
+                            &mut scratch,
                         )
                         .map(|dist| RoutePairRow {
                             pair_idx,
@@ -1613,26 +1607,26 @@ fn do_route_batch_blocking(
             handles.push(scope.spawn(move || {
                 let mode_data = state.get_mode(mode);
                 let query = CchQuery::new(&mode_data);
-                // #482: per-worker distance metric query, built once when
-                // bounded. Same flats as the time query (topo_edge_idx
-                // present) but meters weights. Unbounded → never built.
-                let dist_query = max_m.map(|_| {
-                    CchQuery::with_custom_weights(
-                        &mode_data.cch_topo,
-                        &mode_data.up_adj_flat,
-                        &mode_data.down_rev_flat,
-                        &mode_data.cch_weights_dist,
-                    )
-                });
                 let mut scratch = RouteScratch::default();
                 let fb = fallback_count.as_ref();
                 while let Ok(work) = rx.recv() {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        match (max_m, dist_query.as_ref()) {
-                            // Bounded: DISTANCE-only, DROP over-bound pairs.
-                            (Some(m), Some(dq)) => compute_distance_bounded(
-                                &state, &mode_data, mode, dq, work.slon, work.slat, work.dlon,
-                                work.dlat, m,
+                        match max_m {
+                            // Bounded (#487): keep the pair only if the
+                            // TIME-optimal route's distance is <= max_m.
+                            // Over-bound / unreachable → drop.
+                            Some(m) => compute_route_distance_bounded(
+                                &state,
+                                &mode_data,
+                                mode,
+                                &query,
+                                work.slon,
+                                work.slat,
+                                work.dlon,
+                                work.dlat,
+                                m,
+                                fb,
+                                &mut scratch,
                             )
                             .map(|dist| RoutePairRow {
                                 pair_idx: work.pair_idx,
