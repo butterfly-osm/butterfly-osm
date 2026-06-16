@@ -36,6 +36,16 @@ jobs:
           toolchain: 1.95.0
           components: clippy, rustfmt
 
+      # `gtfs-rt` (transit GTFS-RT decoding) runs `prost-build` at build time,
+      # which shells out to `protoc`. The runner image doesn't ship it, so
+      # `--all-features` clippy/build fail with "Could not find `protoc`".
+      # Pin the version for reproducibility (matches the build rules).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.2"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
 
