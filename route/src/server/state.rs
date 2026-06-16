@@ -2185,6 +2185,88 @@ impl ServerState {
         Ok(matched)
     }
 
+    /// traffic-flow#26 (#480): register `car_eq` — the MSA-equilibrium
+    /// cut of the flow-derived ratios (w=1.0 table) applied to the CLEAN
+    /// base (`car_freeflow`), exposed as its own mode alongside the
+    /// typical-day `car` and the peak `car_rush_hour`. Pinned
+    /// non-evictable (synthetic mode, no container section backs it).
+    ///
+    /// Restored on `feat/route-batch-prune-482`: PR #480's merge to main
+    /// (commit af2edfb) shipped ONLY the `mod.rs` call site for this
+    /// method — the `state.rs` definition (described in the PR as one of
+    /// two "thin wrappers" over the shared
+    /// `recustomized_weights_from_edge_table` core) was dropped, leaving
+    /// `origin/main` non-compiling. This is a faithful sibling of
+    /// [`register_car_rush_hour_from_edge_speeds`]: same clean base, same
+    /// flat rebuild + pinned-variant registration, distinct mode name
+    /// (`car_eq`), input table (`edge_speeds.eq.parquet`), and cache key.
+    pub fn register_car_eq_from_edge_speeds(
+        &mut self,
+        edge_speeds_path: &std::path::Path,
+    ) -> Result<usize> {
+        let t0 = std::time::Instant::now();
+        anyhow::ensure!(
+            !self.mode_lookup.contains_key("car_eq"),
+            "car_eq already registered"
+        );
+        let ff_idx = *self
+            .mode_lookup
+            .get("car_freeflow")
+            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car_freeflow' base"))?
+            as usize;
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car' mode"))?
+            as usize;
+        let base: std::sync::Arc<ModeData> = self.modes[ff_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("car_eq registration: car_freeflow not resident"))?;
+
+        let (matched, new_weights, adjusted_node_weights) = self
+            .recustomized_weights_from_edge_table(
+                &base,
+                edge_speeds_path,
+                "recustomize_cache.car-edge-eq.v1.bin",
+            )?;
+
+        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        let mut eq = clone_mode_data(&base);
+        eq.cch_weights = new_weights;
+        eq.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
+        eq.up_adj_flat = up_adj_flat;
+        eq.down_rev_flat = down_rev_flat;
+        eq.down_adj_flat = down_adj_flat;
+
+        let new_index = self.modes.len();
+        let slot = ModeSlot::new_loaded_variant("car_eq".to_string(), eq);
+        // Variant slots are non-evictable by construction; assert the
+        // invariant rather than trusting it silently.
+        slot.evictable
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.modes.push(slot);
+        self.mode_lookup
+            .insert("car_eq".to_string(), new_index as u8);
+        self.mode_names.push("car_eq".to_string());
+        // Snap mask: share car's eligible-edge mask (same graph shape).
+        if let Some(mask) = self.snap_index.masks.get(car_idx).cloned() {
+            self.snap_index.masks.push(mask);
+        } else {
+            tracing::warn!("car snap mask missing — car_eq snapping degraded");
+        }
+        tracing::info!(
+            matched,
+            elapsed_s = t0.elapsed().as_secs_f64(),
+            "registered car_eq (MSA-equilibrium flow-derived ratios on the clean base, #480)"
+        );
+        Ok(matched)
+    }
+
     pub fn recustomize_car_from_edge_speeds(
         &self,
         edge_speeds_path: &std::path::Path,
