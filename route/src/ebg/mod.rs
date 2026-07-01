@@ -152,7 +152,7 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     let mut penalty_configs: [TurnPenaltyConfig; MAX_MODES] =
         std::array::from_fn(|_| TurnPenaltyConfig::default_identity());
     for mc in &config.modes {
-        penalty_configs[mc.mode_index as usize] = TurnPenaltyConfig::for_mode(&mc.mode_name);
+        penalty_configs[mc.mode_index as usize] = TurnPenaltyConfig::for_mode(&mc.mode_name)?;
     }
 
     // Determine which mode (if any) to use for highway class lookup in turn geometry.

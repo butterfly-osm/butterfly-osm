@@ -27,6 +27,17 @@ struct TurnPenaltySchema {
     pub class_change_penalty_s_per_diff: u32,
     #[serde(default)]
     pub max_class_diff_for_penalty: u8,
+    // Class-scaled per-junction friction: at every real junction, add
+    // `min(max(0, max(from_class,to_class) - ref_class), max_levels) * per_level`
+    // seconds. Unlike the angle penalty it applies to straight-throughs too, so
+    // it accumulates along a chain of minor junctions (rat-run deterrence).
+    // per_level == 0 disables it. See `compute_turn_penalty`.
+    #[serde(default)]
+    pub junction_class_penalty_s_per_level: u32,
+    #[serde(default)]
+    pub junction_class_penalty_ref_class: u16,
+    #[serde(default)]
+    pub junction_class_penalty_max_levels: u8,
 }
 fn default_turn_bias() -> f64 {
     1.0
@@ -146,6 +157,20 @@ pub struct TurnPenaltyConfig {
 
     /// Maximum class difference to apply penalty (larger diffs capped)
     pub max_class_diff_for_penalty: u8,
+
+    /// Class-scaled per-junction friction: seconds added per hierarchy level
+    /// below `junction_class_penalty_ref_class`, at every real junction (not
+    /// just turns). `0` disables it. Governing class = the least-important
+    /// (highest-code) of the two edges, so a movement involving a minor road
+    /// pays minor-road junction friction; accumulates along minor-road chains.
+    pub junction_class_penalty_s_per_level: u32,
+
+    /// Reference (arterial) class code: roads at or above this importance
+    /// (code ≤ ref) pay zero junction friction. E.g. 5 = primary.
+    pub junction_class_penalty_ref_class: u16,
+
+    /// Cap on the number of levels-below-ref charged (larger drops capped).
+    pub junction_class_penalty_max_levels: u8,
 }
 
 impl TurnPenaltyConfig {
@@ -159,23 +184,42 @@ impl TurnPenaltyConfig {
             signal_delay_s: 0,
             class_change_penalty_s_per_diff: 0,
             max_class_diff_for_penalty: 0,
+            junction_class_penalty_s_per_level: 0,
+            junction_class_penalty_ref_class: 0,
+            junction_class_penalty_max_levels: 0,
         }
     }
 
-    /// Load turn penalty config from a model JSON file.
-    /// Falls back to identity config if the model file doesn't exist or has the
-    /// pre-#297 `_ds` keys (which are rejected by `deny_unknown_fields`).
-    pub fn for_mode(mode_name: &str) -> Self {
-        let models_dir =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
-        let model_path = models_dir.join(format!("{}.model.json", mode_name));
-        if let Ok(content) = std::fs::read_to_string(&model_path)
-            && let Ok(schema) = serde_json::from_str::<ModelSchema>(&content)
-        {
-            return Self::from_model_schema(&schema.turn_penalties);
-        }
-        // No model file or parse error — return identity
-        Self::default_identity()
+    /// Load turn penalty config from a model JSON file for an ACTIVE mode.
+    ///
+    /// #491: resolves the models dir from `BUTTERFLY_MODELS_DIR` at runtime,
+    /// falling back to the compile-time checkout path for local dev. HARD-ERRORS
+    /// if the model file is missing or unparseable (including pre-#297 `_ds`
+    /// keys, rejected by `deny_unknown_fields`) — an active mode with no model
+    /// is a build error, not a silent zero-penalty fallback. `default_identity`
+    /// stays for genuinely-inactive mode slots, which never call this.
+    pub fn for_mode(mode_name: &str) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let models_dir = std::env::var_os("BUTTERFLY_MODELS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"))
+            });
+        let model_path = models_dir.join(format!("{mode_name}.model.json"));
+        let content = std::fs::read_to_string(&model_path).with_context(|| {
+            format!(
+                "turn-penalty model for active mode '{mode_name}' not found at {} \
+                 (set BUTTERFLY_MODELS_DIR to the models directory)",
+                model_path.display()
+            )
+        })?;
+        let schema: ModelSchema = serde_json::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse turn_penalties from {}",
+                model_path.display()
+            )
+        })?;
+        Ok(Self::from_model_schema(&schema.turn_penalties))
     }
 
     /// Build config from model schema turn_penalties section
@@ -188,6 +232,9 @@ impl TurnPenaltyConfig {
             signal_delay_s: tp.signal_delay_s,
             class_change_penalty_s_per_diff: tp.class_change_penalty_s_per_diff,
             max_class_diff_for_penalty: tp.max_class_diff_for_penalty,
+            junction_class_penalty_s_per_level: tp.junction_class_penalty_s_per_level,
+            junction_class_penalty_ref_class: tp.junction_class_penalty_ref_class,
+            junction_class_penalty_max_levels: tp.junction_class_penalty_max_levels,
         }
     }
 
@@ -202,6 +249,9 @@ impl TurnPenaltyConfig {
             signal_delay_s: 8,
             class_change_penalty_s_per_diff: 0,
             max_class_diff_for_penalty: 6,
+            junction_class_penalty_s_per_level: 0,
+            junction_class_penalty_ref_class: 0,
+            junction_class_penalty_max_levels: 0,
         }
     }
 
@@ -219,6 +269,9 @@ impl TurnPenaltyConfig {
             signal_delay_s: 5,
             class_change_penalty_s_per_diff: 0,
             max_class_diff_for_penalty: 4,
+            junction_class_penalty_s_per_level: 0,
+            junction_class_penalty_ref_class: 0,
+            junction_class_penalty_max_levels: 0,
         }
     }
 
@@ -233,6 +286,9 @@ impl TurnPenaltyConfig {
             signal_delay_s: 4,
             class_change_penalty_s_per_diff: 0,
             max_class_diff_for_penalty: 0,
+            junction_class_penalty_s_per_level: 0,
+            junction_class_penalty_ref_class: 0,
+            junction_class_penalty_max_levels: 0,
         }
     }
 }
@@ -258,7 +314,10 @@ pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> 
     }
 
     // Skip if no penalty configured
-    if config.turn_penalty_s == 0 && config.signal_delay_s == 0 {
+    if config.turn_penalty_s == 0
+        && config.signal_delay_s == 0
+        && config.junction_class_penalty_s_per_level == 0
+    {
         return 0;
     }
 
@@ -302,6 +361,23 @@ pub fn compute_turn_penalty(geom: &TurnGeometry, config: &TurnPenaltyConfig) -> 
         let capped_diff = class_diff.min(config.max_class_diff_for_penalty as u32);
         let class_penalty = capped_diff * config.class_change_penalty_s_per_diff;
         penalty = penalty.saturating_add(class_penalty);
+    }
+
+    // Class-scaled per-junction friction. Applies to EVERY movement at this
+    // junction (including straight-throughs the angle penalty misses), scaled
+    // by how far below the arterial reference the least-important road is —
+    // so a chain of minor junctions accumulates realistic give-way/crossing
+    // cost, deterring rat-runs that thread through residential streets.
+    if config.junction_class_penalty_s_per_level > 0
+        && geom.from_highway_class > 0
+        && geom.to_highway_class > 0
+    {
+        // Least-important road at the movement (higher code = less important).
+        let governing = geom.from_highway_class.max(geom.to_highway_class);
+        let levels_below = governing.saturating_sub(config.junction_class_penalty_ref_class);
+        let capped = (levels_below as u32).min(config.junction_class_penalty_max_levels as u32);
+        let junction_penalty = capped * config.junction_class_penalty_s_per_level;
+        penalty = penalty.saturating_add(junction_penalty);
     }
 
     penalty
@@ -483,5 +559,41 @@ mod tests {
             foot_penalty_same, foot_penalty_diff,
             "pedestrians should not get class change penalty"
         );
+    }
+
+    #[test]
+    fn test_class_scaled_junction_friction() {
+        // per_level=1, ref=primary(5), cap=6: friction = min(max(0, gov-5), 6).
+        let config = TurnPenaltyConfig {
+            junction_class_penalty_s_per_level: 1,
+            junction_class_penalty_ref_class: 5,
+            junction_class_penalty_max_levels: 6,
+            // isolate the junction term: no angle/class-change here (straight-through).
+            turn_penalty_s: 0,
+            signal_delay_s: 0,
+            class_change_penalty_s_per_diff: 0,
+            ..TurnPenaltyConfig::car()
+        };
+        // Straight-through (angle 0) at a real junction (degree 4). governing =
+        // max(from,to) — the least-important road at the movement.
+        let at = |from: u16, to: u16, deg: u8| {
+            compute_turn_penalty(&TurnGeometry::compute(0, 0, false, deg, from, to), &config)
+        };
+        // Arterials (≤ ref) pay nothing even at a junction.
+        assert_eq!(at(5, 5, 4), 0, "primary-primary junction: 0");
+        assert_eq!(at(1, 1, 4), 0, "motorway: 0");
+        // Minor roads accumulate, scaling with the drop below the arterial ref.
+        assert_eq!(at(7, 7, 4), 2, "secondary: (7-5)=2");
+        assert_eq!(at(9, 9, 4), 4, "tertiary: (9-5)=4");
+        assert_eq!(at(12, 12, 4), 6, "residential: min(12-5,6)=6");
+        // Governing = least-important road: entering residential from primary
+        // still pays residential-junction friction.
+        assert_eq!(
+            at(5, 12, 4),
+            6,
+            "primary->residential governed by residential"
+        );
+        // Below the min-degree gate (not a real junction): no friction.
+        assert_eq!(at(12, 12, 2), 0, "degree<3: not a junction, 0");
     }
 }
