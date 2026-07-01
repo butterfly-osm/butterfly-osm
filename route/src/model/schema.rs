@@ -15,7 +15,11 @@ pub struct ModelSchema {
     pub priority: Vec<PriorityRule>,
     pub highway_class: HashMap<String, u16>,
     pub class_bits: HashMap<String, ClassBitRule>,
-    pub turn_penalties: TurnPenaltySchema,
+    // #490: the `turn_penalties` block is intentionally NOT parsed here. It is
+    // the single-sourced by `ebg::turn_penalty` (`for_mode`), which re-reads
+    // the model JSON at step 4 and is the only consumer that feeds the turn
+    // table. ModelSchema has no `deny_unknown_fields`, so the block in the JSON
+    // is simply ignored on the compile path.
     pub turn_restrictions: TurnRestrictionConfig,
 }
 
@@ -116,25 +120,8 @@ pub enum ClassBitRule {
     HighwayAny { highway_any: Vec<String> },
 }
 
-/// Turn-penalty section of a model JSON. Values are whole seconds
-/// (post-#297; v1 used deciseconds). The `deny_unknown_fields` attribute
-/// makes the loader REJECT pre-#297 JSON files (which used `_ds` keys),
-/// pointing the user at the migration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnPenaltySchema {
-    /// Maximum turn penalty in seconds (was deciseconds in pre-#297 models).
-    pub turn_penalty_s: u32,
-    pub turn_bias: f64,
-    /// Additional U-turn penalty in seconds (was deciseconds).
-    pub u_turn_penalty_s: u32,
-    pub min_degree_for_penalty: u8,
-    /// Traffic-signal delay in seconds (was deciseconds).
-    pub signal_delay_s: u32,
-    /// Per-class-step transition penalty in seconds (was deciseconds).
-    pub class_change_penalty_s_per_diff: u32,
-    pub max_class_diff_for_penalty: u8,
-}
+// #490: `TurnPenaltySchema` moved to `ebg::turn_penalty` as the single typed
+// source for the `turn_penalties` block. The compile path no longer parses it.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRestrictionConfig {
@@ -169,8 +156,7 @@ mod tests {
         assert!(model.access.highway.get("motorway") == Some(&true));
         assert!(model.access.highway.get("footway") == Some(&false));
         assert!(model.oneway.respect);
-        // car turn_penalty: 75 ds → 8 s (round-half-to-even: 7.5 → 8 since 7 is odd → 8).
-        assert_eq!(model.turn_penalties.turn_penalty_s, 8);
+        // #490: turn_penalties no longer parsed here — tested in ebg::turn_penalty.
     }
 
     #[test]
@@ -183,7 +169,6 @@ mod tests {
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
         assert_eq!(model.name, "bike");
         assert!(!model.oneway.respect);
-        assert_eq!(model.turn_penalties.turn_bias, 1.4);
         // #470: cyclists are hard-banned from motorways regardless of tags.
         assert_eq!(
             model.access.hard_deny_highways,
@@ -201,8 +186,6 @@ mod tests {
         let model: ModelSchema = serde_json::from_str(&json).unwrap();
         assert_eq!(model.name, "foot");
         assert!(!model.oneway.respect);
-        assert_eq!(model.turn_penalties.turn_bias, 1.0);
-        assert_eq!(model.turn_penalties.u_turn_penalty_s, 0);
         // #470: pedestrians are hard-banned from motorways regardless of
         // tags (foot=yes / sidewalk=* must not override the class ban).
         assert_eq!(
