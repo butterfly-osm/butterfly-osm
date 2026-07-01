@@ -11,8 +11,8 @@
 //! ## What this tool deliberately does NOT do
 //!
 //! - **It does not choose or fetch the observed-speed dataset.** The data
-//!   source (Sirius CDIS / TomTom Speed Profiles / INRIX / probe-vehicle
-//!   traces / …) is a licensing + coverage decision that belongs to the
+//!   source (probe-vehicle traces / commercial speed profiles / sensor
+//!   aggregates / …) is a licensing + coverage decision that belongs to the
 //!   operator — issue #388 open-question #1, "the real prerequisite". This
 //!   engine is *source-independent*: it takes whatever `(way_id,
 //!   observed_avg_speed_kmh, sample_count)` table the operator produces.
@@ -24,7 +24,7 @@
 //! ## Fitting (density-only variant of the #388 spec)
 //!
 //! The shipped [`TrafficProfile`] schema is five density factors with no
-//! highway dimension (see #392 — Belgium ships one baked friction profile).
+//! highway dimension (see #392 — one baked friction profile per region).
 //! Each way already carries its base (legal-limit) speed in
 //! `way_attrs.base_speed_mmps`, which encodes the highway class. So the right
 //! per-density quantity is the **ratio** `observed_kmh / base_kmh`, aggregated

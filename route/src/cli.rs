@@ -267,7 +267,8 @@ pub enum Commands {
         models_dir: PathBuf,
 
         /// Density classifier: `osm-tag` (default, deterministic, no extra
-        /// data) or `cdis-parquet` (proprietary plug-in, not implemented).
+        /// data) or `external-parquet` (external classification plug-in, not
+        /// implemented in this build).
         #[arg(long, default_value = "osm-tag")]
         density_classifier: String,
 
