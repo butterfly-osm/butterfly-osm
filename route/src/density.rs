@@ -13,10 +13,11 @@
 //!   way into one of the five density classes. Runs in O(n_ways), no spatial
 //!   index, no extra I/O.
 //!
-//! - [`DensityClassifier::CdisParquet`] — reserved plug-in point for the
-//!   Sirius proprietary CDIS sector geometries + rurban archetypes. Not
-//!   implemented in this repo; selecting it returns an error so operators
-//!   know they need a private build.
+//! - [`DensityClassifier::ExternalParquet`] — reserved plug-in point for
+//!   loading density classes from an external per-region classification
+//!   parquet (e.g. territorial/urbanity data). Not implemented in this repo;
+//!   selecting it returns an error so operators know they need a private
+//!   build that provides the classification source.
 //!
 //! ## Mapping rules (OsmTag classifier)
 //!
@@ -142,17 +143,19 @@ impl DensityClass {
 pub enum DensityClassifier {
     /// Tag-driven, no external data. Default.
     OsmTag,
-    /// Sirius proprietary CDIS parquet — not implemented in this repo.
-    CdisParquet,
+    /// External per-region classification parquet — not implemented in this repo.
+    ExternalParquet,
 }
 
 impl DensityClassifier {
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s.to_ascii_lowercase().as_str() {
             "osm-tag" | "osm_tag" | "osmtag" => Ok(DensityClassifier::OsmTag),
-            "cdis-parquet" | "cdis_parquet" | "cdisparquet" => Ok(DensityClassifier::CdisParquet),
+            "external-parquet" | "external_parquet" | "externalparquet" => {
+                Ok(DensityClassifier::ExternalParquet)
+            }
             other => anyhow::bail!(
-                "unknown density classifier '{}': supported: osm-tag, cdis-parquet",
+                "unknown density classifier '{}': supported: osm-tag, external-parquet",
                 other
             ),
         }
@@ -241,8 +244,9 @@ pub fn classify_osm_tag(
     tags: &WayTagsView<'_>,
 ) -> DensityClass {
     if classifier != DensityClassifier::OsmTag {
-        // The CDIS classifier is plumbed at the CLI level; if we ever reach
-        // this point with another variant the caller forgot to dispatch.
+        // The external-parquet classifier is plumbed at the CLI level; if we
+        // ever reach this point with another variant the caller forgot to
+        // dispatch.
         return DensityClass::Suburban;
     }
 
@@ -352,8 +356,8 @@ mod tests {
             DensityClassifier::OsmTag
         );
         assert_eq!(
-            DensityClassifier::parse("CDIS-Parquet").unwrap(),
-            DensityClassifier::CdisParquet
+            DensityClassifier::parse("External-Parquet").unwrap(),
+            DensityClassifier::ExternalParquet
         );
         assert!(DensityClassifier::parse("nope").is_err());
     }

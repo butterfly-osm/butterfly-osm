@@ -215,10 +215,10 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     let mut way_attrs_per_mode: Vec<Vec<WayAttr>> = vec![Vec::new(); n_modes];
 
     // Density classifier: same call for every mode (density is mode-agnostic).
-    if config.density_classifier == DensityClassifier::CdisParquet {
+    if config.density_classifier == DensityClassifier::ExternalParquet {
         anyhow::bail!(
-            "density classifier 'cdis-parquet' is not implemented in this build; \
-             use --density-classifier osm-tag (proprietary CDIS data plug-in is a follow-up issue)"
+            "density classifier 'external-parquet' is not implemented in this build; \
+             use --density-classifier osm-tag (the external classification plug-in is a follow-up)"
         );
     }
 
