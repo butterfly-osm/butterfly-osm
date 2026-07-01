@@ -190,10 +190,7 @@
     "min_degree_for_penalty": 3,
     "signal_delay_s": 2,
     "class_change_penalty_s_per_diff": 0,
-    "max_class_diff_for_penalty": 3,
-    "junction_class_penalty_s_per_level": 1,
-    "junction_class_penalty_ref_class": 5,
-    "junction_class_penalty_max_levels": 6
+    "max_class_diff_for_penalty": 3
   },
   "turn_restrictions": {
     "respect": true,
