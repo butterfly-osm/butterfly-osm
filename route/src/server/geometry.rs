@@ -438,9 +438,9 @@ mod tests {
     // be oriented to connect, not appended forward (which zigzags → ~2× length).
     #[test]
     fn build_raw_points_orients_reversed_edges() {
+        use crate::formats::ArcCow;
         use crate::formats::ebg_nodes::{EbgNode, EbgNodes};
         use crate::formats::edge_geom::{EdgeGeomOffsets, EdgeGeomPoints};
-        use crate::formats::ArcCow;
         use crate::server::edge_geom::EdgeGeometry;
         // edge0 forward: lon 0→1→2 ; edge1 STORED reversed: lon 4→3 (traversed 2→3→4).
         let off = EdgeGeomOffsets {
