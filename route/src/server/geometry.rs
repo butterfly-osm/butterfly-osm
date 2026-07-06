@@ -153,9 +153,30 @@ pub fn build_raw_points_into(
     for &ebg_id in ebg_path {
         let node = &ebg_nodes.nodes[ebg_id as usize];
         let polyline = edge_geom.polyline(node.geom_idx);
-
-        for (lon, lat) in polyline.iter() {
-            coordinates.push(Point { lon, lat });
+        let n = polyline.len();
+        if n == 0 {
+            total_distance_m += node.length_m as f64;
+            continue;
+        }
+        // #493: a per-edge polyline is stored in ONE orientation, but the path may
+        // traverse the edge either way (customized/recustomized shortcut unpacks
+        // pick edges whose stored orientation is reversed). Appending forward
+        // unconditionally makes the polyline zigzag (~2× length). Orient each edge
+        // so the endpoint nearest the running path connects first; length_m is
+        // orientation-independent so the returned distance is unchanged.
+        let reversed = match coordinates.last() {
+            Some(prev) => dist_sq(prev, polyline.at(n - 1)) < dist_sq(prev, polyline.at(0)),
+            None => false,
+        };
+        if reversed {
+            for j in (0..n).rev() {
+                let (lon, lat) = polyline.at(j);
+                coordinates.push(Point { lon, lat });
+            }
+        } else {
+            for (lon, lat) in polyline.iter() {
+                coordinates.push(Point { lon, lat });
+            }
         }
 
         // #297: EBG `length_m` is in metres (was `length_mm` in v1).
@@ -165,6 +186,14 @@ pub fn build_raw_points_into(
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
     total_distance_m
+}
+
+/// Squared planar distance between a Point and a (lon, lat) tuple — cheap
+/// endpoint-proximity test for edge orientation (no need for true metric distance).
+#[inline]
+fn dist_sq(a: &Point, b: (f64, f64)) -> f64 {
+    let (dx, dy) = (a.lon - b.0, a.lat - b.1);
+    dx * dx + dy * dy
 }
 
 /// Build route geometry from EBG node sequence
@@ -404,6 +433,55 @@ pub fn decode_polyline6(encoded: &str) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #493: an edge whose stored polyline is reversed relative to traversal must
+    // be oriented to connect, not appended forward (which zigzags → ~2× length).
+    #[test]
+    fn build_raw_points_orients_reversed_edges() {
+        use crate::formats::ebg_nodes::{EbgNode, EbgNodes};
+        use crate::formats::edge_geom::{EdgeGeomOffsets, EdgeGeomPoints};
+        use crate::formats::ArcCow;
+        use crate::server::edge_geom::EdgeGeometry;
+        // edge0 forward: lon 0→1→2 ; edge1 STORED reversed: lon 4→3 (traversed 2→3→4).
+        let off = EdgeGeomOffsets {
+            n_edges: 2,
+            n_points: 5,
+            offsets: ArcCow::from_vec(vec![0u32, 3, 5]),
+        };
+        let pts = EdgeGeomPoints {
+            n_points: 5,
+            bbox_min_lon: 0,
+            bbox_min_lat: 0,
+            bbox_max_lon: 40_000_000,
+            bbox_max_lat: 0,
+            points: ArcCow::from_vec(vec![
+                0, 0, 10_000_000, 0, 20_000_000, 0, 40_000_000, 0, 30_000_000, 0,
+            ]),
+        };
+        let geom = EdgeGeometry::from_sections(off, pts).unwrap();
+        let mk = |gi: u32| EbgNode {
+            tail_nbg: 0,
+            head_nbg: 0,
+            geom_idx: gi,
+            length_m: 10,
+            class_bits: 0,
+            primary_way: 0,
+        };
+        let ebg = EbgNodes {
+            n_nodes: 2,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(vec![mk(0), mk(1)]),
+        };
+        let mut coords = Vec::new();
+        build_raw_points_into(&[0, 1], &ebg, &geom, &mut coords);
+        let lons: Vec<i64> = coords.iter().map(|p| p.lon.round() as i64).collect();
+        assert_eq!(
+            lons,
+            vec![0, 1, 2, 3, 4],
+            "reversed edge must be oriented to connect (monotonic), not zigzag 0,1,2,4,3"
+        );
+    }
 
     #[test]
     fn test_encode_polyline6_empty() {
