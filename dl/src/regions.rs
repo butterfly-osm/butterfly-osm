@@ -241,6 +241,76 @@ impl RegionReport {
 /// failures (unknown region, bad index TOML); per-entry network
 /// failures become `EntryReport::result = Err(...)` and the caller
 /// decides whether to exit non-zero.
+/// #498: resolve a wildcard feed URL against its parent directory index.
+///
+/// Some mirrors publish only DATED files with no stable `latest` alias (e.g.
+/// gtfs.flatturtle.cloud: `delijn/delijn-gtfs_2026-07-07.zip`). A feed `url`
+/// whose FILENAME segment contains a single `*` (`.../delijn-gtfs_*.zip`) is
+/// resolved by fetching the parent index and picking the lexicographically
+/// greatest match — ISO-dated names make that the newest. Conditional
+/// download (#418) then applies to the resolved URL as usual.
+async fn resolve_wildcard_url(url: &str) -> Result<String> {
+    let (parent, pattern) = url
+        .rsplit_once('/')
+        .with_context(|| format!("wildcard feed url has no path: {url}"))?;
+    let (prefix, suffix) = pattern
+        .split_once('*')
+        .with_context(|| format!("wildcard feed url has no '*': {url}"))?;
+    anyhow::ensure!(
+        !suffix.contains('*'),
+        "only one '*' is supported in a feed url: {url}"
+    );
+    let index_url = format!("{parent}/");
+    let outcome = crate::core::Downloader::stream_url_conditional(&index_url, None, None)
+        .await
+        .with_context(|| format!("GET {index_url} (wildcard index for {url})"))?;
+    let body = match outcome {
+        crate::core::ConditionalOutcome::Body { stream, .. } => {
+            // Directory indexes are a few KB; cap the read so a misbehaving
+            // mirror can't balloon memory. 4 MiB is orders of magnitude above
+            // any real index.
+            const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+            let mut limited = tokio::io::AsyncReadExt::take(stream, MAX_INDEX_BYTES);
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut buf)
+                .await
+                .with_context(|| format!("read index body: {index_url}"))?;
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        crate::core::ConditionalOutcome::NotModified => {
+            bail!("unexpected 304 for unconditional GET {index_url}")
+        }
+    };
+    let best = best_wildcard_match(&body, prefix, suffix).with_context(|| {
+        format!("no file matching '{pattern}' found in index {index_url} (#498)")
+    })?;
+    log::info!("{url}: wildcard resolved → {best} (#498)");
+    Ok(format!("{parent}/{best}"))
+}
+
+/// Scan an HTML/plain directory index for filenames `prefix<middle>suffix`
+/// (middle free of separators/quotes) and return the lexicographically
+/// greatest — for ISO-dated names, the newest.
+fn best_wildcard_match(body: &str, prefix: &str, suffix: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut rest = body;
+    while let Some(pos) = rest.find(prefix) {
+        let tail = &rest[pos..];
+        if let Some(send) = tail[prefix.len()..].find(suffix) {
+            let name = &tail[..prefix.len() + send + suffix.len()];
+            let middle = &name[prefix.len()..name.len() - suffix.len()];
+            let clean = !middle.contains(|c: char| {
+                c == '"' || c == '\'' || c == '/' || c == '<' || c == '>' || c.is_whitespace()
+            });
+            if clean && best.as_deref().is_none_or(|b| name > b) {
+                best = Some(name.to_string());
+            }
+        }
+        rest = &rest[pos + prefix.len()..];
+    }
+    best
+}
+
 pub async fn fetch_region(
     region_name: &str,
     data_root: &Path,
@@ -261,10 +331,29 @@ pub async fn fetch_region(
         .map(|entry| {
             let entry_clone = entry.clone();
             tokio::spawn(async move {
+                // #498: dated-only mirrors — resolve a `*` in the filename
+                // segment against the parent index before downloading.
+                let url = if entry_clone
+                    .url
+                    .rsplit_once('/')
+                    .is_some_and(|(_, f)| f.contains('*'))
+                {
+                    match resolve_wildcard_url(&entry_clone.url).await {
+                        Ok(u) => u,
+                        Err(e) => {
+                            return EntryReport {
+                                entry: entry_clone,
+                                result: Err(format!("{e:#}")),
+                            };
+                        }
+                    }
+                } else {
+                    entry_clone.url.clone()
+                };
                 let mut opts = VerifiedOptions::for_extension(&entry_clone.target);
                 // #418: --force suppresses the conditional GET + sidecar skip.
                 opts.force_refresh = force;
-                let result = download_verified(&entry_clone.url, &entry_clone.target, &opts)
+                let result = download_verified(&url, &entry_clone.target, &opts)
                     .await
                     .map_err(|e| format!("{e:#}"));
                 EntryReport {
@@ -313,6 +402,26 @@ pub fn shipped_regions() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #498: wildcard index matching — picks the lexicographically greatest
+    // (= newest for ISO-dated names), ignores non-filename spans.
+    #[test]
+    fn wildcard_picks_newest_dated_file() {
+        let body = r#"<a href="/delijn/delijn-gtfs_2026-07-04.zip">delijn-gtfs_2026-07-04.zip</a>
+                      <a href="/delijn/delijn-gtfs_2026-07-07.zip">delijn-gtfs_2026-07-07.zip</a>
+                      <a href="/delijn/delijn-gtfs_2026-07-06.zip">delijn-gtfs_2026-07-06.zip</a>"#;
+        assert_eq!(
+            best_wildcard_match(body, "delijn-gtfs_", ".zip").as_deref(),
+            Some("delijn-gtfs_2026-07-07.zip")
+        );
+    }
+
+    #[test]
+    fn wildcard_rejects_spans_crossing_tokens() {
+        // prefix appears but nothing ends with the suffix inside one token
+        let body = r#"<a href="/x/delijn-gtfs_readme.txt">notes</a> other .zip elsewhere"#;
+        assert_eq!(best_wildcard_match(body, "delijn-gtfs_", ".zip"), None);
+    }
 
     #[test]
     fn belgium_index_parses() {
