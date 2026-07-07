@@ -265,9 +265,14 @@ async fn resolve_wildcard_url(url: &str) -> Result<String> {
         .await
         .with_context(|| format!("GET {index_url} (wildcard index for {url})"))?;
     let body = match outcome {
-        crate::core::ConditionalOutcome::Body { mut stream, .. } => {
+        crate::core::ConditionalOutcome::Body { stream, .. } => {
+            // Directory indexes are a few KB; cap the read so a misbehaving
+            // mirror can't balloon memory. 4 MiB is orders of magnitude above
+            // any real index.
+            const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+            let mut limited = tokio::io::AsyncReadExt::take(stream, MAX_INDEX_BYTES);
             let mut buf = Vec::new();
-            tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
+            tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut buf)
                 .await
                 .with_context(|| format!("read index body: {index_url}"))?;
             String::from_utf8_lossy(&buf).into_owned()
