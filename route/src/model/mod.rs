@@ -129,14 +129,17 @@ pub fn resolve_models_dir(explicit: Option<&Path>) -> Result<PathBuf> {
         if p.is_dir() {
             return Ok(p.to_path_buf());
         }
-        anyhow::bail!("--models-dir {} does not exist", p.display());
+        anyhow::bail!("--models-dir {} is not an existing directory", p.display());
     }
     if let Ok(env_dir) = std::env::var("BUTTERFLY_MODELS_DIR") {
         let p = PathBuf::from(&env_dir);
         if p.is_dir() {
             return Ok(p);
         }
-        anyhow::bail!("BUTTERFLY_MODELS_DIR={} does not exist", env_dir);
+        anyhow::bail!(
+            "BUTTERFLY_MODELS_DIR={} is not an existing directory",
+            env_dir
+        );
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(exe_dir) = exe.parent()
@@ -198,6 +201,27 @@ impl BuildManifest {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // #491: resolver tests use only the explicit arg — deterministic under the
+    // parallel test harness (no env-var mutation).
+    #[test]
+    fn resolve_models_dir_explicit_existing() {
+        let dir = std::env::temp_dir().join(format!("bf_models_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let got = resolve_models_dir(Some(dir.as_path())).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, dir);
+    }
+
+    #[test]
+    fn resolve_models_dir_explicit_missing_is_error() {
+        let dir = std::env::temp_dir().join(format!("bf_models_gone_{}", std::process::id()));
+        let err = resolve_models_dir(Some(dir.as_path())).unwrap_err();
+        assert!(
+            err.to_string().contains("not an existing directory"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn test_discover_modes_from_models_dir() {

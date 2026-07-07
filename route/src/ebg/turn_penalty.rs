@@ -174,7 +174,7 @@ impl TurnPenaltyConfig {
         let model_path = models_dir.join(format!("{}.model.json", mode_name));
         let content = std::fs::read_to_string(&model_path).with_context(|| {
             format!(
-                "model file for active mode '{}' missing: {} (#491 — refusing to build with zero turn penalties)",
+                "cannot read model file for active mode '{}': {} (#491 — refusing to build with zero turn penalties)",
                 mode_name,
                 model_path.display()
             )
@@ -508,8 +508,11 @@ mod tests {
 
     #[test]
     fn from_models_dir_missing_mode_is_hard_error() {
-        let dir = std::env::temp_dir();
+        // Fresh empty dir (not the shared temp root, which may hold unrelated files).
+        let dir = std::env::temp_dir().join(format!("bf_tp_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let err = TurnPenaltyConfig::from_models_dir(&dir, "no_such_mode").unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
         assert!(
             err.to_string().contains("no_such_mode"),
             "error must name the missing mode: {err}"
