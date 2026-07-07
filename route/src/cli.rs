@@ -322,6 +322,12 @@ pub enum Commands {
         #[arg(long = "turn-rules", value_name = "MODE=PATH")]
         turn_rules: Vec<String>,
 
+        /// Models directory holding <mode>.model.json (turn penalties). Defaults
+        /// to $BUTTERFLY_MODELS_DIR, then exe-relative models/, then the dev
+        /// checkout (#491 — missing model for an active mode is a hard error).
+        #[arg(long = "models-dir")]
+        models_dir: Option<PathBuf>,
+
         /// Output directory for ebg.nodes, ebg.csr, ebg.turn_table
         #[arg(short, long)]
         outdir: PathBuf,
@@ -1482,6 +1488,7 @@ impl Cli {
                 node_signals,
                 way_attrs,
                 turn_rules,
+                models_dir,
                 outdir,
             } => {
                 let wa_parsed = parse_mode_path_pairs(&way_attrs, "way-attrs")?;
@@ -1607,6 +1614,12 @@ impl Cli {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
+                // #491: resolve the models dir at RUNTIME (arg → env → exe-relative
+                // → dev checkout) and hard-error when absent — never build with
+                // silently-zeroed turn penalties again.
+                let resolved_models_dir = crate::model::resolve_models_dir(models_dir.as_deref())?;
+                println!("Models dir: {}", resolved_models_dir.display());
+
                 let config = EbgConfig {
                     nbg_csr_path: nbg_csr.clone(),
                     nbg_geo_path: nbg_geo.clone(),
@@ -1614,6 +1627,7 @@ impl Cli {
                     node_signals_path: signals_path,
                     modes: modes.clone(),
                     outdir: outdir.clone(),
+                    models_dir: resolved_models_dir,
                 };
 
                 let result = build_ebg(config)?;

@@ -162,20 +162,26 @@ impl TurnPenaltyConfig {
         }
     }
 
-    /// Load turn penalty config from a model JSON file.
-    /// Falls back to identity config if the model file doesn't exist or has the
-    /// pre-#297 `_ds` keys (which are rejected by `deny_unknown_fields`).
-    pub fn for_mode(mode_name: &str) -> Self {
-        let models_dir =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
+    /// Load turn penalty config for an ACTIVE mode from `<models_dir>/<mode>.model.json`.
+    ///
+    /// #491: this is a HARD ERROR on a missing or unparseable model file. The
+    /// previous `for_mode` read a compile-time-baked path and silently returned
+    /// `default_identity()` when it was absent (e.g. in containers), producing
+    /// artifacts with ZERO turn penalties. Identity is reserved for genuinely
+    /// inactive mode slots, which never reach this call.
+    pub fn from_models_dir(models_dir: &std::path::Path, mode_name: &str) -> anyhow::Result<Self> {
+        use anyhow::Context;
         let model_path = models_dir.join(format!("{}.model.json", mode_name));
-        if let Ok(content) = std::fs::read_to_string(&model_path)
-            && let Ok(schema) = serde_json::from_str::<ModelSchema>(&content)
-        {
-            return Self::from_model_schema(&schema.turn_penalties);
-        }
-        // No model file or parse error — return identity
-        Self::default_identity()
+        let content = std::fs::read_to_string(&model_path).with_context(|| {
+            format!(
+                "cannot read model file for active mode '{}': {} (#491 — refusing to build with zero turn penalties)",
+                mode_name,
+                model_path.display()
+            )
+        })?;
+        let schema: ModelSchema = serde_json::from_str(&content)
+            .with_context(|| format!("unparseable model file: {}", model_path.display()))?;
+        Ok(Self::from_model_schema(&schema.turn_penalties))
     }
 
     /// Build config from model schema turn_penalties section
@@ -482,6 +488,34 @@ mod tests {
         assert_eq!(
             foot_penalty_same, foot_penalty_diff,
             "pedestrians should not get class change penalty"
+        );
+    }
+
+    // #491: loading from an explicit models dir must parse the shipped car
+    // model (real penalties), and a missing model for an active mode must be
+    // a hard error — never a silent identity fallback.
+    #[test]
+    fn from_models_dir_loads_shipped_car() {
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
+        let tp = TurnPenaltyConfig::from_models_dir(&dir, "car").unwrap();
+        assert_eq!(tp.turn_penalty_s, 8);
+        assert_eq!(tp.u_turn_penalty_s, 20);
+        assert!(
+            tp.turn_penalty_s > 0,
+            "car must never build with zero turn penalties (#491)"
+        );
+    }
+
+    #[test]
+    fn from_models_dir_missing_mode_is_hard_error() {
+        // Fresh empty dir (not the shared temp root, which may hold unrelated files).
+        let dir = std::env::temp_dir().join(format!("bf_tp_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = TurnPenaltyConfig::from_models_dir(&dir, "no_such_mode").unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            err.to_string().contains("no_such_mode"),
+            "error must name the missing mode: {err}"
         );
     }
 }
