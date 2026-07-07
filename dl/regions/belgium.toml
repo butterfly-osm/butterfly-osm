@@ -25,7 +25,10 @@ url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
 
 [[gtfs]]
 id  = "delijn"
-url = "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip"
+# #498: the iRail mirror moved to gtfs.flatturtle.cloud and publishes only
+# DATED files (no latest alias). The '*' in the filename is resolved against
+# the directory index at fetch time — newest (lexicographically greatest) wins.
+url = "https://gtfs.flatturtle.cloud/delijn/delijn-gtfs_*.zip"
 
 [[gtfs]]
 id  = "tec"
