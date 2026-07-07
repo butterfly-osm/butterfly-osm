@@ -114,6 +114,58 @@ pub fn model_file_path(model_dir: &Path, mode_name: &str) -> PathBuf {
     model_dir.join(format!("{}.model.json", mode_name))
 }
 
+/// Resolve the models directory at RUNTIME (#491). Resolution order:
+/// 1. `explicit` (a `--models-dir` CLI arg)
+/// 2. `$BUTTERFLY_MODELS_DIR`
+/// 3. `<exe_dir>/models` and `<exe_dir>/../models` (installed layouts)
+/// 4. `CARGO_MANIFEST_DIR/../models` (dev checkout / cargo runs)
+///
+/// The first candidate that EXISTS wins; if none does, this is a hard error
+/// listing everything tried. Never silently fall back to "no models" — that
+/// produced artifacts with zero turn penalties (#491).
+pub fn resolve_models_dir(explicit: Option<&Path>) -> Result<PathBuf> {
+    let mut tried: Vec<PathBuf> = Vec::new();
+    if let Some(p) = explicit {
+        if p.is_dir() {
+            return Ok(p.to_path_buf());
+        }
+        anyhow::bail!("--models-dir {} is not an existing directory", p.display());
+    }
+    if let Ok(env_dir) = std::env::var("BUTTERFLY_MODELS_DIR") {
+        let p = PathBuf::from(&env_dir);
+        if p.is_dir() {
+            return Ok(p);
+        }
+        anyhow::bail!(
+            "BUTTERFLY_MODELS_DIR={} is not an existing directory",
+            env_dir
+        );
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        for cand in [exe_dir.join("models"), exe_dir.join("../models")] {
+            if cand.is_dir() {
+                return Ok(cand);
+            }
+            tried.push(cand);
+        }
+    }
+    let dev = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../models"));
+    if dev.is_dir() {
+        return Ok(dev);
+    }
+    tried.push(dev);
+    anyhow::bail!(
+        "models directory not found — set --models-dir or BUTTERFLY_MODELS_DIR (tried: {})",
+        tried
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 /// Build manifest — written by pipeline, validated by server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildManifest {
@@ -149,6 +201,27 @@ impl BuildManifest {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // #491: resolver tests use only the explicit arg — deterministic under the
+    // parallel test harness (no env-var mutation).
+    #[test]
+    fn resolve_models_dir_explicit_existing() {
+        let dir = std::env::temp_dir().join(format!("bf_models_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let got = resolve_models_dir(Some(dir.as_path())).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, dir);
+    }
+
+    #[test]
+    fn resolve_models_dir_explicit_missing_is_error() {
+        let dir = std::env::temp_dir().join(format!("bf_models_gone_{}", std::process::id()));
+        let err = resolve_models_dir(Some(dir.as_path())).unwrap_err();
+        assert!(
+            err.to_string().contains("not an existing directory"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn test_discover_modes_from_models_dir() {

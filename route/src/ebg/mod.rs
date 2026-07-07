@@ -34,6 +34,10 @@ pub struct EbgConfig {
     pub node_signals_path: PathBuf,
     pub modes: Vec<EbgModeConfig>,
     pub outdir: PathBuf,
+    /// Runtime-resolved models directory (#491) — turn penalties per active
+    /// mode are loaded from `<models_dir>/<mode>.model.json`, hard-erroring
+    /// when missing (no silent zero-penalty builds).
+    pub models_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -148,11 +152,19 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     // 5. Build adjacency lists with turn rule application
     println!("Building turn-expanded adjacency...");
 
-    // Build turn penalty configs per mode from model JSON files
+    // Build turn penalty configs per mode from model JSON files. #491: loading
+    // is a hard error for active modes (identity stays only on inactive slots),
+    // and the loaded values are printed so a zero-penalty build can never pass
+    // silently again.
     let mut penalty_configs: [TurnPenaltyConfig; MAX_MODES] =
         std::array::from_fn(|_| TurnPenaltyConfig::default_identity());
     for mc in &config.modes {
-        penalty_configs[mc.mode_index as usize] = TurnPenaltyConfig::for_mode(&mc.mode_name);
+        let tp = TurnPenaltyConfig::from_models_dir(&config.models_dir, &mc.mode_name)?;
+        println!(
+            "  ✓ turn penalties {}: turn={}s bias={} u_turn={}s signal={}s",
+            mc.mode_name, tp.turn_penalty_s, tp.turn_bias, tp.u_turn_penalty_s, tp.signal_delay_s
+        );
+        penalty_configs[mc.mode_index as usize] = tp;
     }
 
     // Determine which mode (if any) to use for highway class lookup in turn geometry.
