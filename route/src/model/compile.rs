@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 
-use crate::ebg::turn_penalty::TurnPenaltyConfig;
-
 use super::schema::*;
 
 /// Compiled speed override
@@ -99,9 +97,6 @@ pub struct CompiledModel {
     // Highway key_id for fast lookup
     pub highway_key_id: Option<u32>,
 
-    // Turn penalties
-    pub turn_penalty_config: TurnPenaltyConfig,
-
     // Turn restrictions
     pub respect_turn_restrictions: bool,
     pub restriction_key_id: Option<u32>,
@@ -134,7 +129,6 @@ impl CompiledModel {
             highway_class_table: vec![],
             class_bit_rules: vec![],
             highway_key_id: None,
-            turn_penalty_config: TurnPenaltyConfig::default_identity(),
             respect_turn_restrictions: false,
             restriction_key_id: None,
             mode_restriction_key_id: None,
@@ -315,18 +309,6 @@ pub fn compile_model(
         })
         .collect();
 
-    // --- Turn penalty config (post-#297: values in seconds) ---
-    let tp = &schema.turn_penalties;
-    let turn_penalty_config = TurnPenaltyConfig {
-        turn_penalty_s: tp.turn_penalty_s,
-        turn_bias: tp.turn_bias,
-        u_turn_penalty_s: tp.u_turn_penalty_s,
-        min_degree_for_penalty: tp.min_degree_for_penalty,
-        signal_delay_s: tp.signal_delay_s,
-        class_change_penalty_s_per_diff: tp.class_change_penalty_s_per_diff,
-        max_class_diff_for_penalty: tp.max_class_diff_for_penalty,
-    };
-
     // --- Turn restrictions ---
     let restriction_key_id = rev_key
         .get(schema.turn_restrictions.restriction_tag.as_str())
@@ -371,8 +353,6 @@ pub fn compile_model(
 
         class_bit_rules,
         highway_key_id,
-
-        turn_penalty_config,
 
         respect_turn_restrictions: schema.turn_restrictions.respect,
         restriction_key_id,

@@ -8,38 +8,12 @@
 //!
 //! Reference: https://github.com/Project-OSRM/osrm-backend/blob/master/profiles/car.lua
 
-/// Schema for parsing model JSON files (turn_penalties section).
-/// Values are whole seconds (post-#297; v1 used deciseconds with `_ds` keys
-/// which are now rejected).
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TurnPenaltySchema {
-    pub turn_penalty_s: u32,
-    #[serde(default = "default_turn_bias")]
-    pub turn_bias: f64,
-    #[serde(default)]
-    pub u_turn_penalty_s: u32,
-    #[serde(default = "default_min_degree")]
-    pub min_degree_for_penalty: u8,
-    #[serde(default)]
-    pub signal_delay_s: u32,
-    #[serde(default)]
-    pub class_change_penalty_s_per_diff: u32,
-    #[serde(default)]
-    pub max_class_diff_for_penalty: u8,
-}
-fn default_turn_bias() -> f64 {
-    1.0
-}
-fn default_min_degree() -> u8 {
-    3
-}
-
-/// Top-level model JSON schema (only the fields we need).
-#[derive(Debug, serde::Deserialize)]
-struct ModelSchema {
-    turn_penalties: TurnPenaltySchema,
-}
+/// #490: the `turn_penalties` JSON block is parsed by the SHARED
+/// `crate::model::schema::TurnPenaltySchema` — one struct, one parse contract.
+/// (Previously a private duplicate here had to be kept field-for-field in sync
+/// with the compile-path struct.)
+use crate::model::ModelSchema;
+use crate::model::schema::TurnPenaltySchema;
 
 /// Turn geometry for a single turn (a → b at intersection)
 #[derive(Debug, Clone)]
