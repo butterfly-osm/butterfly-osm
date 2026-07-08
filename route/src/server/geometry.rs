@@ -4,7 +4,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::formats::EbgNodes;
-use crate::range::{ReachableSegment, SparseContourConfig, generate_sparse_contour};
+use crate::range::{ReachableSegment, SparseContourConfig};
 use crate::server::edge_geom::EdgeGeometry;
 
 /// A point in WGS84 coordinates
@@ -275,6 +275,10 @@ pub fn build_isochrone_geometry_sparse(
     // it produced missing polygon areas exactly like this.)
 
     let mut segments: Vec<ReachableSegment> = Vec::new();
+    // #497: the snapped origin — first geometry point of a zero-distance settled
+    // edge. Used to pick the contour component CONTAINING the origin when the
+    // stamped set is disconnected at tile resolution.
+    let mut anchor: Option<(i32, i32)> = None;
 
     for &(ebg_id, dist_ds) in settled_nodes {
         if dist_ds > max_time_ds {
@@ -300,6 +304,10 @@ pub fn build_isochrone_geometry_sparse(
             continue;
         }
 
+        if anchor.is_none() && dist_ds == 0 {
+            anchor = Some(polyline.at_lat_lon_e7(0));
+        }
+
         if dist_end_ds <= max_time_ds {
             // Fully reachable edge — stamp it (lat-first ordering for the
             // sparse contour stamper, matching the legacy code).
@@ -320,7 +328,7 @@ pub fn build_isochrone_geometry_sparse(
     }
 
     // Generate contour using sparse tile rasterization + boundary tracing
-    match generate_sparse_contour(&segments, &config) {
+    match crate::range::generate_sparse_contour_anchored(&segments, &config, anchor) {
         Ok(result) => result
             .outer_ring
             .into_iter()

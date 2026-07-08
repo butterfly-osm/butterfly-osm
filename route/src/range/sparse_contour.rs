@@ -637,6 +637,21 @@ pub fn generate_sparse_contour(
     segments: &[ReachableSegment],
     config: &SparseContourConfig,
 ) -> Result<SparseContourResult> {
+    generate_sparse_contour_anchored(segments, config, None)
+}
+
+/// #497: like [`generate_sparse_contour`], but when the stamped set splits into
+/// multiple disconnected components, return the contour CONTAINING the anchor
+/// (the snapped query origin, `(lat_e7, lon_e7)` — same fixed-point order as
+/// segment points) instead of the largest-by-vertex-count one. An isochrone
+/// whose polygon excludes its own origin is wrong no matter how big the other
+/// component is. Falls back to the largest contour when the anchor is `None`
+/// or not inside any traced ring.
+pub fn generate_sparse_contour_anchored(
+    segments: &[ReachableSegment],
+    config: &SparseContourConfig,
+    anchor_lat_lon_e7: Option<(i32, i32)>,
+) -> Result<SparseContourResult> {
     let mut stats = SparseContourStats {
         input_segments: segments.len(),
         ..Default::default()
@@ -712,6 +727,26 @@ pub fn generate_sparse_contour(
         }
     }
 
+    // #497: the anchor (snapped query origin) is reachable BY DEFINITION —
+    // stamp a 3×3 disk at its cell so its component always has area. A thin
+    // origin street otherwise traces a degenerate (<3-vertex / zero-area)
+    // ring that gets dropped, leaving the origin outside the returned
+    // polygon. The disk is ≤ ~1 cell (~20-40 m) of extra extent and merges
+    // invisibly when the origin sits inside the main blob (the common case).
+    let anchor_cell: Option<(f64, f64)> = anchor_lat_lon_e7.map(|(lat_e7, lon_e7)| {
+        let pt = to_mercator(lat_e7 as f64 / 1e7, lon_e7 as f64 / 1e7);
+        let (col, row) = tile_map.mercator_to_cell(pt.x, pt.y);
+        for dc in -1..=1 {
+            for dr in -1..=1 {
+                tile_map.set_cell(col + dc, row + dr);
+            }
+        }
+        (
+            (pt.x - min_x) / cell_size_merc,
+            (pt.y - min_y) / cell_size_merc,
+        )
+    });
+
     stats.active_tiles = tile_map.tiles.len();
     stats.stamp_time_us = stamp_start.elapsed().as_micros() as u64;
 
@@ -732,7 +767,7 @@ pub fn generate_sparse_contour(
 
     // Step 4: Extract contour using marching squares on sparse tiles
     let contour_start = std::time::Instant::now();
-    let contour = extract_contour_sparse(&closed);
+    let contour = extract_contour_sparse(&closed, anchor_cell);
     stats.contour_vertices_before_simplify = contour.len();
     stats.contour_time_us = contour_start.elapsed().as_micros() as u64;
 
@@ -793,7 +828,7 @@ pub fn generate_sparse_contour(
 /// For maps with multiple disconnected components, we trace ALL boundaries and return
 /// the LARGEST one (by vertex count). This handles cases where roads reach far-away
 /// areas without connecting to intermediate regions.
-fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
+fn extract_contour_sparse(map: &SparseTileMap, anchor_cell: Option<(f64, f64)>) -> Vec<(f64, f64)> {
     if map.tiles.is_empty() {
         return vec![];
     }
@@ -832,11 +867,68 @@ fn extract_contour_sparse(map: &SparseTileMap) -> Vec<(f64, f64)> {
         }
     }
 
-    // Return the largest contour (by vertex count).
+    // #497: prefer the contour CONTAINING the anchor (the snapped query
+    // origin) — an isochrone must include its own origin, however small its
+    // component. Fall back to the largest contour (by vertex count) when no
+    // anchor is given or no ring contains it.
+    if let Some(anchor) = anchor_cell {
+        let mut containing: Option<&Vec<(f64, f64)>> = None;
+        for c in &all_contours {
+            // "Contains" must tolerate thin components: ring vertices are
+            // emitted at CELL CENTERS (#431), so a 1-cell-wide corridor traces
+            // a zero-area ring and its own origin lies ON it, never strictly
+            // inside. Accept strictly-inside OR within one cell of the ring.
+            if (point_in_ring(anchor, c) || ring_near(anchor, c, 1.0))
+                && containing.is_none_or(|b| c.len() > b.len())
+            {
+                containing = Some(c);
+            }
+        }
+        if let Some(c) = containing {
+            return c.clone();
+        }
+    }
     all_contours
         .into_iter()
         .max_by_key(|c| c.len())
         .unwrap_or_default()
+}
+
+/// True when `pt` is within `tol` (cell units) of any ring segment.
+fn ring_near(pt: (f64, f64), ring: &[(f64, f64)], tol: f64) -> bool {
+    let (px, py) = pt;
+    let n = ring.len();
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        let (dx, dy) = (x2 - x1, y2 - y1);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (cx, cy) = (x1 + t * dx, y1 + t * dy);
+        if (px - cx) * (px - cx) + (py - cy) * (py - cy) <= tol * tol {
+            return true;
+        }
+    }
+    false
+}
+
+/// Even-odd point-in-polygon in tile coordinates.
+fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
+    let (x, y) = pt;
+    let mut inside = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        if (y1 > y) != (y2 > y) && x < (x2 - x1) * (y - y1) / (y2 - y1) + x1 {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 /// Find ALL boundary cells that could start a trace (for multi-component maps)
@@ -1323,6 +1415,41 @@ mod tests {
             .collect()
     }
 
+    // #497: with two disconnected components, the anchor (query origin) must
+    // select ITS component even when the other one is larger; without an
+    // anchor the largest wins (legacy behavior).
+    #[test]
+    fn anchored_extraction_prefers_origin_component() {
+        // big 30x3 strip at (10..40, 10..13); tiny 2x2 block at (0..2, 0..2)
+        let mut cells: Vec<(i32, i32)> = vec![(0, 0), (1, 0), (0, 1), (1, 1)];
+        for c in 10..40 {
+            for r in 10..13 {
+                cells.push((c, r));
+            }
+        }
+        let map = map_with_cells(&cells);
+        let largest = extract_contour_sparse(&map, None);
+        let anchored = extract_contour_sparse(&map, Some((1.0, 1.0)));
+        assert!(
+            largest.len() > anchored.len(),
+            "sanity: big block traces more vertices"
+        );
+        assert!(
+            point_in_ring((1.0, 1.0), &anchored) || ring_near((1.0, 1.0), &anchored, 1.0),
+            "anchored ring must contain the origin"
+        );
+        assert!(
+            !point_in_ring((1.0, 1.0), &largest),
+            "largest ring is the other component"
+        );
+        // anchor inside the big block still returns the big block
+        let big = extract_contour_sparse(&map, Some((20.0, 11.5)));
+        assert_eq!(big.len(), largest.len());
+        // anchor outside everything falls back to largest
+        let fallback = extract_contour_sparse(&map, Some((100.0, 100.0)));
+        assert_eq!(fallback.len(), largest.len());
+    }
+
     #[test]
     fn test_center_emission_square_block() {
         // 3x3 block of cells: the ring must pass through the centers of the
@@ -1331,7 +1458,7 @@ mod tests {
         let cells: Vec<(i32, i32)> = (0..3)
             .flat_map(|row| (0..3).map(move |col| (col, row)))
             .collect();
-        let ring = extract_contour_sparse(&map_with_cells(&cells));
+        let ring = extract_contour_sparse(&map_with_cells(&cells), None);
 
         let got: HashSet<(i64, i64)> = half_cells(&ring).into_iter().collect();
         let expected: HashSet<(i64, i64)> = [
@@ -1361,7 +1488,7 @@ mod tests {
         let cells: Vec<(i32, i32)> = (0..3)
             .flat_map(|row| (0..3).map(move |col| (col, row)))
             .collect();
-        let ring = extract_contour_sparse(&map_with_cells(&cells));
+        let ring = extract_contour_sparse(&map_with_cells(&cells), None);
         assert!(!ring.is_empty());
 
         let min_x = ring.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
@@ -1382,7 +1509,7 @@ mod tests {
         // be exactly the 3 distinct centers with no consecutive duplicates
         // and no trailing repeat of the first vertex (closure happens
         // downstream).
-        let ring = extract_contour_sparse(&map_with_cells(&[(0, 0), (1, 0), (0, 1)]));
+        let ring = extract_contour_sparse(&map_with_cells(&[(0, 0), (1, 0), (0, 1)]), None);
         let q = half_cells(&ring);
 
         assert_eq!(q.len(), 3, "expected 3 distinct centers, got {ring:?}");
@@ -1413,10 +1540,10 @@ mod tests {
         // Far-away smaller component, in different tiles.
         cells.extend((200..203).flat_map(|row| (200..203).map(move |col| (col, row))));
 
-        let reference = extract_contour_sparse(&map_with_cells(&cells));
+        let reference = extract_contour_sparse(&map_with_cells(&cells), None);
         assert!(!reference.is_empty());
         for _ in 0..5 {
-            let again = extract_contour_sparse(&map_with_cells(&cells));
+            let again = extract_contour_sparse(&map_with_cells(&cells), None);
             assert_eq!(
                 half_cells(&again),
                 half_cells(&reference),
@@ -1433,7 +1560,7 @@ mod tests {
             .collect();
         cells.extend([(300, 300), (301, 300), (300, 301), (301, 301)]);
 
-        let ring = extract_contour_sparse(&map_with_cells(&cells));
+        let ring = extract_contour_sparse(&map_with_cells(&cells), None);
         assert!(!ring.is_empty());
         for &(x, y) in &ring {
             assert!(

@@ -33,6 +33,7 @@ pub use contour::{ContourResult, ContourStats, export_contour_geojson};
 pub mod sparse_contour;
 pub use sparse_contour::{
     SparseContourConfig, SparseContourResult, SparseContourStats, generate_sparse_contour,
+    generate_sparse_contour_anchored,
 };
 
 pub mod batched_isochrone;
