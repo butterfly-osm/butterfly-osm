@@ -595,18 +595,10 @@ pub async fn compute_table_bucket_m2m(
     // bounded fallback's distance_bounded gate keeps them null cheaply.
     let need_dur_internal = want_duration || bounded;
 
-    // #502: expand phantom seeds into extra matrix rows/columns; the bucket
-    // engine runs on the expanded lists and SeedExpansion::reduce_* collapses
-    // back to S×T with exact partial-edge adjustments (see phantom.rs).
-    let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
-    let tgt_exp = super::phantom::SeedExpansion::build(&tgt_seedsets);
-    let src_exp_ranks = src_exp.exp_ranks.clone();
-    let tgt_exp_ranks = tgt_exp.exp_ranks.clone();
-    let exp_threshold = if threshold == u32::MAX {
-        u32::MAX
-    } else {
-        threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
-    };
+    // #509: phantom seeds go INTO the bucket engine (super-source forward,
+    // shift-trick backward, pure-meet guard) — one sweep per endpoint, S×T
+    // cells. Replaces the #502 API-layer SeedExpansion, which multiplied
+    // engine cells by ~(avg seeds)^2 (measured 12-15x slower at every size).
 
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
@@ -625,18 +617,16 @@ pub async fn compute_table_bucket_m2m(
         // #415: the `_bounded` variant early-stops the time sweeps at
         // `threshold`; `u32::MAX` reproduces the unbounded result exactly.
         let (time_mat, lat_mat, _stats) =
-            crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
+            crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
                 n_nodes,
                 time_up,
                 time_down,
                 up_lat,
                 dn_lat,
-                &src_exp_ranks,
-                &tgt_exp_ranks,
-                exp_threshold,
+                &src_seedsets,
+                &tgt_seedsets,
+                threshold,
             );
-        let (time_mat, lat_opt) = src_exp.reduce_time(&tgt_exp, &time_mat, Some(&lat_mat));
-        let lat_mat = lat_opt.expect("carry channel requested");
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
@@ -666,15 +656,14 @@ pub async fn compute_table_bucket_m2m(
         // bound is in effect (reachability is defined by time).
         let time_mat: Option<Vec<u32>> = if need_dur_internal {
             let t_dur = std::time::Instant::now();
-            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_bounded(
+            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                 n_nodes,
                 time_up,
                 time_down,
-                &src_exp_ranks,
-                &tgt_exp_ranks,
-                exp_threshold,
+                &src_seedsets,
+                &tgt_seedsets,
+                threshold,
             );
-            let (matrix, _) = src_exp.reduce_time(&tgt_exp, &matrix, None);
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
@@ -689,9 +678,21 @@ pub async fn compute_table_bucket_m2m(
             // Distance weights are metres — the minutes bound does not apply to
             // the distance search. Distance cells are bounded by the final
             // time-grid mask after the fallback.
-            let (matrix, _stats) =
-                table_bucket_parallel(n_nodes, dist_up, dist_down, &src_exp_ranks, &tgt_exp_ranks);
-            let matrix = src_exp.reduce_len(&tgt_exp, &matrix);
+            // Distance-metric run: seed costs must be the LENGTH partials —
+            // swap (part_time, part_len) so the engine's cost channel is metres.
+            let swap = |sets: &[Vec<(u32, u32, u32, bool)>]| -> Vec<Vec<(u32, u32, u32, bool)>> {
+                sets.iter()
+                    .map(|v| v.iter().map(|&(r, t, l, ok)| (r, l, t, ok)).collect())
+                    .collect()
+            };
+            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+                n_nodes,
+                dist_up,
+                dist_down,
+                &swap(&src_seedsets),
+                &swap(&tgt_seedsets),
+                u32::MAX,
+            );
             tracing::debug!(
                 "compute_table_bucket_m2m: distance M2M took {:?}",
                 t_dist.elapsed()
