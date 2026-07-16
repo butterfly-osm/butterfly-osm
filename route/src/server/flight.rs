@@ -42,7 +42,9 @@ use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
 use super::geometry::{Point, build_isochrone_geometry};
-use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
+use super::isochrone_handler::{
+    run_phast_bounded_fast_reverse_seeded, run_phast_bounded_fast_seeded,
+};
 use super::query::CchQuery;
 use super::state::ServerState;
 
@@ -834,6 +836,11 @@ fn do_matrix(
         let schema = Arc::new(matrix_schema());
         let neighbor_mask_bg = neighbor_mask.clone();
 
+        // #506: phantom expansion for the streamed path — same semantics as
+        // the small bucket-M2M branch. The target expansion is shared across
+        // all source tiles; the source expansion is built per tile.
+        let tgt_exp = Arc::new(super::phantom::SeedExpansion::build(&tgt_seedsets));
+
         let src_tile_size = 1000usize.min(n_origin).max(1);
 
         tokio::task::spawn_blocking(move || {
@@ -849,18 +856,27 @@ fn do_matrix(
                     return;
                 }
 
-                let mut block_src_ranks = Vec::new();
+                let mut block_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
                 let mut block_src_orig = Vec::new();
                 for (vi, &oi) in valid_origin.iter().enumerate() {
                     if oi >= src_start && oi < src_end {
-                        block_src_ranks.push(origins_rank[vi]);
+                        block_seedsets.push(src_seedsets[vi].clone());
                         block_src_orig.push(oi);
                     }
                 }
 
-                if block_src_ranks.is_empty() {
+                if block_seedsets.is_empty() {
                     return;
                 }
+
+                // #506: expand phantom seeds into extra rows/columns, run the
+                // engine once, min-reduce back with partial-edge adjustments.
+                let src_exp = super::phantom::SeedExpansion::build(&block_seedsets);
+                let exp_threshold = if threshold == u32::MAX {
+                    u32::MAX
+                } else {
+                    threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
+                };
 
                 // #415: bound both sweeps at the time threshold so the large
                 // (streamed) path is also time-proportional, not just the
@@ -868,20 +884,21 @@ fn do_matrix(
                 let buckets = Arc::new(crate::matrix::bucket_ch::forward_build_buckets_bounded(
                     n_nodes,
                     &up_adj,
-                    &block_src_ranks,
-                    threshold,
+                    &src_exp.exp_ranks,
+                    exp_threshold,
                 ));
 
-                let tile_matrix = crate::matrix::bucket_ch::backward_join_with_buckets_bounded(
+                let exp_matrix = crate::matrix::bucket_ch::backward_join_with_buckets_bounded(
                     n_nodes,
                     &down_rev,
                     &buckets,
-                    &targets_rank,
-                    threshold,
+                    &tgt_exp.exp_ranks,
+                    exp_threshold,
                 );
+                let (tile_matrix, _) = src_exp.reduce_time(&tgt_exp, &exp_matrix, None);
 
-                let n_block_src = block_src_ranks.len();
-                let n_block_dst = targets_rank.len();
+                let n_block_src = block_src_orig.len();
+                let n_block_dst = valid_dst.len();
                 let capacity = n_block_src * n_block_dst;
                 let mut si_arr = UInt32Builder::with_capacity(capacity);
                 let mut di_arr = UInt32Builder::with_capacity(capacity);
@@ -1249,35 +1266,62 @@ fn compute_route_distance_bounded(
     use super::types::SnapRole;
     let bound = max_m as f32;
 
-    // K=1 fast path.
-    let src_role = SnapRole::Src.role_filter(mode_data);
-    let dst_role = SnapRole::Dst.role_filter(mode_data);
-    if let (Some(src_id), Some(dst_id)) = (
-        state
-            .snap_index
-            .snap_filtered_role(slon, slat, mode.0, None, src_role),
-        state
-            .snap_index
-            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    // Fast path (#506): phantom-seeded single query — same seeding as the
+    // unbounded `compute_route_pair`, so bounded and unbounded route_batch
+    // agree on the route (and therefore on the distance the bound prunes).
+    let src_k = state.snap_index.snap_k_with_info_filtered_role(
+        slon,
+        slat,
+        mode.0,
+        8,
+        None,
+        SnapRole::Src.role_filter(mode_data),
+    );
+    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
+        dlon,
+        dlat,
+        mode.0,
+        8,
+        None,
+        SnapRole::Dst.role_filter(mode_data),
+    );
+    if let (Some(sp), Some(dp)) = (
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &src_k,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+        ),
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &dst_k,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+        ),
     ) {
-        let (src_rank, dst_rank) = match (
-            mode_data.orig_to_rank.get(src_id as usize).copied(),
-            mode_data.orig_to_rank.get(dst_id as usize).copied(),
-        ) {
-            (Some(s), Some(d)) => (s, d),
-            _ => (u32::MAX, u32::MAX),
-        };
-        if src_rank != u32::MAX && dst_rank != u32::MAX {
-            // Both endpoints snapped to valid ranks: the time query is
-            // authoritative for reachability. If it connects, the bound
-            // decides — over-bound DROPS here, no K=64 escalation.
-            if let Some(result) = query.query(src_rank, dst_rank) {
-                let dist = build_route_distance(state, mode_data, &result, src_rank, scratch);
-                return if dist <= bound { Some(dist) } else { None };
-            }
-            // valid ranks but no path between them → fall through to K=64
-            // (same reachability escalation compute_route_pair does).
+        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
+            // Reachability is authoritative here: if the seeded query
+            // connects, the bound decides — over-bound DROPS, no K=64
+            // escalation (same rule as the pre-#506 K=1 path).
+            let result = super::query::QueryResult {
+                distance: r.distance.saturating_sub(dst_shift),
+                meeting_node: r.meeting_node,
+                forward_parent: r.forward_parent,
+                backward_parent: r.backward_parent,
+            };
+            let dist = build_route_distance(state, mode_data, &result, r.src_root, scratch);
+            return if dist <= bound { Some(dist) } else { None };
         }
+        // seeded query found no path → fall through to K=64 (same
+        // reachability escalation compute_route_pair does).
     }
 
     // K=64 escalation — only reached on a K=1 snap miss / non-connecting
@@ -1970,23 +2014,37 @@ fn do_isochrone(
             "Snapped node not accessible for this mode",
         ));
     }
+    // #506: phantom center — multi-seed init so the polygon isn't committed
+    // to one departure/arrival direction of the snapped edge. Same seeding
+    // as the REST /isochrone handler.
+    let (center_seeds, center_anchor) = super::phantom::isochrone_center_seeds(
+        state,
+        &mode_data,
+        mode,
+        params.lon,
+        params.lat,
+        center_role,
+        None,
+        is_reverse,
+        origin_rank,
+    );
     // Intervals are user-input seconds; weights are also seconds (post-#297),
     // so the threshold passes through unchanged.
     let max_threshold_s = *params.intervals.iter().max().unwrap();
 
     let settled = if is_reverse {
-        run_phast_bounded_fast_reverse(
+        run_phast_bounded_fast_reverse_seeded(
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            origin_rank,
+            &center_seeds,
             max_threshold_s,
             mode,
         )
     } else {
-        run_phast_bounded_fast(
+        run_phast_bounded_fast_seeded(
             &mode_data.up_adj_flat,
             &mode_data.down_adj_flat,
-            origin_rank,
+            &center_seeds,
             max_threshold_s,
             mode,
         )
@@ -2016,7 +2074,7 @@ fn do_isochrone(
             &state.ebg_nodes,
             &state.edge_geom,
             mode_name,
-            None,
+            center_anchor,
         );
 
         let coords: Vec<(f64, f64)> = polygon_points.iter().map(|p| (p.lon, p.lat)).collect();
