@@ -28,6 +28,18 @@ pub struct QueryResult {
     pub backward_parent: Vec<(u32, u32)>,
 }
 
+/// #502: result of a multi-seed (phantom-endpoint) query. `distance` is RAW
+/// (target-shift not yet subtracted); `src_root`/`dst_root` are the winning
+/// seed ranks (needed to know which directed twin the route actually uses).
+pub struct SeededQueryResult {
+    pub distance: u32,
+    pub meeting_node: u32,
+    pub forward_parent: Vec<(u32, u32)>,
+    pub backward_parent: Vec<(u32, u32)>,
+    pub src_root: u32,
+    pub dst_root: u32,
+}
+
 // =============================================================================
 // THREAD-LOCAL CCH QUERY STATE (eliminates ~80MB allocation per query)
 // =============================================================================
@@ -289,6 +301,32 @@ fn reconstruct_path_versioned(
     path
 }
 
+/// #502: like [`reconstruct_path_versioned`] but stops at WHICHEVER root the
+/// walk reaches (a node whose parent is itself) — multi-seed queries don't
+/// know the winning root up front. Returns `(path, root)`.
+fn reconstruct_to_root(
+    parent: &[(u32, u32)],
+    generation: &[u32],
+    current_gen: u32,
+    end: u32,
+) -> (Vec<(u32, u32)>, u32) {
+    let mut path = Vec::new();
+    let mut current = end;
+    loop {
+        if generation[current as usize] != current_gen {
+            break;
+        }
+        let (prev, edge_idx) = parent[current as usize];
+        if prev == current {
+            break; // reached a seed root
+        }
+        path.push((current, edge_idx));
+        current = prev;
+    }
+    path.reverse();
+    (path, current)
+}
+
 /// Backend selection for `CchQuery` weight reads.
 ///
 /// `Flats` is the post-#149 hot path: the bidirectional search reads
@@ -535,41 +573,82 @@ impl<'a> CchQuery<'a> {
                 backward_parent: vec![],
             });
         }
+        self.query_seeded(&[(source, 0)], &[(target, 0)], debug)
+            .map(|r| QueryResult {
+                distance: r.distance,
+                meeting_node: r.meeting_node,
+                forward_parent: r.forward_parent,
+                backward_parent: r.backward_parent,
+            })
+    }
 
+    /// #502: bidirectional query from MULTIPLE weighted source/target seeds
+    /// (phantom endpoints — both directed twins of a snapped edge, with
+    /// partial-edge costs). Semantically a super-source/super-target with
+    /// non-negative arcs, so stall-on-demand and early termination remain
+    /// valid unchanged.
+    ///
+    /// `distance` is RAW: for shifted target seeds (see `phantom.rs`) the
+    /// caller subtracts the shift. Pure seed⊕seed meets (dist_fwd == its seed
+    /// cost AND dist_bwd == its seed cost at the same node) are SKIPPED: they
+    /// encode an invalid zero-length "meet" between two phantom roots (e.g.
+    /// same-edge src/dst where the dst lies BEHIND the src along the directed
+    /// edge). The valid same-edge direct move is the caller's to precompute.
+    pub fn query_seeded(
+        &self,
+        src_seeds: &[(u32, u32)],
+        dst_seeds: &[(u32, u32)],
+        debug: bool,
+    ) -> Option<SeededQueryResult> {
+        if src_seeds.is_empty() || dst_seeds.is_empty() {
+            return None;
+        }
         let n = self.n_nodes;
+
+        // Tiny seed lookups for the seed⊕seed meet guard (≤2 entries each).
+        let src_seed_cost =
+            |u: u32| -> Option<u32> { src_seeds.iter().find(|(r, _)| *r == u).map(|(_, c)| *c) };
+        let dst_seed_cost =
+            |u: u32| -> Option<u32> { dst_seeds.iter().find(|(r, _)| *r == u).map(|(_, c)| *c) };
+        // A meet at `u` with labels (df, db) is a pure phantom⊕phantom meet
+        // iff both labels are exactly their seed costs at u.
+        let is_seed_seed_meet = |u: u32, df: u32, db: u32| -> bool {
+            src_seed_cost(u) == Some(df) && dst_seed_cost(u) == Some(db)
+        };
 
         CCH_QUERY_STATE.with(|cell| {
             cell.with_or_init(
                 || CchQueryState::new(n),
                 |state| {
-                    // Reinitialize if n_nodes changed (e.g. graph swapped) or
-                    // after the idle-compactor freed and we rebuilt fresh.
                     if state.dist_fwd.len() != n {
                         *state = CchQueryState::new(n);
                     }
 
-                    // Start new query (O(1) instead of O(n) memset)
                     state.start_query();
 
-                    // Initialize source and target
-                    state.set_fwd(source as usize, 0, (source, 0));
-                    state.set_bwd(target as usize, 0, (target, 0));
-                    state.push_fwd(source, 0);
-                    state.push_bwd(target, 0);
+                    // Initialize all seeds (keep the min when ranks collide).
+                    for &(r, c) in src_seeds {
+                        if c < state.get_fwd(r as usize) {
+                            state.set_fwd(r as usize, c, (r, 0));
+                            state.push_fwd(r, c);
+                        }
+                    }
+                    for &(r, c) in dst_seeds {
+                        if c < state.get_bwd(r as usize) {
+                            state.set_bwd(r as usize, c, (r, 0));
+                            state.push_bwd(r, c);
+                        }
+                    }
 
-                    // Best meeting point
                     let mut best_dist = u32::MAX;
                     let mut meeting_node = u32::MAX;
 
-                    // Debug counters
                     let mut fwd_settled = 0usize;
                     let mut bwd_settled = 0usize;
                     let mut fwd_relaxed = 0usize;
                     let mut bwd_relaxed = 0usize;
 
-                    // Bidirectional search with early termination
                     while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
-                        // Early termination: if both queue minimums exceed best_dist, stop
                         let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
                         let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
                         if fwd_min >= best_dist && bwd_min >= best_dist {
@@ -577,10 +656,7 @@ impl<'a> CchQuery<'a> {
                         }
 
                         // Forward step — search UP graph. #272 stall-on-demand
-                        // body is inlined (not hoisted to `is_stalled_fwd`)
-                        // because hoisting prevents the compiler from folding
-                        // the closure into the outer loop, costing the measured
-                        // p50 speedup.
+                        // body inlined (see query_with_debug history).
                         if let Some((d, u)) = state.pop_fwd() {
                             if d > state.get_fwd(u as usize) {
                                 // Stale entry — skip
@@ -600,11 +676,10 @@ impl<'a> CchQuery<'a> {
                                 if !stalled {
                                     fwd_settled += 1;
 
-                                    // Check meeting point when settling a node
                                     let bwd_d = state.get_bwd(u as usize);
                                     if bwd_d != u32::MAX {
                                         let total = d.saturating_add(bwd_d);
-                                        if total < best_dist {
+                                        if total < best_dist && !is_seed_seed_meet(u, d, bwd_d) {
                                             best_dist = total;
                                             meeting_node = u;
                                             if debug {
@@ -613,7 +688,7 @@ impl<'a> CchQuery<'a> {
                                                     dist_fwd = d,
                                                     dist_bwd = bwd_d,
                                                     total,
-                                                    "FWD meet"
+                                                    "FWD meet (seeded)"
                                                 );
                                             }
                                         }
@@ -627,22 +702,14 @@ impl<'a> CchQuery<'a> {
                                             state.set_fwd(v as usize, new_dist, (u, edge_idx));
                                             state.push_fwd(v, new_dist);
 
-                                            // Check meeting when updating
                                             let bwd_v = state.get_bwd(v as usize);
                                             if bwd_v != u32::MAX {
                                                 let total = new_dist.saturating_add(bwd_v);
-                                                if total < best_dist {
+                                                if total < best_dist
+                                                    && !is_seed_seed_meet(v, new_dist, bwd_v)
+                                                {
                                                     best_dist = total;
                                                     meeting_node = v;
-                                                    if debug {
-                                                        tracing::debug!(
-                                                            meet_node = v,
-                                                            dist_fwd = new_dist,
-                                                            dist_bwd = bwd_v,
-                                                            total,
-                                                            "FWD meet via edge"
-                                                        );
-                                                    }
                                                 }
                                             }
                                         }
@@ -651,9 +718,7 @@ impl<'a> CchQuery<'a> {
                             }
                         }
 
-                        // Backward step — traverse reversed DOWN edges
-                        // (= upward in reversed graph). #272 stall body inlined
-                        // for the same reason as the forward branch above.
+                        // Backward step — reversed DOWN graph. #272 stall inline.
                         if let Some((d, u)) = state.pop_bwd() {
                             if d > state.get_bwd(u as usize) {
                                 // Stale — skip
@@ -675,11 +740,10 @@ impl<'a> CchQuery<'a> {
                                 }
                                 bwd_settled += 1;
 
-                                // Check meeting point
                                 let fwd_d = state.get_fwd(u as usize);
                                 if fwd_d != u32::MAX {
                                     let total = d.saturating_add(fwd_d);
-                                    if total < best_dist {
+                                    if total < best_dist && !is_seed_seed_meet(u, fwd_d, d) {
                                         best_dist = total;
                                         meeting_node = u;
                                         if debug {
@@ -688,7 +752,7 @@ impl<'a> CchQuery<'a> {
                                                 dist_fwd = fwd_d,
                                                 dist_bwd = d,
                                                 total,
-                                                "BWD meet"
+                                                "BWD meet (seeded)"
                                             );
                                         }
                                     }
@@ -702,22 +766,14 @@ impl<'a> CchQuery<'a> {
                                         state.set_bwd(x as usize, new_dist, (u, edge_idx));
                                         state.push_bwd(x, new_dist);
 
-                                        // Check meeting when updating
                                         let fwd_x = state.get_fwd(x as usize);
                                         if fwd_x != u32::MAX {
                                             let total = new_dist.saturating_add(fwd_x);
-                                            if total < best_dist {
+                                            if total < best_dist
+                                                && !is_seed_seed_meet(x, fwd_x, new_dist)
+                                            {
                                                 best_dist = total;
                                                 meeting_node = x;
-                                                if debug {
-                                                    tracing::debug!(
-                                                        meet_node = x,
-                                                        dist_fwd = fwd_x,
-                                                        dist_bwd = new_dist,
-                                                        total,
-                                                        "BWD meet via edge"
-                                                    );
-                                                }
                                             }
                                         }
                                     }
@@ -734,7 +790,7 @@ impl<'a> CchQuery<'a> {
                             bwd_relaxed,
                             best_dist,
                             meeting_node,
-                            "CCH bidir final"
+                            "CCH bidir final (seeded)"
                         );
                     }
 
@@ -742,33 +798,32 @@ impl<'a> CchQuery<'a> {
                         return None;
                     }
 
-                    // Reconstruct paths using generation-stamped parent arrays
-                    let forward_parent = reconstruct_path_versioned(
+                    // Reconstruct to whichever roots won (parent == self).
+                    let (forward_parent, src_root) = reconstruct_to_root(
                         &state.parent_fwd,
                         &state.gen_fwd,
                         state.gen_fwd_epoch,
-                        source,
                         meeting_node,
                     );
-                    let backward_parent = reconstruct_path_versioned(
+                    let (backward_parent, dst_root) = reconstruct_to_root(
                         &state.parent_bwd,
                         &state.gen_bwd,
                         state.gen_bwd_epoch,
-                        target,
                         meeting_node,
                     );
 
-                    Some(QueryResult {
+                    Some(SeededQueryResult {
                         distance: best_dist,
                         meeting_node,
                         forward_parent,
                         backward_parent,
+                        src_root,
+                        dst_root,
                     })
                 },
             )
         })
     }
-
     /// #438: forward-only UP settle to EXHAUSTION from `source`, frozen in
     /// the thread-local query state for reuse across many targets via
     /// [`Self::backward_meet_and_paths`]. No early termination (no target

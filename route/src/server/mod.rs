@@ -41,6 +41,7 @@ pub mod elevation;
 pub mod evictable;
 pub mod exclude;
 pub mod overlay;
+pub mod phantom;
 // tonic::Status is 176 bytes — the canonical gRPC error type.
 // Every gRPC function returns Result<_, Status>; boxing adds indirection with no benefit.
 #[allow(clippy::result_large_err)]

@@ -794,6 +794,141 @@ pub async fn route_handler(
         MAX_FALLBACK_COMBOS,
     );
     let mut result_opt: Option<super::query::QueryResult> = None;
+
+    // #502: phantom endpoints — seed BOTH directed twins of each endpoint's
+    // snapped edge with exact partial-edge costs and let ONE search decide the
+    // departure/arrival direction. Kills the wrong-way commitment detours
+    // (4x fwd/rev asymmetry on long rural edges). Bearing hints imply an
+    // explicit direction and avoid/exclude run custom weight vectors the seed
+    // costs don't reflect — those paths keep the legacy single-seed flow.
+    if src_bearing.is_none()
+        && dst_bearing.is_none()
+        && avoid_entry.is_none()
+        && exclude_weights.is_none()
+    {
+        // K=8 candidate fetch so near-equidistant PARALLEL physical edges are
+        // all seeded (Robertville: the correct road was 12 m further than a
+        // track whose both directions detour 15 km).
+        let src_k = state.snap_index.snap_k_with_info_filtered_role(
+            req.origin_lon,
+            req.origin_lat,
+            mode.0,
+            8,
+            Some(&snap_mask),
+            src_role_filter,
+        );
+        let dst_k = state.snap_index.snap_k_with_info_filtered_role(
+            req.destination_lon,
+            req.destination_lat,
+            mode.0,
+            8,
+            Some(&snap_mask),
+            dst_role_filter,
+        );
+        let src_ph = super::phantom::phantom_from_candidates(
+            &state,
+            &mode_data,
+            &src_k,
+            req.origin_lon,
+            req.origin_lat,
+            super::types::SnapRole::Src,
+            Some(&snap_mask),
+        );
+        let dst_ph = super::phantom::phantom_from_candidates(
+            &state,
+            &mode_data,
+            &dst_k,
+            req.destination_lon,
+            req.destination_lat,
+            super::types::SnapRole::Dst,
+            Some(&snap_mask),
+        );
+        if let (Some(sp), Some(dp)) = (src_ph, dst_ph) {
+            // Same-physical-edge direct move. The seeded query's guard skips
+            // pure seed-to-seed meets (they can encode an invalid backward
+            // same-edge move), so the valid forward move is computed here.
+            let mut direct: Option<(u32, f64, f64, u32)> = None; // (cost, f_s, f_d, ebg)
+            for sseed in &sp.seeds {
+                if let Some(fd) = dp.frac_of(sseed.ebg_id)
+                    && fd >= sseed.frac
+                {
+                    let w = mode_data.node_weights[sseed.ebg_id as usize] as f64;
+                    let c = ((fd - sseed.frac) * w).round() as u32;
+                    if direct.is_none_or(|(bc, _, _, _)| c < bc) {
+                        direct = Some((c, sseed.frac, fd, sseed.ebg_id));
+                    }
+                }
+            }
+            let (src_seeds, _) = sp.query_seeds_and_shift(super::types::SnapRole::Src);
+            let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(super::types::SnapRole::Dst);
+            let seeded = query.query_seeded(&src_seeds, &dst_seeds, req.debug);
+            let seeded_cost = seeded
+                .as_ref()
+                .map(|r| r.distance.saturating_sub(dst_shift));
+            // Trivial same-edge response when the direct move wins.
+            if let Some((dc, f_s, f_d, ebg)) = direct
+                && seeded_cost.is_none_or(|sc| dc <= sc)
+            {
+                let node = &state.ebg_nodes.nodes[ebg as usize];
+                let dist_m = (f_d - f_s) * node.length_m as f64;
+                let pts = vec![
+                    Point {
+                        lon: sp.snapped_lon,
+                        lat: sp.snapped_lat,
+                    },
+                    Point {
+                        lon: dp.snapped_lon,
+                        lat: dp.snapped_lat,
+                    },
+                ];
+                let geometry = RouteGeometry::from_points(pts, geom_format);
+                let debug_info = if req.debug {
+                    Some(RouteDebugInfo {
+                        src_snapped: SnapInfo {
+                            lon: sp.snapped_lon,
+                            lat: sp.snapped_lat,
+                            snap_distance_m: sp.snap_distance_m,
+                            ebg_node_id: ebg,
+                        },
+                        dst_snapped: SnapInfo {
+                            lon: dp.snapped_lon,
+                            lat: dp.snapped_lat,
+                            snap_distance_m: dp.snap_distance_m,
+                            ebg_node_id: ebg,
+                        },
+                    })
+                } else {
+                    None
+                };
+                super::region_metrics::record_query(
+                    &region_id,
+                    "route",
+                    started_dispatch.elapsed().as_secs_f64(),
+                );
+                return Json(RouteResponse {
+                    duration_s: dc as f64,
+                    distance_m: dist_m,
+                    geometry,
+                    steps: if req.steps { Some(vec![]) } else { None },
+                    annotations: None,
+                    alternatives: None,
+                    debug: debug_info,
+                })
+                .into_response();
+            }
+            if let Some(r) = seeded {
+                src_rank = r.src_root;
+                dst_rank = r.dst_root;
+                result_opt = Some(super::query::QueryResult {
+                    distance: r.distance.saturating_sub(dst_shift),
+                    meeting_node: r.meeting_node,
+                    forward_parent: r.forward_parent,
+                    backward_parent: r.backward_parent,
+                });
+            }
+        }
+    }
+
     let try_combos = |combo_order: &[(usize, usize)],
                       src_rank_candidates: &[u32],
                       dst_rank_candidates: &[u32]|
@@ -810,8 +945,9 @@ pub async fn route_handler(
         }
         None
     };
-    if let Some((r, s, d, i, j)) =
-        try_combos(&combo_order, &src_rank_candidates, &dst_rank_candidates)
+    if result_opt.is_none()
+        && let Some((r, s, d, i, j)) =
+            try_combos(&combo_order, &src_rank_candidates, &dst_rank_candidates)
     {
         src_rank = s;
         dst_rank = d;
