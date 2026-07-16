@@ -309,3 +309,118 @@ pub fn phantom_from_primary(
         primary_ebg: primary,
     })
 }
+
+// =============================================================================
+// #502: matrix seed expansion — shared by /table (REST) and Flight `matrix`.
+// Each endpoint's directional seeds become extra rows/columns for the bucket
+// engine (which stays untouched); `reduce_*` collapses the expanded result
+// back to S×T with exact partial-edge adjustments.
+// =============================================================================
+
+/// Expanded seed lists for one matrix axis.
+pub struct SeedExpansion {
+    /// Rank per expanded row/column (engine input).
+    pub exp_ranks: Vec<u32>,
+    /// (start, len) span into `exp_ranks` per ORIGINAL endpoint index.
+    pub spans: Vec<(usize, usize)>,
+    /// (time_part, len_part) per expanded row/column.
+    pub parts: Vec<(u32, u32)>,
+}
+
+impl SeedExpansion {
+    /// Build from per-endpoint seed sets `(rank, time_part, len_part)`.
+    /// Empty sets (invalid endpoints) get one placeholder so spans align;
+    /// their cells are masked by the caller's validity flags as before.
+    pub fn build(seedsets: &[Vec<(u32, u32, u32)>]) -> Self {
+        let mut exp_ranks = Vec::new();
+        let mut spans = Vec::with_capacity(seedsets.len());
+        let mut parts = Vec::new();
+        for seeds in seedsets {
+            let start = exp_ranks.len();
+            for &(r, t, l) in seeds {
+                exp_ranks.push(r);
+                parts.push((t, l));
+            }
+            if seeds.is_empty() {
+                exp_ranks.push(0);
+                parts.push((0, 0));
+            }
+            spans.push((start, exp_ranks.len() - start));
+        }
+        Self {
+            exp_ranks,
+            spans,
+            parts,
+        }
+    }
+
+    /// Max time part — bounded searches widen their threshold by
+    /// `src.slack() + tgt.slack()` so seed adjustments can't cut valid cells.
+    pub fn slack(&self) -> u32 {
+        self.parts.iter().map(|p| p.0).max().unwrap_or(0)
+    }
+
+    /// Reduce an expanded TIME matrix (rows = self, cols = tgt) to S×T.
+    /// `carry` (e.g. length-along-time) is read at the time-argmin so the
+    /// two channels stay path-consistent.
+    pub fn reduce_time(
+        &self,
+        tgt: &SeedExpansion,
+        m: &[u32],
+        carry: Option<&[u32]>,
+    ) -> (Vec<u32>, Option<Vec<u32>>) {
+        self.reduce_inner(tgt, m, carry, false)
+    }
+
+    /// Reduce an expanded DISTANCE matrix with LENGTH partials.
+    pub fn reduce_len(&self, tgt: &SeedExpansion, m: &[u32]) -> Vec<u32> {
+        self.reduce_inner(tgt, m, None, true).0
+    }
+
+    fn reduce_inner(
+        &self,
+        tgt: &SeedExpansion,
+        m: &[u32],
+        carry: Option<&[u32]>,
+        use_len_parts: bool,
+    ) -> (Vec<u32>, Option<Vec<u32>>) {
+        let n_exp_t = tgt.exp_ranks.len();
+        let n_s = self.spans.len();
+        let n_t = tgt.spans.len();
+        let mut out = vec![u32::MAX; n_s * n_t];
+        let mut out_c = carry.map(|_| vec![u32::MAX; n_s * n_t]);
+        let pick = |p: &(u32, u32)| if use_len_parts { p.1 } else { p.0 };
+        for (i, &(ss, sl)) in self.spans.iter().enumerate() {
+            for (j, &(ts, tl)) in tgt.spans.iter().enumerate() {
+                let mut best = i64::MAX;
+                let mut best_rc = (0usize, 0usize);
+                for r in ss..ss + sl {
+                    for c in ts..ts + tl {
+                        let v = m[r * n_exp_t + c];
+                        if v == u32::MAX {
+                            continue;
+                        }
+                        let adj =
+                            v as i64 + pick(&self.parts[r]) as i64 - pick(&tgt.parts[c]) as i64;
+                        if adj < best {
+                            best = adj;
+                            best_rc = (r, c);
+                        }
+                    }
+                }
+                if best != i64::MAX {
+                    out[i * n_t + j] = best.max(0) as u32;
+                    if let (Some(oc), Some(cm)) = (&mut out_c, carry) {
+                        let (r, c) = best_rc;
+                        let lv = cm[r * n_exp_t + c];
+                        if lv != u32::MAX {
+                            let ladj = lv as i64 + self.parts[r].1 as i64 - tgt.parts[c].1 as i64;
+                            oc[i * n_t + j] = ladj.max(0) as u32;
+                        }
+                    }
+                }
+            }
+        }
+        (out, out_c)
+    }
+}

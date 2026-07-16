@@ -595,116 +595,17 @@ pub async fn compute_table_bucket_m2m(
     // bounded fallback's distance_bounded gate keeps them null cheaply.
     let need_dur_internal = want_duration || bounded;
 
-    // #502: expand phantom seeds into extra matrix rows/columns and min-reduce
-    // after the engine runs — exact phantom semantics with the bucket engine
-    // untouched. Single-seed endpoints expand 1:1 (zero overhead vs legacy).
-    let mut src_exp_ranks: Vec<u32> = Vec::new();
-    let mut src_spans: Vec<(usize, usize)> = Vec::with_capacity(src_seedsets.len());
-    let mut src_parts: Vec<(u32, u32)> = Vec::new(); // (time, len) per expanded row
-    for seeds in &src_seedsets {
-        let start = src_exp_ranks.len();
-        for &(r, t, l) in seeds {
-            src_exp_ranks.push(r);
-            src_parts.push((t, l));
-        }
-        if seeds.is_empty() {
-            // invalid endpoint — keep one placeholder row so spans stay aligned
-            src_exp_ranks.push(0);
-            src_parts.push((0, 0));
-        }
-        src_spans.push((start, src_exp_ranks.len() - start));
-    }
-    let mut tgt_exp_ranks: Vec<u32> = Vec::new();
-    let mut tgt_spans: Vec<(usize, usize)> = Vec::with_capacity(tgt_seedsets.len());
-    let mut tgt_parts: Vec<(u32, u32)> = Vec::new();
-    for seeds in &tgt_seedsets {
-        let start = tgt_exp_ranks.len();
-        for &(r, t, l) in seeds {
-            tgt_exp_ranks.push(r);
-            tgt_parts.push((t, l));
-        }
-        if seeds.is_empty() {
-            tgt_exp_ranks.push(0);
-            tgt_parts.push((0, 0));
-        }
-        tgt_spans.push((start, tgt_exp_ranks.len() - start));
-    }
-    let n_exp_t = tgt_exp_ranks.len();
-    // Bounded searches must not cut paths whose seed adjustments would bring
-    // them back under the bound.
-    let seed_slack: u32 = src_parts.iter().map(|p| p.0).max().unwrap_or(0)
-        + tgt_parts.iter().map(|p| p.0).max().unwrap_or(0);
+    // #502: expand phantom seeds into extra matrix rows/columns; the bucket
+    // engine runs on the expanded lists and SeedExpansion::reduce_* collapses
+    // back to S×T with exact partial-edge adjustments (see phantom.rs).
+    let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
+    let tgt_exp = super::phantom::SeedExpansion::build(&tgt_seedsets);
+    let src_exp_ranks = src_exp.exp_ranks.clone();
+    let tgt_exp_ranks = tgt_exp.exp_ranks.clone();
     let exp_threshold = if threshold == u32::MAX {
         u32::MAX
     } else {
-        threshold.saturating_add(seed_slack)
-    };
-
-    // Min-reduce an expanded flat matrix (rows=src_exp, cols=tgt_exp) into the
-    // S×T flat layout. `value + src_part - tgt_part` in i64 (clamped at 0);
-    // returns the reduced primary matrix and, when `carry` is given, the value
-    // of the carried channel at the SAME argmin (path-consistent 2-channel).
-    let reduce = |m: &[u32], carry: Option<&[u32]>| -> (Vec<u32>, Option<Vec<u32>>) {
-        let n_s = src_spans.len();
-        let n_t = tgt_spans.len();
-        let mut out = vec![u32::MAX; n_s * n_t];
-        let mut out_c = carry.map(|_| vec![u32::MAX; n_s * n_t]);
-        for (i, &(ss, sl)) in src_spans.iter().enumerate() {
-            for (j, &(ts, tl)) in tgt_spans.iter().enumerate() {
-                let mut best = i64::MAX;
-                let mut best_rc = (0usize, 0usize);
-                for r in ss..ss + sl {
-                    for c in ts..ts + tl {
-                        let v = m[r * n_exp_t + c];
-                        if v == u32::MAX {
-                            continue;
-                        }
-                        let adj = v as i64 + src_parts[r].0 as i64 - tgt_parts[c].0 as i64;
-                        if adj < best {
-                            best = adj;
-                            best_rc = (r, c);
-                        }
-                    }
-                }
-                if best != i64::MAX {
-                    out[i * n_t + j] = best.max(0) as u32;
-                    if let (Some(oc), Some(cm)) = (&mut out_c, carry) {
-                        let (r, c) = best_rc;
-                        let lv = cm[r * n_exp_t + c];
-                        if lv != u32::MAX {
-                            let ladj = lv as i64 + src_parts[r].1 as i64 - tgt_parts[c].1 as i64;
-                            oc[i * n_t + j] = ladj.max(0) as u32;
-                        }
-                    }
-                }
-            }
-        }
-        (out, out_c)
-    };
-    // Distance-channel reduction adjusts by LEN parts (independent min).
-    let reduce_len = |m: &[u32]| -> Vec<u32> {
-        let n_s = src_spans.len();
-        let n_t = tgt_spans.len();
-        let mut out = vec![u32::MAX; n_s * n_t];
-        for (i, &(ss, sl)) in src_spans.iter().enumerate() {
-            for (j, &(ts, tl)) in tgt_spans.iter().enumerate() {
-                let mut best = i64::MAX;
-                for r in ss..ss + sl {
-                    for c in ts..ts + tl {
-                        let v = m[r * n_exp_t + c];
-                        if v == u32::MAX {
-                            continue;
-                        }
-                        let adj = v as i64 + src_parts[r].1 as i64 - tgt_parts[c].1 as i64;
-                        best = best.min(adj);
-                    }
-                }
-                if best != i64::MAX {
-                    out[i * n_t + j] = best.max(0) as u32;
-                }
-            }
-        }
-        out
+        threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
     };
 
     let (durations, distances) = if use_2channel {
@@ -734,7 +635,7 @@ pub async fn compute_table_bucket_m2m(
                 &tgt_exp_ranks,
                 exp_threshold,
             );
-        let (time_mat, lat_opt) = reduce(&time_mat, Some(&lat_mat));
+        let (time_mat, lat_opt) = src_exp.reduce_time(&tgt_exp, &time_mat, Some(&lat_mat));
         let lat_mat = lat_opt.expect("carry channel requested");
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
@@ -773,7 +674,7 @@ pub async fn compute_table_bucket_m2m(
                 &tgt_exp_ranks,
                 exp_threshold,
             );
-            let (matrix, _) = reduce(&matrix, None);
+            let (matrix, _) = src_exp.reduce_time(&tgt_exp, &matrix, None);
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
@@ -790,7 +691,7 @@ pub async fn compute_table_bucket_m2m(
             // time-grid mask after the fallback.
             let (matrix, _stats) =
                 table_bucket_parallel(n_nodes, dist_up, dist_down, &src_exp_ranks, &tgt_exp_ranks);
-            let matrix = reduce_len(&matrix);
+            let matrix = src_exp.reduce_len(&tgt_exp, &matrix);
             tracing::debug!(
                 "compute_table_bucket_m2m: distance M2M took {:?}",
                 t_dist.elapsed()
