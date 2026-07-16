@@ -415,51 +415,79 @@ pub async fn compute_table_bucket_m2m(
 
     // (rank, snapped, valid). Per-row candidate list is built lazily on
     // first miss (see apply_k_best_fallback's lazy K=64 escalator).
-    type SnapResult = (u32, (f64, f64), bool);
+    type SnapResult = (u32, (f64, f64), bool, Vec<(u32, u32, u32)>);
 
-    let source_results: Vec<SnapResult> = sources
-        .par_iter()
-        .map(|&[lon, lat]| {
-            if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
+    // #502: phantom seed sets — (rank, time_part, len_part) per endpoint.
+    // Base-weights matrices seed BOTH directed twins of up to 3 near-
+    // equidistant physical edges (K=4 snap) so the search picks the
+    // departure/arrival direction; exclude/avoid keep the single-seed
+    // legacy (their custom weight vectors aren't reflected in seed costs).
+    let phantom_ok = custom_weights.is_none();
+    let snap_endpoint = |lon: f64, lat: f64, role: super::types::SnapRole| -> SnapResult {
+        if phantom_ok {
+            let k = state.snap_index.snap_k_with_info_filtered_role(
                 lon,
                 lat,
                 mode.0,
+                4,
                 Some(snap_mask),
-                src_role_filter,
+                role.role_filter(&mode_data),
+            );
+            if let Some(pe) = super::phantom::phantom_from_candidates(
+                state,
+                &mode_data,
+                &k,
+                lon,
+                lat,
+                role,
+                Some(snap_mask),
             ) {
-                let rank = mode_data.orig_to_rank[orig_id as usize];
-                if rank != u32::MAX {
-                    return (rank, (plon, plat), true);
-                }
+                let seeds: Vec<(u32, u32, u32)> = pe
+                    .seeds
+                    .iter()
+                    .map(|x| (x.rank, x.part_time, x.part_len))
+                    .collect();
+                let primary_rank = mode_data.orig_to_rank[pe.primary_ebg as usize];
+                let rank = if primary_rank != u32::MAX {
+                    primary_rank
+                } else {
+                    seeds[0].0
+                };
+                return (rank, (pe.snapped_lon, pe.snapped_lat), true, seeds);
             }
-            (0, (lon, lat), false)
-        })
+        }
+        if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
+            lon,
+            lat,
+            mode.0,
+            Some(snap_mask),
+            role.role_filter(&mode_data),
+        ) {
+            let rank = mode_data.orig_to_rank[orig_id as usize];
+            if rank != u32::MAX {
+                return (rank, (plon, plat), true, vec![(rank, 0, 0)]);
+            }
+        }
+        (0, (lon, lat), false, vec![])
+    };
+
+    let source_results: Vec<SnapResult> = sources
+        .par_iter()
+        .map(|&[lon, lat]| snap_endpoint(lon, lat, super::types::SnapRole::Src))
         .collect();
 
     let target_results: Vec<SnapResult> = destinations
         .par_iter()
-        .map(|&[lon, lat]| {
-            if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
-                lon,
-                lat,
-                mode.0,
-                Some(snap_mask),
-                dst_role_filter,
-            ) {
-                let rank = mode_data.orig_to_rank[orig_id as usize];
-                if rank != u32::MAX {
-                    return (rank, (plon, plat), true);
-                }
-            }
-            (0, (lon, lat), false)
-        })
+        .map(|&[lon, lat]| snap_endpoint(lon, lat, super::types::SnapRole::Dst))
         .collect();
 
     let mut sources_rank: Vec<u32> = Vec::with_capacity(sources.len());
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
-    for (rank, (plon, plat), valid) in source_results {
+    let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(sources.len());
+    for (rank, (plon, plat), valid, seeds) in source_results {
+        src_seedsets.push(seeds);
         sources_rank.push(rank);
         source_valid.push(valid);
         sources_snapped.push((plon, plat));
@@ -473,7 +501,9 @@ pub async fn compute_table_bucket_m2m(
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
-    for (rank, (plon, plat), valid) in target_results {
+    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(destinations.len());
+    for (rank, (plon, plat), valid, seeds) in target_results {
+        tgt_seedsets.push(seeds);
         targets_rank.push(rank);
         target_valid.push(valid);
         targets_snapped.push((plon, plat));
@@ -565,6 +595,19 @@ pub async fn compute_table_bucket_m2m(
     // bounded fallback's distance_bounded gate keeps them null cheaply.
     let need_dur_internal = want_duration || bounded;
 
+    // #502: expand phantom seeds into extra matrix rows/columns; the bucket
+    // engine runs on the expanded lists and SeedExpansion::reduce_* collapses
+    // back to S×T with exact partial-edge adjustments (see phantom.rs).
+    let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
+    let tgt_exp = super::phantom::SeedExpansion::build(&tgt_seedsets);
+    let src_exp_ranks = src_exp.exp_ranks.clone();
+    let tgt_exp_ranks = tgt_exp.exp_ranks.clone();
+    let exp_threshold = if threshold == u32::MAX {
+        u32::MAX
+    } else {
+        threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
+    };
+
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
         let up_lat = mode_data
@@ -588,10 +631,12 @@ pub async fn compute_table_bucket_m2m(
                 time_down,
                 up_lat,
                 dn_lat,
-                &sources_rank,
-                &targets_rank,
-                threshold,
+                &src_exp_ranks,
+                &tgt_exp_ranks,
+                exp_threshold,
             );
+        let (time_mat, lat_opt) = src_exp.reduce_time(&tgt_exp, &time_mat, Some(&lat_mat));
+        let lat_mat = lat_opt.expect("carry channel requested");
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
@@ -625,10 +670,11 @@ pub async fn compute_table_bucket_m2m(
                 n_nodes,
                 time_up,
                 time_down,
-                &sources_rank,
-                &targets_rank,
-                threshold,
+                &src_exp_ranks,
+                &tgt_exp_ranks,
+                exp_threshold,
             );
+            let (matrix, _) = src_exp.reduce_time(&tgt_exp, &matrix, None);
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
@@ -644,7 +690,8 @@ pub async fn compute_table_bucket_m2m(
             // the distance search. Distance cells are bounded by the final
             // time-grid mask after the fallback.
             let (matrix, _stats) =
-                table_bucket_parallel(n_nodes, dist_up, dist_down, &sources_rank, &targets_rank);
+                table_bucket_parallel(n_nodes, dist_up, dist_down, &src_exp_ranks, &tgt_exp_ranks);
+            let matrix = src_exp.reduce_len(&tgt_exp, &matrix);
             tracing::debug!(
                 "compute_table_bucket_m2m: distance M2M took {:?}",
                 t_dist.elapsed()

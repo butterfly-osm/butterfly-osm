@@ -498,46 +498,68 @@ fn do_matrix(
     use rayon::prelude::*;
     // Lazy snap (#368 pattern): K=1 primary upfront, K=64 escalation
     // lives in the INF-cell fallback below.
-    type PrimarySnap = Option<((u32, f64, f64, f64), u32)>;
+    // #502: primary + phantom seed set per endpoint. Seeds cover both
+    // directed twins of up to 3 near-equidistant physical edges; the small-
+    // matrix branch expands them into extra rows/columns (SeedExpansion) so
+    // the bucket engine stays untouched. The large PHAST-tiled branch keeps
+    // the primary-only legacy (engine-level multi-seed is the follow-up).
+    type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32)>)>;
+    let snap_endpoint = |lon: f64, lat: f64, role: SnapRole| -> PrimarySnap {
+        let k = state.snap_index.snap_k_with_info_filtered_role(
+            lon,
+            lat,
+            mode.0,
+            4,
+            None,
+            role.role_filter(&mode_data),
+        );
+        if let Some(pe) =
+            super::phantom::phantom_from_candidates(state, &mode_data, &k, lon, lat, role, None)
+        {
+            let seeds: Vec<(u32, u32, u32)> = pe
+                .seeds
+                .iter()
+                .map(|x| (x.rank, x.part_time, x.part_len))
+                .collect();
+            let primary_rank = {
+                let r = mode_data.orig_to_rank[pe.primary_ebg as usize];
+                if r != u32::MAX { r } else { seeds[0].0 }
+            };
+            return Some((
+                (
+                    pe.primary_ebg,
+                    pe.snapped_lon,
+                    pe.snapped_lat,
+                    pe.snap_distance_m,
+                ),
+                primary_rank,
+                seeds,
+            ));
+        }
+        super::snap_kbest::snap_primary_role(state, &mode_data, mode, lon, lat, role, None)
+            .map(|(t, r)| (t, r, vec![(r, 0, 0)]))
+    };
     let src_primary: Vec<PrimarySnap> = params
         .origins
         .par_iter()
-        .map(|&[lon, lat]| {
-            super::snap_kbest::snap_primary_role(
-                state,
-                &mode_data,
-                mode,
-                lon,
-                lat,
-                SnapRole::Src,
-                None,
-            )
-        })
+        .map(|&[lon, lat]| snap_endpoint(lon, lat, SnapRole::Src))
         .collect();
     let dst_primary: Vec<PrimarySnap> = params
         .destinations
         .par_iter()
-        .map(|&[lon, lat]| {
-            super::snap_kbest::snap_primary_role(
-                state,
-                &mode_data,
-                mode,
-                lon,
-                lat,
-                SnapRole::Dst,
-                None,
-            )
-        })
+        .map(|&[lon, lat]| snap_endpoint(lon, lat, SnapRole::Dst))
         .collect();
 
     let mut origins_rank = Vec::with_capacity(params.origins.len());
     let mut valid_origin = Vec::with_capacity(params.origins.len());
     let mut origins_snapped = Vec::with_capacity(params.origins.len());
+    let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
     for (i, snap) in src_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank)) = snap {
+        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
             origins_rank.push(*rank);
             valid_origin.push(i);
             origins_snapped.push((*plon, *plat));
+            src_seedsets.push(seeds.clone());
         } else {
             let [lon, lat] = params.origins[i];
             origins_snapped.push((lon, lat));
@@ -546,11 +568,13 @@ fn do_matrix(
     let mut targets_rank = Vec::with_capacity(params.destinations.len());
     let mut valid_dst = Vec::with_capacity(params.destinations.len());
     let mut targets_snapped = Vec::with_capacity(params.destinations.len());
+    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
     for (i, snap) in dst_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank)) = snap {
+        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
             targets_rank.push(*rank);
             valid_dst.push(i);
             targets_snapped.push((*plon, *plat));
+            tgt_seedsets.push(seeds.clone());
         } else {
             let [lon, lat] = params.destinations[i];
             targets_snapped.push((lon, lat));
@@ -614,6 +638,14 @@ fn do_matrix(
             .up_adj_flat_len_along_time
             .as_ref()
             .zip(mode_data.down_rev_flat_len_along_time.as_ref());
+        // #502: expansion (see phantom.rs SeedExpansion)
+        let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
+        let tgt_exp = super::phantom::SeedExpansion::build(&tgt_seedsets);
+        let exp_threshold = if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
+        };
         let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
             // Always use parallel for 2-channel: the sequential path
             // calls `SearchState2::new(n_nodes)` per call which is
@@ -630,11 +662,12 @@ fn do_matrix(
                     down,
                     up_lat,
                     dn_lat,
-                    &origins_rank,
-                    &targets_rank,
-                    threshold,
+                    &src_exp.exp_ranks,
+                    &tgt_exp.exp_ranks,
+                    exp_threshold,
                 );
-            (m, Some(lm), st)
+            let (m, lm_opt) = src_exp.reduce_time(&tgt_exp, &m, Some(&lm));
+            (m, lm_opt, st)
         } else {
             // #415: when bounded, always take the parallel `_bounded` path
             // (the sequential `table_bucket_full_flat` has no bound hook).
@@ -643,13 +676,14 @@ fn do_matrix(
                     n_nodes,
                     up,
                     down,
-                    &origins_rank,
-                    &targets_rank,
-                    threshold,
+                    &src_exp.exp_ranks,
+                    &tgt_exp.exp_ranks,
+                    exp_threshold,
                 )
             } else {
-                table_bucket_full_flat(n_nodes, up, down, &origins_rank, &targets_rank)
+                table_bucket_full_flat(n_nodes, up, down, &src_exp.exp_ranks, &tgt_exp.exp_ranks)
             };
+            let (m, _) = src_exp.reduce_time(&tgt_exp, &m, None);
             (m, None, st)
         };
 
@@ -1018,34 +1052,57 @@ fn compute_route_pair(
 ) -> Option<(f32, f32, Vec<u8>)> {
     use super::types::SnapRole;
 
-    // Fast path: K=1 single snap + single CCH query. Avoids the K=64
-    // collect overhead that costs ~1 ms/pair just for the snap.
-    let src_role = SnapRole::Src.role_filter(mode_data);
-    let dst_role = SnapRole::Dst.role_filter(mode_data);
-    if let (Some(src_id), Some(dst_id)) = (
-        state
-            .snap_index
-            .snap_filtered_role(slon, slat, mode.0, None, src_role),
-        state
-            .snap_index
-            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+    // Fast path (#502): phantom-seeded single query — both directed twins of
+    // up to 3 near-equidistant physical edges per endpoint, exact partial
+    // costs. Replaces the K=1 single-directed-edge commitment that caused 4x
+    // fwd/rev asymmetry on long rural chains.
+    let src_k = state.snap_index.snap_k_with_info_filtered_role(
+        slon,
+        slat,
+        mode.0,
+        4,
+        None,
+        SnapRole::Src.role_filter(mode_data),
+    );
+    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
+        dlon,
+        dlat,
+        mode.0,
+        4,
+        None,
+        SnapRole::Dst.role_filter(mode_data),
+    );
+    if let (Some(sp), Some(dp)) = (
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &src_k,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+        ),
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &dst_k,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+        ),
     ) {
-        // Defensive bounds-checked lookup so a corrupted snap index can
-        // never index out-of-range here (would panic + take down the
-        // request). Treat OOB as snap miss and fall through to slow path.
-        let (src_rank, dst_rank) = match (
-            mode_data.orig_to_rank.get(src_id as usize).copied(),
-            mode_data.orig_to_rank.get(dst_id as usize).copied(),
-        ) {
-            (Some(s), Some(d)) => (s, d),
-            _ => (u32::MAX, u32::MAX),
-        };
-        if src_rank != u32::MAX
-            && dst_rank != u32::MAX
-            && let Some(result) = query.query(src_rank, dst_rank)
-        {
+        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
+            let result = super::query::QueryResult {
+                distance: r.distance.saturating_sub(dst_shift),
+                meeting_node: r.meeting_node,
+                forward_parent: r.forward_parent,
+                backward_parent: r.backward_parent,
+            };
             return Some(build_route_output(
-                state, mode_data, &result, src_rank, dst_rank, scratch,
+                state, mode_data, &result, r.src_root, r.dst_root, scratch,
             ));
         }
     }
