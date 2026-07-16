@@ -289,6 +289,7 @@ mod tests {
             &state.ebg_nodes,
             &state.edge_geom,
             mode_name,
+            None,
         );
 
         assert!(
