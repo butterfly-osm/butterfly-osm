@@ -19,7 +19,7 @@ use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
 use super::geometry::{build_isochrone_geometry, build_raw_points};
-use super::isochrone_handler::run_phast_bounded_fast;
+use super::isochrone_handler::run_phast_bounded_fast_seeded;
 use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
@@ -374,13 +374,26 @@ pub fn isochrone_hull(
         return Vec::new();
     }
 
+    // #506: phantom store seeds + exact anchor — same seeding as /isochrone.
+    let (center_seeds, center_anchor) = super::phantom::isochrone_center_seeds(
+        state,
+        &mode_data,
+        mode,
+        store_lon,
+        store_lat,
+        super::types::SnapRole::Src,
+        None,
+        false,
+        origin_rank,
+    );
+
     // Weights are seconds (post-#297); threshold is already user-input seconds.
     let threshold_s_u32 = threshold_s.round() as u32;
 
-    let settled = run_phast_bounded_fast(
+    let settled = run_phast_bounded_fast_seeded(
         &mode_data.up_adj_flat,
         &mode_data.down_adj_flat,
-        origin_rank,
+        &center_seeds,
         threshold_s_u32,
         mode,
     );
@@ -404,6 +417,7 @@ pub fn isochrone_hull(
         &state.ebg_nodes,
         &state.edge_geom,
         mode_name,
+        center_anchor,
     );
 
     let coords: Vec<(f64, f64)> = polygon_points.iter().map(|p| (p.lon, p.lat)).collect();
