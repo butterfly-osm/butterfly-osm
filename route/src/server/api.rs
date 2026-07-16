@@ -141,6 +141,15 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
             post(super::transit_handler::transit_bulk_handler),
         )
         .route("/health", get(super::health_handler::health_handler))
+        .route(
+            "/version",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "name": "butterfly-route",
+                    "version": env!("CARGO_PKG_VERSION"),
+                }))
+            }),
+        )
         .route("/regions", get(super::regions_handler::regions_handler));
     if elevation_loaded {
         api_routes = api_routes.route("/height", get(super::height_handler::height_handler));
