@@ -644,13 +644,11 @@ pub async fn compute_table_bucket_m2m(
     // S×T flat layout. `value + src_part - tgt_part` in i64 (clamped at 0);
     // returns the reduced primary matrix and, when `carry` is given, the value
     // of the carried channel at the SAME argmin (path-consistent 2-channel).
-    let reduce = |m: &[u32],
-                  carry: Option<(&[u32], fn(&(u32, u32)) -> u32)>|
-     -> (Vec<u32>, Option<Vec<u32>>) {
+    let reduce = |m: &[u32], carry: Option<&[u32]>| -> (Vec<u32>, Option<Vec<u32>>) {
         let n_s = src_spans.len();
         let n_t = tgt_spans.len();
         let mut out = vec![u32::MAX; n_s * n_t];
-        let mut out_c = carry.as_ref().map(|_| vec![u32::MAX; n_s * n_t]);
+        let mut out_c = carry.map(|_| vec![u32::MAX; n_s * n_t]);
         for (i, &(ss, sl)) in src_spans.iter().enumerate() {
             for (j, &(ts, tl)) in tgt_spans.iter().enumerate() {
                 let mut best = i64::MAX;
@@ -670,7 +668,7 @@ pub async fn compute_table_bucket_m2m(
                 }
                 if best != i64::MAX {
                     out[i * n_t + j] = best.max(0) as u32;
-                    if let (Some(oc), Some((cm, _))) = (&mut out_c, carry.as_ref()) {
+                    if let (Some(oc), Some(cm)) = (&mut out_c, carry) {
                         let (r, c) = best_rc;
                         let lv = cm[r * n_exp_t + c];
                         if lv != u32::MAX {
@@ -736,7 +734,7 @@ pub async fn compute_table_bucket_m2m(
                 &tgt_exp_ranks,
                 exp_threshold,
             );
-        let (time_mat, lat_opt) = reduce(&time_mat, Some((&lat_mat, |p: &(u32, u32)| p.1)));
+        let (time_mat, lat_opt) = reduce(&time_mat, Some(&lat_mat));
         let lat_mat = lat_opt.expect("carry channel requested");
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
