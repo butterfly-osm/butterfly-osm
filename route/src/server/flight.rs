@@ -2153,7 +2153,63 @@ pub(crate) fn route_for_pair(
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
 
-    // K=1 fast path (same shape as compute_route_pair).
+    // Phantom-seeded fast path (#506/#509): same seeding as /route and
+    // route_batch, so the emitted per-edge path is the SAME route those
+    // endpoints return — no more directional-commit detours feeding flow
+    // analytics (fixtures emitted 334s/2880m vs the true 163s/1258m).
+    let src_k = state.snap_index.snap_k_with_info_filtered_role(
+        slon,
+        slat,
+        mode.0,
+        8,
+        None,
+        SnapRole::Src.role_filter(mode_data),
+    );
+    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
+        dlon,
+        dlat,
+        mode.0,
+        8,
+        None,
+        SnapRole::Dst.role_filter(mode_data),
+    );
+    if let (Some(sp), Some(dp)) = (
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &src_k,
+            slon,
+            slat,
+            SnapRole::Src,
+            None,
+        ),
+        super::phantom::phantom_from_candidates(
+            state,
+            mode_data,
+            &dst_k,
+            dlon,
+            dlat,
+            SnapRole::Dst,
+            None,
+        ),
+    ) {
+        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
+            return Some((
+                r.src_root,
+                r.dst_root,
+                super::query::QueryResult {
+                    distance: r.distance.saturating_sub(dst_shift),
+                    meeting_node: r.meeting_node,
+                    forward_parent: r.forward_parent,
+                    backward_parent: r.backward_parent,
+                },
+            ));
+        }
+    }
+
+    // Phantom missed / didn't connect → legacy K=1 + K=64 escalation.
     let src_role = SnapRole::Src.role_filter(mode_data);
     let dst_role = SnapRole::Dst.role_filter(mode_data);
     if let (Some(src_id), Some(dst_id)) = (
@@ -2446,9 +2502,10 @@ pub(crate) fn route_per_pair_work(
     {
         return Some((src_rank, dst_rank, result));
     }
-    // K=1 missed (or didn't connect) → escalate WITHOUT re-doing the K=1 that
-    // the precomputed-rank query above already covered.
-    escalate_route(state, mode_data, mode, query, &work.pair)
+    // No precomputed ranks (the #506 phantom flow) or the K=1 query didn't
+    // connect → the full per-pair path: phantom-seeded query first, then
+    // legacy K=1 + K=64 escalation.
+    route_for_pair(state, mode_data, mode, query, &work.pair)
 }
 
 /// #438: resolve each pair's K=1 source/dest rank and partition into
@@ -2877,8 +2934,23 @@ pub fn do_edges_batch(
         // bounded to one chunk even at the 500k-pair cap — the #438-review
         // BLOCKER fix: we no longer materialise EVERY pair's edge rows before
         // emitting (which was unbounded by the pair cap for long routes).
-        let (group_vec, per_pair_work) =
-            group_pairs(&state, &mode_data, mode, &params.pairs, parallel);
+        // #506: the #438 group/tree machinery keys on single K=1 ranks and
+        // would emit the pre-phantom detour paths. Route ALL pairs through
+        // the phantom-seeded per-pair path until a seeded meet-group lands
+        // (correctness > the shared-forward win; tracked on #506).
+        let group_vec: Vec<(u32, Vec<GroupedTarget>)> = Vec::new();
+        let per_pair_work: Vec<PerPairWork> = params
+            .pairs
+            .iter()
+            .enumerate()
+            .map(|(i, &pair)| PerPairWork {
+                query_idx: i as u32,
+                pair,
+                src_rank: None,
+                dst_rank: None,
+            })
+            .collect();
+        let _ = group_pairs;
         // Work-chunk size in PAIRS. Bounds peak ≈ CHUNK_PAIRS × path_len × 32B
         // (~2 MB typical, ~200 MB worst-case long routes) vs unbounded before.
         const CHUNK_PAIRS: usize = 2048;
