@@ -2002,7 +2002,7 @@ impl ServerState {
             // charges as turn penalties on every transition. Scaling the
             // link weight by the raw ratio double-counts that dwell,
             // maximally on urban arterials (measured ~24% pessimism, ring
-            // detours on 68/1000 Google benchmark trips) and not at all on
+            // detours on 68/1000 reference benchmark trips) and not at all on
             // motorways. Correction (zero fitted parameters): subtract the
             // edge's own EXPECTED outgoing turn penalty from the observed
             // door-to-door time before setting the link weight, floored at
