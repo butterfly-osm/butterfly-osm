@@ -893,46 +893,20 @@ pub async fn isochrone_handler(
     // direction of the snapped edge. Depart seeds cost the REMAINDER of the
     // edge (part_time); arrive seeds cost the ENTRY-to-snap part (w - part).
     // Custom-weight paths (avoid/exclude) keep the legacy single seed.
-    let mut center_anchor: Option<(f64, f64)> = None;
-    let center_seeds: Vec<(u32, u32)> = if avoid_entry.is_none() && exclude_mask.is_none() {
-        let k = state.snap_index.snap_k_with_info_filtered_role(
-            req.lon,
-            req.lat,
-            mode.0,
-            8,
-            Some(&snap_mask),
-            center_role_filter,
-        );
-        match super::phantom::phantom_from_candidates(
+    let (center_seeds, center_anchor) = if avoid_entry.is_none() && exclude_mask.is_none() {
+        super::phantom::isochrone_center_seeds(
             &state,
             &mode_data,
-            &k,
+            mode,
             req.lon,
             req.lat,
             center_role,
             Some(&snap_mask),
-        ) {
-            Some(pe) => {
-                center_anchor = Some((pe.snapped_lon, pe.snapped_lat));
-                pe.seeds
-                .iter()
-                .map(|sd| {
-                    let cost = if reverse {
-                        // arrive: cost from edge entry (tail) to the snap point
-                        mode_data.node_weights[sd.ebg_id as usize]
-                            .saturating_sub(sd.part_time)
-                    } else {
-                        // depart: cost from the snap point to the edge head
-                        sd.part_time
-                    };
-                    (sd.rank, cost)
-                })
-                .collect()
-            }
-            None => vec![(center_rank, 0)],
-        }
+            reverse,
+            center_rank,
+        )
     } else {
-        vec![(center_rank, 0)]
+        (vec![(center_rank, 0)], None)
     };
 
     // Get custom weights (avoid takes priority, then exclude)
@@ -1349,9 +1323,29 @@ pub async fn isochrone_bulk_handler(
                 return None;
             }
 
+            // #506: phantom center seeds + exact anchor (custom-weight runs
+            // keep the legacy single seed — phantom partials assume base
+            // weights).
+            let (center_seeds, center_anchor) =
+                if avoid_entry.is_none() && exclude_weights.is_none() {
+                    super::phantom::isochrone_center_seeds(
+                        &state,
+                        &mode_data,
+                        mode,
+                        lon,
+                        lat,
+                        SnapRole::Src,
+                        Some(&snap_mask),
+                        false,
+                        center_rank,
+                    )
+                } else {
+                    (vec![(center_rank, 0)], None)
+                };
+
             // Run PHAST - Note: thread-local state handles per-thread allocation
             let phast_settled =
-                run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, time_s, mode);
+                run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, time_s, mode);
 
             // Convert to original IDs
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
@@ -1369,7 +1363,7 @@ pub async fn isochrone_bulk_handler(
                 &state.ebg_nodes,
                 &state.edge_geom,
                 &req.mode,
-                None,
+                center_anchor,
             );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
             let contour = ContourResult {

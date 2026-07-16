@@ -424,3 +424,59 @@ impl SeedExpansion {
         (out, out_c)
     }
 }
+
+/// #506: seeded PHAST init `(seeds, exact snapped anchor)` for a center.
+pub type CenterSeeds = (Vec<(u32, u32)>, Option<(f64, f64)>);
+
+/// #506: multi-seed PHAST init for an isochrone/catchment center.
+///
+/// Snaps `(lon, lat)` with K=8 role-aware candidates and converts the phantom
+/// seeds into `(rank, cost)` pairs for the seeded PHAST variants:
+/// - depart (`is_reverse == false`): cost = remainder of the edge past the
+///   snap point (`part_time`)
+/// - arrive (`is_reverse == true`): cost = entry-to-snap prefix
+///   (`w(edge) − part_time`)
+///
+/// Returns the seeds plus the exact snapped point (the #497 contour anchor).
+/// Falls back to a single zero-cost seed at `fallback_rank` when no phantom
+/// end can be built (isolated candidates, filtered edges).
+#[allow(clippy::too_many_arguments)]
+pub fn isochrone_center_seeds(
+    state: &ServerState,
+    mode_data: &ModeData,
+    mode: Mode,
+    lon: f64,
+    lat: f64,
+    role: SnapRole,
+    snap_mask: Option<&[u64]>,
+    is_reverse: bool,
+    fallback_rank: u32,
+) -> CenterSeeds {
+    let k = state.snap_index.snap_k_with_info_filtered_role(
+        lon,
+        lat,
+        mode.0,
+        8,
+        snap_mask,
+        role.role_filter(mode_data),
+    );
+    match phantom_from_candidates(state, mode_data, &k, lon, lat, role, snap_mask) {
+        Some(pe) => {
+            let anchor = Some((pe.snapped_lon, pe.snapped_lat));
+            let seeds = pe
+                .seeds
+                .iter()
+                .map(|sd| {
+                    let cost = if is_reverse {
+                        mode_data.node_weights[sd.ebg_id as usize].saturating_sub(sd.part_time)
+                    } else {
+                        sd.part_time
+                    };
+                    (sd.rank, cost)
+                })
+                .collect();
+            (seeds, anchor)
+        }
+        None => (vec![(fallback_rank, 0)], None),
+    }
+}
