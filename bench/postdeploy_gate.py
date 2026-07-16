@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Post-deploy correctness gate for a live butterfly server.
 
-Runs baseline-independent invariants + real-Google ground truth against a
+Runs baseline-independent invariants + a reference-ETA ground-truth set against a
 deployed instance and exits non-zero on any violation. Designed to run after
 every deploy (dev container, staging, or any reachable instance) so a
 regression of a KNOWN failure class can never ship silently again.
 
 Checks
 ------
-1. GROUND TRUTH (1,000 real Google routes, David's 2024 BE benchmark):
-   duration and distance ratio distributions vs Google. The DISTANCE ratio is
+1. GROUND TRUTH (1,000 reference trips with independently observed ETAs;
+   the dataset itself is private — pass any CSV with columns
+   route_id,long_1,lat_1,long_2,lat_2,ref_min,ref_km via --trips):
+   duration and distance ratio distributions vs the reference. The DISTANCE ratio is
    speed-calibration-independent — it gates pure routing correctness.
 2. SYMMETRY: route(A→B) vs route(B→A) on seeded random pairs. The #502 snap
    bug's fingerprint was 4× asymmetry; a healthy two-way network stays <1.5×.
@@ -45,7 +47,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-DEFAULT_TRIPS = "/home/pierre/explorations/butterfly_google_speeds/od.csv"
+DEFAULT_TRIPS = "/home/pierre/explorations/reference_trips/od.csv"
 
 # BASELINE 2026-07-16 (engine d97168d, 1000 trips, zero errors):
 #   duration ratio: p05=0.854 p50=1.029 p90=1.246 p95=1.304 mean=1.048
@@ -104,15 +106,15 @@ def check(name, ok, detail):
 
 
 def gate_ground_truth(base, trips_path):
-    print(f"== ground truth: 1000 real Google routes ({trips_path}) ==")
+    print(f"== ground truth: reference trips ({trips_path}) ==")
     rows = list(csv.DictReader(open(trips_path)))
 
     def one(r):
         try:
             dur_s, dist_m = route(base, r["long_1"], r["lat_1"], r["long_2"], r["lat_2"])
             return (
-                dur_s / 60 / float(r["google_min"]),
-                dist_m / 1000 / float(r["google_km"]),
+                dur_s / 60 / float(r["ref_min"]),
+                dist_m / 1000 / float(r["ref_km"]),
             )
         except Exception:
             return None

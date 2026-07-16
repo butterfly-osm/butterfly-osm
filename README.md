@@ -20,8 +20,9 @@ faster than OSRM at scale.
   multi-candidate directional phantom endpoints with exact partial-edge
   costs. No wrong-way commitment detours, no 0-second same-edge answers,
   one consistent answer across REST and Flight.
-- **Ground truth**: 1 000 real Google Directions trips — duration p50
-  **1.02×**, distance p50 **1.004×**; enforced by a post-deploy gate
+- **Ground truth**: 1 000 real-world reference trips with independently
+  observed travel times — duration p50 **1.02×**, distance p50 **1.004×**;
+  enforced by a post-deploy gate
   (fixtures, symmetry, endpoint consistency, close-pair sweep, isochrone
   containment, edges sums) that blocks promotion on any regression.
 - **vs OSRM CH (same host, interleaved)**: tied at 200×200, **2.7× faster**
