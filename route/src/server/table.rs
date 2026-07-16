@@ -415,7 +415,7 @@ pub async fn compute_table_bucket_m2m(
 
     // (rank, snapped, valid). Per-row candidate list is built lazily on
     // first miss (see apply_k_best_fallback's lazy K=64 escalator).
-    type SnapResult = (u32, (f64, f64), bool, Vec<(u32, u32, u32)>);
+    type SnapResult = (u32, (f64, f64), bool, Vec<(u32, u32, u32, bool)>);
 
     // #502: phantom seed sets — (rank, time_part, len_part) per endpoint.
     // Base-weights matrices seed BOTH directed twins of up to 3 near-
@@ -442,10 +442,10 @@ pub async fn compute_table_bucket_m2m(
                 role,
                 Some(snap_mask),
             ) {
-                let seeds: Vec<(u32, u32, u32)> = pe
+                let seeds: Vec<(u32, u32, u32, bool)> = pe
                     .seeds
                     .iter()
-                    .map(|x| (x.rank, x.part_time, x.part_len))
+                    .map(|x| (x.rank, x.part_time, x.part_len, x.direct_ok))
                     .collect();
                 let primary_rank = mode_data.orig_to_rank[pe.primary_ebg as usize];
                 let rank = if primary_rank != u32::MAX {
@@ -465,7 +465,7 @@ pub async fn compute_table_bucket_m2m(
         ) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {
-                return (rank, (plon, plat), true, vec![(rank, 0, 0)]);
+                return (rank, (plon, plat), true, vec![(rank, 0, 0, true)]);
             }
         }
         (0, (lon, lat), false, vec![])
@@ -485,7 +485,7 @@ pub async fn compute_table_bucket_m2m(
     let mut source_waypoints: Vec<Waypoint> = Vec::with_capacity(sources.len());
     let mut source_valid: Vec<bool> = Vec::with_capacity(sources.len());
     let mut sources_snapped: Vec<(f64, f64)> = Vec::with_capacity(sources.len());
-    let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(sources.len());
+    let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(sources.len());
     for (rank, (plon, plat), valid, seeds) in source_results {
         src_seedsets.push(seeds);
         sources_rank.push(rank);
@@ -501,7 +501,7 @@ pub async fn compute_table_bucket_m2m(
     let mut dest_waypoints: Vec<Waypoint> = Vec::with_capacity(destinations.len());
     let mut target_valid: Vec<bool> = Vec::with_capacity(destinations.len());
     let mut targets_snapped: Vec<(f64, f64)> = Vec::with_capacity(destinations.len());
-    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(destinations.len());
+    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(destinations.len());
     for (rank, (plon, plat), valid, seeds) in target_results {
         tgt_seedsets.push(seeds);
         targets_rank.push(rank);

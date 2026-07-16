@@ -505,7 +505,7 @@ fn do_matrix(
     // matrix branch expands them into extra rows/columns (SeedExpansion) so
     // the bucket engine stays untouched. The large PHAST-tiled branch keeps
     // the primary-only legacy (engine-level multi-seed is the follow-up).
-    type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32)>)>;
+    type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
     let snap_endpoint = |lon: f64, lat: f64, role: SnapRole| -> PrimarySnap {
         let k = state.snap_index.snap_k_with_info_filtered_role(
             lon,
@@ -518,10 +518,10 @@ fn do_matrix(
         if let Some(pe) =
             super::phantom::phantom_from_candidates(state, &mode_data, &k, lon, lat, role, None)
         {
-            let seeds: Vec<(u32, u32, u32)> = pe
+            let seeds: Vec<(u32, u32, u32, bool)> = pe
                 .seeds
                 .iter()
-                .map(|x| (x.rank, x.part_time, x.part_len))
+                .map(|x| (x.rank, x.part_time, x.part_len, x.direct_ok))
                 .collect();
             let primary_rank = {
                 let r = mode_data.orig_to_rank[pe.primary_ebg as usize];
@@ -539,7 +539,7 @@ fn do_matrix(
             ));
         }
         super::snap_kbest::snap_primary_role(state, &mode_data, mode, lon, lat, role, None)
-            .map(|(t, r)| (t, r, vec![(r, 0, 0)]))
+            .map(|(t, r)| (t, r, vec![(r, 0, 0, true)]))
     };
     let src_primary: Vec<PrimarySnap> = params
         .origins
@@ -555,7 +555,7 @@ fn do_matrix(
     let mut origins_rank = Vec::with_capacity(params.origins.len());
     let mut valid_origin = Vec::with_capacity(params.origins.len());
     let mut origins_snapped = Vec::with_capacity(params.origins.len());
-    let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
+    let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
     for (i, snap) in src_primary.iter().enumerate() {
         if let Some(((_, plon, plat, _), rank, seeds)) = snap {
             origins_rank.push(*rank);
@@ -570,7 +570,7 @@ fn do_matrix(
     let mut targets_rank = Vec::with_capacity(params.destinations.len());
     let mut valid_dst = Vec::with_capacity(params.destinations.len());
     let mut targets_snapped = Vec::with_capacity(params.destinations.len());
-    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
+    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
     for (i, snap) in dst_primary.iter().enumerate() {
         if let Some(((_, plon, plat, _), rank, seeds)) = snap {
             targets_rank.push(*rank);
@@ -856,7 +856,7 @@ fn do_matrix(
                     return;
                 }
 
-                let mut block_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::new();
+                let mut block_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
                 let mut block_src_orig = Vec::new();
                 for (vi, &oi) in valid_origin.iter().enumerate() {
                     if oi >= src_start && oi < src_end {

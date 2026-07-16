@@ -633,8 +633,17 @@ pub async fn route_handler(
     let mut chosen_src_idx: usize = 0;
     let mut chosen_dst_idx: usize = 0;
 
-    // Same-edge: return consistent zero-distance, zero-duration result
-    if src_rank == dst_rank {
+    // Same-edge: legacy zero-cost shortcut. ONLY for the custom-weight /
+    // bearing paths that skip the #502 phantom flow — the phantom same-edge
+    // direct computes the true partial cost between two points on the same
+    // directed edge ((f_d-f_s)*w), where this shortcut wrongly returned 0 s
+    // for points up to a whole edge apart (found live: 0 s vs a true 30-70 s
+    // drive on 17/500 close pairs).
+    let phantom_will_run = src_bearing.is_none()
+        && dst_bearing.is_none()
+        && avoid_entry.is_none()
+        && exclude_mask.is_none();
+    if src_rank == dst_rank && !phantom_will_run {
         let snap_point = Point {
             lon: src_snap_info.lon,
             lat: src_snap_info.lat,
@@ -849,9 +858,14 @@ pub async fn route_handler(
             // same-edge move), so the valid forward move is computed here.
             let mut direct: Option<(u32, f64, f64, u32)> = None; // (cost, f_s, f_d, ebg)
             for sseed in &sp.seeds {
-                if let Some(fd) = dp.frac_of(sseed.ebg_id)
-                    && fd >= sseed.frac
+                if !sseed.direct_ok {
+                    continue;
+                }
+                if let Some(dseed) = dp.seed_of(sseed.ebg_id)
+                    && dseed.direct_ok
+                    && dseed.frac >= sseed.frac
                 {
+                    let fd = dseed.frac;
                     let w = mode_data.node_weights[sseed.ebg_id as usize] as f64;
                     let c = ((fd - sseed.frac) * w).round() as u32;
                     if direct.is_none_or(|(bc, _, _, _)| c < bc) {
