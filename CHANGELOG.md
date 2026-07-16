@@ -10,6 +10,42 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-07-17 — Phantom endpoints, close-pair correctness, in-engine seeded matrices (#502–#517)
+
+The largest correctness campaign since the CCH landed, deployed fleet-wide
+and locked in by a new post-deploy gate:
+
+- **Phantom endpoints (#502/#503/#504–#508)**: snapping commits to BOTH
+  directed twins of up to 3 near-equidistant physical edges with exact
+  partial-edge costs, on every surface — `/route`, `/table`, Flight
+  `matrix` (small + streamed), `route_batch` (unbounded + `max_meters`),
+  `/trip`, REST + Flight isochrones (+ exact snapped contour anchor, #497),
+  `/isochrone/bulk`, catchment, `edges_batch`. Kills 2–4× wrong-way
+  detours on long rural edges; field-validated (Berloz/Heers/Robertville).
+- **Close-pair correctness (#509/#510)**: fixed 0-second `/table` answers
+  (12 % of close pairs), a legacy same-edge `/route` shortcut, secondary-
+  candidate zero-cost conflation, and seed-label domination in the seeded
+  bidirectional search (ALT-label meets).
+- **In-engine multi-seed bucket M2M (#511)**: phantom seeds now initialise
+  the engine directly (super-source forward, shift-trick backward,
+  pure-meet guard with in-join same-edge directs). Replaces the API-layer
+  expansion that cost 12–15× on matrices; measured at parity with the
+  pre-phantom engine (1000×1000: 492 ms seeded vs 509 ms legacy).
+- **edges_batch (#512)**: per-edge paths now match `/route` exactly
+  (fixture sums 334 s → 163 s).
+- **Turn-charge label correction (#515)**: boot recustomization subtracts
+  the engine's own expected junction charge from observed door-to-door
+  edge slowdowns (zero fitted parameters).
+- **`GET /version` (#516)** and **post-deploy gate** (`bench/postdeploy_gate.py`,
+  #505/#513/#517): ticket fixtures, fwd/rev symmetry, route==table,
+  close-pair sweep, isochrone snapped-origin containment, edges_batch
+  sums, and 1 000 real-Google-trip ground truth (dur p50 1.02, dist p50
+  1.004, thresholds ratcheted); `deploy.sh staging` refuses to promote on
+  FAIL.
+- **OSRM re-validation (post-phantom)**: tied at 200×200, 2.7× faster at
+  500×500, 4.8× faster at 1000×1000 (same-host interleaved HTTP).
+
+
 ### 2026-06-10 — Traffic profiles: (highway_class × density) modifier matrix (#428)
 
 Traffic profiles (`traffic/*.traffic.json`) may now carry an opt-in 2-D
