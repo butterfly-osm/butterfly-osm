@@ -33,8 +33,8 @@ Brussels Grand-Place → Luxembourg City.
 }
 ```
 
-- Distance: 186.6 km (Google Maps reference: ~210 km — within 12 %)
-- Duration: 2 h 28 min (Google Maps reference: ~2 h 30 min — within 1 %)
+- Distance: 186.6 km (public map reference: ~210 km — within 12 %)
+- Duration: 2 h 28 min (public map reference: ~2 h 30 min — within 1 %)
 - Polyline: crosses the BE/LU border (Athus area)
 
 ## Same-region regression
@@ -45,8 +45,8 @@ GET /route?src_lon=4.3525&src_lat=50.8467&dst_lon=4.4024&dst_lat=51.2213&mode=ca
 
 Brussels → Antwerp (BE intra-region):
 
-- Distance: 46.9 km (Google: ~50 km, ✓)
-- Duration: 36 min (Google: ~40 min, ✓)
+- Distance: 46.9 km (reference: ~50 km, ✓)
+- Duration: 36 min (reference: ~40 min, ✓)
 - Same-region path through `dispatch_p2p_with_overlay::P2pPlan::SameRegion`. No overlay involvement. No regression.
 
 ## Why this works
