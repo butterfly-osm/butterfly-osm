@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Post-deploy correctness gate for a live butterfly server.
 
-Runs baseline-independent invariants + reference ground truth against a
+Runs baseline-independent invariants + a reference-ETA ground-truth set against a
 deployed instance and exits non-zero on any violation. Designed to run after
 every deploy (dev container, staging, or any reachable instance) so a
 regression of a KNOWN failure class can never ship silently again.
 
 Checks
 ------
-1. GROUND TRUTH (1,000 reference trips, David's 2024 BE reference benchmark):
+1. GROUND TRUTH (1,000 reference trips with independently observed ETAs;
+   the dataset itself is private — pass any CSV with columns
+   route_id,long_1,lat_1,long_2,lat_2,ref_min,ref_km via --trips):
    duration and distance ratio distributions vs the reference. The DISTANCE ratio is
    speed-calibration-independent — it gates pure routing correctness.
 2. SYMMETRY: route(A→B) vs route(B→A) on seeded random pairs. The #502 snap
@@ -104,7 +106,7 @@ def check(name, ok, detail):
 
 
 def gate_ground_truth(base, trips_path):
-    print(f"== ground truth: 1000 reference trips ({trips_path}) ==")
+    print(f"== ground truth: reference trips ({trips_path}) ==")
     rows = list(csv.DictReader(open(trips_path)))
 
     def one(r):
