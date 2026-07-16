@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
 
 use super::regions::RegionsState;
@@ -750,8 +749,6 @@ pub async fn trip_handler(
             src_seedsets.push(mk(super::types::SnapRole::Src));
             dst_seedsets.push(mk(super::types::SnapRole::Dst));
         }
-        let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
-        let tgt_exp = super::phantom::SeedExpansion::build(&dst_seedsets);
 
         // Select flat adjacencies (avoid takes priority, then exclude)
         let (time_up, time_down) = if let Some(ref entry) = avoid_entry {
@@ -783,37 +780,43 @@ pub async fn trip_handler(
         let (mut duration_matrix, mut distance_matrix) = if use_2channel {
             let up_lat = mode_data.up_adj_flat_len_along_time.as_ref().unwrap();
             let dn_lat = mode_data.down_rev_flat_len_along_time.as_ref().unwrap();
-            let (dur_exp, lat_exp, _stats) =
-                crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
+            let (dur_mat, lat_mat, _stats) =
+                crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
                     n_nodes,
                     time_up,
                     time_down,
                     up_lat,
                     dn_lat,
-                    &src_exp.exp_ranks,
-                    &tgt_exp.exp_ranks,
+                    &src_seedsets,
+                    &dst_seedsets,
                     u32::MAX,
                 );
-            let (dur_mat, lat_mat) = src_exp.reduce_time(&tgt_exp, &dur_exp, Some(&lat_exp));
-            (dur_mat, lat_mat)
+            (dur_mat, Some(lat_mat))
         } else {
-            let (dur_exp, _stats) = table_bucket_full_flat(
+            let (dur_mat, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                 n_nodes,
                 time_up,
                 time_down,
-                &src_exp.exp_ranks,
-                &tgt_exp.exp_ranks,
+                &src_seedsets,
+                &dst_seedsets,
+                u32::MAX,
             );
-            let (dur_mat, _) = src_exp.reduce_time(&tgt_exp, &dur_exp, None);
             let dist_mat = if want_distance {
-                let (m_exp, _) = table_bucket_full_flat(
+                // Distance-metric run — swap partials so the cost channel is metres.
+                let swap = |sets: &[Vec<(u32, u32, u32, bool)>]| -> Vec<Vec<(u32, u32, u32, bool)>> {
+                    sets.iter()
+                        .map(|v| v.iter().map(|&(r, t, l, ok)| (r, l, t, ok)).collect())
+                        .collect()
+                };
+                let (m, _) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                     n_nodes,
                     dist_up,
                     dist_down,
-                    &src_exp.exp_ranks,
-                    &tgt_exp.exp_ranks,
+                    &swap(&src_seedsets),
+                    &swap(&dst_seedsets),
+                    u32::MAX,
                 );
-                Some(src_exp.reduce_len(&tgt_exp, &m_exp))
+                Some(m)
             } else {
                 None
             };

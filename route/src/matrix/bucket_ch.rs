@@ -5778,3 +5778,925 @@ mod max_minutes_bound_tests {
         }
     }
 }
+
+// =============================================================================
+// SEEDED (MULTI-SEED PHANTOM) BUCKET M2M — #509
+//
+// In-engine replacement for the API-layer `SeedExpansion` (#504), which
+// multiplied engine cells by ~(avg seeds)² and measured 12-15× slower at
+// every size. Here each SOURCE runs ONE forward sweep initialised with all
+// of its seeds (super-source), each TARGET runs ONE backward sweep with
+// shift-trick seeds, and the join stays S×T.
+//
+// Semantics (mirrors query_seeded + its #510 fixes):
+// - source seed cost = remainder partial `(1-f)·w`; target seed raw cost =
+//   suffix partial; the backward sweep initialises at `shift - suffix`
+//   (shift = max suffix of that target) and the whole column is shifted
+//   back down after the sweep.
+// - pure⊕pure joins (source seed rank == meet == target seed rank, both
+//   labels untouched seed inits) encode SAME-EDGE moves. They are allowed
+//   iff BOTH seeds are `direct_ok` (primary edges) AND `total >= shift`
+//   (⟺ part_src >= part_dst ⟺ f_dst >= f_src: a valid forward move along
+//   the edge). Everything else is rejected — the backward variant is not a
+//   path, and cross-candidate (secondary) zero-moves fabricate teleports.
+// - seed-label domination (#510 case 4): a via-network label at a seed rank
+//   is dominated by the pure init and its joins would be lost. Forward
+//   sweeps therefore push an extra ALT (impure) bucket entry at their own
+//   seed ranks; backward sweeps track ALT labels at theirs and run a
+//   post-sweep join with them.
+// =============================================================================
+
+/// One phantom seed for the in-engine seeded M2M:
+/// `(rank, part_time, part_len, direct_ok)`.
+pub type EngineSeed = (u32, u32, u32, bool);
+
+/// Per-rank map of the sources whose PURE seed sits there:
+/// `(source_idx, pure_time_cost, pure_lat_cost, direct_ok)`.
+type SrcPureMap = std::collections::HashMap<u32, Vec<(u32, u32, u32, bool)>>;
+
+fn build_src_pure_map(src_seedsets: &[Vec<EngineSeed>]) -> SrcPureMap {
+    let mut map: SrcPureMap = std::collections::HashMap::new();
+    for (si, seeds) in src_seedsets.iter().enumerate() {
+        for &(r, t, l, ok) in seeds {
+            map.entry(r).or_default().push((si as u32, t, l, ok));
+        }
+    }
+    map
+}
+
+/// Seeded forward sweep (time channel). Pushes an ALT (impure) entry at
+/// each of the source's own seed ranks so enter-and-stop joins survive
+/// pure-label domination.
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
+fn forward_fill_buckets_flat_seeded(
+    up_adj_flat: &UpAdjFlat,
+    source_idx: u32,
+    seeds: &[EngineSeed],
+    other_ranks: &std::collections::HashSet<u32>,
+    state: &mut SearchState,
+    bucket_items: &mut Vec<(u32, u32, u32)>,
+) {
+    state.start_search();
+    // alt[i] = best via-network arrival at seeds[i].0, dominated or not.
+    // Alt entries only matter at ranks seeded on BOTH sides (they feed the
+    // enter-and-stop joins at shared seed ranks) — when this source shares
+    // no rank with any target, the hook is skipped entirely.
+    let mut alt: [(u32, u32); 8] = [(u32::MAX, u32::MAX); 8];
+    let mut k = 0usize;
+    for &(r, c, _, _) in seeds.iter().take(8) {
+        state.relax(r, c);
+        if other_ranks.contains(&r) {
+            alt[k].0 = r;
+            k += 1;
+        }
+    }
+
+    let offsets = up_adj_flat.offsets.as_slice();
+    let targets = up_adj_flat.targets.as_slice();
+    let weights = &up_adj_flat.weights;
+
+    let multi = k > 0;
+    // 64-bit hash filter over the shared ranks: one AND+shift per
+    // relaxation instead of a k-way compare.
+    let mut seed_filter: u64 = 0;
+    for a in alt.iter().take(k) {
+        seed_filter |= 1u64 << (a.0 & 63);
+    }
+
+    while let Some((d, u)) = state.pop() {
+        bucket_items.push((u, source_idx, d));
+
+        let start = offsets[u as usize] as usize;
+        let end = offsets[u as usize + 1] as usize;
+        for i in start..end {
+            let v = targets[i];
+            let w = weights.get(i);
+            let new_dist = d.saturating_add(w);
+            if multi && (seed_filter >> (v & 63)) & 1 == 1 {
+                for a in alt.iter_mut().take(k) {
+                    if a.0 == v && new_dist < a.1 {
+                        a.1 = new_dist;
+                    }
+                }
+            }
+            state.relax(v, new_dist);
+        }
+    }
+
+    if multi {
+        for &(r, ad) in alt.iter().take(k) {
+            if ad != u32::MAX && ad <= state.dist_threshold {
+                bucket_items.push((r, source_idx, ad));
+            }
+        }
+    }
+}
+
+/// Seeded backward sweep + join (time channel). Writes shifted-adjusted
+/// values into this target's column of the atomic matrix.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
+fn backward_join_seeded(
+    down_rev_flat: &DownReverseAdjFlat,
+    seeds: &[EngineSeed],
+    buckets: &PrefixSumBuckets,
+    matrix: &[std::sync::atomic::AtomicU32],
+    n_sources: usize,
+    n_targets: usize,
+    target_idx: usize,
+    state: &mut SearchState,
+    src_pure: &SrcPureMap,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+    let shift: u32 = seeds.iter().take(8).map(|s| s.1).max().unwrap_or(0);
+
+    state.start_search();
+    // Shared-rank machinery (alt labels + purity skip) is only live at
+    // ranks that are ALSO some source's seed — the k counter below tracks
+    // only those; when zero, all hooks vanish from the sweep.
+    let mut alt: [(u32, u32); 8] = [(u32::MAX, u32::MAX); 8];
+    let mut pure_at: [(u32, u32, bool); 8] = [(u32::MAX, u32::MAX, false); 8];
+    let mut k = 0usize;
+    for &(r, t, _, ok) in seeds.iter().take(8) {
+        let init = shift - t;
+        state.relax(r, init);
+        if src_pure.contains_key(&r) {
+            alt[k].0 = r;
+            pure_at[k] = (r, init, ok);
+            k += 1;
+        }
+    }
+
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_weights = &down_rev_flat.weights;
+
+    let multi = k > 0;
+    let mut seed_filter: u64 = 0;
+    for a in alt.iter().take(k) {
+        seed_filter |= 1u64 << (a.0 & 63);
+    }
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    // local (this thread owns the whole column) min-write helper
+    let write_min = |cell: usize, val: u32| {
+        let a = &matrix[cell];
+        if val < a.load(Ordering::Relaxed) {
+            a.store(val, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    };
+
+    let result_bytes = matrix.len().saturating_mul(4);
+    let prefetch_enabled = result_bytes >= 8 * 1024 * 1024;
+
+    while let Some((d, u)) = state.pop() {
+        visited += 1;
+
+        // Is this node's label the target's own PURE seed init at a
+        // SHARED rank? Only there can a pure⊕pure meet exist.
+        let bwd_pure = if multi && (seed_filter >> (u & 63)) & 1 == 1 {
+            pure_at
+                .iter()
+                .take(k)
+                .find(|&&(r, init, _)| r == u && init == d)
+        } else {
+            None
+        };
+
+        if let Some(&(_, _, dst_direct_ok)) = bwd_pure {
+            // Slow lane: only at the (≤ k) own-seed nodes with pure labels.
+            let entries = buckets.get(u);
+            let pure_list = src_pure.get(&u);
+            for entry in entries {
+                let is_pure_pure = pure_list
+                    .map(|pl| {
+                        pl.iter().any(|&(si, pc, _, src_ok)| {
+                            si == entry.source_idx && pc == entry.dist && {
+                                // pure⊕pure: allow ONLY the valid same-edge
+                                // forward direct on primary edges.
+                                let total = entry.dist.saturating_add(d);
+                                !(src_ok && dst_direct_ok && total >= shift)
+                            }
+                        })
+                    })
+                    .unwrap_or(false);
+                if is_pure_pure {
+                    continue;
+                }
+                let total = entry.dist.saturating_add(d);
+                let cell = entry.source_idx as usize * n_targets + target_idx;
+                if write_min(cell, total) {
+                    joins += 1;
+                }
+            }
+        } else {
+            // Fast lane — byte-for-byte the backward_join_parallel_prefix
+            // inner loop (SoA reads, bound-prune before add, prefetch).
+            let (start, len) = buckets.get_range(u);
+            if len > 0 {
+                let dists = &buckets.dists[start..start + len];
+                let source_indices = &buckets.source_indices[start..start + len];
+                for i in 0..len {
+                    if prefetch_enabled && i + PREFETCH_DISTANCE < len {
+                        let pf_src_idx = source_indices[i + PREFETCH_DISTANCE] as usize;
+                        let pf_idx = pf_src_idx * n_targets + target_idx;
+                        prefetch_matrix_cell(matrix, pf_idx);
+                    }
+                    let entry_dist = dists[i];
+                    let idx = source_indices[i] as usize * n_targets + target_idx;
+                    let current_best = matrix[idx].load(Ordering::Relaxed);
+                    if current_best <= entry_dist {
+                        continue;
+                    }
+                    joins += 1;
+                    let total = entry_dist.saturating_add(d);
+                    if total < current_best {
+                        matrix[idx].store(total, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
+        for i in edge_start..edge_end {
+            let x = dr_sources[i];
+            let w = dr_weights.get(i);
+            let new_dist = d.saturating_add(w);
+            if multi && (seed_filter >> (x & 63)) & 1 == 1 {
+                for a in alt.iter_mut().take(k) {
+                    if a.0 == x && new_dist < a.1 {
+                        a.1 = new_dist;
+                    }
+                }
+            }
+            state.relax(x, new_dist);
+        }
+    }
+
+    // Post-sweep ALT joins: impure backward arrival at own seed ranks
+    // (depart-and-stop on the target's edge, lost to domination above).
+    if multi {
+        for &(r, ad) in alt.iter().take(k) {
+            if ad == u32::MAX || ad > state.dist_threshold {
+                continue;
+            }
+            for entry in buckets.get(r) {
+                let total = entry.dist.saturating_add(ad);
+                let cell = entry.source_idx as usize * n_targets + target_idx;
+                if write_min(cell, total) {
+                    joins += 1;
+                }
+            }
+        }
+    }
+
+    // Undo the shift on this target's finished column.
+    if shift > 0 {
+        use std::sync::atomic::Ordering;
+        for s in 0..n_sources {
+            let cell = s * n_targets + target_idx;
+            let v = matrix[cell].load(Ordering::Relaxed);
+            if v != u32::MAX {
+                matrix[cell].store(v.saturating_sub(shift), Ordering::Relaxed);
+            }
+        }
+    }
+
+    (visited, joins)
+}
+
+/// Seeded parallel bucket M2M, time channel, bounded (#509).
+/// Mirrors [`table_bucket_parallel_bounded`] with seed-set endpoints.
+pub fn table_bucket_parallel_seeded_bounded(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, BucketM2MStats) {
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    if n_sources == 0 || n_targets == 0 {
+        return (
+            vec![u32::MAX; n_sources * n_targets],
+            BucketM2MStats::default(),
+        );
+    }
+
+    // L3-aware source tiling (#190) — same trigger as the unseeded path.
+    let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+    if let Some(tile) =
+        crate::matrix::tile_geometry::pick_source_tile_size(n_sources, n_targets, avg_visited)
+    {
+        let mut matrix = vec![u32::MAX; n_sources * n_targets];
+        let mut stats = BucketM2MStats {
+            n_sources,
+            n_targets,
+            ..Default::default()
+        };
+        let mut start = 0usize;
+        while start < n_sources {
+            let end = (start + tile).min(n_sources);
+            let (tile_matrix, tile_stats) = table_bucket_parallel_seeded_monolithic(
+                n_nodes,
+                up_adj_flat,
+                down_rev_flat,
+                &src_seedsets[start..end],
+                tgt_seedsets,
+                threshold,
+            );
+            matrix[start * n_targets..end * n_targets].copy_from_slice(&tile_matrix);
+            stats.forward_visited += tile_stats.forward_visited;
+            stats.backward_visited += tile_stats.backward_visited;
+            stats.join_operations += tile_stats.join_operations;
+            start = end;
+        }
+        return (matrix, stats);
+    }
+
+    table_bucket_parallel_seeded_monolithic(
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        src_seedsets,
+        tgt_seedsets,
+        threshold,
+    )
+}
+
+fn table_bucket_parallel_seeded_monolithic(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, BucketM2MStats) {
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+    let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+    let src_pure = build_src_pure_map(src_seedsets);
+    // Ranks seeded on the TARGET side — the forward alt hook only matters
+    // where a source seed rank is also a target seed rank.
+    let tgt_ranks: std::collections::HashSet<u32> = tgt_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|s| s.0))
+        .collect();
+
+    // Per-sweep bounds: widen by that endpoint's max partial so a pair
+    // within `threshold` still meets (#415 exactness argument + seed slack).
+    let sweep_bound = |seeds: &[EngineSeed]| -> u32 {
+        if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold.saturating_add(seeds.iter().map(|s| s.1).max().unwrap_or(0))
+        }
+    };
+
+    let run_forward = |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32)>> {
+        if seeds.is_empty() {
+            return None;
+        }
+        FORWARD_STATE.with(|state_cell| {
+            FORWARD_BUCKET_ITEMS.with(|items_cell| {
+                state_cell.with_or_init(
+                    || SearchState::new(n_nodes, avg_visited),
+                    |state| {
+                        if state.entries.len() != n_nodes {
+                            *state = SearchState::new(n_nodes, avg_visited);
+                        }
+                        state.dist_threshold = sweep_bound(seeds);
+                        items_cell.with_or_init(Vec::new, |items| {
+                            items.clear();
+                            forward_fill_buckets_flat_seeded(
+                                up_adj_flat,
+                                source_idx as u32,
+                                seeds,
+                                &tgt_ranks,
+                                state,
+                                items,
+                            );
+                            Some(std::mem::take(items))
+                        })
+                    },
+                )
+            })
+        })
+    };
+
+    let forward_start = std::time::Instant::now();
+    let sequential = n_sources * n_targets <= SEQUENTIAL_FAST_PATH_CELL_THRESHOLD;
+    let bucket_chunks: Vec<Vec<(u32, u32, u32)>> = if sequential {
+        src_seedsets
+            .iter()
+            .enumerate()
+            .filter_map(run_forward)
+            .collect()
+    } else {
+        src_seedsets
+            .par_iter()
+            .enumerate()
+            .filter_map(run_forward)
+            .collect()
+    };
+    let bucket_items: Vec<(u32, u32, u32)> = bucket_chunks.into_iter().flatten().collect();
+    stats.forward_visited = bucket_items.len();
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    let sort_start = std::time::Instant::now();
+    let mut buckets = PrefixSumBuckets::new(n_nodes);
+    buckets.build(&bucket_items);
+    stats.bucket_items = buckets.total_items();
+    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+    let backward_start = std::time::Instant::now();
+    let matrix: Vec<std::sync::atomic::AtomicU32> = (0..n_sources * n_targets)
+        .map(|_| std::sync::atomic::AtomicU32::new(u32::MAX))
+        .collect();
+
+    let run_backward = |(target_idx, seeds): (usize, &Vec<EngineSeed>)| -> (usize, usize) {
+        if seeds.is_empty() {
+            return (0, 0);
+        }
+        BACKWARD_STATE.with(|state_cell| {
+            state_cell.with_or_init(
+                || SearchState::new(n_nodes, avg_visited),
+                |state| {
+                    if state.entries.len() != n_nodes {
+                        *state = SearchState::new(n_nodes, avg_visited);
+                    }
+                    state.dist_threshold = sweep_bound(seeds);
+                    backward_join_seeded(
+                        down_rev_flat,
+                        seeds,
+                        &buckets,
+                        &matrix,
+                        n_sources,
+                        n_targets,
+                        target_idx,
+                        state,
+                        &src_pure,
+                    )
+                },
+            )
+        })
+    };
+
+    let (total_visited, total_joins): (usize, usize) = if sequential {
+        tgt_seedsets
+            .iter()
+            .enumerate()
+            .map(run_backward)
+            .fold((0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2))
+    } else {
+        tgt_seedsets
+            .par_iter()
+            .enumerate()
+            .map(run_backward)
+            .reduce(|| (0, 0), |(v1, j1), (v2, j2)| (v1 + v2, j1 + j2))
+    };
+    stats.backward_visited = total_visited;
+    stats.join_operations = total_joins;
+    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+    let result_matrix: Vec<u32> = matrix.into_iter().map(|a| a.into_inner()).collect();
+    (result_matrix, stats)
+}
+
+/// Seeded forward sweep, 2-channel (time + length-along-time).
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
+fn forward_fill_buckets_flat_seeded_lat(
+    up_adj_flat: &UpAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    source_idx: u32,
+    seeds: &[EngineSeed],
+    other_ranks: &std::collections::HashSet<u32>,
+    state: &mut SearchState2,
+    bucket_items: &mut Vec<(u32, u32, u32, u32)>,
+) {
+    state.start_search();
+    // Alt entries only matter at ranks seeded on BOTH sides (see 1ch).
+    let mut alt: [(u32, u32, u32); 8] = [(u32::MAX, u32::MAX, u32::MAX); 8];
+    let mut k = 0usize;
+    for &(r, t, l, _) in seeds.iter().take(8) {
+        state.relax(r, t, l);
+        if other_ranks.contains(&r) {
+            alt[k].0 = r;
+            k += 1;
+        }
+    }
+
+    let offsets = up_adj_flat.offsets.as_slice();
+    let targets = up_adj_flat.targets.as_slice();
+    let w_time_arr = &up_adj_flat.weights;
+    let w_lat_arr = &up_adj_flat_len_along_time.weights;
+
+    let multi = k > 0;
+    let mut seed_filter: u64 = 0;
+    for a in alt.iter().take(k) {
+        seed_filter |= 1u64 << (a.0 & 63);
+    }
+
+    while let Some((d, l, u)) = state.pop() {
+        bucket_items.push((u, source_idx, d, l));
+
+        let start = offsets[u as usize] as usize;
+        let end = offsets[u as usize + 1] as usize;
+        for i in start..end {
+            let v = targets[i];
+            let w_time = w_time_arr.get(i);
+            let w_lat = w_lat_arr.get(i);
+            let new_dist = d.saturating_add(w_time);
+            let new_lat = l.saturating_add(w_lat);
+            if multi && (seed_filter >> (v & 63)) & 1 == 1 {
+                for a in alt.iter_mut().take(k) {
+                    if a.0 == v && (new_dist, new_lat) < (a.1, a.2) {
+                        a.1 = new_dist;
+                        a.2 = new_lat;
+                    }
+                }
+            }
+            state.relax(v, new_dist, new_lat);
+        }
+    }
+
+    if multi {
+        for &(r, ad, al) in alt.iter().take(k) {
+            if ad != u32::MAX && ad <= state.dist_threshold {
+                bucket_items.push((r, source_idx, ad, al));
+            }
+        }
+    }
+}
+
+/// Seeded backward sweep + lex join, 2-channel, LOCAL-COLUMN shape
+/// (mirrors backward_join_local_columns_len_along_time: plain u32 writes
+/// into a per-target column, contiguous [src] indexing, no atomics).
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)] // weights.get(i) needs the index
+fn backward_join_seeded_lat(
+    down_rev_flat: &DownReverseAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    seeds: &[EngineSeed],
+    buckets: &PrefixSumBuckets2,
+    time_col: &mut [u32],
+    lat_col: &mut [u32],
+    state: &mut SearchState2,
+    src_pure: &SrcPureMap,
+) -> (usize, usize) {
+    let shift_t: u32 = seeds.iter().take(8).map(|s| s.1).max().unwrap_or(0);
+    let shift_l: u32 = seeds.iter().take(8).map(|s| s.2).max().unwrap_or(0);
+
+    state.start_search();
+    // Shared-rank machinery only (see 1ch backward).
+    let mut alt: [(u32, u32, u32); 8] = [(u32::MAX, u32::MAX, u32::MAX); 8];
+    let mut pure_at: [(u32, u32, u32, bool); 8] = [(u32::MAX, u32::MAX, u32::MAX, false); 8];
+    let mut k = 0usize;
+    for &(r, t, l, ok) in seeds.iter().take(8) {
+        let init_t = shift_t - t;
+        let init_l = shift_l - l;
+        state.relax(r, init_t, init_l);
+        if src_pure.contains_key(&r) {
+            alt[k].0 = r;
+            pure_at[k] = (r, init_t, init_l, ok);
+            k += 1;
+        }
+    }
+
+    let dr_offsets = down_rev_flat.offsets.as_slice();
+    let dr_sources = down_rev_flat.sources.as_slice();
+    let dr_w_time = &down_rev_flat.weights;
+    let dr_w_lat = &down_rev_flat_len_along_time.weights;
+
+    let multi = k > 0;
+    let mut seed_filter: u64 = 0;
+    for a in alt.iter().take(k) {
+        seed_filter |= 1u64 << (a.0 & 63);
+    }
+
+    let mut visited = 0usize;
+    let mut joins = 0usize;
+
+    while let Some((d, l, u)) = state.pop() {
+        visited += 1;
+
+        let bwd_pure = if multi && (seed_filter >> (u & 63)) & 1 == 1 {
+            pure_at
+                .iter()
+                .take(k)
+                .find(|&&(r, it, il, _)| r == u && it == d && il == l)
+        } else {
+            None
+        };
+
+        let entries = buckets.get(u);
+        if let Some(&(_, _, _, dst_direct_ok)) = bwd_pure {
+            let pure_list = src_pure.get(&u);
+            for entry in entries {
+                let is_pure_pure = pure_list
+                    .map(|pl| {
+                        pl.iter().any(|&(si, pt, plat, src_ok)| {
+                            si == entry.source_idx
+                                && pt == entry.dist
+                                && plat == entry.lat
+                                && {
+                                    let total = entry.dist.saturating_add(d);
+                                    !(src_ok && dst_direct_ok && total >= shift_t)
+                                }
+                        })
+                    })
+                    .unwrap_or(false);
+                if is_pure_pure {
+                    continue;
+                }
+                let src = entry.source_idx as usize;
+                let cur_time = time_col[src];
+                if cur_time < entry.dist {
+                    continue;
+                }
+                let total_time = entry.dist.saturating_add(d);
+                if total_time > cur_time {
+                    continue;
+                }
+                let total_lat = entry.lat.saturating_add(l);
+                if total_time < cur_time || total_lat < lat_col[src] {
+                    time_col[src] = total_time;
+                    lat_col[src] = total_lat;
+                    joins += 1;
+                }
+            }
+        } else {
+            // Fast lane — byte-for-byte backward_join_local_columns_len_along_time.
+            for entry in entries {
+                let src = entry.source_idx as usize;
+                let cur_time = time_col[src];
+                if cur_time < entry.dist {
+                    continue;
+                }
+                let total_time = entry.dist.saturating_add(d);
+                if total_time > cur_time {
+                    continue;
+                }
+                let total_lat = entry.lat.saturating_add(l);
+                if total_time < cur_time || total_lat < lat_col[src] {
+                    time_col[src] = total_time;
+                    lat_col[src] = total_lat;
+                    joins += 1;
+                }
+            }
+        }
+
+        let edge_start = dr_offsets[u as usize] as usize;
+        let edge_end = dr_offsets[u as usize + 1] as usize;
+        for i in edge_start..edge_end {
+            let x = dr_sources[i];
+            let w_time = dr_w_time.get(i);
+            let w_lat = dr_w_lat.get(i);
+            let new_dist = d.saturating_add(w_time);
+            let new_lat = l.saturating_add(w_lat);
+            if multi && (seed_filter >> (x & 63)) & 1 == 1 {
+                for a in alt.iter_mut().take(k) {
+                    if a.0 == x && (new_dist, new_lat) < (a.1, a.2) {
+                        a.1 = new_dist;
+                        a.2 = new_lat;
+                    }
+                }
+            }
+            state.relax(x, new_dist, new_lat);
+        }
+    }
+
+    // Post-sweep ALT joins (depart-and-stop paths lost to domination).
+    if multi {
+        for &(r, ad, al) in alt.iter().take(k) {
+            if ad == u32::MAX || ad > state.dist_threshold {
+                continue;
+            }
+            for entry in buckets.get(r) {
+                let src = entry.source_idx as usize;
+                let total_time = entry.dist.saturating_add(ad);
+                let cur_time = time_col[src];
+                if total_time > cur_time {
+                    continue;
+                }
+                let total_lat = entry.lat.saturating_add(al);
+                if total_time < cur_time || total_lat < lat_col[src] {
+                    time_col[src] = total_time;
+                    lat_col[src] = total_lat;
+                    joins += 1;
+                }
+            }
+        }
+    }
+
+    // Undo the shifts on the finished column.
+    if shift_t > 0 || shift_l > 0 {
+        for src in 0..time_col.len() {
+            if time_col[src] != u32::MAX {
+                time_col[src] = time_col[src].saturating_sub(shift_t);
+                if lat_col[src] != u32::MAX {
+                    lat_col[src] = lat_col[src].saturating_sub(shift_l);
+                }
+            }
+        }
+    }
+
+    (visited, joins)
+}
+
+/// Seeded parallel 2-channel bucket M2M, bounded (#509). Mirrors
+/// [`table_bucket_parallel_len_along_time_bounded`] with seed-set
+/// endpoints. Returns (time_matrix, lat_matrix, stats).
+#[allow(clippy::too_many_arguments)]
+pub fn table_bucket_parallel_seeded_len_along_time_bounded(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len_along_time: &UpAdjFlat,
+    down_rev_flat_len_along_time: &DownReverseAdjFlat,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    if n_sources == 0 || n_targets == 0 {
+        return (
+            vec![u32::MAX; n_sources * n_targets],
+            vec![u32::MAX; n_sources * n_targets],
+            BucketM2MStats::default(),
+        );
+    }
+
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+    let avg_visited = (n_nodes / 400).clamp(500, 20_000);
+    let src_pure = build_src_pure_map(src_seedsets);
+    let tgt_ranks: std::collections::HashSet<u32> = tgt_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|s| s.0))
+        .collect();
+
+    let sweep_bound = |seeds: &[EngineSeed]| -> u32 {
+        if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold.saturating_add(seeds.iter().map(|s| s.1).max().unwrap_or(0))
+        }
+    };
+
+    let run_forward =
+        |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32, u32)>> {
+            if seeds.is_empty() {
+                return None;
+            }
+            FORWARD_STATE_LAT.with(|state_cell| {
+                state_cell.with_or_init(
+                    || SearchState2::new(n_nodes, avg_visited),
+                    |state| {
+                        if state.entries.len() != n_nodes {
+                            *state = SearchState2::new(n_nodes, avg_visited);
+                        }
+                        state.dist_threshold = sweep_bound(seeds);
+                        FORWARD_BUCKET_ITEMS_LAT.with(|items_cell| {
+                            items_cell.with_or_init(Vec::new, |items| {
+                                items.clear();
+                                forward_fill_buckets_flat_seeded_lat(
+                                    up_adj_flat,
+                                    up_adj_flat_len_along_time,
+                                    source_idx as u32,
+                                    seeds,
+                                    &tgt_ranks,
+                                    state,
+                                    items,
+                                );
+                                Some(std::mem::take(items))
+                            })
+                        })
+                    },
+                )
+            })
+        };
+
+    let forward_start = std::time::Instant::now();
+    let sequential = n_sources * n_targets <= SEQUENTIAL_FAST_PATH_CELL_THRESHOLD;
+    let bucket_chunks: Vec<Vec<(u32, u32, u32, u32)>> = if sequential {
+        src_seedsets
+            .iter()
+            .enumerate()
+            .filter_map(run_forward)
+            .collect()
+    } else {
+        src_seedsets
+            .par_iter()
+            .enumerate()
+            .filter_map(run_forward)
+            .collect()
+    };
+    let bucket_items: Vec<(u32, u32, u32, u32)> = bucket_chunks.into_iter().flatten().collect();
+    stats.forward_visited = bucket_items.len();
+    stats.forward_time_ms = forward_start.elapsed().as_millis() as u64;
+
+    let sort_start = std::time::Instant::now();
+    let mut buckets = PrefixSumBuckets2::new(n_nodes);
+    buckets.build(&bucket_items);
+    stats.bucket_items = bucket_items.len();
+    stats.sort_time_ms = sort_start.elapsed().as_millis() as u64;
+
+    let backward_start = std::time::Instant::now();
+
+    struct ColumnResult {
+        target_idx: usize,
+        time_col: Vec<u32>,
+        lat_col: Vec<u32>,
+        visited: usize,
+        joins: usize,
+    }
+    let run_backward = |(target_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<ColumnResult> {
+        if seeds.is_empty() {
+            return None;
+        }
+        BACKWARD_STATE_LAT.with(|state_cell| {
+            state_cell.with_or_init(
+                || SearchState2::new(n_nodes, avg_visited),
+                |state| {
+                    if state.entries.len() != n_nodes {
+                        *state = SearchState2::new(n_nodes, avg_visited);
+                    }
+                    state.dist_threshold = sweep_bound(seeds);
+                    let mut time_col = vec![u32::MAX; n_sources];
+                    let mut lat_col = vec![u32::MAX; n_sources];
+                    let (visited, joins) = backward_join_seeded_lat(
+                        down_rev_flat,
+                        down_rev_flat_len_along_time,
+                        seeds,
+                        &buckets,
+                        &mut time_col,
+                        &mut lat_col,
+                        state,
+                        &src_pure,
+                    );
+                    Some(ColumnResult {
+                        target_idx,
+                        time_col,
+                        lat_col,
+                        visited,
+                        joins,
+                    })
+                },
+            )
+        })
+    };
+
+    let columns: Vec<ColumnResult> = if sequential {
+        tgt_seedsets
+            .iter()
+            .enumerate()
+            .filter_map(run_backward)
+            .collect()
+    } else {
+        tgt_seedsets
+            .par_iter()
+            .enumerate()
+            .filter_map(run_backward)
+            .collect()
+    };
+
+    let mut total_visited = 0usize;
+    let mut total_joins = 0usize;
+    for c in &columns {
+        total_visited += c.visited;
+        total_joins += c.joins;
+    }
+    stats.backward_visited = total_visited;
+    stats.join_operations = total_joins;
+    stats.backward_time_ms = backward_start.elapsed().as_millis() as u64;
+
+    // Gather columns into row-major matrices (stride-1 writes per row).
+    let mut time_out = vec![u32::MAX; n_sources * n_targets];
+    let mut lat_out = vec![u32::MAX; n_sources * n_targets];
+    for src in 0..n_sources {
+        let row_off = src * n_targets;
+        for c in &columns {
+            time_out[row_off + c.target_idx] = c.time_col[src];
+            lat_out[row_off + c.target_idx] = c.lat_col[src];
+        }
+    }
+    (time_out, lat_out, stats)
+}
