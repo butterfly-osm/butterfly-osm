@@ -47,6 +47,15 @@ pub struct PhantomSeed {
     /// Arc-length fraction of the snap point along THIS directed edge's
     /// traversal (0 = at its tail, 1 = at its head). For geometry clipping.
     pub frac: f64,
+    /// Whether this seed may participate in SAME-EDGE direct/zero-move
+    /// evaluations. True for the primary (geometrically best) edge and for
+    /// secondary edges the point projects ONTO (interior). False for
+    /// CLAMPED secondary projections: two distinct points clamping onto the
+    /// same end of a shared side street collapse to equal fractions and
+    /// fabricate a 0-cost "direct" move (live bug: 0 s vs a true 30-70 s
+    /// drive). Such seeds still participate in the network query, where the
+    /// junction-entry approximation is fine.
+    pub direct_ok: bool,
 }
 
 /// A snapped query endpoint with its directional seeds.
@@ -70,6 +79,11 @@ impl PhantomEnd {
             .iter()
             .find(|s| s.ebg_id == ebg_id)
             .map(|s| s.frac)
+    }
+
+    /// The full seed for a given ebg id (direct-move eligibility + fraction).
+    pub fn seed_of(&self, ebg_id: u32) -> Option<&PhantomSeed> {
+        self.seeds.iter().find(|s| s.ebg_id == ebg_id)
     }
 
     /// Time-channel query seeds `(rank, cost)` + the shift to subtract from
@@ -107,12 +121,12 @@ fn projection_fraction(
     ebg_id: u32,
     lon: f64,
     lat: f64,
-) -> f64 {
+) -> (f64, bool) {
     let node = &ebg_nodes.nodes[ebg_id as usize];
     let poly = edge_geom.polyline(node.geom_idx);
     let n = poly.len();
     if n < 2 {
-        return 0.5;
+        return (0.5, false);
     }
     // planar approximation, consistent with the snap index's projection
     let mlat = 111_320.0_f64;
@@ -147,9 +161,14 @@ fn projection_fraction(
         prev = cur;
     }
     if total > 0.0 {
-        (best_arc / total).clamp(0.0, 1.0)
+        let f = (best_arc / total).clamp(0.0, 1.0);
+        // Interior = the point actually projects ONTO the edge, not past an
+        // end. A sliver of tolerance (~0.5 m on a 500 m edge) keeps genuine
+        // endpoint projections classified as clamped.
+        let interior = best_arc > 1e-3 * total && best_arc < total * (1.0 - 1e-3);
+        (f, interior)
     } else {
-        0.5
+        (0.5, false)
     }
 }
 
@@ -248,8 +267,17 @@ pub fn phantom_from_candidates(
         if edges_used.len() >= MAX_PHANTOM_EDGES {
             break;
         }
-        if let Some(pe) = phantom_from_primary(state, mode_data, cand, lon, lat, role, edge_filter)
-        {
+        let is_secondary = !edges_used.is_empty();
+        if let Some(pe) = phantom_from_primary_inner(
+            state,
+            mode_data,
+            cand,
+            lon,
+            lat,
+            role,
+            edge_filter,
+            is_secondary,
+        ) {
             edges_used.push(base);
             match &mut end {
                 None => end = Some(pe),
@@ -269,6 +297,20 @@ pub fn phantom_from_primary(
     role: SnapRole,
     edge_filter: Option<&[u64]>,
 ) -> Option<PhantomEnd> {
+    phantom_from_primary_inner(state, mode_data, primary_tuple, lon, lat, role, edge_filter, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn phantom_from_primary_inner(
+    state: &ServerState,
+    mode_data: &ModeData,
+    primary_tuple: (u32, f64, f64, f64),
+    lon: f64,
+    lat: f64,
+    role: SnapRole,
+    edge_filter: Option<&[u64]>,
+    is_secondary: bool,
+) -> Option<PhantomEnd> {
     let (primary, plon, plat, dist_m) = primary_tuple;
 
     // Twin pair of the snapped physical edge (forward = even, reverse = odd).
@@ -278,7 +320,17 @@ pub fn phantom_from_primary(
 
     // Fraction along the STORED direction; the reverse twin traverses the same
     // geometry backward, so its own fraction is 1 - f.
-    let f_stored = projection_fraction(&state.ebg_nodes, &state.edge_geom, fwd, lon, lat);
+    //
+    // `direct_ok` marks PRIMARY-edge seeds only. Secondary seeds (nearby
+    // parallel/side streets within snap slack) exist to give the network
+    // query directional alternatives — they do NOT claim the point is ON
+    // that edge, so they must not participate in same-edge direct/zero-move
+    // evaluations: two points near a shared side street both project onto
+    // its stem at nearly the same spot and fabricate a ~0-cost "direct"
+    // between points a real 30-190 s drive apart (live /table 0-second bug).
+    let (f_stored, _interior) =
+        projection_fraction(&state.ebg_nodes, &state.edge_geom, fwd, lon, lat);
+    let direct_ok = !is_secondary;
 
     let mut seeds: Vec<PhantomSeed> = Vec::with_capacity(2);
     let mut push = |ebg_id: u32, frac_along_self: f64| {
@@ -292,6 +344,7 @@ pub fn phantom_from_primary(
                 part_time: (rem * w).round() as u32,
                 part_len: (rem * len).round() as u32,
                 frac: frac_along_self,
+                direct_ok,
             });
         }
     };
@@ -324,26 +377,27 @@ pub struct SeedExpansion {
     /// (start, len) span into `exp_ranks` per ORIGINAL endpoint index.
     pub spans: Vec<(usize, usize)>,
     /// (time_part, len_part) per expanded row/column.
-    pub parts: Vec<(u32, u32)>,
+    pub parts: Vec<(u32, u32, bool)>,
 }
 
 impl SeedExpansion {
-    /// Build from per-endpoint seed sets `(rank, time_part, len_part)`.
-    /// Empty sets (invalid endpoints) get one placeholder so spans align;
-    /// their cells are masked by the caller's validity flags as before.
-    pub fn build(seedsets: &[Vec<(u32, u32, u32)>]) -> Self {
+    /// Build from per-endpoint seed sets `(rank, time_part, len_part,
+    /// direct_ok)`. Empty sets (invalid endpoints) get one placeholder so
+    /// spans align; their cells are masked by the caller's validity flags as
+    /// before.
+    pub fn build(seedsets: &[Vec<(u32, u32, u32, bool)>]) -> Self {
         let mut exp_ranks = Vec::new();
         let mut spans = Vec::with_capacity(seedsets.len());
         let mut parts = Vec::new();
         for seeds in seedsets {
             let start = exp_ranks.len();
-            for &(r, t, l) in seeds {
+            for &(r, t, l, ok) in seeds {
                 exp_ranks.push(r);
-                parts.push((t, l));
+                parts.push((t, l, ok));
             }
             if seeds.is_empty() {
                 exp_ranks.push(0);
-                parts.push((0, 0));
+                parts.push((0, 0, false));
             }
             spans.push((start, exp_ranks.len() - start));
         }
@@ -389,7 +443,7 @@ impl SeedExpansion {
         let n_t = tgt.spans.len();
         let mut out = vec![u32::MAX; n_s * n_t];
         let mut out_c = carry.map(|_| vec![u32::MAX; n_s * n_t]);
-        let pick = |p: &(u32, u32)| if use_len_parts { p.1 } else { p.0 };
+        let pick = |p: &(u32, u32, bool)| if use_len_parts { p.1 } else { p.0 };
         for (i, &(ss, sl)) in self.spans.iter().enumerate() {
             for (j, &(ts, tl)) in tgt.spans.iter().enumerate() {
                 let mut best = i64::MAX;
@@ -400,16 +454,37 @@ impl SeedExpansion {
                         if v == u32::MAX {
                             continue;
                         }
+                        // A same-rank combo is the engine's zero-cost identity
+                        // cell — a pure seed-seed meet standing in for the
+                        // SAME-EDGE direct move. Only valid when both seeds
+                        // actually project onto the edge (direct_ok); clamped
+                        // secondary projections fabricate 0-cost moves between
+                        // distinct points (live 0-second /table bug).
+                        if self.exp_ranks[r] == tgt.exp_ranks[c]
+                            && !(self.parts[r].2 && tgt.parts[c].2)
+                        {
+                            continue;
+                        }
                         let adj =
                             v as i64 + pick(&self.parts[r]) as i64 - pick(&tgt.parts[c]) as i64;
-                        if adj < best {
+                        // NEGATIVE adj is an INVALID pure seed-seed meet, not a
+                        // path: any REAL path into the target edge has paid its
+                        // full charge-on-entry (v >= w(dst) >= tgt part), so
+                        // v + src_part - tgt_part >= 0 always. Only the
+                        // engine's zero-cost same-rank cell (source seed ==
+                        // target seed, journey would run BACKWARD along the
+                        // edge) can go negative. Clamping it to 0 emitted 0 s
+                        // for ~12% of close pairs (src ahead of dst on the
+                        // same edge). Reject instead — the cell stays MAX and
+                        // the K-best P2P rescue computes the true loop.
+                        if (0..best).contains(&adj) {
                             best = adj;
                             best_rc = (r, c);
                         }
                     }
                 }
                 if best != i64::MAX {
-                    out[i * n_t + j] = best.max(0) as u32;
+                    out[i * n_t + j] = best as u32;
                     if let (Some(oc), Some(cm)) = (&mut out_c, carry) {
                         let (r, c) = best_rc;
                         let lv = cm[r * n_exp_t + c];

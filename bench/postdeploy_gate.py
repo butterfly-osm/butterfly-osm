@@ -20,6 +20,10 @@ Checks
 5. ISOCHRONE CONTAINMENT (#497/#506): every isochrone polygon must contain
    its own SNAPPED origin (snapped-road-point semantics — the raw query
    point may legitimately sit outside when it is far off-network).
+6. CLOSE-PAIR CONSISTENCY: /route vs /table on pairs 50-400 m apart —
+   the same-edge / co-located-candidate regime where a legacy same-rank
+   shortcut and a reduce clamp both emitted bogus 0 s answers. Uniform
+   random pairs almost never land in this regime, so it gets its own sweep.
 
 Usage
 -----
@@ -250,6 +254,60 @@ ISO_POINTS = [
 ]
 
 
+def gate_close_pairs(base, n_pairs=150):
+    import math
+
+    print(f"== close-pair route==table ({n_pairs} pairs, 50-400 m) ==")
+    rng = random.Random(123)
+    tol = THRESHOLDS["consistency_tolerance_s"]
+    worst = 0.0
+    tested = 0
+    zeros = 0
+    mism = 0
+    for _ in range(n_pairs):
+        lon, lat = rng.uniform(3.5, 5.8), rng.uniform(50.3, 51.2)
+        d, a = rng.uniform(0.0005, 0.004), rng.uniform(0, 6.283)
+        p = (
+            round(lon, 6),
+            round(lat, 6),
+            round(lon + d * math.cos(a), 6),
+            round(lat + d * math.sin(a), 6),
+        )
+        try:
+            dur_r, _ = route(base, p[0], p[1], p[2], p[3])
+            body = json.dumps(
+                {
+                    "origins": [[p[0], p[1]]],
+                    "destinations": [[p[2], p[3]]],
+                    "mode": "car",
+                    "annotations": "duration",
+                }
+            ).encode()
+            tab = http_json(
+                f"{base}/table", data=body, headers={"Content-Type": "application/json"}
+            )
+            dur_t = tab["durations"][0][0]
+        except Exception:
+            continue
+        if dur_t is None:
+            continue
+        tested += 1
+        delta = abs(dur_r - dur_t)
+        worst = max(worst, delta)
+        if delta > tol:
+            mism += 1
+        # a sub-second answer while the other side needs >10 s is the
+        # fingerprint of the 0-second bug class
+        if (dur_r < 1 and dur_t > 10) or (dur_t is not None and dur_t < 1 and dur_r > 10):
+            zeros += 1
+    ok = zeros == 0 and mism <= 2 and tested >= 80
+    return check(
+        "close pairs",
+        ok,
+        f"{tested} pairs, {zeros} zero-bugs, {mism} >{tol}s (max 2), worst {worst:.1f}s",
+    )
+
+
 def gate_isochrone(base):
     print("== isochrone snapped-origin containment (#497/#506) ==")
     passed = True
@@ -333,6 +391,7 @@ def main():
     ok &= gate_symmetry(base)
     ok &= gate_consistency(base)
     ok &= gate_isochrone(base)
+    ok &= gate_close_pairs(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
