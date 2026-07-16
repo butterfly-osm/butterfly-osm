@@ -27,6 +27,24 @@ Server-wide layers (defined in `route/src/server/api.rs`):
 
 ---
 
+## Endpoint semantics (2026-07)
+
+- **Phantom endpoints**: every snap seeds BOTH directed twins of up to 3
+  near-equidistant physical edges with exact partial-edge costs — routes,
+  matrices, isochrones, catchments, trips and `edges_batch` all agree on
+  one answer. Custom-weight paths (`avoid_polygons`, `exclude`, bearing
+  hints) keep single-seed snapping.
+- `GET /version` → `{"name": "butterfly-route", "version": "..."}`.
+- `alternatives` on `/route` is a **count** (`u32`), not a boolean.
+- Isodistance (`distance_m`) was removed in #371 — time thresholds only.
+- `GET /height` is mounted only when `<data>/srtm/` exists (lean
+  containers return 404 by design).
+- REST `POST /catchment` takes `stores[].id` (the Flight `catchment`
+  DoExchange table uses `store_id` columns) and requires `hull_shape`.
+- Isochrone polygons follow **snapped-road-point semantics**: the polygon
+  always contains the snapped origin; a raw query point far off-network
+  may legitimately fall outside.
+
 ## REST endpoints
 
 ### `GET /route`
