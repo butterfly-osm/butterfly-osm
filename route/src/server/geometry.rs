@@ -226,6 +226,7 @@ pub fn build_isochrone_geometry(
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
     mode_name: &str,
+    origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat) of the query origin (#497/#506)
 ) -> Vec<Point> {
     let geo_start = std::time::Instant::now();
     let result = build_isochrone_geometry_sparse(
@@ -235,6 +236,7 @@ pub fn build_isochrone_geometry(
         ebg_nodes,
         edge_geom,
         mode_name,
+        origin_anchor,
     );
     let geo_us = geo_start.elapsed().as_micros();
     tracing::debug!(
@@ -266,6 +268,7 @@ pub fn build_isochrone_geometry_sparse(
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
     mode_name: &str,
+    origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-dist edge start
 ) -> Vec<Point> {
     let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
 
@@ -275,10 +278,12 @@ pub fn build_isochrone_geometry_sparse(
     // it produced missing polygon areas exactly like this.)
 
     let mut segments: Vec<ReachableSegment> = Vec::new();
-    // #497: the snapped origin — first geometry point of a zero-distance settled
-    // edge. Used to pick the contour component CONTAINING the origin when the
-    // stamped set is disconnected at tile resolution.
+    // #497: the snapped origin — geometry point of the MINIMUM-distance settled
+    // edge (with #506 phantom seeds the origin edge starts at a partial cost,
+    // not 0). Used to pick the contour component CONTAINING the origin when
+    // the stamped set is disconnected at tile resolution.
     let mut anchor: Option<(i32, i32)> = None;
+    let mut anchor_dist = u32::MAX;
 
     for &(ebg_id, dist_ds) in settled_nodes {
         if dist_ds > max_time_ds {
@@ -304,7 +309,8 @@ pub fn build_isochrone_geometry_sparse(
             continue;
         }
 
-        if anchor.is_none() && dist_ds == 0 {
+        if dist_ds < anchor_dist {
+            anchor_dist = dist_ds;
             anchor = Some(polyline.at_lat_lon_e7(0));
         }
 
@@ -327,7 +333,14 @@ pub fn build_isochrone_geometry_sparse(
         return vec![];
     }
 
-    // Generate contour using sparse tile rasterization + boundary tracing
+    // Generate contour using sparse tile rasterization + boundary tracing.
+    // Prefer the EXACT snapped origin when the handler supplies it (#506 —
+    // the derived min-dist edge START can sit a whole edge away from the snap
+    // on long rural chains); the derived anchor remains the fallback for
+    // callers without snap context.
+    let anchor = origin_anchor
+        .map(|(lon, lat)| ((lat * 1e7) as i32, (lon * 1e7) as i32))
+        .or(anchor);
     match crate::range::generate_sparse_contour_anchored(&segments, &config, anchor) {
         Ok(result) => result
             .outer_ring

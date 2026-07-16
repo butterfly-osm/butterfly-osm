@@ -17,6 +17,9 @@ Checks
    to their validated values ±10 %.
 4. ENDPOINT CONSISTENCY: /route and /table must agree on durations (±3 s)
    for the same pairs — one answer per question.
+5. ISOCHRONE CONTAINMENT (#497/#506): every isochrone polygon must contain
+   its own SNAPPED origin (snapped-road-point semantics — the raw query
+   point may legitimately sit outside when it is far off-network).
 
 Usage
 -----
@@ -197,6 +200,91 @@ def gate_fixtures(base):
     return passed
 
 
+def _decode_polyline6(s):
+    coords, idx, lat, lon = [], 0, 0, 0
+    while idx < len(s):
+        for which in (0, 1):
+            shift = result = 0
+            while True:
+                b = ord(s[idx]) - 63
+                idx += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            d = ~(result >> 1) if result & 1 else result >> 1
+            if which == 0:
+                lat += d
+            else:
+                lon += d
+        coords.append((lon / 1e6, lat / 1e6))
+    return coords
+
+
+def _point_in_ring(pt, ring):
+    x, y = pt
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+# Origins chosen to cover urban, rural, long-edge (#502 Robertville) and
+# off-network snaps. Containment is checked against the SNAPPED point.
+ISO_POINTS = [
+    ("Brussels", 4.3517, 50.8503),
+    ("Antwerp", 4.4025, 51.2194),
+    ("Rixensart", 4.5286, 50.7115),
+    ("Robertville #502", 6.008464, 50.428652),
+    ("Heers #503", 5.30708, 50.75161),
+    ("rural WB", 4.85, 50.55),
+    ("Ardennes", 5.65, 50.10),
+    ("coast", 2.95, 51.20),
+    ("Ghent", 3.7174, 51.0543),
+    ("Berloz #503", 5.211554, 50.709124),
+]
+
+
+def gate_isochrone(base):
+    print("== isochrone snapped-origin containment (#497/#506) ==")
+    passed = True
+    for mode, time_s in (("car", 600), ("foot", 1800)):
+        ok = 0
+        fails = []
+        for name, lon, lat in ISO_POINTS:
+            try:
+                d = http_json(
+                    f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}"
+                )
+                rings = [
+                    _decode_polyline6(c["polygon"])
+                    for c in d.get("contours", [])
+                    if c.get("polygon")
+                ]
+                n = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
+                sp = tuple(n["waypoints"][0]["location"])
+            except Exception as e:
+                fails.append(f"{name}: {e}")
+                continue
+            if any(_point_in_ring(sp, r) for r in rings):
+                ok += 1
+            else:
+                fails.append(name)
+        for f in fails[:5]:
+            print(f"    not contained: {f}")
+        passed &= check(
+            f"containment {mode}",
+            ok == len(ISO_POINTS),
+            f"{ok}/{len(ISO_POINTS)} ({time_s}s)",
+        )
+    return passed
+
+
 def gate_consistency(base, n_pairs=15):
     print(f"== /route vs /table consistency ({n_pairs} pairs) ==")
     rng = random.Random(7)
@@ -244,6 +332,7 @@ def main():
     ok &= gate_fixtures(base)
     ok &= gate_symmetry(base)
     ok &= gate_consistency(base)
+    ok &= gate_isochrone(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
