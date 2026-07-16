@@ -15,6 +15,17 @@ faster than OSRM at scale.
 
 ## At a glance
 
+- **Phantom endpoints everywhere (2026-07)**: every query surface — routes,
+  matrices, isochrones, catchments, TSP, per-edge paths — snaps via
+  multi-candidate directional phantom endpoints with exact partial-edge
+  costs. No wrong-way commitment detours, no 0-second same-edge answers,
+  one consistent answer across REST and Flight.
+- **Ground truth**: 1 000 real-world reference trips — duration p50
+  **1.02×**, distance p50 **1.004×**; enforced by a post-deploy gate
+  (fixtures, symmetry, endpoint consistency, close-pair sweep, isochrone
+  containment, edges sums) that blocks promotion on any regression.
+- **vs OSRM CH (same host, interleaved)**: tied at 200×200, **2.7× faster**
+  at 500×500, **4.8× faster** at 1000×1000 over HTTP.
 - **Matrix 10k×10k via Flight gRPC**: 32.5 s end-to-end (vs drivetimes/libosrm 614 s — 19× faster on the wire).
 - **Flight gRPC matrix 50k×50k**: 9.61 min (parity with the historical `/table/stream` baseline; OSRM cannot run it).
 - **`/isochrone` 30-min**: 5 ms p50; bulk endpoint sustains **1 526 iso/sec**.
@@ -29,7 +40,7 @@ faster than OSRM at scale.
 docker build -t butterfly-route .
 docker run -d --name butterfly -p 3001:8080 -p 3002:8081 \
   -v "${PWD}/data/belgium:/data" butterfly-route
-curl "http://localhost:3001/route?src_lon=4.3517&src_lat=50.8503&dst_lon=4.4025&dst_lat=51.2194&mode=car"
+curl "http://localhost:3001/route?origin_lon=4.3517&origin_lat=50.8503&destination_lon=4.4025&destination_lat=51.2194&mode=car"
 ```
 
 Boot is ~30-40 s for the road graph alone, ~3 min with transit feeds. See
