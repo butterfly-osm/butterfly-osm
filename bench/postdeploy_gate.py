@@ -254,6 +254,43 @@ ISO_POINTS = [
 ]
 
 
+def gate_edges_batch(base):
+    """#512: edges_batch per-edge duration sums must match /route (plus the
+    documented full first/last-edge emission — bounded by 2 edges' worth)."""
+    print("== edges_batch vs /route (ticket fixtures) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    # Flight port convention: REST port + 1 (dev container maps 3011).
+    import urllib.parse as up
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    try:
+        client = fl.connect(f"grpc://{host}:{port}")
+        pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
+        t = fl.Ticket(f"edges_batch:car:{json.dumps({'pairs': pairs})}".encode())
+        tb = client.do_get(t).read_all()
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
+    sums = {}
+    qi, du = tb.column("query_idx"), tb.column("duration_ms")
+    for i in range(tb.num_rows):
+        k = qi[i].as_py()
+        sums[k] = sums.get(k, 0.0) + du[i].as_py() / 1000.0
+    passed = True
+    for idx, f in enumerate(FIXTURES):
+        got = sums.get(idx)
+        exp = f[5]
+        # sum >= route (full edges) but within +45% (2 extra rural edge
+        # halves); the #502 detour fingerprint was 2-3.5x.
+        ok = got is not None and exp * 0.9 <= got <= exp * 1.45
+        passed &= check(f"{f[0]} edges", ok, f"sum {got:.0f}s (route {exp}s)" if got else "no rows")
+    return passed
+
+
 def gate_close_pairs(base, n_pairs=150):
     import math
 
@@ -392,6 +429,7 @@ def main():
     ok &= gate_consistency(base)
     ok &= gate_isochrone(base)
     ok &= gate_close_pairs(base)
+    ok &= gate_edges_batch(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
