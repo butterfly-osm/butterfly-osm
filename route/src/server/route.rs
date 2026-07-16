@@ -859,10 +859,12 @@ pub async fn route_handler(
                     }
                 }
             }
-            let src_seeds: Vec<(u32, u32)> = sp.seeds.iter().map(|x| (x.rank, x.cost)).collect();
-            let dst_seeds: Vec<(u32, u32)> = dp.seeds.iter().map(|x| (x.rank, x.cost)).collect();
+            let (src_seeds, _) = sp.query_seeds_and_shift(super::types::SnapRole::Src);
+            let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(super::types::SnapRole::Dst);
             let seeded = query.query_seeded(&src_seeds, &dst_seeds, req.debug);
-            let seeded_cost = seeded.as_ref().map(|r| r.distance.saturating_sub(dp.shift));
+            let seeded_cost = seeded
+                .as_ref()
+                .map(|r| r.distance.saturating_sub(dst_shift));
             // Trivial same-edge response when the direct move wins.
             if let Some((dc, f_s, f_d, ebg)) = direct
                 && seeded_cost.is_none_or(|sc| dc <= sc)
@@ -918,7 +920,7 @@ pub async fn route_handler(
                 src_rank = r.src_root;
                 dst_rank = r.dst_root;
                 result_opt = Some(super::query::QueryResult {
-                    distance: r.distance.saturating_sub(dp.shift),
+                    distance: r.distance.saturating_sub(dst_shift),
                     meeting_node: r.meeting_node,
                     forward_parent: r.forward_parent,
                     backward_parent: r.backward_parent,

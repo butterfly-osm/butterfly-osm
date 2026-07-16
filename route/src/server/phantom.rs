@@ -36,9 +36,14 @@ pub struct PhantomSeed {
     pub ebg_id: u32,
     /// Rank-space id in this mode's CCH.
     pub rank: u32,
-    /// Seed cost in the TIME channel (deciseconds/seconds — same unit as
-    /// `node_weights`). Source: partial remainder; target: `shift - suffix`.
-    pub cost: u32,
+    /// RAW partial in the TIME channel: cost of the remainder of this directed
+    /// edge from the snap point to its head — `(1-frac)·w(edge)`. Sources seed
+    /// with it directly; targets interpret it as the SUFFIX overpay (see
+    /// [`PhantomEnd::query_seeds_and_shift`]) or subtract it in API-level
+    /// reductions.
+    pub part_time: u32,
+    /// Same partial in METERS: `(1-frac)·length_m`.
+    pub part_len: u32,
     /// Arc-length fraction of the snap point along THIS directed edge's
     /// traversal (0 = at its tail, 1 = at its head). For geometry clipping.
     pub frac: f64,
@@ -56,8 +61,6 @@ pub struct PhantomEnd {
     /// The primary (geometrically snapped) directed edge — for debug output
     /// and single-seed fallbacks.
     pub primary_ebg: u32,
-    /// Target-side shift (0 for sources). Final duration = raw - shift.
-    pub shift: u32,
 }
 
 impl PhantomEnd {
@@ -67,6 +70,32 @@ impl PhantomEnd {
             .iter()
             .find(|s| s.ebg_id == ebg_id)
             .map(|s| s.frac)
+    }
+
+    /// Time-channel query seeds `(rank, cost)` + the shift to subtract from
+    /// the final raw best, per role:
+    /// - `Src`: cost = raw partial (remainder to head), shift = 0.
+    /// - `Dst`: reaching edge `d` pays full `w(d)` but the journey stops at
+    ///   the snap — overpay = `part_time(d)`. Negative labels aren't
+    ///   representable, so cost = `shift - part_time` with
+    ///   `shift = max part_time`; caller subtracts `shift` from the best.
+    pub fn query_seeds_and_shift(&self, role: SnapRole) -> (Vec<(u32, u32)>, u32) {
+        match role {
+            SnapRole::Dst => {
+                let shift = self.seeds.iter().map(|s| s.part_time).max().unwrap_or(0);
+                (
+                    self.seeds
+                        .iter()
+                        .map(|s| (s.rank, shift - s.part_time))
+                        .collect(),
+                    shift,
+                )
+            }
+            _ => (
+                self.seeds.iter().map(|s| (s.rank, s.part_time)).collect(),
+                0,
+            ),
+        }
     }
 }
 
@@ -228,24 +257,7 @@ pub fn phantom_from_candidates(
             }
         }
     }
-    let mut end = end?;
-    // Re-derive the target shift across ALL merged seeds: per-edge shifts are
-    // inconsistent with each other, so rebuild from raw suffixes.
-    if matches!(role, SnapRole::Dst) && !end.seeds.is_empty() {
-        // undo per-edge shifts back to suffixes, then apply a global shift
-        // (seed = shift_edge - suffix → suffix = shift_edge - seed; the per-edge
-        // shift is not stored per seed, so recompute suffix from weights).
-        for s in &mut end.seeds {
-            let w = mode_data.node_weights[s.ebg_id as usize] as f64;
-            s.cost = ((1.0 - s.frac) * w).round() as u32; // suffix again
-        }
-        let shift = end.seeds.iter().map(|s| s.cost).max().unwrap_or(0);
-        for s in &mut end.seeds {
-            s.cost = shift - s.cost;
-        }
-        end.shift = shift;
-    }
-    Some(end)
+    end
 }
 
 pub fn phantom_from_primary(
@@ -272,14 +284,13 @@ pub fn phantom_from_primary(
     let mut push = |ebg_id: u32, frac_along_self: f64| {
         if seed_valid(mode_data, role, edge_filter, ebg_id) {
             let w = mode_data.node_weights[ebg_id as usize] as f64;
-            // Source: cost from snap to this edge's head = (1 - frac)·w.
-            // Target: suffix (overpay) from snap to head = (1 - frac)·w too —
-            //         converted to a shifted seed below.
-            let part = ((1.0 - frac_along_self) * w).round() as u32;
+            let len = state.ebg_nodes.nodes[ebg_id as usize].length_m as f64;
+            let rem = 1.0 - frac_along_self;
             seeds.push(PhantomSeed {
                 ebg_id,
                 rank: mode_data.orig_to_rank[ebg_id as usize],
-                cost: part,
+                part_time: (rem * w).round() as u32,
+                part_len: (rem * len).round() as u32,
                 frac: frac_along_self,
             });
         }
@@ -290,25 +301,11 @@ pub fn phantom_from_primary(
         return None;
     }
 
-    let shift = match role {
-        // Target: seeds currently hold suffix(d); rewrite to shift - suffix.
-        SnapRole::Dst => {
-            let shift = seeds.iter().map(|s| s.cost).max().unwrap_or(0);
-            for s in &mut seeds {
-                s.cost = shift - s.cost;
-            }
-            shift
-        }
-        // Source (and Either): seeds are the forward remainders as-is.
-        _ => 0,
-    };
-
     Some(PhantomEnd {
         seeds,
         snapped_lon: plon,
         snapped_lat: plat,
         snap_distance_m: dist_m,
         primary_ebg: primary,
-        shift,
     })
 }
