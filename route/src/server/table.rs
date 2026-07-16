@@ -429,7 +429,7 @@ pub async fn compute_table_bucket_m2m(
                 lon,
                 lat,
                 mode.0,
-                4,
+                8,
                 Some(snap_mask),
                 role.role_filter(&mode_data),
             );
