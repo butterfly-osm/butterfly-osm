@@ -713,15 +713,15 @@ pub async fn trip_handler(
         // runs (avoid/exclude) keep single zero-part seeds — the expansion
         // then reduces to an identity copy.
         let phantom_ok = avoid_entry.is_none() && exclude_weights.is_none();
-        let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(n);
-        let mut dst_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(n);
+        let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(n);
+        let mut dst_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(n);
         for (i, &[lon, lat]) in coordinates.iter().enumerate() {
             if !phantom_ok {
-                src_seedsets.push(vec![(ranks[i], 0, 0)]);
-                dst_seedsets.push(vec![(ranks[i], 0, 0)]);
+                src_seedsets.push(vec![(ranks[i], 0, 0, true)]);
+                dst_seedsets.push(vec![(ranks[i], 0, 0, true)]);
                 continue;
             }
-            let mk = |role: super::types::SnapRole| -> Vec<(u32, u32, u32)> {
+            let mk = |role: super::types::SnapRole| -> Vec<(u32, u32, u32, bool)> {
                 let k = state_clone.snap_index.snap_k_with_info_filtered_role(
                     lon,
                     lat,
@@ -742,9 +742,9 @@ pub async fn trip_handler(
                     Some(pe) => pe
                         .seeds
                         .iter()
-                        .map(|x| (x.rank, x.part_time, x.part_len))
+                        .map(|x| (x.rank, x.part_time, x.part_len, x.direct_ok))
                         .collect(),
-                    None => vec![(ranks[i], 0, 0)],
+                    None => vec![(ranks[i], 0, 0, true)],
                 }
             };
             src_seedsets.push(mk(super::types::SnapRole::Src));
