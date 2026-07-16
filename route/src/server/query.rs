@@ -615,6 +615,21 @@ impl<'a> CchQuery<'a> {
         let is_seed_seed_meet = |u: u32, df: u32, db: u32| -> bool {
             src_seed_cost(u) == Some(df) && dst_seed_cost(u) == Some(db)
         };
+        // Ranks seeded on BOTH sides. At such a rank the pure seed labels
+        // dominate any via-network label in the Dijkstra arrays, and the
+        // pure⊕pure guard above then kills the ONLY possible meet there —
+        // losing valid enter-and-stop / depart-via-network paths whenever the
+        // optimal path's peak IS the shared rank (e.g. a direct UP edge
+        // between two seeds; found live as /route 139-348 s loops where the
+        // true answer is 0-30 s, #509). Fix: at shared ranks, ALSO evaluate
+        // meets with the candidate (impure) label at relaxation time, even
+        // when it is dominated by the pure label, and remember the candidate's
+        // parent so reconstruction can walk through it.
+        let shared: Vec<u32> = src_seeds
+            .iter()
+            .filter(|(r, _)| dst_seeds.iter().any(|(dr, _)| dr == r))
+            .map(|(r, _)| *r)
+            .collect();
 
         CCH_QUERY_STATE.with(|cell| {
             cell.with_or_init(
@@ -642,6 +657,11 @@ impl<'a> CchQuery<'a> {
 
                     let mut best_dist = u32::MAX;
                     let mut meeting_node = u32::MAX;
+                    // When the winning meet used a DOMINATED (impure) label at
+                    // a shared seed rank, the parent to walk through on that
+                    // side (the stored parent array holds the pure self-root).
+                    let mut alt_parent_fwd: Option<(u32, u32)> = None;
+                    let mut alt_parent_bwd: Option<(u32, u32)> = None;
 
                     let mut fwd_settled = 0usize;
                     let mut bwd_settled = 0usize;
@@ -682,6 +702,8 @@ impl<'a> CchQuery<'a> {
                                         if total < best_dist && !is_seed_seed_meet(u, d, bwd_d) {
                                             best_dist = total;
                                             meeting_node = u;
+                                            alt_parent_fwd = None;
+                                            alt_parent_bwd = None;
                                             if debug {
                                                 tracing::debug!(
                                                     meet_node = u,
@@ -710,6 +732,23 @@ impl<'a> CchQuery<'a> {
                                                 {
                                                     best_dist = total;
                                                     meeting_node = v;
+                                                    alt_parent_fwd = None;
+                                                    alt_parent_bwd = None;
+                                                }
+                                            }
+                                        } else if shared.contains(&v) {
+                                            // Dominated candidate at a shared
+                                            // seed rank: the impure label can
+                                            // still close the ONLY valid meet
+                                            // there (see `shared` above).
+                                            let bwd_v = state.get_bwd(v as usize);
+                                            if bwd_v != u32::MAX {
+                                                let total = new_dist.saturating_add(bwd_v);
+                                                if total < best_dist {
+                                                    best_dist = total;
+                                                    meeting_node = v;
+                                                    alt_parent_fwd = Some((u, edge_idx));
+                                                    alt_parent_bwd = None;
                                                 }
                                             }
                                         }
@@ -746,6 +785,8 @@ impl<'a> CchQuery<'a> {
                                     if total < best_dist && !is_seed_seed_meet(u, fwd_d, d) {
                                         best_dist = total;
                                         meeting_node = u;
+                                        alt_parent_fwd = None;
+                                        alt_parent_bwd = None;
                                         if debug {
                                             tracing::debug!(
                                                 meet_node = u,
@@ -774,6 +815,21 @@ impl<'a> CchQuery<'a> {
                                             {
                                                 best_dist = total;
                                                 meeting_node = x;
+                                                alt_parent_fwd = None;
+                                                alt_parent_bwd = None;
+                                            }
+                                        }
+                                    } else if shared.contains(&x) {
+                                        // Dominated candidate at a shared seed
+                                        // rank (see `shared` above).
+                                        let fwd_x = state.get_fwd(x as usize);
+                                        if fwd_x != u32::MAX {
+                                            let total = new_dist.saturating_add(fwd_x);
+                                            if total < best_dist {
+                                                best_dist = total;
+                                                meeting_node = x;
+                                                alt_parent_fwd = None;
+                                                alt_parent_bwd = Some((u, edge_idx));
                                             }
                                         }
                                     }
@@ -796,6 +852,18 @@ impl<'a> CchQuery<'a> {
 
                     if best_dist == u32::MAX {
                         return None;
+                    }
+
+                    // If the winning meet went through a DOMINATED label at a
+                    // shared seed rank, the stored parent there is the pure
+                    // self-root — write the winning candidate's parent so the
+                    // walk crosses the meeting node onto the real path. The
+                    // search loop is over; next query re-stamps epochs.
+                    if let Some(p) = alt_parent_fwd {
+                        state.parent_fwd[meeting_node as usize] = p;
+                    }
+                    if let Some(p) = alt_parent_bwd {
+                        state.parent_bwd[meeting_node as usize] = p;
                     }
 
                     // Reconstruct to whichever roots won (parent == self).
