@@ -53,10 +53,10 @@ DEFAULT_TRIPS = "/home/pierre/explorations/reference_trips/od.csv"
 #   distance outliers (<0.85 / >1.2): 73
 THRESHOLDS = {
     "dur_p50": (0.90, 1.15),
-    "dur_p90_max": 1.35,
+    "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
-    "dist_outliers_max": 90,  # baseline 73 + slack — ratchet down over time
+    "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs per-edge FCD (butterfly-speeds#9)
     "symmetry_ratio_max": 1.5,
     "symmetry_violations_max": 0,
     "fixture_tolerance": 0.10,
