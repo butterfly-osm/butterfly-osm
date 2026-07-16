@@ -707,6 +707,52 @@ pub async fn trip_handler(
             }
         }
 
+        // #506: phantom waypoint seeds. Each waypoint is both a source
+        // (departs to the next stop) and a destination (arrives from the
+        // previous), so it gets TWO role-specific seed sets. Custom-weight
+        // runs (avoid/exclude) keep single zero-part seeds — the expansion
+        // then reduces to an identity copy.
+        let phantom_ok = avoid_entry.is_none() && exclude_weights.is_none();
+        let mut src_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(n);
+        let mut dst_seedsets: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(n);
+        for (i, &[lon, lat]) in coordinates.iter().enumerate() {
+            if !phantom_ok {
+                src_seedsets.push(vec![(ranks[i], 0, 0)]);
+                dst_seedsets.push(vec![(ranks[i], 0, 0)]);
+                continue;
+            }
+            let mk = |role: super::types::SnapRole| -> Vec<(u32, u32, u32)> {
+                let k = state_clone.snap_index.snap_k_with_info_filtered_role(
+                    lon,
+                    lat,
+                    mode.0,
+                    8,
+                    Some(&snap_mask),
+                    role.role_filter(&mode_data),
+                );
+                match super::phantom::phantom_from_candidates(
+                    &state_clone,
+                    &mode_data,
+                    &k,
+                    lon,
+                    lat,
+                    role,
+                    Some(&snap_mask),
+                ) {
+                    Some(pe) => pe
+                        .seeds
+                        .iter()
+                        .map(|x| (x.rank, x.part_time, x.part_len))
+                        .collect(),
+                    None => vec![(ranks[i], 0, 0)],
+                }
+            };
+            src_seedsets.push(mk(super::types::SnapRole::Src));
+            dst_seedsets.push(mk(super::types::SnapRole::Dst));
+        }
+        let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
+        let tgt_exp = super::phantom::SeedExpansion::build(&dst_seedsets);
+
         // Select flat adjacencies (avoid takes priority, then exclude)
         let (time_up, time_down) = if let Some(ref entry) = avoid_entry {
             (&entry.weights.time_up_flat, &entry.weights.time_down_flat)
@@ -737,24 +783,37 @@ pub async fn trip_handler(
         let (mut duration_matrix, mut distance_matrix) = if use_2channel {
             let up_lat = mode_data.up_adj_flat_len_along_time.as_ref().unwrap();
             let dn_lat = mode_data.down_rev_flat_len_along_time.as_ref().unwrap();
-            let (dur_mat, lat_mat, _stats) =
+            let (dur_exp, lat_exp, _stats) =
                 crate::matrix::bucket_ch::table_bucket_full_flat_len_along_time(
                     n_nodes,
                     time_up,
                     time_down,
                     up_lat,
                     dn_lat,
-                    &ranks,
-                    &ranks,
+                    &src_exp.exp_ranks,
+                    &tgt_exp.exp_ranks,
                     u32::MAX,
                 );
-            (dur_mat, Some(lat_mat))
+            let (dur_mat, lat_mat) = src_exp.reduce_time(&tgt_exp, &dur_exp, Some(&lat_exp));
+            (dur_mat, lat_mat)
         } else {
-            let (dur_mat, _stats) =
-                table_bucket_full_flat(n_nodes, time_up, time_down, &ranks, &ranks);
+            let (dur_exp, _stats) = table_bucket_full_flat(
+                n_nodes,
+                time_up,
+                time_down,
+                &src_exp.exp_ranks,
+                &tgt_exp.exp_ranks,
+            );
+            let (dur_mat, _) = src_exp.reduce_time(&tgt_exp, &dur_exp, None);
             let dist_mat = if want_distance {
-                let (m, _) = table_bucket_full_flat(n_nodes, dist_up, dist_down, &ranks, &ranks);
-                Some(m)
+                let (m_exp, _) = table_bucket_full_flat(
+                    n_nodes,
+                    dist_up,
+                    dist_down,
+                    &src_exp.exp_ranks,
+                    &tgt_exp.exp_ranks,
+                );
+                Some(src_exp.reduce_len(&tgt_exp, &m_exp))
             } else {
                 None
             };
