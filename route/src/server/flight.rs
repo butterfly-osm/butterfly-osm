@@ -509,7 +509,7 @@ fn do_matrix(
             lon,
             lat,
             mode.0,
-            4,
+            8,
             None,
             role.role_filter(&mode_data),
         );
@@ -1060,7 +1060,7 @@ fn compute_route_pair(
         slon,
         slat,
         mode.0,
-        4,
+        8,
         None,
         SnapRole::Src.role_filter(mode_data),
     );
@@ -1068,7 +1068,7 @@ fn compute_route_pair(
         dlon,
         dlat,
         mode.0,
-        4,
+        8,
         None,
         SnapRole::Dst.role_filter(mode_data),
     );
