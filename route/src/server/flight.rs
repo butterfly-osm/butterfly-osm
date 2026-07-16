@@ -640,52 +640,32 @@ fn do_matrix(
             .up_adj_flat_len_along_time
             .as_ref()
             .zip(mode_data.down_rev_flat_len_along_time.as_ref());
-        // #502: expansion (see phantom.rs SeedExpansion)
-        let src_exp = super::phantom::SeedExpansion::build(&src_seedsets);
-        let tgt_exp = super::phantom::SeedExpansion::build(&tgt_seedsets);
-        let exp_threshold = if threshold == u32::MAX {
-            u32::MAX
-        } else {
-            threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
-        };
+        // #509: seeds go INTO the bucket engine (super-source forward,
+        // shift-trick backward, pure-meet guard) — S×T cells, replacing the
+        // #502 API-layer SeedExpansion (~(avg seeds)^2 engine cells).
+        let _ = use_parallel; // seeded driver dispatches internally
         let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
-            // Always use parallel for 2-channel: the sequential path
-            // calls `SearchState2::new(n_nodes)` per call which is
-            // ~60 MB on Belgium and dominates small-N latency. The
-            // parallel path reuses thread-local SearchState2 via
-            // BACKWARD_STATE_LAT, so even 10×10 amortises the alloc
-            // away. Rayon spawn cost is in microseconds and fine.
-            // #415: `_bounded` early-stops the time sweeps at `threshold`
-            // (u32::MAX = unbounded, byte-identical to the prior call).
             let (m, lm, st) =
-                crate::matrix::bucket_ch::table_bucket_parallel_len_along_time_bounded(
+                crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
                     n_nodes,
                     up,
                     down,
                     up_lat,
                     dn_lat,
-                    &src_exp.exp_ranks,
-                    &tgt_exp.exp_ranks,
-                    exp_threshold,
+                    &src_seedsets,
+                    &tgt_seedsets,
+                    threshold,
                 );
-            let (m, lm_opt) = src_exp.reduce_time(&tgt_exp, &m, Some(&lm));
-            (m, lm_opt, st)
+            (m, Some(lm), st)
         } else {
-            // #415: when bounded, always take the parallel `_bounded` path
-            // (the sequential `table_bucket_full_flat` has no bound hook).
-            let (m, st) = if use_parallel || bounded {
-                crate::matrix::bucket_ch::table_bucket_parallel_bounded(
-                    n_nodes,
-                    up,
-                    down,
-                    &src_exp.exp_ranks,
-                    &tgt_exp.exp_ranks,
-                    exp_threshold,
-                )
-            } else {
-                table_bucket_full_flat(n_nodes, up, down, &src_exp.exp_ranks, &tgt_exp.exp_ranks)
-            };
-            let (m, _) = src_exp.reduce_time(&tgt_exp, &m, None);
+            let (m, st) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+                n_nodes,
+                up,
+                down,
+                &src_seedsets,
+                &tgt_seedsets,
+                threshold,
+            );
             (m, None, st)
         };
 
@@ -836,10 +816,9 @@ fn do_matrix(
         let schema = Arc::new(matrix_schema());
         let neighbor_mask_bg = neighbor_mask.clone();
 
-        // #506: phantom expansion for the streamed path — same semantics as
-        // the small bucket-M2M branch. The target expansion is shared across
-        // all source tiles; the source expansion is built per tile.
-        let tgt_exp = Arc::new(super::phantom::SeedExpansion::build(&tgt_seedsets));
+        // #509: the streamed path calls the seeded engine per source tile —
+        // identical semantics to the small branch, S×T engine cells.
+        let tgt_seedsets = Arc::new(tgt_seedsets);
 
         let src_tile_size = 1000usize.min(n_origin).max(1);
 
@@ -869,33 +848,16 @@ fn do_matrix(
                     return;
                 }
 
-                // #506: expand phantom seeds into extra rows/columns, run the
-                // engine once, min-reduce back with partial-edge adjustments.
-                let src_exp = super::phantom::SeedExpansion::build(&block_seedsets);
-                let exp_threshold = if threshold == u32::MAX {
-                    u32::MAX
-                } else {
-                    threshold.saturating_add(src_exp.slack() + tgt_exp.slack())
-                };
-
-                // #415: bound both sweeps at the time threshold so the large
-                // (streamed) path is also time-proportional, not just the
-                // small bucket-M2M path. u32::MAX = unbounded.
-                let buckets = Arc::new(crate::matrix::bucket_ch::forward_build_buckets_bounded(
+                // #509/#415: seeded engine per source tile, bounded at the
+                // time threshold. u32::MAX = unbounded.
+                let (tile_matrix, _st) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                     n_nodes,
                     &up_adj,
-                    &src_exp.exp_ranks,
-                    exp_threshold,
-                ));
-
-                let exp_matrix = crate::matrix::bucket_ch::backward_join_with_buckets_bounded(
-                    n_nodes,
                     &down_rev,
-                    &buckets,
-                    &tgt_exp.exp_ranks,
-                    exp_threshold,
+                    &block_seedsets,
+                    &tgt_seedsets,
+                    threshold,
                 );
-                let (tile_matrix, _) = src_exp.reduce_time(&tgt_exp, &exp_matrix, None);
 
                 let n_block_src = block_src_orig.len();
                 let n_block_dst = valid_dst.len();
