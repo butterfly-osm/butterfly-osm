@@ -39,9 +39,9 @@ and locked in by a new post-deploy gate:
 - **`GET /version` (#516)** and **post-deploy gate** (`bench/postdeploy_gate.py`,
   #505/#513/#517): ticket fixtures, fwd/rev symmetry, route==table,
   close-pair sweep, isochrone snapped-origin containment, edges_batch
-  sums, and 1 000 reference-trip ground truth (dur p50 1.02, dist p50
-  1.004, thresholds ratcheted); `deploy.sh staging` refuses to promote on
-  FAIL.
+  sums, and a 1 000-trip reference ground truth with independently
+  observed travel times (dur p50 1.02, dist p50 1.004, thresholds
+  ratcheted); `deploy.sh staging` refuses to promote on FAIL.
 - **OSRM re-validation (post-phantom)**: tied at 200×200, 2.7× faster at
   500×500, 4.8× faster at 1000×1000 (same-host interleaved HTTP).
 
