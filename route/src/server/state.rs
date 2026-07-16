@@ -1997,6 +1997,43 @@ impl ServerState {
                 lut.insert((r.from, r.to), v);
             }
 
+            // #481: sensors measure DOOR-TO-DOOR speed — their slowdown
+            // includes junction dwell that this edge-based engine ALREADY
+            // charges as turn penalties on every transition. Scaling the
+            // link weight by the raw ratio double-counts that dwell,
+            // maximally on urban arterials (measured ~24% pessimism, ring
+            // detours on 68/1000 reference benchmark trips) and not at all on
+            // motorways. Correction (zero fitted parameters): subtract the
+            // edge's own EXPECTED outgoing turn penalty from the observed
+            // door-to-door time before setting the link weight, floored at
+            // legal free-flow: w' = max(w, w/v − E[t_out]).
+            let turns = {
+                let name = "mode/car/node_weights.turn";
+                let entry = container
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("missing section '{}'", name))?;
+                lazy.verify_now(name)?;
+                let bytes = &mmap[entry.offset as usize..(entry.offset + entry.len) as usize];
+                crate::formats::mod_turns::read_all_from_bytes(bytes)?
+            };
+            let n_nodes_csr = self.ebg_csr.n_nodes as usize;
+            let csr_offsets = self.ebg_csr.offsets.as_slice();
+            let mut expected_turn_s: Vec<u32> = vec![0; n_nodes_csr];
+            for i in 0..n_nodes_csr {
+                let (a, b) = (csr_offsets[i] as usize, csr_offsets[i + 1] as usize);
+                let mut sum = 0u64;
+                let mut n = 0u64;
+                for &p in &turns.penalties[a..b] {
+                    if p != u32::MAX {
+                        sum += p as u64;
+                        n += 1;
+                    }
+                }
+                if let Some(mean) = sum.checked_div(n) {
+                    expected_turn_s[i] = mean as u32;
+                }
+            }
+
             // 2. Map onto per-EBG-node times (free-flow fallback elsewhere).
             let mut weights: Vec<u32> = base.node_weights.to_vec();
             anyhow::ensure!(
@@ -2041,9 +2078,13 @@ impl ServerState {
                 }
                 if let Some(v) = val {
                     if table_is_ratio {
-                        // Factor on the edge's OWN base time (slower ⇒ v<1
-                        // ⇒ time grows). Keeps per-edge legal speeds intact.
-                        weights[i] = (((weights[i] as f64) / v as f64).round() as u32).max(1);
+                        // Door-to-door observed time minus the engine's own
+                        // expected junction charge (see #481 note above),
+                        // floored at legal free-flow.
+                        let w = weights[i] as f64;
+                        let door_to_door = w / (v as f64).clamp(0.05, 1.0);
+                        let et = *expected_turn_s.get(i).unwrap_or(&0) as f64;
+                        weights[i] = (door_to_door - et).round().max(w.round()).max(1.0) as u32;
                     } else {
                         let secs = (node.length_m as f64 * 3.6 / v as f64).round();
                         weights[i] = (secs.max(1.0) as u32).max(1);
@@ -2148,7 +2189,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-rush.v1.bin",
+                "recustomize_cache.car-edge-rush.v2.bin",
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2230,7 +2271,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-eq.v1.bin",
+                "recustomize_cache.car-edge-eq.v2.bin",
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2287,7 +2328,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge.v1.bin",
+                "recustomize_cache.car-edge.v2.bin",
             )?;
 
         // 4. Flats + swap + pin (same as the per-way path).
