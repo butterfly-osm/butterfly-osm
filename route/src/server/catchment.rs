@@ -404,7 +404,8 @@ pub fn isochrone_hull(
         &state.ebg_nodes,
         &state.edge_geom,
         mode_name,
-    );
+            None,
+        );
 
     let coords: Vec<(f64, f64)> = polygon_points.iter().map(|p| (p.lon, p.lat)).collect();
     let contour = ContourResult {

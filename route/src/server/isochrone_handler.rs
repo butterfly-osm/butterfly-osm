@@ -283,6 +283,20 @@ pub fn run_phast_bounded_fast(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
+    run_phast_bounded_fast_seeded(up_adj_flat, down_adj_flat, &[(origin_rank, 0)], threshold, mode)
+}
+
+/// #506: multi-seed variant — phantom isochrone origins. Each seed is
+/// `(rank, partial_cost)`; equivalent to a super-source with non-negative
+/// arcs, so the bounded upward sweep and the rank-order downward scan are
+/// unchanged.
+pub fn run_phast_bounded_fast_seeded(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat: &crate::matrix::bucket_ch::DownAdjFlat,
+    seeds: &[(u32, u32)],
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
     let total_start = std::time::Instant::now();
@@ -307,7 +321,11 @@ pub fn run_phast_bounded_fast(
 
             // Start new query (O(1) instead of O(n) memset)
             state.start_query();
-            state.set_dist(origin_rank as usize, 0);
+            for &(r, c) in seeds {
+                if c < state.get_dist(r as usize) {
+                    state.set_dist(r as usize, c);
+                }
+            }
 
             // Track settled nodes during upward phase
             let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
@@ -316,7 +334,11 @@ pub fn run_phast_bounded_fast(
             // from `up_adj_flat` (pre-filtered for INF), so the hot loop is
             // branch-free w.r.t. weight validity.
             let upward_start = std::time::Instant::now();
-            state.pq.push(Reverse((0, origin_rank)));
+            for &(r, c) in seeds {
+                if state.get_dist(r as usize) == c {
+                    state.pq.push(Reverse((c, r)));
+                }
+            }
 
             while let Some(Reverse((d, u))) = state.pq.pop() {
                 if d > threshold {
@@ -443,6 +465,23 @@ pub fn run_phast_bounded_fast_reverse(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
+    run_phast_bounded_fast_reverse_seeded(
+        up_adj_flat,
+        down_rev_flat,
+        &[(target_rank, 0)],
+        threshold,
+        mode,
+    )
+}
+
+/// #506: multi-seed reverse variant (arrive isochrones) — phantom center.
+pub fn run_phast_bounded_fast_reverse_seeded(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    seeds: &[(u32, u32)],
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32)> {
     use std::cmp::Reverse;
 
     let total_start = std::time::Instant::now();
@@ -461,11 +500,19 @@ pub fn run_phast_bounded_fast_reverse(
             }
 
             state.start_query();
-            state.set_dist(target_rank as usize, 0);
+            for &(r, c) in seeds {
+                if c < state.get_dist(r as usize) {
+                    state.set_dist(r as usize, c);
+                }
+            }
 
             // Phase 1: Upward search using DOWN-reverse edges (goes to higher rank nodes)
             let upward_start = std::time::Instant::now();
-            state.pq.push(Reverse((0, target_rank)));
+            for &(r, c) in seeds {
+                if state.get_dist(r as usize) == c {
+                    state.pq.push(Reverse((c, r)));
+                }
+            }
 
             while let Some(Reverse((d, u))) = state.pq.pop() {
                 if d > threshold {
@@ -841,6 +888,53 @@ pub async fn isochrone_handler(
             .into_response();
     }
 
+    // #506: phantom center — seed both directed twins (and near-equidistant
+    // parallel edges) so the polygon isn't committed to one departure/arrival
+    // direction of the snapped edge. Depart seeds cost the REMAINDER of the
+    // edge (part_time); arrive seeds cost the ENTRY-to-snap part (w - part).
+    // Custom-weight paths (avoid/exclude) keep the legacy single seed.
+    let mut center_anchor: Option<(f64, f64)> = None;
+    let center_seeds: Vec<(u32, u32)> = if avoid_entry.is_none() && exclude_mask.is_none() {
+        let k = state.snap_index.snap_k_with_info_filtered_role(
+            req.lon,
+            req.lat,
+            mode.0,
+            8,
+            Some(&snap_mask),
+            center_role_filter,
+        );
+        match super::phantom::phantom_from_candidates(
+            &state,
+            &mode_data,
+            &k,
+            req.lon,
+            req.lat,
+            center_role,
+            Some(&snap_mask),
+        ) {
+            Some(pe) => {
+                center_anchor = Some((pe.snapped_lon, pe.snapped_lat));
+                pe.seeds
+                .iter()
+                .map(|sd| {
+                    let cost = if reverse {
+                        // arrive: cost from edge entry (tail) to the snap point
+                        mode_data.node_weights[sd.ebg_id as usize]
+                            .saturating_sub(sd.part_time)
+                    } else {
+                        // depart: cost from the snap point to the edge head
+                        sd.part_time
+                    };
+                    (sd.rank, cost)
+                })
+                .collect()
+            }
+            None => vec![(center_rank, 0)],
+        }
+    } else {
+        vec![(center_rank, 0)]
+    };
+
     // Get custom weights (avoid takes priority, then exclude)
     let exclude_weights = if avoid_entry.is_none() {
         exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
@@ -878,9 +972,15 @@ pub async fn isochrone_handler(
 
     // Run PHAST once with max threshold
     let phast_settled = if reverse {
-        run_phast_bounded_fast_reverse(up_flat, down_flat, center_rank, phast_threshold, mode)
+        run_phast_bounded_fast_reverse_seeded(
+            up_flat,
+            down_flat,
+            &center_seeds,
+            phast_threshold,
+            mode,
+        )
     } else {
-        run_phast_bounded_fast(up_flat, down_fwd_flat, center_rank, phast_threshold, mode)
+        run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, phast_threshold, mode)
     };
 
     // Convert to original IDs
@@ -900,6 +1000,7 @@ pub async fn isochrone_handler(
             &state.ebg_nodes,
             &state.edge_geom,
             &req.mode,
+            center_anchor,
         )
     };
 
@@ -1268,6 +1369,7 @@ pub async fn isochrone_bulk_handler(
                 &state.ebg_nodes,
                 &state.edge_geom,
                 &req.mode,
+                None,
             );
             let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
             let contour = ContourResult {
