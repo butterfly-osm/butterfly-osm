@@ -181,3 +181,4 @@ geocode/data/br/
 /data/world-corpus/*
 !/data/world-corpus/MANIFEST.json
 CLAUDE.md
+.env
