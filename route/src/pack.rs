@@ -2021,7 +2021,10 @@ pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Res
     meta = meta.set_key_value_metadata(Some(vec![
         parquet::file::metadata::KeyValue::new(
             "container".to_string(),
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string(),
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string(),
         ),
         parquet::file::metadata::KeyValue::new("nbg_edges".to_string(), n.to_string()),
     ]));
