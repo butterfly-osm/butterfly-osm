@@ -164,9 +164,26 @@ pub fn build_raw_points_into(
         // unconditionally makes the polyline zigzag (~2× length). Orient each edge
         // so the endpoint nearest the running path connects first; length_m is
         // orientation-independent so the returned distance is unchanged.
+        // #522: the FIRST edge has no running path yet — orient it against the
+        // NEXT edge's nearer endpoint instead (a reversed first edge drew an
+        // out-and-back: 684 m of polyline on a 491 m path, foot pair in Forest).
         let reversed = match coordinates.last() {
             Some(prev) => dist_sq(prev, polyline.at(n - 1)) < dist_sq(prev, polyline.at(0)),
-            None => false,
+            None => ebg_path.get(1).is_some_and(|&next_id| {
+                let next = &ebg_nodes.nodes[next_id as usize];
+                let np = edge_geom.polyline(next.geom_idx);
+                if np.is_empty() {
+                    return false;
+                }
+                let d = |a: (f64, f64), b: (f64, f64)| {
+                    let (dx, dy) = (a.0 - b.0, a.1 - b.1);
+                    dx * dx + dy * dy
+                };
+                let near = |from: (f64, f64)| d(from, np.at(0)).min(d(from, np.at(np.len() - 1)));
+                // if the first edge's STORED START is closer to the next edge
+                // than its stored end, the traversal runs tail-ward: reverse.
+                near(polyline.at(0)) < near(polyline.at(n - 1))
+            }),
         };
         if reversed {
             for j in (0..n).rev() {
