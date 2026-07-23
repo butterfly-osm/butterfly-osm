@@ -118,6 +118,16 @@ impl<T: Send + 'static> EvictableCell<T> {
     /// compactor evicted an idle arena). Holds the cell lock for the
     /// duration of `f` — i.e. the whole query — mirroring the old
     /// `RefCell` borrow lifetime.
+    /// Test-only: the `Weak<dyn Evictable>` for this cell's inner arena
+    /// (must have been initialised via `with_or_init` first), so a test can
+    /// assert registry pruning by identity instead of a racy global count.
+    #[cfg(test)]
+    fn weak_for_test(&self) -> std::sync::Weak<dyn Evictable> {
+        let arc = self.inner.get().expect("cell not initialised");
+        let dyn_arc: Arc<dyn Evictable> = arc.clone();
+        Arc::downgrade(&dyn_arc)
+    }
+
     #[inline]
     pub fn with_or_init<R>(&self, init: impl FnOnce() -> T, f: impl FnOnce(&mut T) -> R) -> R {
         let arc = self.inner.get_or_init(|| {
@@ -177,6 +187,14 @@ pub fn evict_idle(threshold: Duration) -> usize {
         }
     }
     freed
+}
+
+/// Test-only: does the registry still hold this exact Weak? Count-independent
+/// (identity by pointer), so it is robust to concurrent registrations.
+#[cfg(test)]
+fn registry_contains_test(target: &std::sync::Weak<dyn Evictable>) -> bool {
+    let reg = registry().lock();
+    reg.iter().any(|w| std::sync::Weak::ptr_eq(w, target))
 }
 
 /// Number of registered (live + not-yet-pruned) cells. Test/observability.
@@ -252,17 +270,44 @@ mod tests {
     #[test]
     fn dead_thread_cell_is_pruned() {
         let _g = SERIAL.lock();
-        let _ = evict_idle(Duration::ZERO); // clean slate (live cells only)
-        let before = registered_len();
-        std::thread::spawn(|| {
+        // NOTE: `registered_len()` is a GLOBAL count; other (non-evictable)
+        // tests in the parallel suite register live cells via PHAST /
+        // mode-slots, so asserting it returns to an exact pre-spawn baseline
+        // is racy (was a real flake). Instead assert the ACTUAL invariant on
+        // OUR OWN cell, deterministically: the dead thread drops its Arc, and
+        // a sweep prunes the now-dead Weak out of the registry.
+        let _ = evict_idle(Duration::ZERO);
+        // Thread creates + registers a cell and hands us back a Weak to it.
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Weak<dyn Evictable>>();
+        std::thread::spawn(move || {
             let cell: EvictableCell<Vec<u8>> = EvictableCell::new();
             cell.with_or_init(|| vec![0; 10], |_| {});
+            tx.send(cell.weak_for_test()).unwrap();
         })
         .join()
         .unwrap();
-        // The cell registered (+1), then the thread died dropping the Arc.
-        // A sweep prunes the dead Weak back to the pre-spawn baseline.
-        let _ = evict_idle(Duration::from_millis(0));
-        assert_eq!(registered_len(), before);
+        let weak = rx.recv().unwrap();
+        // Thread died -> its Arc dropped -> our Weak can no longer upgrade.
+        assert!(
+            weak.upgrade().is_none(),
+            "dead thread must drop its cell's Arc"
+        );
+        // The sweep's retain() must remove that dead Weak from the registry.
+        // Bounded retry closes the narrow window where a *concurrent* test
+        // thread dies between the sweep and the check (its dead Weak is not
+        // ours; a re-sweep clears it). We assert OUR weak is absent, which is
+        // count-independent and thus robust to concurrent live registrations.
+        let mut pruned = false;
+        for _ in 0..5 {
+            let _ = evict_idle(Duration::ZERO);
+            if !registry_contains_test(&weak) {
+                pruned = true;
+                break;
+            }
+        }
+        assert!(
+            pruned,
+            "sweep must prune the dead thread's Weak from the registry"
+        );
     }
 }
