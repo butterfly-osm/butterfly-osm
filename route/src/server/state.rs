@@ -2499,8 +2499,12 @@ impl ServerState {
             let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
             let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
             // #528: recompute len-along-time from THIS variant's new time middles.
-            let (lat_w, lat_up, lat_dn) =
-                refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
+            let (lat_w, lat_up, lat_dn) = refresh_len_along_time(
+                &base,
+                &self.ebg_nodes,
+                &new_weights,
+                &adjusted_node_weights,
+            );
             let mut band = clone_mode_data(&base);
             band.cch_weights = new_weights;
             band.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);

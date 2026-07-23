@@ -2069,9 +2069,18 @@ mod len_along_time_middle_tests {
         );
 
         // Leaf edges are middle-independent: identical across both runs.
-        assert_eq!(dn_via0, dn_via1, "original DOWN edges must not depend on middle");
-        assert_eq!(up_via0[0], up_via1[0], "orig up 0->3 must not depend on middle");
-        assert_eq!(up_via0[1], up_via1[1], "orig up 1->3 must not depend on middle");
+        assert_eq!(
+            dn_via0, dn_via1,
+            "original DOWN edges must not depend on middle"
+        );
+        assert_eq!(
+            up_via0[0], up_via1[0],
+            "orig up 0->3 must not depend on middle"
+        );
+        assert_eq!(
+            up_via0[1], up_via1[1],
+            "orig up 1->3 must not depend on middle"
+        );
 
         // The shortcut (index 2) length IS a function of the elected apex.
         assert_eq!(up_via0[2], 13, "via apex 0: 3 + 10");
@@ -2094,8 +2103,23 @@ mod len_along_time_middle_tests {
             vec![Vec::new(), Vec::new(), vec![0usize, 1], Vec::new()];
         let up_mid = [u32::MAX, u32::MAX, 0];
         let down_mid = [u32::MAX, u32::MAX];
-        let a = bottom_up_with_external_middles(&topo, &sorted_down_indices, &up_mid, &down_mid, leaf_len);
-        let b = bottom_up_with_external_middles(&topo, &sorted_down_indices, &up_mid, &down_mid, leaf_len);
-        assert_eq!(a, b, "recompute with identical middles must be bit-for-bit stable");
+        let a = bottom_up_with_external_middles(
+            &topo,
+            &sorted_down_indices,
+            &up_mid,
+            &down_mid,
+            leaf_len,
+        );
+        let b = bottom_up_with_external_middles(
+            &topo,
+            &sorted_down_indices,
+            &up_mid,
+            &down_mid,
+            leaf_len,
+        );
+        assert_eq!(
+            a, b,
+            "recompute with identical middles must be bit-for-bit stable"
+        );
     }
 }
