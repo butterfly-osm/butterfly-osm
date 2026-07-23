@@ -624,35 +624,13 @@ pub async fn serve(
                         // car — registered as `car_rush_hour` when its table
                         // is staged. Failure is non-fatal (typical car keeps
                         // serving).
-                        for (name, file) in [
-                            ("car_rush_hour", "edge_speeds.rush_hour.parquet"),
-                            ("car_eq", "edge_speeds.eq.parquet"),
-                        ] {
-                            let table = edge_path.with_file_name(file);
-                            if !table.exists() {
-                                continue;
-                            }
-                            let res = match name {
-                                "car_rush_hour" => {
-                                    state_owned.register_car_rush_hour_from_edge_speeds(&table)
-                                }
-                                _ => state_owned.register_car_eq_from_edge_speeds(&table),
-                            };
-                            match res {
-                                Ok(m) => tracing::info!(
-                                    region = %region_id,
-                                    mode = name,
-                                    matched = m,
-                                    "car variant registered from staged ratios (#467)"
-                                ),
-                                Err(e) => tracing::warn!(
-                                    region = %region_id,
-                                    mode = name,
-                                    error = %e,
-                                    "car variant registration failed (non-fatal)"
-                                ),
-                            }
-                        }
+                        //
+                        // #521: car_rush_hour / car_eq RETIRED — ONE public car
+                        // profile = the demand-weighted TomTom median. Peak /
+                        // equilibrium friction is superseded by the opt-in
+                        // uncertainty bands (uncertainty=bands) below; a second
+                        // public car speed profile duplicated it. No longer
+                        // registered regardless of any staged rush/eq parquet.
                         // #521: hidden uncertainty-band weight sets from the
                         // optional q25/q75 columns of the SAME table.
                         // Non-fatal: median car keeps serving without bands.
