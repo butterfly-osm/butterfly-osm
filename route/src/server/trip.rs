@@ -803,11 +803,12 @@ pub async fn trip_handler(
             );
             let dist_mat = if want_distance {
                 // Distance-metric run — swap partials so the cost channel is metres.
-                let swap = |sets: &[Vec<(u32, u32, u32, bool)>]| -> Vec<Vec<(u32, u32, u32, bool)>> {
-                    sets.iter()
-                        .map(|v| v.iter().map(|&(r, t, l, ok)| (r, l, t, ok)).collect())
-                        .collect()
-                };
+                let swap =
+                    |sets: &[Vec<(u32, u32, u32, bool)>]| -> Vec<Vec<(u32, u32, u32, bool)>> {
+                        sets.iter()
+                            .map(|v| v.iter().map(|&(r, t, l, ok)| (r, l, t, ok)).collect())
+                            .collect()
+                    };
                 let (m, _) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                     n_nodes,
                     dist_up,

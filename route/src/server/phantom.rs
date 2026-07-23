@@ -297,7 +297,16 @@ pub fn phantom_from_primary(
     role: SnapRole,
     edge_filter: Option<&[u64]>,
 ) -> Option<PhantomEnd> {
-    phantom_from_primary_inner(state, mode_data, primary_tuple, lon, lat, role, edge_filter, false)
+    phantom_from_primary_inner(
+        state,
+        mode_data,
+        primary_tuple,
+        lon,
+        lat,
+        role,
+        edge_filter,
+        false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

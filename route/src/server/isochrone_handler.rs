@@ -283,7 +283,13 @@ pub fn run_phast_bounded_fast(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
-    run_phast_bounded_fast_seeded(up_adj_flat, down_adj_flat, &[(origin_rank, 0)], threshold, mode)
+    run_phast_bounded_fast_seeded(
+        up_adj_flat,
+        down_adj_flat,
+        &[(origin_rank, 0)],
+        threshold,
+        mode,
+    )
 }
 
 /// #506: multi-seed variant — phantom isochrone origins. Each seed is
