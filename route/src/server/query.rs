@@ -57,6 +57,17 @@ struct CchQueryState {
     dist_fwd: Vec<u32>,
     /// Backward distance array
     dist_bwd: Vec<u32>,
+    /// #529: forward length-along-time (lat) secondary key per node,
+    /// gen-stamped by `gen_fwd`. Only maintained by the lexicographic
+    /// `query_seeded` path (via `set_fwd_lex`); other callers never
+    /// read it. `get_fwd_lat` returns `u32::MAX` for un-lat-stamped
+    /// nodes (same generation gate as `dist_fwd`). Interior-only:
+    /// seeds start at lat 0, head/tail snap cuts are added by the
+    /// caller after reconstruction, so the tie-break minimises the
+    /// interior arc-length exactly like the 2-channel matrix.
+    dist_fwd_lat: Vec<u32>,
+    /// #529: backward lat secondary key per node, gen-stamped by `gen_bwd`.
+    dist_bwd_lat: Vec<u32>,
     /// Forward parent: packed (prev_node, edge_idx)
     parent_fwd: Vec<(u32, u32)>,
     /// Backward parent: packed (prev_node, edge_idx)
@@ -108,6 +119,8 @@ impl CchQueryState {
         Self {
             dist_fwd: vec![u32::MAX; n_nodes],
             dist_bwd: vec![u32::MAX; n_nodes],
+            dist_fwd_lat: vec![u32::MAX; n_nodes],
+            dist_bwd_lat: vec![u32::MAX; n_nodes],
             parent_fwd: vec![(u32::MAX, 0); n_nodes],
             parent_bwd: vec![(u32::MAX, 0); n_nodes],
             gen_fwd: vec![0; n_nodes],
@@ -265,6 +278,51 @@ impl CchQueryState {
         self.parent_bwd[node] = parent;
         self.gen_bwd[node] = self.gen_bwd_epoch;
     }
+
+    // ---- #529 lexicographic (time, then lat) accessors --------------
+    // These maintain the lat secondary key in lock-step with the time
+    // arrays. `set_*_lex` writes BOTH so `get_*_lat` (gen-gated on the
+    // SAME stamp as `dist_*`) is always valid after a lex write.
+
+    #[inline]
+    fn get_fwd_lat(&self, node: usize) -> u32 {
+        if self.gen_fwd[node] == self.gen_fwd_epoch {
+            self.dist_fwd_lat[node]
+        } else {
+            u32::MAX
+        }
+    }
+
+    #[inline]
+    fn get_bwd_lat(&self, node: usize) -> u32 {
+        if self.gen_bwd[node] == self.gen_bwd_epoch {
+            self.dist_bwd_lat[node]
+        } else {
+            u32::MAX
+        }
+    }
+
+    #[inline]
+    fn set_fwd_lex(&mut self, node: usize, dist: u32, lat: u32, parent: (u32, u32)) {
+        if self.gen_fwd[node] != self.gen_fwd_epoch {
+            self.handles_fwd[node] = HANDLE_NONE;
+        }
+        self.dist_fwd[node] = dist;
+        self.dist_fwd_lat[node] = lat;
+        self.parent_fwd[node] = parent;
+        self.gen_fwd[node] = self.gen_fwd_epoch;
+    }
+
+    #[inline]
+    fn set_bwd_lex(&mut self, node: usize, dist: u32, lat: u32, parent: (u32, u32)) {
+        if self.gen_bwd[node] != self.gen_bwd_epoch {
+            self.handles_bwd[node] = HANDLE_NONE;
+        }
+        self.dist_bwd[node] = dist;
+        self.dist_bwd_lat[node] = lat;
+        self.parent_bwd[node] = parent;
+        self.gen_bwd[node] = self.gen_bwd_epoch;
+    }
 }
 
 thread_local! {
@@ -274,6 +332,13 @@ thread_local! {
     /// is a Tokio worker (where `/route` runs inline) or a rayon worker.
     static CCH_QUERY_STATE: crate::server::evictable::EvictableCell<CchQueryState> =
         const { crate::server::evictable::EvictableCell::new() };
+}
+
+/// #529: lexicographic "(time, then lat) strictly better" comparator for
+/// meeting-node selection. `true` iff `(t, l)` precedes `(best_t, best_l)`.
+#[inline]
+fn lex_better(t: u32, l: u32, best_t: u32, best_l: u32) -> bool {
+    t < best_t || (t == best_t && l < best_l)
 }
 
 /// Reconstruct path from generation-stamped parent arrays
@@ -370,6 +435,15 @@ enum Backend<'a> {
 /// `cch_topo` they passed when building the flats.
 pub struct CchQuery<'a> {
     backend: Backend<'a>,
+    /// #529: length-along-time (lat) flats, slot-aligned with the time
+    /// flats (same CCH topology — index `i` addresses the same edge, the
+    /// invariant the 2-channel matrix already relies on). `Some` only for
+    /// the plain `Flats` backend on a mode that shipped `cch.lat.<mode>`;
+    /// `None` for custom-weight (exclude/avoid) queries, where the
+    /// lexicographic tie-break degrades to time-only (no behavioural
+    /// change vs pre-#529).
+    up_lat: Option<&'a UpAdjFlat>,
+    down_rev_lat: Option<&'a DownReverseAdjFlat>,
     n_nodes: usize,
 }
 
@@ -387,6 +461,8 @@ impl<'a> CchQuery<'a> {
                 up_adj_flat: &mode_data.up_adj_flat,
                 down_rev_flat: &mode_data.down_rev_flat,
             },
+            up_lat: mode_data.up_adj_flat_len_along_time.as_ref(),
+            down_rev_lat: mode_data.down_rev_flat_len_along_time.as_ref(),
             n_nodes: mode_data.cch_topo.n_nodes as usize,
         }
     }
@@ -470,6 +546,82 @@ impl<'a> CchQuery<'a> {
         }
     }
 
+    /// #529: like [`Self::for_up_edges`] but also yields the per-edge
+    /// length-along-time weight `w_lat` (0 when no lat flat is present).
+    /// Reads topology from the time flat and `w_lat` from the slot-aligned
+    /// lat flat — exactly the pairing the 2-channel matrix uses.
+    #[inline]
+    fn for_up_edges_lex<F: FnMut(u32, u32, u32, u32)>(&self, u: u32, mut f: F) {
+        match &self.backend {
+            Backend::Flats { up_adj_flat, .. } => {
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                let lat = self.up_lat;
+                for slot in start..end {
+                    let v = up_adj_flat.targets[slot];
+                    let w = up_adj_flat.weights.get(slot);
+                    let wl = lat.map(|l| l.weights.get(slot)).unwrap_or(0);
+                    let parent_idx = up_adj_flat.topo_edge_idx[slot];
+                    f(v, w, wl, parent_idx);
+                }
+            }
+            Backend::CustomWeights {
+                weights,
+                up_adj_flat,
+                ..
+            } => {
+                let start = up_adj_flat.offsets[u as usize] as usize;
+                let end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let parent_idx = up_adj_flat.topo_edge_idx[slot];
+                    let w = weights.up.get(parent_idx as usize);
+                    if w == u32::MAX {
+                        continue;
+                    }
+                    let v = up_adj_flat.targets[slot];
+                    f(v, w, 0, parent_idx);
+                }
+            }
+        }
+    }
+
+    /// #529: lat-aware reversed-DOWN iterator (mirror of
+    /// [`Self::for_up_edges_lex`]).
+    #[inline]
+    fn for_down_rev_edges_lex<F: FnMut(u32, u32, u32, u32)>(&self, u: u32, mut f: F) {
+        match &self.backend {
+            Backend::Flats { down_rev_flat, .. } => {
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                let lat = self.down_rev_lat;
+                for slot in start..end {
+                    let x = down_rev_flat.sources[slot];
+                    let w = down_rev_flat.weights.get(slot);
+                    let wl = lat.map(|l| l.weights.get(slot)).unwrap_or(0);
+                    let parent_idx = down_rev_flat.topo_edge_idx[slot];
+                    f(x, w, wl, parent_idx);
+                }
+            }
+            Backend::CustomWeights {
+                weights,
+                down_rev_flat,
+                ..
+            } => {
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for slot in start..end {
+                    let parent_idx = down_rev_flat.topo_edge_idx[slot];
+                    let w = weights.down.get(parent_idx as usize);
+                    if w == u32::MAX {
+                        continue;
+                    }
+                    let x = down_rev_flat.sources[slot];
+                    f(x, w, 0, parent_idx);
+                }
+            }
+        }
+    }
+
     /// Create a query with custom weights (for alternative routes with
     /// penalties, exclude/avoid recustomization, transit access/egress).
     ///
@@ -499,6 +651,11 @@ impl<'a> CchQuery<'a> {
                 up_adj_flat,
                 down_rev_flat,
             },
+            // Custom-weight (exclude/avoid) queries have no length-along-time
+            // recustomisation (they use the legacy 2-pass distance path in
+            // `/table`); the #529 lex tie-break is off here.
+            up_lat: None,
+            down_rev_lat: None,
             n_nodes: topo.n_nodes as usize,
         }
     }
@@ -642,20 +799,30 @@ impl<'a> CchQuery<'a> {
                     state.start_query();
 
                     // Initialize all seeds (keep the min when ranks collide).
+                    // #529: seeds carry lat 0 — the length tie-break minimises
+                    // INTERIOR arc length; head/tail partial-edge cuts are
+                    // added by the caller after reconstruction and are
+                    // constant across equal-time interior paths.
                     for &(r, c) in src_seeds {
                         if c < state.get_fwd(r as usize) {
-                            state.set_fwd(r as usize, c, (r, 0));
+                            state.set_fwd_lex(r as usize, c, 0, (r, 0));
                             state.push_fwd(r, c);
                         }
                     }
                     for &(r, c) in dst_seeds {
                         if c < state.get_bwd(r as usize) {
-                            state.set_bwd(r as usize, c, (r, 0));
+                            state.set_bwd_lex(r as usize, c, 0, (r, 0));
                             state.push_bwd(r, c);
                         }
                     }
 
                     let mut best_dist = u32::MAX;
+                    // #529: length-along-time of the best meet found so far.
+                    // The meeting node is chosen lexicographically by
+                    // (total_time, then total_lat), so among equal-DURATION
+                    // paths /route returns the shortest-length one — matching
+                    // the 2-channel /table surface.
+                    let mut best_lat = u32::MAX;
                     let mut meeting_node = u32::MAX;
                     // When the winning meet used a DOMINATED (impure) label at
                     // a shared seed rank, the parent to walk through on that
@@ -671,7 +838,14 @@ impl<'a> CchQuery<'a> {
                     while !state.pq_fwd.is_empty() || !state.pq_bwd.is_empty() {
                         let fwd_min = state.pq_fwd.peek_min_weight().unwrap_or(u32::MAX);
                         let bwd_min = state.pq_bwd.peek_min_weight().unwrap_or(u32::MAX);
-                        if fwd_min >= best_dist && bwd_min >= best_dist {
+                        // #529: drain the FULL equal-time layer (`>` not `>=`)
+                        // so every meet at total_time == best_dist is seen and
+                        // its length can lower best_lat. Min-time still settles
+                        // as in Dijkstra; both frontiers passing best_dist means
+                        // no further total==best_dist meet can appear. (Pre-#529
+                        // used `>=`, correct for a time-only answer but it could
+                        // stop before a shorter equal-time path was seen.)
+                        if fwd_min > best_dist && bwd_min > best_dist {
                             break;
                         }
 
@@ -695,12 +869,19 @@ impl<'a> CchQuery<'a> {
                                 });
                                 if !stalled {
                                     fwd_settled += 1;
+                                    // #529: lat of the settled forward label.
+                                    let d_lat = state.get_fwd_lat(u as usize);
 
                                     let bwd_d = state.get_bwd(u as usize);
                                     if bwd_d != u32::MAX {
                                         let total = d.saturating_add(bwd_d);
-                                        if total < best_dist && !is_seed_seed_meet(u, d, bwd_d) {
+                                        let total_lat =
+                                            d_lat.saturating_add(state.get_bwd_lat(u as usize));
+                                        if lex_better(total, total_lat, best_dist, best_lat)
+                                            && !is_seed_seed_meet(u, d, bwd_d)
+                                        {
                                             best_dist = total;
+                                            best_lat = total_lat;
                                             meeting_node = u;
                                             alt_parent_fwd = None;
                                             alt_parent_bwd = None;
@@ -710,27 +891,41 @@ impl<'a> CchQuery<'a> {
                                                     dist_fwd = d,
                                                     dist_bwd = bwd_d,
                                                     total,
+                                                    total_lat,
                                                     "FWD meet (seeded)"
                                                 );
                                             }
                                         }
                                     }
 
-                                    // Relax UP edges
-                                    self.for_up_edges(u, |v, w, edge_idx| {
+                                    // Relax UP edges (lex: time, then lat).
+                                    self.for_up_edges_lex(u, |v, w, w_lat, edge_idx| {
                                         fwd_relaxed += 1;
                                         let new_dist = d.saturating_add(w);
-                                        if new_dist < state.get_fwd(v as usize) {
-                                            state.set_fwd(v as usize, new_dist, (u, edge_idx));
+                                        let new_lat = d_lat.saturating_add(w_lat);
+                                        let cur = state.get_fwd(v as usize);
+                                        let improve = new_dist < cur
+                                            || (new_dist == cur
+                                                && new_lat < state.get_fwd_lat(v as usize));
+                                        if improve {
+                                            state.set_fwd_lex(
+                                                v as usize,
+                                                new_dist,
+                                                new_lat,
+                                                (u, edge_idx),
+                                            );
                                             state.push_fwd(v, new_dist);
 
                                             let bwd_v = state.get_bwd(v as usize);
                                             if bwd_v != u32::MAX {
                                                 let total = new_dist.saturating_add(bwd_v);
-                                                if total < best_dist
+                                                let total_lat = new_lat
+                                                    .saturating_add(state.get_bwd_lat(v as usize));
+                                                if lex_better(total, total_lat, best_dist, best_lat)
                                                     && !is_seed_seed_meet(v, new_dist, bwd_v)
                                                 {
                                                     best_dist = total;
+                                                    best_lat = total_lat;
                                                     meeting_node = v;
                                                     alt_parent_fwd = None;
                                                     alt_parent_bwd = None;
@@ -744,8 +939,12 @@ impl<'a> CchQuery<'a> {
                                             let bwd_v = state.get_bwd(v as usize);
                                             if bwd_v != u32::MAX {
                                                 let total = new_dist.saturating_add(bwd_v);
-                                                if total < best_dist {
+                                                let total_lat = new_lat
+                                                    .saturating_add(state.get_bwd_lat(v as usize));
+                                                if lex_better(total, total_lat, best_dist, best_lat)
+                                                {
                                                     best_dist = total;
+                                                    best_lat = total_lat;
                                                     meeting_node = v;
                                                     alt_parent_fwd = Some((u, edge_idx));
                                                     alt_parent_bwd = None;
@@ -778,12 +977,19 @@ impl<'a> CchQuery<'a> {
                                     continue;
                                 }
                                 bwd_settled += 1;
+                                // #529: lat of the settled backward label.
+                                let d_lat = state.get_bwd_lat(u as usize);
 
                                 let fwd_d = state.get_fwd(u as usize);
                                 if fwd_d != u32::MAX {
                                     let total = d.saturating_add(fwd_d);
-                                    if total < best_dist && !is_seed_seed_meet(u, fwd_d, d) {
+                                    let total_lat =
+                                        d_lat.saturating_add(state.get_fwd_lat(u as usize));
+                                    if lex_better(total, total_lat, best_dist, best_lat)
+                                        && !is_seed_seed_meet(u, fwd_d, d)
+                                    {
                                         best_dist = total;
+                                        best_lat = total_lat;
                                         meeting_node = u;
                                         alt_parent_fwd = None;
                                         alt_parent_bwd = None;
@@ -793,27 +999,41 @@ impl<'a> CchQuery<'a> {
                                                 dist_fwd = fwd_d,
                                                 dist_bwd = d,
                                                 total,
+                                                total_lat,
                                                 "BWD meet (seeded)"
                                             );
                                         }
                                     }
                                 }
 
-                                // Relax reverse DOWN edges
-                                self.for_down_rev_edges(u, |x, w, edge_idx| {
+                                // Relax reverse DOWN edges (lex: time, then lat).
+                                self.for_down_rev_edges_lex(u, |x, w, w_lat, edge_idx| {
                                     bwd_relaxed += 1;
                                     let new_dist = d.saturating_add(w);
-                                    if new_dist < state.get_bwd(x as usize) {
-                                        state.set_bwd(x as usize, new_dist, (u, edge_idx));
+                                    let new_lat = d_lat.saturating_add(w_lat);
+                                    let cur = state.get_bwd(x as usize);
+                                    let improve = new_dist < cur
+                                        || (new_dist == cur
+                                            && new_lat < state.get_bwd_lat(x as usize));
+                                    if improve {
+                                        state.set_bwd_lex(
+                                            x as usize,
+                                            new_dist,
+                                            new_lat,
+                                            (u, edge_idx),
+                                        );
                                         state.push_bwd(x, new_dist);
 
                                         let fwd_x = state.get_fwd(x as usize);
                                         if fwd_x != u32::MAX {
                                             let total = new_dist.saturating_add(fwd_x);
-                                            if total < best_dist
+                                            let total_lat = new_lat
+                                                .saturating_add(state.get_fwd_lat(x as usize));
+                                            if lex_better(total, total_lat, best_dist, best_lat)
                                                 && !is_seed_seed_meet(x, fwd_x, new_dist)
                                             {
                                                 best_dist = total;
+                                                best_lat = total_lat;
                                                 meeting_node = x;
                                                 alt_parent_fwd = None;
                                                 alt_parent_bwd = None;
@@ -825,8 +1045,11 @@ impl<'a> CchQuery<'a> {
                                         let fwd_x = state.get_fwd(x as usize);
                                         if fwd_x != u32::MAX {
                                             let total = new_dist.saturating_add(fwd_x);
-                                            if total < best_dist {
+                                            let total_lat = new_lat
+                                                .saturating_add(state.get_fwd_lat(x as usize));
+                                            if lex_better(total, total_lat, best_dist, best_lat) {
                                                 best_dist = total;
+                                                best_lat = total_lat;
                                                 meeting_node = x;
                                                 alt_parent_fwd = None;
                                                 alt_parent_bwd = Some((u, edge_idx));

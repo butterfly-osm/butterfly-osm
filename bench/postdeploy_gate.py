@@ -296,10 +296,22 @@ def gate_recustomized_distance(base):
     the `car_rush_hour` variant — the variant exercises the second stale-clone
     site (the container-baked / register-from-edge-speeds variant path), whose
     len-along-time flats must be recomputed from the VARIANT's own time
-    middles, not cloned from the clean base."""
-    print("== recustomized-mode 2-channel distance==route (#528) ==")
+    middles, not cloned from the clean base.
+
+    #529/#530: `car_nodir` (one-way-agnostic) is the canonical equal-DURATION
+    tie mode — forward/backward arcs cost the same, so many OD pairs have
+    several equal-time paths of DIFFERENT length. The 2-channel distance must
+    still equal /route distance_m under those ties. This probe exercises the
+    default /table BUCKET path (SearchState2 lazy-lex, #529). The PHAST
+    2-channel path (#530) is only taken when `phast_wins()` routes a lopsided
+    matrix through `table_phast_lopsided_2ch`; the live server picks the plan
+    itself and its env cannot be set from the gate, so forcing PHAST here is
+    not feasible — that surface is locked by the Rust unit test
+    `phast_2ch_lex_tests` and can be re-verified live with a dedicated serve
+    run under `BUTTERFLY_MATRIX_ALGO=phast`."""
+    print("== recustomized-mode 2-channel distance==route (#528/#529) ==")
     passed = True
-    for mode in ("car", "car_rush_hour"):
+    for mode in ("car", "car_rush_hour", "car_nodir"):
         res = _distance_channel_vs_route(base, mode)
         if res is None:
             print(f"  [SKIP] {mode} 2-channel distance==route: mode not served")
@@ -307,7 +319,7 @@ def gate_recustomized_distance(base):
         checked, mism, worst = res
         # `car` is always present (hard requirement); a served variant must
         # also hold. checked>=20 guards against a probe that snapped nothing.
-        need_coverage = checked >= 20 if mode == "car" else checked >= 10
+        need_coverage = checked >= 20 if mode in ("car", "car_nodir") else checked >= 10
         passed &= check(
             f"{mode} 2-channel distance==route",
             mism == 0 and need_coverage,
