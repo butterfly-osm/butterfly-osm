@@ -56,6 +56,11 @@ pub struct IsochroneRequest {
     /// Avoid polygon(s) as JSON: `[[lon,lat],...]` or `[[[lon,lat],...],...]`
     #[serde(default)]
     pub avoid_polygons: Option<String>,
+    /// Uncertainty bands (#521): "bands" adds optimistic/pessimistic contour
+    /// features per threshold (hidden q75-/q25-speed weight sets). Explicit
+    /// opt-in (2 extra PHAST passes). car only, JSON only.
+    #[serde(default)]
+    pub uncertainty: Option<String>,
 }
 
 /// A single contour polygon in an isochrone response
@@ -76,6 +81,10 @@ pub struct ContourFeature {
     pub polygon_points: Option<Vec<Point>>,
     /// Number of reachable edges within this contour
     pub reachable_edges: usize,
+    /// Band tag (only with uncertainty=bands): "optimistic" | "pessimistic";
+    /// absent on the median contour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<&'static str>,
 }
 
 /// Isochrone response -- always returns a `contours` array (even for a single contour)
@@ -763,6 +772,32 @@ pub async fn isochrone_handler(
         }
     };
 
+    // #521 bands: explicit opt-in, plain car path only, JSON only.
+    let bands_requested = match req.uncertainty.as_deref() {
+        None => false,
+        Some("bands") => {
+            if req.mode != "car" || req.avoid_polygons.is_some() || req.exclude.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "uncertainty=bands is car-only and incompatible with avoid_polygons/exclude".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            true
+        }
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
+                }),
+            )
+                .into_response();
+        }
+    };
+
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
@@ -1019,6 +1054,17 @@ pub async fn isochrone_handler(
 
     // WKB path (content negotiation)
     if wants_wkb {
+        if bands_requested {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error:
+                        "uncertainty=bands requires the JSON response (Accept: application/json)"
+                            .to_string(),
+                }),
+            )
+                .into_response();
+        }
         use crate::range::contour::ContourResult;
         use crate::range::wkb_stream::encode_polygon_wkb;
 
@@ -1066,9 +1112,49 @@ pub async fn isochrone_handler(
                 polygon_geojson: poly_geo,
                 polygon_points: poly_pts,
                 reachable_edges: reachable,
+                band: None,
             }
         })
         .collect();
+    let mut contour_features = contour_features;
+
+    // #521 uncertainty bands: two extra seeded PHAST passes on the hidden
+    // band weight sets — optimistic (fluid q75-speed) reaches farther,
+    // pessimistic (congested q25-speed) less far. Same thresholds.
+    if bands_requested {
+        let Some((pess, opt)) = state.band_modes() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".to_string(),
+                }),
+            )
+                .into_response();
+        };
+        for (band_mode, tag) in [(opt, "optimistic"), (pess, "pessimistic")] {
+            match band_isochrone_features(
+                &state,
+                band_mode,
+                &req,
+                reverse,
+                &thresholds,
+                phast_threshold,
+                geom_format,
+                tag,
+            ) {
+                Some(mut feats) => contour_features.append(&mut feats),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("band '{tag}': could not snap/compute isochrone"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
 
     // Build network at max threshold if requested
     let network = if include_network {
@@ -1093,6 +1179,111 @@ pub async fn isochrone_handler(
         network,
     })
     .into_response()
+}
+
+/// #521: contour features for ONE hidden band weight set — a compact replay
+/// of the plain-path core (snap -> phantom center seeds -> seeded PHAST ->
+/// contour) against the band's ModeData. Plain path only by construction
+/// (bands reject avoid/exclude upstream).
+#[allow(clippy::too_many_arguments)]
+fn band_isochrone_features(
+    state: &ServerState,
+    band: crate::profile_abi::Mode,
+    req: &IsochroneRequest,
+    reverse: bool,
+    thresholds: &[(u32, Option<u32>)],
+    phast_threshold: u32,
+    geom_format: GeometryFormat,
+    tag: &'static str,
+) -> Option<Vec<ContourFeature>> {
+    let md = state.get_mode(band);
+    let role = if reverse {
+        SnapRole::Dst
+    } else {
+        SnapRole::Src
+    };
+    let rf = role.role_filter(&md);
+    let center =
+        state
+            .snap_index
+            .snap_filtered_role(req.lon, req.lat, band.0, Some(&md.mask), rf)?;
+    let center_rank = md.orig_to_rank[center as usize];
+    if center_rank == u32::MAX {
+        return None;
+    }
+    let (seeds, anchor) = super::phantom::isochrone_center_seeds(
+        state,
+        &md,
+        band,
+        req.lon,
+        req.lat,
+        role,
+        Some(&md.mask),
+        reverse,
+        center_rank,
+    );
+    let phast_settled = if reverse {
+        run_phast_bounded_fast_reverse_seeded(
+            &md.up_adj_flat,
+            &md.down_rev_flat,
+            &seeds,
+            phast_threshold,
+            band,
+        )
+    } else {
+        run_phast_bounded_fast_seeded(
+            &md.up_adj_flat,
+            &md.down_adj_flat,
+            &seeds,
+            phast_threshold,
+            band,
+        )
+    };
+    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
+    for (rank, dist) in phast_settled {
+        let filtered_id = md.cch_topo.rank_to_filtered[rank as usize];
+        settled.push((md.filtered_to_original[filtered_id as usize], dist));
+    }
+    let mut out = Vec::with_capacity(thresholds.len());
+    for &(threshold, time_s) in thresholds {
+        let polygon = build_isochrone_geometry(
+            &settled,
+            threshold,
+            &md.node_weights,
+            &state.ebg_nodes,
+            &state.edge_geom,
+            &req.mode,
+            anchor,
+        );
+        let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
+        let (poly_enc, poly_geo, poly_pts) = match geom_format {
+            GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
+            GeometryFormat::GeoJson => {
+                use crate::range::wkb_stream::ensure_ccw;
+                let trunc = |v: f64| (v * 1e5).round() / 1e5;
+                let mut coords: Vec<(f64, f64)> = polygon
+                    .iter()
+                    .map(|p| (trunc(p.lon), trunc(p.lat)))
+                    .collect();
+                ensure_ccw(&mut coords);
+                (
+                    None,
+                    Some(coords.into_iter().map(|(lo, la)| [lo, la]).collect()),
+                    None,
+                )
+            }
+            GeometryFormat::Points => (None, None, Some(polygon)),
+        };
+        out.push(ContourFeature {
+            time_s,
+            polygon: poly_enc,
+            polygon_geojson: poly_geo,
+            polygon_points: poly_pts,
+            reachable_edges: reachable,
+            band: Some(tag),
+        });
+    }
+    Some(out)
 }
 
 /// Build network geometry - all reachable road segments as polylines.

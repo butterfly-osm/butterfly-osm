@@ -653,6 +653,16 @@ pub async fn serve(
                                 ),
                             }
                         }
+                        // #521: hidden uncertainty-band weight sets from the
+                        // optional q25/q75 columns of the SAME table.
+                        // Non-fatal: median car keeps serving without bands.
+                        if let Err(e) = state_owned.register_car_bands_from_edge_speeds(edge_path) {
+                            tracing::warn!(
+                                region = %region_id,
+                                error = %e,
+                                "uncertainty-band registration failed (non-fatal)"
+                            );
+                        }
                         return; // edge contract wins; skip the per-way path
                     }
                     Err(e) => tracing::warn!(

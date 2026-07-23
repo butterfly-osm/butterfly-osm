@@ -72,6 +72,11 @@ pub struct TablePostRequest {
     /// matrix filtered to ≤ `max_minutes`. Orthogonal to `radius_km`.
     #[serde(default)]
     pub max_minutes: Option<f64>,
+    /// Uncertainty bands (#521): "bands" adds durations_q25/durations_q75
+    /// (diurnal TIME quantiles from hidden q75-/q25-speed weight sets).
+    /// Explicit opt-in: runs the matrix three times. car only.
+    #[serde(default)]
+    pub uncertainty: Option<String>,
 }
 
 pub fn default_annotations() -> String {
@@ -117,6 +122,12 @@ pub struct TableResponse {
     /// Destination waypoints with snapped locations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destinations: Option<Vec<Waypoint>>,
+    /// Optimistic (25th TIME percentile) durations — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durations_q25: Option<Vec<Vec<Option<f64>>>>,
+    /// Pessimistic (75th TIME percentile) durations — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durations_q75: Option<Vec<Vec<Option<f64>>>>,
 }
 
 /// Request for streaming table computation
@@ -363,6 +374,121 @@ pub async fn table_post_handler(
         threshold_s,
     )
     .await;
+
+    // #521 uncertainty bands: two more full matrix passes on the hidden band
+    // weight sets, merged into the median response as durations_q25/q75
+    // (TIME quantiles: q25 <- fluid q75-speed set). Opt-in only — 3x cost.
+    let resp = match req.uncertainty.as_deref() {
+        None => resp,
+        Some("bands") => {
+            if req.mode != "car" || req.exclude.is_some() || req.avoid_polygons.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "uncertainty=bands is car-only and incompatible with exclude/avoid_polygons".into(),
+                    }),
+                )
+                    .into_response();
+            }
+            let Some((pess, opt)) = state.band_modes() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".into(),
+                    }),
+                )
+                    .into_response();
+            };
+            let mut band_grids: Vec<serde_json::Value> = Vec::with_capacity(2);
+            for band in [opt, pess] {
+                let md = state.get_mode(band);
+                let r = compute_table_bucket_m2m(
+                    &state,
+                    band,
+                    &req.origins,
+                    &req.destinations,
+                    true,
+                    false,
+                    None,
+                    &md.mask,
+                    parse_radius(req.radius_km.as_ref()),
+                    threshold_s,
+                )
+                .await;
+                let bytes = match axum::body::to_bytes(r.into_body(), 256 * 1024 * 1024).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: format!("band matrix pass failed: {e}"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+                let v: serde_json::Value = match serde_json::from_slice(&bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: format!("band matrix pass returned non-JSON: {e}"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+                band_grids.push(
+                    v.get("durations")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                );
+            }
+            let bytes = match axum::body::to_bytes(resp.into_body(), 256 * 1024 * 1024).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("median matrix pass failed: {e}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(mut v) => {
+                    let q75 = band_grids.pop().unwrap_or(serde_json::Value::Null);
+                    let q25 = band_grids.pop().unwrap_or(serde_json::Value::Null);
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("durations_q25".into(), q25);
+                        obj.insert("durations_q75".into(), q75);
+                    }
+                    Json(v).into_response()
+                }
+                // Median pass errored (4xx body): pass it through untouched.
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "table computation failed before band merge".into(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
+                }),
+            )
+                .into_response();
+        }
+    };
     super::region_metrics::record_query(
         &region_id,
         "table",
@@ -820,6 +946,8 @@ pub async fn compute_table_bucket_m2m(
         distances,
         origins: Some(source_waypoints),
         destinations: Some(dest_waypoints),
+        durations_q25: None,
+        durations_q75: None,
     })
     .into_response();
     tracing::debug!(

@@ -44,6 +44,18 @@ Server-wide layers (defined in `route/src/server/api.rs`):
 - Isochrone polygons follow **snapped-road-point semantics**: the polygon
   always contains the snapped origin; a raw query point far off-network
   may legitimately fall outside.
+- **Uncertainty bands (#521, opt-in)**: `uncertainty=bands` on `/route`,
+  `POST /table`, `GET /isochrone` and `POST /trip` adds diurnal TIME
+  quantiles (q25 = optimistic, q75 = pessimistic) computed on hidden
+  q75-/q25-speed weight sets carried by `edge_speeds.parquet`
+  (`speed_ratio_q25/q75` columns). The default response is ALWAYS the
+  median alone — bands cost 2 extra passes and must be asked for. `car`
+  only; incompatible with `traffic`/`avoid_polygons`/`exclude`/`bearings`;
+  isochrone bands are JSON-only. On `/route` and `/trip` the band numbers
+  are full re-queries (the band's world may reroute); on `/isochrone` the
+  response carries extra contour features tagged `band: "optimistic" |
+  "pessimistic"` (nested rings); on `/table` extra `durations_q25` /
+  `durations_q75` grids. 400 if the loaded table has no band columns.
 
 ## REST endpoints
 
@@ -67,6 +79,7 @@ Point-to-point routing with geometry, optional turn-by-turn steps with road name
 | `exclude` | string | none | Comma list of `toll`, `ferry`, `motorway` |
 | `avoid_polygons` | string | none | JSON `[[lon,lat],...]` or `[[[lon,lat],...],...]` |
 | `debug` | bool | `false` | Include snap diagnostics in response |
+| `uncertainty` | string | none | `bands` → adds `duration_q25_s`/`duration_q75_s` (TIME quantiles; car only; 2 extra queries) |
 
 Content negotiation:
 - `Accept: application/json` (default) → JSON `RouteResponse`

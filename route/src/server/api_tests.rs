@@ -918,7 +918,8 @@ fn test_contour_feature_serialization_time() {
         polygon: None,
         polygon_geojson: Some(vec![[4.35, 50.85], [4.36, 50.86]]),
         polygon_points: None,
-        reachable_edges: 1234,
+        band: None,
+            reachable_edges: 1234,
     };
     let json = serde_json::to_value(&feature).unwrap();
     assert_eq!(json["time_s"], 600);
@@ -936,14 +937,16 @@ fn test_isochrone_response_always_has_contours_array() {
                 polygon: None,
                 polygon_geojson: Some(vec![[4.35, 50.85]]),
                 polygon_points: None,
-                reachable_edges: 1000,
+                band: None,
+            reachable_edges: 1000,
             },
             ContourFeature {
                 time_s: Some(600),
                 polygon: None,
                 polygon_geojson: Some(vec![[4.34, 50.84]]),
                 polygon_points: None,
-                reachable_edges: 3000,
+                band: None,
+            reachable_edges: 3000,
             },
         ],
         network: None,
@@ -1063,6 +1066,8 @@ fn test_route_response_with_annotations() {
         }),
         alternatives: None,
         debug: None,
+        duration_q25_s: None,
+        duration_q75_s: None,
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert!(json["annotations"]["duration"].is_array());
@@ -1151,6 +1156,7 @@ fn test_isochrone_response_single_contour_still_array() {
             polygon: Some("encoded".to_string()),
             polygon_geojson: None,
             polygon_points: None,
+            band: None,
             reachable_edges: 100,
         }],
         network: None,
