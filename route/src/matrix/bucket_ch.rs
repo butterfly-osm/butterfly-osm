@@ -6165,36 +6165,37 @@ fn table_bucket_parallel_seeded_monolithic(
         }
     };
 
-    let run_forward = |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32)>> {
-        if seeds.is_empty() {
-            return None;
-        }
-        FORWARD_STATE.with(|state_cell| {
-            FORWARD_BUCKET_ITEMS.with(|items_cell| {
-                state_cell.with_or_init(
-                    || SearchState::new(n_nodes, avg_visited),
-                    |state| {
-                        if state.entries.len() != n_nodes {
-                            *state = SearchState::new(n_nodes, avg_visited);
-                        }
-                        state.dist_threshold = sweep_bound(seeds);
-                        items_cell.with_or_init(Vec::new, |items| {
-                            items.clear();
-                            forward_fill_buckets_flat_seeded(
-                                up_adj_flat,
-                                source_idx as u32,
-                                seeds,
-                                &tgt_ranks,
-                                state,
-                                items,
-                            );
-                            Some(std::mem::take(items))
-                        })
-                    },
-                )
+    let run_forward =
+        |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32)>> {
+            if seeds.is_empty() {
+                return None;
+            }
+            FORWARD_STATE.with(|state_cell| {
+                FORWARD_BUCKET_ITEMS.with(|items_cell| {
+                    state_cell.with_or_init(
+                        || SearchState::new(n_nodes, avg_visited),
+                        |state| {
+                            if state.entries.len() != n_nodes {
+                                *state = SearchState::new(n_nodes, avg_visited);
+                            }
+                            state.dist_threshold = sweep_bound(seeds);
+                            items_cell.with_or_init(Vec::new, |items| {
+                                items.clear();
+                                forward_fill_buckets_flat_seeded(
+                                    up_adj_flat,
+                                    source_idx as u32,
+                                    seeds,
+                                    &tgt_ranks,
+                                    state,
+                                    items,
+                                );
+                                Some(std::mem::take(items))
+                            })
+                        },
+                    )
+                })
             })
-        })
-    };
+        };
 
     let forward_start = std::time::Instant::now();
     let sequential = n_sources * n_targets <= SEQUENTIAL_FAST_PATH_CELL_THRESHOLD;
@@ -6409,13 +6410,10 @@ fn backward_join_seeded_lat(
                 let is_pure_pure = pure_list
                     .map(|pl| {
                         pl.iter().any(|&(si, pt, plat, src_ok)| {
-                            si == entry.source_idx
-                                && pt == entry.dist
-                                && plat == entry.lat
-                                && {
-                                    let total = entry.dist.saturating_add(d);
-                                    !(src_ok && dst_direct_ok && total >= shift_t)
-                                }
+                            si == entry.source_idx && pt == entry.dist && plat == entry.lat && {
+                                let total = entry.dist.saturating_add(d);
+                                !(src_ok && dst_direct_ok && total >= shift_t)
+                            }
                         })
                     })
                     .unwrap_or(false);

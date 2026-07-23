@@ -850,14 +850,15 @@ fn do_matrix(
 
                 // #509/#415: seeded engine per source tile, bounded at the
                 // time threshold. u32::MAX = unbounded.
-                let (tile_matrix, _st) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
-                    n_nodes,
-                    &up_adj,
-                    &down_rev,
-                    &block_seedsets,
-                    &tgt_seedsets,
-                    threshold,
-                );
+                let (tile_matrix, _st) =
+                    crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+                        n_nodes,
+                        &up_adj,
+                        &down_rev,
+                        &block_seedsets,
+                        &tgt_seedsets,
+                        threshold,
+                    );
 
                 let n_block_src = block_src_orig.len();
                 let n_block_dst = valid_dst.len();
