@@ -679,6 +679,26 @@ pub enum Commands {
         out: PathBuf,
     },
 
+    /// #524: export the engine's NBG edge list (u_osm, v_osm, way_id,
+    /// length_m) as parquet, so external speed producers resolve their
+    /// graphs onto the engine's offline and emit edge_speeds keyed by
+    /// the engine's own node pairs — boot matching by construction.
+    ExportEdges {
+        /// Path to a `*.butterfly` container.
+        #[arg(short, long)]
+        path: PathBuf,
+
+        /// Output parquet path.
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Optional raw-OSM-segment table output (eng_ord, seq, n_from,
+        /// n_to, seg_len_m, way_id) — segment-level resolution for
+        /// producers whose junctions aren't engine nodes (#524).
+        #[arg(long)]
+        segments: Option<PathBuf>,
+    },
+
     /// Issue #146: empirical sharing analysis between mode pairs in a
     /// `*.butterfly` container. Loads each mode's accessibility mask +
     /// filtered-EBG arc set + topology section header, computes node
@@ -2162,6 +2182,9 @@ impl Cli {
                 verify_full,
             } => crate::pack::inspect(&path, verify, verify_full),
             Commands::Unpack { path, out } => crate::pack::unpack(&path, &out),
+            Commands::ExportEdges { path, out, segments } => {
+                crate::pack::export_edges(&path, &out, segments.as_deref())
+            }
             Commands::TopologyDiff { path, modes } => {
                 crate::pack::topology_diff(&path, modes.as_deref())
             }

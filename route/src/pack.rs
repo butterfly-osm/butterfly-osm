@@ -1938,6 +1938,186 @@ pub struct ModePairDiff {
 ///   "pairs": [<ModePairDiff>...]
 /// }
 /// ```
+/// #524: dump the engine's undirected NBG edge list as parquet so speed
+/// producers can resolve THEIR graph onto OURS offline and emit
+/// edge_speeds rows keyed by the engine's own node pairs — the #454
+/// boot matcher then matches by construction instead of by luck.
+/// Columns: u_osm, v_osm (endpoint OSM node ids), way_id (the OSM way the
+/// edge was emitted from), length_m. File metadata carries the container
+/// identity so consumers can detect artifact drift.
+pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Result<()> {
+    use crate::formats::nbg_geo::NbgGeoFile;
+    use crate::formats::nbg_node_map::NbgNodeMapFile;
+    use arrow::array::{Float64Array, Int64Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use std::sync::Arc;
+
+    let c = Container::open(path)?;
+    let find = |name: &str| -> Result<&crate::formats::butterfly_dat::SectionEntry> {
+        c.sections
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow::anyhow!("container has no section '{name}'"))
+    };
+    let geo_sec = find("shared/nbg.geo")?;
+    let map_sec = find("shared/nbg.node_map")?;
+    let geo_bytes = c.read_section_verified(path, geo_sec)?;
+    let map_bytes = c.read_section_verified(path, map_sec)?;
+    let geo = if segments_out.is_some() {
+        NbgGeoFile::read_from_bytes(&geo_bytes)?
+    } else {
+        NbgGeoFile::read_edges_only_from_bytes(&geo_bytes)?
+    };
+    let node_map = NbgNodeMapFile::read_map_from_bytes(&map_bytes)?;
+    let max_compact = node_map
+        .mappings
+        .iter()
+        .map(|m| m.compact_id)
+        .max()
+        .unwrap_or(0);
+    let mut to_osm: Vec<i64> = vec![0; max_compact as usize + 1];
+    for m in &node_map.mappings {
+        to_osm[m.compact_id as usize] = m.osm_node_id;
+    }
+
+    let n = geo.edges.len();
+    let (mut u, mut v, mut w, mut l) = (
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+    );
+    let mut skipped = 0usize;
+    for e in &geo.edges {
+        let (ui, vi) = (e.u_node as usize, e.v_node as usize);
+        if ui >= to_osm.len() || vi >= to_osm.len() {
+            skipped += 1;
+            continue;
+        }
+        u.push(to_osm[ui]);
+        v.push(to_osm[vi]);
+        w.push(e.first_osm_way_id);
+        l.push(e.length_mm as f64 / 1000.0);
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("u_osm", DataType::Int64, false),
+        Field::new("v_osm", DataType::Int64, false),
+        Field::new("way_id", DataType::Int64, false),
+        Field::new("length_m", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(u)),
+            Arc::new(Int64Array::from(v)),
+            Arc::new(Int64Array::from(w)),
+            Arc::new(Float64Array::from(l)),
+        ],
+    )?;
+    let file = std::fs::File::create(out)?;
+    let mut meta = parquet::file::properties::WriterProperties::builder();
+    meta = meta.set_key_value_metadata(Some(vec![
+        parquet::file::metadata::KeyValue::new(
+            "container".to_string(),
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string(),
+        ),
+        parquet::file::metadata::KeyValue::new("nbg_edges".to_string(), n.to_string()),
+    ]));
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, Some(meta.build()))?;
+    writer.write(&batch)?;
+    writer.close()?;
+    println!(
+        "exported {} NBG edges ({} skipped) -> {}",
+        n - skipped,
+        skipped,
+        out.display()
+    );
+
+    // #524 v2: raw OSM segment table. The gdf's OSMnx junctions exist as
+    // engine NODES for only ~27% of them — but every one of them exists in
+    // the per-edge OSM id chains (1:1 with polyline vertices), so producers
+    // resolve paths at SEGMENT level and aggregate back to engine edges.
+    if let Some(seg_out) = segments_out {
+        use crate::formats::edge_osm::{EdgeOsmIdsFile, EdgeOsmOffsetsFile};
+        let off_sec = find("shared/edge_osm_offsets")?;
+        let ids_sec = find("shared/edge_osm_ids")?;
+        let off = EdgeOsmOffsetsFile::read_from_bytes(&c.read_section_verified(path, off_sec)?)?;
+        let ids = EdgeOsmIdsFile::read_from_bytes(&c.read_section_verified(path, ids_sec)?)?;
+        anyhow::ensure!(
+            off.offsets.len() == geo.edges.len() + 1,
+            "edge_osm_offsets covers {} edges, nbg.geo has {}",
+            off.offsets.len().saturating_sub(1),
+            geo.edges.len()
+        );
+        let hav = |la1: f64, lo1: f64, la2: f64, lo2: f64| -> f64 {
+            let r = 6_371_000.0f64;
+            let (p1, p2) = (la1.to_radians(), la2.to_radians());
+            let a = ((p2 - p1) / 2.0).sin().powi(2)
+                + p1.cos() * p2.cos() * ((lo2 - lo1).to_radians() / 2.0).sin().powi(2);
+            2.0 * r * a.sqrt().asin()
+        };
+        let (mut so, mut sq, mut sf, mut st, mut sl, mut sw) =
+            (vec![], vec![], vec![], vec![], vec![], vec![]);
+        let mut chainless = 0usize;
+        for (ei, e) in geo.edges.iter().enumerate() {
+            let (a, b) = (off.offsets[ei] as usize, off.offsets[ei + 1] as usize);
+            let chain = &ids.ids.as_slice()[a..b];
+            let poly = &geo.polylines[ei];
+            if chain.len() < 2 || poly.lat_fxp.len() != chain.len() {
+                chainless += 1;
+                continue;
+            }
+            for k in 0..chain.len() - 1 {
+                let l = hav(
+                    poly.lat_fxp[k] as f64 * 1e-7,
+                    poly.lon_fxp[k] as f64 * 1e-7,
+                    poly.lat_fxp[k + 1] as f64 * 1e-7,
+                    poly.lon_fxp[k + 1] as f64 * 1e-7,
+                );
+                so.push(ei as i64);
+                sq.push(k as i64);
+                sf.push(chain[k]);
+                st.push(chain[k + 1]);
+                sl.push(l);
+                sw.push(e.first_osm_way_id);
+            }
+        }
+        let n_segs = so.len();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("eng_ord", DataType::Int64, false),
+            Field::new("seq", DataType::Int64, false),
+            Field::new("n_from", DataType::Int64, false),
+            Field::new("n_to", DataType::Int64, false),
+            Field::new("seg_len_m", DataType::Float64, false),
+            Field::new("way_id", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(so)),
+                Arc::new(Int64Array::from(sq)),
+                Arc::new(Int64Array::from(sf)),
+                Arc::new(Int64Array::from(st)),
+                Arc::new(Float64Array::from(sl)),
+                Arc::new(Int64Array::from(sw)),
+            ],
+        )?;
+        let file = std::fs::File::create(seg_out)?;
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+        println!(
+            "exported {} raw OSM segments ({} chainless edges skipped) -> {}",
+            n_segs,
+            chainless,
+            seg_out.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn topology_diff(path: &Path, modes_arg: Option<&str>) -> Result<()> {
     let container =
         Container::open(path).with_context(|| format!("opening container {}", path.display()))?;
