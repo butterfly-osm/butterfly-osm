@@ -56,6 +56,8 @@ uplift spatial-CV R² 0.37/0.25). Flight band columns: follow-up on #521.
   duration p50 0.992 (was 1.020), corr 0.994 (was 0.963), MAPE 4.0 %
   (was 10.6 %); distance outliers 39 (max 80). Full gate PASS.
 
+### 2026-07-17 — Phantom endpoints, close-pair correctness, in-engine seeded matrices (#502–#517)
+
 The largest correctness campaign since the CCH landed, deployed fleet-wide
 and locked in by a new post-deploy gate:
 
