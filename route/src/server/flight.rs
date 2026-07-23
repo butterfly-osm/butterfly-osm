@@ -645,17 +645,23 @@ fn do_matrix(
         // #502 API-layer SeedExpansion (~(avg seeds)^2 engine cells).
         let _ = use_parallel; // seeded driver dispatches internally
         let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
-            let (m, lm, st) =
-                crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
+            let (m, lm, st) = {
+                // #527: 2-channel shape-aware router (plain weights).
+                let phast_ctx2 = mode_data
+                    .down_len_flat()
+                    .map(|dl| (&mode_data.down_adj_flat, dl, mode));
+                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
                     n_nodes,
                     up,
                     down,
                     up_lat,
                     dn_lat,
+                    phast_ctx2,
                     &src_seedsets,
                     &tgt_seedsets,
                     threshold,
-                );
+                )
+            };
             (m, Some(lm), st)
         } else {
             // #526 shape-aware router (duration-only, plain weights).

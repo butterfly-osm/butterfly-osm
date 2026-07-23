@@ -142,6 +142,10 @@ pub struct PhastState {
     current_gen: u32,
     /// Priority queue (reused across queries)
     pq: std::collections::BinaryHeap<std::cmp::Reverse<(u32, u32)>>,
+    /// #527: parallel length-along-time channel, co-stamped with `version`.
+    /// Empty until the first 2-channel query grows it — single-channel
+    /// isochrones never allocate or touch it.
+    len: Vec<u32>,
 }
 
 impl PhastState {
@@ -154,7 +158,33 @@ impl PhastState {
             n_blocks,
             current_gen: 0,
             pq: std::collections::BinaryHeap::with_capacity(n_nodes / 100),
+            len: Vec::new(),
         }
+    }
+
+    /// #527: ensure the length channel is allocated (2-channel path only).
+    #[inline]
+    fn ensure_len(&mut self) {
+        if self.len.len() != self.dist.len() {
+            self.len = vec![u32::MAX; self.dist.len()];
+        }
+    }
+    #[inline]
+    fn get_len(&self, node: usize) -> u32 {
+        if self.version[node] == self.current_gen {
+            self.len[node]
+        } else {
+            u32::MAX
+        }
+    }
+    /// Set BOTH channels (time primary, length carried). Marks version+block.
+    #[inline]
+    fn set_dist_len(&mut self, node: usize, dist: u32, len: u32) {
+        self.dist[node] = dist;
+        self.len[node] = len;
+        self.version[node] = self.current_gen;
+        let block_idx = node / PHAST_BLOCK_SIZE;
+        self.block_active[block_idx] = self.current_gen;
     }
 
     /// Start a new query (O(1) instead of O(n))
@@ -455,6 +485,113 @@ pub fn run_phast_bounded_fast_seeded(
                 "PHAST forward timing"
             );
 
+            result
+        })
+    })
+}
+
+/// #527: 2-channel seeded bounded PHAST — a length-along-time channel
+/// carried in lockstep with the time field (time primary, length follows
+/// the improving parent). Mirrors `run_phast_bounded_fast_seeded` exactly on
+/// the time side; the `*_len` flats share topology (identical offsets +
+/// targets, different weights) so index `i` aligns across both. Returns
+/// settled `(rank, time, len_along_time)`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_phast_bounded_fast_seeded_2ch(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat: &crate::matrix::bucket_ch::DownAdjFlat,
+    up_adj_flat_len: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat_len: &crate::matrix::bucket_ch::DownAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32, u32)> {
+    use std::cmp::Reverse;
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mode_idx = mode.index();
+    let cap = phast_mode_lru_cap();
+    PHAST_STATES.with(|cell| {
+        cell.with_or_init(PhastSlots::empty, |states| {
+            let state_slot = states.touch(mode_idx, cap);
+            let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
+            if state.dist.len() != n_nodes {
+                *state = PhastState::new(n_nodes);
+            }
+            state.start_query();
+            state.ensure_len();
+            for &(r, t, l) in seeds {
+                if t < state.get_dist(r as usize) {
+                    state.set_dist_len(r as usize, t, l);
+                }
+            }
+            // Phase 1: upward PQ (time-ordered), length carried.
+            for &(r, t, _) in seeds {
+                if state.get_dist(r as usize) == t {
+                    state.pq.push(Reverse((t, r)));
+                }
+            }
+            while let Some(Reverse((d, u))) = state.pq.pop() {
+                if d > threshold {
+                    break;
+                }
+                if d > state.get_dist(u as usize) {
+                    continue;
+                }
+                let lu = state.get_len(u as usize);
+                let up_start = up_adj_flat.offsets[u as usize] as usize;
+                let up_end = up_adj_flat.offsets[u as usize + 1] as usize;
+                for i in up_start..up_end {
+                    let v = up_adj_flat.targets[i] as usize;
+                    let new_t = d.saturating_add(up_adj_flat.weights.get(i));
+                    if new_t < state.get_dist(v) {
+                        let new_l = lu.saturating_add(up_adj_flat_len.weights.get(i));
+                        state.set_dist_len(v, new_t, new_l);
+                        state.pq.push(Reverse((new_t, v as u32)));
+                    }
+                }
+            }
+            // Phase 2: block-gated downward scan, length carried.
+            for block_idx in (0..state.n_blocks).rev() {
+                if !state.is_block_active(block_idx) {
+                    continue;
+                }
+                let block_start = block_idx * PHAST_BLOCK_SIZE;
+                let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
+                for rank in (block_start..block_end).rev() {
+                    let d_u = state.get_dist(rank);
+                    if d_u == u32::MAX || d_u > threshold {
+                        continue;
+                    }
+                    let l_u = state.get_len(rank);
+                    let down_start = down_adj_flat.offsets[rank] as usize;
+                    let down_end = down_adj_flat.offsets[rank + 1] as usize;
+                    for i in down_start..down_end {
+                        let v = down_adj_flat.targets[i] as usize;
+                        let new_t = d_u.saturating_add(down_adj_flat.weights.get(i));
+                        if new_t < state.get_dist(v) {
+                            let new_l = l_u.saturating_add(down_adj_flat_len.weights.get(i));
+                            state.set_dist_len(v, new_t, new_l);
+                        }
+                    }
+                }
+            }
+            // Collect within-threshold settled nodes with both channels.
+            let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            for block_idx in 0..state.n_blocks {
+                if !state.is_block_active(block_idx) {
+                    continue;
+                }
+                let block_start = block_idx * PHAST_BLOCK_SIZE;
+                let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
+                for rank in block_start..block_end {
+                    if state.version[rank] == state.current_gen {
+                        let d = state.dist[rank];
+                        if d <= threshold {
+                            result.push((rank as u32, d, state.len[rank]));
+                        }
+                    }
+                }
+            }
             result
         })
     })

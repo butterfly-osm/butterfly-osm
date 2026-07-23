@@ -742,17 +742,28 @@ pub async fn compute_table_bucket_m2m(
         // and the rayon-parallel path above it.
         // #415: the `_bounded` variant early-stops the time sweeps at
         // `threshold`; `u32::MAX` reproduces the unbounded result exactly.
-        let (time_mat, lat_mat, _stats) =
-            crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
-                n_nodes,
-                time_up,
-                time_down,
-                up_lat,
-                dn_lat,
-                &src_seedsets,
-                &tgt_seedsets,
-                threshold,
-            );
+        // #527: shape-aware router — plain-path 2-channel lopsided matrices
+        // ride the seeded-PHAST field (distance included); custom weights
+        // keep the 2-channel bucket. down_len_flat() builds the forward-down
+        // len flat lazily on first use.
+        let phast_ctx2 = if custom_weights.is_none() {
+            mode_data
+                .down_len_flat()
+                .map(|dl| (&mode_data.down_adj_flat, dl, mode))
+        } else {
+            None
+        };
+        let (time_mat, lat_mat, _stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+            n_nodes,
+            time_up,
+            time_down,
+            up_lat,
+            dn_lat,
+            phast_ctx2,
+            &src_seedsets,
+            &tgt_seedsets,
+            threshold,
+        );
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),

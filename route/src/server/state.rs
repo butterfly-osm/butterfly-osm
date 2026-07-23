@@ -163,11 +163,29 @@ pub struct ModeData {
     /// Reverse DOWN flat carrying length-along-time weights. See
     /// `up_adj_flat_len_along_time`.
     pub down_rev_flat_len_along_time: Option<DownReverseAdjFlat>,
+    /// #527: forward-DOWN len-along-time flat for the 2-channel lopsided
+    /// PHAST matrix plan. Built lazily on first duration+distance lopsided
+    /// query (modes that never serve one pay nothing) and cached per
+    /// ModeData instance — a freshly recustomized car rebuilds its own, so
+    /// weights never go stale. `None` inside means no len weights exist.
+    pub down_adj_flat_len_along_time_lazy: std::sync::OnceLock<Option<DownAdjFlat>>,
     // Cached exclude weight sets (keyed by exclude bitmask)
     pub exclude_cache: super::exclude::ExcludeWeightCache,
 }
 
 impl ModeData {
+    /// #527: forward-down len-along-time flat, built + cached on demand.
+    /// Returns None when this mode carries no len-along-time weights.
+    pub fn down_len_flat(&self) -> Option<&crate::matrix::bucket_ch::DownAdjFlat> {
+        self.down_adj_flat_len_along_time_lazy
+            .get_or_init(|| {
+                self.cch_weights_len_along_time
+                    .as_ref()
+                    .map(|w| crate::matrix::bucket_ch::DownAdjFlat::build(&self.cch_topo, w))
+            })
+            .as_ref()
+    }
+
     /// Borrow the `orig_to_rank` mapping as a flat slice. Equivalent
     /// to `&mode_data.orig_to_rank[..]`.
     #[inline]
@@ -1077,9 +1095,10 @@ impl ServerState {
 
         // Register container traffic-variants now that snap_index is
         // built. Each variant becomes a synthetic mode `<base>_<variant>`
-        // sharing topology, snap mask, dist + len_along_time flats with
-        // its base — only TIME flats are rebuilt against the variant's
-        // recustomised cch_weights.
+        // sharing topology, snap mask, and the physical dist flats with its
+        // base. The TIME flats AND the len-along-time flats are rebuilt
+        // against the variant's recustomised cch_weights (len-along-time is
+        // path-dependent, not traffic-invariant — #528).
         let mut snap_index = snap_index;
         for (base, variant) in &container_variants {
             let synthetic = format!("{}_{}", base, variant);
@@ -1163,28 +1182,63 @@ impl ServerState {
                     _ => None,
                 }
             };
-            // Rebuild only the TIME flats against the variant weights;
-            // dist + len_along_time flats keep their base bytes
-            // (distance semantics are mode-physical, not affected by
-            // variant speed factors).
+            // Rebuild the TIME flats against the variant weights. The dist
+            // channel stays cloned (physical, traffic-invariant). The
+            // len-along-time channel is NOT traffic-invariant (#528): it is
+            // the physical length along the TIME-optimal path, and the
+            // variant's different time weights move the optimal middles, so
+            // the base bytes describe the WRONG (clean-car) paths. Recompute
+            // it from the variant's own middles, mirroring
+            // `refresh_len_along_time` on the boot-recustomization sites. If
+            // the baked variant section carries no middles we cannot
+            // recompute — fall back to the base clone and warn (the pre-#528
+            // shape, kept only as a non-panicking degradation).
             let up_adj_flat =
                 UpAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
             let down_rev_flat =
                 DownReverseAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
             let down_adj_flat = DownAdjFlat::build(&base_data.cch_topo, &variant_cch_weights);
+            let effective_node_weights: std::borrow::Cow<'static, [u32]> = adjusted_node_weights
+                .map(std::borrow::Cow::Owned)
+                .unwrap_or_else(|| base_data.node_weights.clone());
+            let n_up = base_data.cch_topo.up_targets.len();
+            let (lat_weights, lat_flat_up, lat_flat_down) =
+                if base_data.cch_weights_len_along_time.is_some()
+                    && variant_cch_weights.up_middle.len() == n_up
+                {
+                    refresh_len_along_time(
+                        base_data,
+                        &ebg_nodes,
+                        &variant_cch_weights,
+                        &effective_node_weights,
+                    )
+                } else {
+                    if base_data.cch_weights_len_along_time.is_some() {
+                        tracing::warn!(
+                            base = base.as_str(),
+                            variant = variant.as_str(),
+                            "container traffic variant: baked weights carry no middles; \
+                             len-along-time distance channel falls back to base and may \
+                             diverge from /route (#528)"
+                        );
+                    }
+                    (
+                        base_data.cch_weights_len_along_time.clone(),
+                        base_data.up_adj_flat_len_along_time.clone(),
+                        base_data.down_rev_flat_len_along_time.clone(),
+                    )
+                };
             let variant_data = ModeData {
                 mode: base_data.mode,
                 cch_topo: base_data.cch_topo.clone(),
                 cch_weights: variant_cch_weights,
                 cch_weights_dist: base_data.cch_weights_dist.clone(),
-                cch_weights_len_along_time: base_data.cch_weights_len_along_time.clone(),
+                cch_weights_len_along_time: lat_weights,
                 orig_to_rank: base_data.orig_to_rank.clone(),
                 filtered_to_original: base_data.filtered_to_original.clone(),
                 n_filtered_nodes: base_data.n_filtered_nodes,
                 n_original_nodes: base_data.n_original_nodes,
-                node_weights: adjusted_node_weights
-                    .map(std::borrow::Cow::Owned)
-                    .unwrap_or_else(|| base_data.node_weights.clone()),
+                node_weights: effective_node_weights,
                 mask: base_data.mask.clone(),
                 has_outbound: base_data.has_outbound.clone(),
                 has_inbound: base_data.has_inbound.clone(),
@@ -1194,8 +1248,9 @@ impl ServerState {
                 up_adj_flat_dist: base_data.up_adj_flat_dist.clone(),
                 down_rev_flat_dist: base_data.down_rev_flat_dist.clone(),
                 down_adj_flat_dist: base_data.down_adj_flat_dist.clone(),
-                up_adj_flat_len_along_time: base_data.up_adj_flat_len_along_time.clone(),
-                down_rev_flat_len_along_time: base_data.down_rev_flat_len_along_time.clone(),
+                up_adj_flat_len_along_time: lat_flat_up,
+                down_rev_flat_len_along_time: lat_flat_down,
+                down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
                 exclude_cache: super::exclude::ExcludeWeightCache::default(),
             };
             let new_index = modes_data.len();
@@ -1885,15 +1940,17 @@ impl ServerState {
         let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
 
-        // 5. Assemble the recustomized car ModeData — distance / length-along-time
-        // are physical and unchanged by traffic, so they (and topology + the
-        // mapping sections) are cloned from the base.
+        // 5. #528: recompute len-along-time from the NEW time middles (length
+        // along the RECUSTOMIZED time-shortest path). Distance-shortest
+        // (cch_weights_dist) IS physical/traffic-invariant and stays cloned.
+        let (lat_weights, lat_flat_up, lat_flat_down) =
+            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
         let new_car = ModeData {
             mode: base.mode,
             cch_topo: base.cch_topo.clone(),
             cch_weights: new_weights,
             cch_weights_dist: base.cch_weights_dist.clone(),
-            cch_weights_len_along_time: base.cch_weights_len_along_time.clone(),
+            cch_weights_len_along_time: lat_weights,
             orig_to_rank: base.orig_to_rank.clone(),
             filtered_to_original: base.filtered_to_original.clone(),
             n_filtered_nodes: base.n_filtered_nodes,
@@ -1908,8 +1965,9 @@ impl ServerState {
             up_adj_flat_dist: base.up_adj_flat_dist.clone(),
             down_rev_flat_dist: base.down_rev_flat_dist.clone(),
             down_adj_flat_dist: base.down_adj_flat_dist.clone(),
-            up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
-            down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
+            up_adj_flat_len_along_time: lat_flat_up,
+            down_rev_flat_len_along_time: lat_flat_down,
+            down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
             exclude_cache: super::exclude::ExcludeWeightCache::default(),
         };
 
@@ -2255,12 +2313,19 @@ impl ServerState {
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        // #528: recompute len-along-time from THIS variant's new time middles.
+        let (lat_w, lat_up, lat_dn) =
+            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
         let mut rush = clone_mode_data(&base);
         rush.cch_weights = new_weights;
         rush.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
         rush.up_adj_flat = up_adj_flat;
         rush.down_rev_flat = down_rev_flat;
         rush.down_adj_flat = down_adj_flat;
+        rush.cch_weights_len_along_time = lat_w;
+        rush.up_adj_flat_len_along_time = lat_up;
+        rush.down_rev_flat_len_along_time = lat_dn;
+        rush.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
 
         let new_index = self.modes.len();
         let slot = ModeSlot::new_loaded_variant("car_rush_hour".to_string(), rush);
@@ -2338,12 +2403,19 @@ impl ServerState {
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        // #528: recompute len-along-time from THIS variant's new time middles.
+        let (lat_w, lat_up, lat_dn) =
+            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
         let mut eq = clone_mode_data(&base);
         eq.cch_weights = new_weights;
         eq.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
         eq.up_adj_flat = up_adj_flat;
         eq.down_rev_flat = down_rev_flat;
         eq.down_adj_flat = down_adj_flat;
+        eq.cch_weights_len_along_time = lat_w;
+        eq.up_adj_flat_len_along_time = lat_up;
+        eq.down_rev_flat_len_along_time = lat_dn;
+        eq.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
 
         let new_index = self.modes.len();
         let slot = ModeSlot::new_loaded_variant("car_eq".to_string(), eq);
@@ -2426,12 +2498,19 @@ impl ServerState {
             let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
             let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
             let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+            // #528: recompute len-along-time from THIS variant's new time middles.
+            let (lat_w, lat_up, lat_dn) =
+                refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
             let mut band = clone_mode_data(&base);
             band.cch_weights = new_weights;
             band.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
             band.up_adj_flat = up_adj_flat;
             band.down_rev_flat = down_rev_flat;
             band.down_adj_flat = down_adj_flat;
+            band.cch_weights_len_along_time = lat_w;
+            band.up_adj_flat_len_along_time = lat_up;
+            band.down_rev_flat_len_along_time = lat_dn;
+            band.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
 
             let new_index = self.modes.len();
             let slot = ModeSlot::new_loaded_variant(slot_name.to_string(), band);
@@ -2498,12 +2577,19 @@ impl ServerState {
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
         let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+        // #528: recompute len-along-time from THIS variant's new time middles.
+        let (lat_w, lat_up, lat_dn) =
+            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
         let mut new_car = clone_mode_data(&base);
         new_car.cch_weights = new_weights;
         new_car.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
         new_car.up_adj_flat = up_adj_flat;
         new_car.down_rev_flat = down_rev_flat;
         new_car.down_adj_flat = down_adj_flat;
+        new_car.cch_weights_len_along_time = lat_w;
+        new_car.up_adj_flat_len_along_time = lat_up;
+        new_car.down_rev_flat_len_along_time = lat_dn;
+        new_car.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
         let slot = &self.modes[car_idx];
         {
             let mut w = slot.state.write();
@@ -2874,6 +2960,7 @@ fn load_traffic_variant_mode_data(
         down_adj_flat_dist: base.down_adj_flat_dist.clone(),
         up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
         down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
+        down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
         exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
@@ -2996,6 +3083,7 @@ fn load_mode_data(
         down_adj_flat_dist,
         up_adj_flat_len_along_time,
         down_rev_flat_len_along_time,
+        down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
         exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
@@ -4073,6 +4161,7 @@ fn load_mode_data_from_bundle(
         down_adj_flat_dist,
         up_adj_flat_len_along_time,
         down_rev_flat_len_along_time,
+        down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
         exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
 }
@@ -4336,6 +4425,38 @@ fn try_load_edge_geometry(
 /// heavy field is Arc/mmap-backed (ArcCow / WeightArray / flats borrowed from
 /// the container mapping); only small Vecs copy. Used to register
 /// `car_freeflow` as an alias of the pre-recustomization base car.
+/// #528: rebuild the (Option) len-along-time weights + flats for a car-family
+/// mode whose TIME weights were just recustomized. The base build-time lat
+/// describes the CLEAN paths; the new time middles describe the recustomized
+/// paths, so the length that belongs to the served duration is recomputed
+/// from those middles (physical lengths are traffic-invariant). Returns
+/// cloned-None when the mode carries no lat weights (old container).
+fn refresh_len_along_time(
+    base: &ModeData,
+    ebg_nodes: &EbgNodes,
+    new_time: &crate::formats::CchWeights,
+    node_weights_time: &[u32],
+) -> (
+    Option<crate::formats::CchWeights>,
+    Option<UpAdjFlat>,
+    Option<DownReverseAdjFlat>,
+) {
+    if base.cch_weights_len_along_time.is_none() {
+        return (None, None, None);
+    }
+    let lat = crate::customization::recompute_len_along_time_from_middles(
+        &base.cch_topo,
+        &base.filtered_to_original,
+        ebg_nodes,
+        node_weights_time,
+        new_time.up_middle.as_ref(),
+        new_time.down_middle.as_ref(),
+    );
+    let up = UpAdjFlat::build(&base.cch_topo, &lat);
+    let down_rev = DownReverseAdjFlat::build(&base.cch_topo, &lat);
+    (Some(lat), Some(up), Some(down_rev))
+}
+
 fn clone_mode_data(base: &ModeData) -> ModeData {
     ModeData {
         mode: base.mode,
@@ -4359,6 +4480,7 @@ fn clone_mode_data(base: &ModeData) -> ModeData {
         down_adj_flat_dist: base.down_adj_flat_dist.clone(),
         up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
         down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
+        down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
         exclude_cache: super::exclude::ExcludeWeightCache::default(),
     }
 }
