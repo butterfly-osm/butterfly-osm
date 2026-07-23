@@ -1483,6 +1483,33 @@ const EDGE_RATIO_ALIASES: &[&str] = &["speed_ratio", "ratio", "congestion_factor
 /// `(osm_node_from i64, osm_node_to i64, speed_kmh double)`.
 /// Rows with nulls or non-positive/absurd speeds (outside (0, 200] km/h)
 /// are skipped with a tally — a malformed table degrades, never aborts.
+/// #524: optional global end-to-end time scale carried in the table's
+/// parquet key-value metadata (`time_scale`). Applied by the recustomizer to
+/// LINK weights AND turn penalties, so producer-measured level anchors
+/// propagate exactly (scaling only ratios reaches ~55% per pass and warps
+/// structure — the #481 transform leaves turns unscaled). Generic contract:
+/// any producer may set it; absent -> 1.0.
+pub fn read_time_scale(path: &Path) -> Result<Option<f64>> {
+    use parquet::file::reader::FileReader;
+    let f = std::fs::File::open(path)?;
+    let r = parquet::file::serialized_reader::SerializedFileReader::new(f)?;
+    let md = r.metadata().file_metadata();
+    if let Some(kvs) = md.key_value_metadata() {
+        for kv in kvs {
+            if kv.key == "time_scale"
+                && let Some(v) = kv.value.as_ref().and_then(|v| v.parse::<f64>().ok())
+            {
+                anyhow::ensure!(
+                    (0.5..=2.0).contains(&v),
+                    "time_scale {v} outside sanity range [0.5, 2.0]"
+                );
+                return Ok(Some(v));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 

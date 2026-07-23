@@ -1983,6 +1983,7 @@ impl ServerState {
         } else {
             // 1. Read the table + build the directed lookup.
             let rows = crate::calibrate::read_edge_speeds(edge_speeds_path)?;
+            let time_scale = crate::calibrate::read_time_scale(edge_speeds_path)?.unwrap_or(1.0);
             anyhow::ensure!(!rows.is_empty(), "edge recustomize: empty table");
             // Values are either absolute km/h or base-speed ratios —
             // read_edge_speeds enforces exactly one column type per table.
@@ -2092,6 +2093,21 @@ impl ServerState {
                     matched += 1;
                 }
             }
+            // #524: global end-to-end level anchor — scale link weights AND
+            // turn penalties so producer-measured levels propagate exactly
+            // (input-ratio scaling reaches ~55%/pass and erodes rank
+            // correlation because turns stay fixed).
+            if (time_scale - 1.0).abs() > 1e-6 {
+                for w in weights.iter_mut() {
+                    if *w != 0 {
+                        *w = ((*w as f64) * time_scale).round().max(1.0) as u32;
+                    }
+                }
+                tracing::info!(
+                    time_scale,
+                    "edge recustomize: applied global time scale (#524)"
+                );
+            }
             tracing::info!(
                 rows = rows.len(),
                 matched,
@@ -2125,11 +2141,28 @@ impl ServerState {
                 let bytes = &mmap[entry.offset as usize..(entry.offset + entry.len) as usize];
                 crate::formats::mod_turns::read_all_from_bytes(bytes)?
             };
+            let scaled_turns: Vec<u32>;
+            let turn_penalties: &[u32] = if (time_scale - 1.0).abs() > 1e-6 {
+                scaled_turns = turns
+                    .penalties
+                    .iter()
+                    .map(|&p| {
+                        if p == u32::MAX {
+                            p // forbidden-turn sentinel stays forbidden
+                        } else {
+                            ((p as f64) * time_scale).round() as u32
+                        }
+                    })
+                    .collect();
+                &scaled_turns
+            } else {
+                &turns.penalties
+            };
             let (new_weights, adjusted) = crate::customization::customize_cch_time_in_memory(
                 &base.cch_topo,
                 &filtered_ebg,
                 &weights,
-                &turns.penalties,
+                turn_penalties,
                 &self.ebg_nodes,
                 None,
             )?;
@@ -2189,7 +2222,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-rush.v2.bin",
+                "recustomize_cache.car-edge-rush.v3.bin",
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2271,7 +2304,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-eq.v2.bin",
+                "recustomize_cache.car-edge-eq.v3.bin",
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2328,7 +2361,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge.v2.bin",
+                "recustomize_cache.car-edge.v3.bin",
             )?;
 
         // 4. Flats + swap + pin (same as the per-way path).
@@ -4215,7 +4248,7 @@ const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
 /// `None` (unreadable parquet) disables the cache for this boot.
 fn recustomize_edge_cache_key(path: &std::path::Path, car_weights_crc: u64) -> Option<u64> {
     let mut d = crate::formats::crc::Digest::new();
-    d.update(b"recustomize-car-edge-v1");
+    d.update(b"recustomize-car-edge-v3"); // v3: #524 global time_scale (links + turns)
     d.update(&std::fs::read(path).ok()?);
     d.update(&car_weights_crc.to_le_bytes());
     Some(d.finalize())
