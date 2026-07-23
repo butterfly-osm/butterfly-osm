@@ -352,11 +352,13 @@ def gate_edges_batch(base):
     passed = True
     for idx, f in enumerate(FIXTURES):
         got = sums.get(idx)
-        exp = f[5]
-        # sum >= route (full edges) but within +45% (2 extra rural edge
+        # Invariant, no stored constant: the per-edge sum must agree with the
+        # LIVE /route duration for the same pair — >= route (edges are whole,
+        # the route clips partials) but within +45% (2 extra rural edge
         # halves); the #502 detour fingerprint was 2-3.5x.
+        exp, _ = route(base, f[1], f[2], f[3], f[4])
         ok = got is not None and exp * 0.9 <= got <= exp * 1.45
-        passed &= check(f"{f[0]} edges", ok, f"sum {got:.0f}s (route {exp}s)" if got else "no rows")
+        passed &= check(f"{f[0]} edges", ok, f"sum {got:.0f}s (route {exp:.0f}s)" if got else "no rows")
     return passed
 
 
