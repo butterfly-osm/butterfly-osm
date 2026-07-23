@@ -388,3 +388,138 @@ impl SpatialIndex {
         self.tree.locate_in_envelope(&envelope)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pure-math + synthetic-index unit tests. `compute_bearing`,
+    //! `bearing_matches` and `distance_meters` are exact functions of their
+    //! inputs; the snap tests build a tiny R-tree over hand-placed polyline
+    //! vertices (no Belgium data) and assert the meter cutoff, mask rejection
+    //! and per-edge dedup.
+    use super::*;
+    use crate::formats::ArcCow;
+    use crate::formats::ebg_nodes::{EbgNode, EbgNodes};
+    use crate::formats::nbg_geo::{NbgGeo, PolyLine};
+
+    // --- pure trig / distance ----------------------------------------------
+
+    #[test]
+    fn compute_bearing_is_zero_north_and_clockwise_through_the_cardinals() {
+        // Bearing convention: 0 = North (increasing lat), clockwise. The four
+        // cardinal directions are exact regardless of the lat/lon metre
+        // scaling because each has one zero component.
+        let n = SpatialIndex::compute_bearing(50.0, 4.0, 51.0, 4.0); // +lat
+        let e = SpatialIndex::compute_bearing(50.0, 4.0, 50.0, 5.0); // +lon
+        let s = SpatialIndex::compute_bearing(50.0, 4.0, 49.0, 4.0); // -lat
+        let w = SpatialIndex::compute_bearing(50.0, 4.0, 50.0, 3.0); // -lon
+        assert_eq!(n, 0, "north");
+        assert_eq!(e, 90, "east");
+        assert_eq!(s, 180, "south");
+        assert_eq!(w, 270, "west");
+    }
+
+    #[test]
+    fn distance_meters_matches_the_per_degree_scaling_and_is_zero_at_a_point() {
+        // One degree of latitude = METERS_PER_DEG_LAT; one degree of longitude
+        // (at the ~50N constant) = METERS_PER_DEG_LON_AT_50; a point to itself
+        // is 0.
+        let dlat = SpatialIndex::distance_meters(4.0, 50.0, 4.0, 51.0);
+        assert!(
+            (dlat - METERS_PER_DEG_LAT).abs() < 1e-6,
+            "1 deg lat, got {dlat}"
+        );
+        let dlon = SpatialIndex::distance_meters(4.0, 50.0, 5.0, 50.0);
+        assert!(
+            (dlon - METERS_PER_DEG_LON_AT_50).abs() < 1e-6,
+            "1 deg lon, got {dlon}"
+        );
+        assert_eq!(SpatialIndex::distance_meters(4.0, 50.0, 4.0, 50.0), 0.0);
+    }
+
+    // --- synthetic index / snap --------------------------------------------
+
+    /// Build an `(EbgNodes, NbgGeo)` from a list of edges, each a list of
+    /// (lat_deg, lon_deg) polyline vertices. `geom_idx == edge index`.
+    fn synth(edges: &[&[(f64, f64)]]) -> (EbgNodes, NbgGeo) {
+        let mut nodes = Vec::new();
+        let mut polylines = Vec::new();
+        for (i, verts) in edges.iter().enumerate() {
+            nodes.push(EbgNode {
+                tail_nbg: 0,
+                head_nbg: 0,
+                geom_idx: i as u32,
+                length_m: 100,
+                class_bits: 0,
+                primary_way: 0,
+            });
+            polylines.push(PolyLine {
+                lat_fxp: verts.iter().map(|v| (v.0 * 1e7).round() as i32).collect(),
+                lon_fxp: verts.iter().map(|v| (v.1 * 1e7).round() as i32).collect(),
+            });
+        }
+        let ebg = EbgNodes {
+            n_nodes: edges.len() as u32,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(nodes),
+        };
+        let nbg = NbgGeo {
+            n_edges_und: edges.len() as u64,
+            edges: Vec::new(), // build_inner only reads polylines
+            polylines,
+        };
+        (ebg, nbg)
+    }
+
+    #[test]
+    fn snap_returns_the_nearest_edge_and_snap_k_dedups_and_sorts_by_metres() {
+        // edge0 ~14 m from the query, edge1 ~700 m. Both < 5 km cutoff.
+        let (ebg, nbg) = synth(&[
+            &[(50.0, 4.0), (50.0, 4.0005)],  // near
+            &[(50.0, 4.01), (50.0, 4.0105)], // ~700 m east
+        ]);
+        let idx = SpatialIndex::build(&ebg, &nbg);
+        let mask = vec![0b11u64]; // both accessible
+
+        assert_eq!(
+            idx.snap_unfiltered(4.0002, 50.0),
+            Some(0),
+            "nearest is edge0"
+        );
+
+        let k = idx.snap_k_with_info(4.0002, 50.0, &mask, 8);
+        assert_eq!(
+            k.len(),
+            2,
+            "each distinct edge appears exactly once (deduped)"
+        );
+        assert_eq!(k[0].0, 0, "sorted by metre distance: edge0 first");
+        assert_eq!(k[1].0, 1, "edge1 second");
+        assert!(k[0].3 < k[1].3, "distances strictly increasing");
+        assert!(k[0].3 < 50.0, "edge0 is within ~14 m");
+    }
+
+    #[test]
+    fn snap_skips_masked_out_edges_via_the_rejection_loop() {
+        // Same geometry, but the mask clears edge0 (bit 0). The nearest
+        // ACCESSIBLE edge is edge1, so snap must walk past edge0's closer
+        // vertices — the #116 rejection loop.
+        let (ebg, nbg) = synth(&[
+            &[(50.0, 4.0), (50.0, 4.0005)],
+            &[(50.0, 4.01), (50.0, 4.0105)],
+        ]);
+        let idx = SpatialIndex::build(&ebg, &nbg);
+        let mask_no_edge0 = vec![0b10u64];
+        assert_eq!(idx.snap(4.0002, 50.0, &mask_no_edge0, 8), Some(1));
+    }
+
+    #[test]
+    fn snap_rejects_points_beyond_the_max_snap_distance() {
+        // The only edge sits ~71 km east — well past MAX_SNAP_DISTANCE_M (5 km)
+        // — so a query near lon 4.0 must fail to snap.
+        let (ebg, nbg) = synth(&[&[(50.0, 5.0), (50.0, 5.0005)]]);
+        let idx = SpatialIndex::build(&ebg, &nbg);
+        assert_eq!(idx.snap_unfiltered(4.0, 50.0), None);
+        assert!(idx.snap_k_with_info(4.0, 50.0, &[0b1u64], 8).is_empty());
+    }
+}

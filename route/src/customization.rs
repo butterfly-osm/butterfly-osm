@@ -2094,6 +2094,24 @@ mod len_along_time_middle_tests {
     }
 
     #[test]
+    fn pack_wm_is_a_bijection_and_orders_by_weight_then_middle() {
+        // pack_wm must (1) round-trip both fields exactly and (2) put the
+        // weight in the high 32 bits so a `<` / fetch_min on the packed u64
+        // minimises weight first, breaking ties on the middle. Both facts are
+        // load-bearing: triangle relaxation and the exclude recustomization
+        // pick the lex-smallest (weight, middle) via this single comparison.
+        for (w, m) in [(0u32, 0u32), (1, 7), (72, 3), (u32::MAX, 0), (5, u32::MAX)] {
+            let p = pack_wm(w, m);
+            assert_eq!(unpack_weight(p), w, "weight must round-trip");
+            assert_eq!(unpack_middle(p), m, "middle must round-trip");
+        }
+        // Smaller weight wins regardless of middle.
+        assert!(pack_wm(10, u32::MAX) < pack_wm(11, 0));
+        // Equal weight -> smaller middle wins (deterministic tie-break).
+        assert!(pack_wm(10, 3) < pack_wm(10, 4));
+    }
+
+    #[test]
     fn unchanged_middles_reproduce_the_same_len_bit_for_bit() {
         // The other half of the contract: feeding the SAME middles twice is
         // deterministic and byte-identical (so refresh with unchanged time

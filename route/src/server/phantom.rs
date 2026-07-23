@@ -115,7 +115,9 @@ impl PhantomEnd {
 
 /// Project (lon, lat) onto the edge's stored polyline; return the arc-length
 /// fraction of the closest point along the STORED direction, in [0, 1].
-fn projection_fraction(
+// `pub(crate)` only so the unit tests below can pin the geometry directly;
+// behavior is unchanged.
+pub(crate) fn projection_fraction(
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
     ebg_id: u32,
@@ -562,5 +564,354 @@ pub fn isochrone_center_seeds(
             (seeds, anchor)
         }
         None => (vec![(fallback_rank, 0)], None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure-geometry / pure-arithmetic unit tests for the phantom-endpoint
+    //! construction. No server, no Belgium container: `projection_fraction`
+    //! runs on a hand-built single-edge geometry with exactly derivable
+    //! expected fractions, `query_seeds_and_shift` and `SeedExpansion` run on
+    //! plain in-memory structs.
+    use super::*;
+    use crate::formats::ArcCow;
+    use crate::formats::ebg_nodes::{EbgNode, EbgNodes};
+    use crate::formats::edge_geom::{EdgeGeomOffsets, EdgeGeomPoints};
+    use crate::server::edge_geom::EdgeGeometry;
+    use crate::server::types::SnapRole;
+
+    /// Build a one-edge `(EbgNodes, EdgeGeometry)` from a polyline of
+    /// (lon_deg, lat_deg) vertices. The single EBG node has `geom_idx == 0`.
+    fn single_edge(pts_deg: &[(f64, f64)]) -> (EbgNodes, EdgeGeometry) {
+        let n = pts_deg.len() as u32;
+        let mut flat: Vec<i32> = Vec::with_capacity(pts_deg.len() * 2);
+        for &(lon, lat) in pts_deg {
+            flat.push((lon * 1e7).round() as i32);
+            flat.push((lat * 1e7).round() as i32);
+        }
+        let min_lon = pts_deg
+            .iter()
+            .map(|p| (p.0 * 1e7).round() as i32)
+            .min()
+            .unwrap_or(0);
+        let max_lon = pts_deg
+            .iter()
+            .map(|p| (p.0 * 1e7).round() as i32)
+            .max()
+            .unwrap_or(0);
+        let min_lat = pts_deg
+            .iter()
+            .map(|p| (p.1 * 1e7).round() as i32)
+            .min()
+            .unwrap_or(0);
+        let max_lat = pts_deg
+            .iter()
+            .map(|p| (p.1 * 1e7).round() as i32)
+            .max()
+            .unwrap_or(0);
+        let off = EdgeGeomOffsets {
+            n_edges: 1,
+            n_points: n,
+            offsets: ArcCow::from_vec(vec![0u32, n]),
+        };
+        let points = EdgeGeomPoints {
+            n_points: n,
+            bbox_min_lon: min_lon,
+            bbox_min_lat: min_lat,
+            bbox_max_lon: max_lon,
+            bbox_max_lat: max_lat,
+            points: ArcCow::from_vec(flat),
+        };
+        let geom = EdgeGeometry::from_sections(off, points).unwrap();
+        let node = EbgNode {
+            tail_nbg: 0,
+            head_nbg: 0,
+            geom_idx: 0,
+            length_m: 100,
+            class_bits: 0,
+            primary_way: 0,
+        };
+        let ebg = EbgNodes {
+            n_nodes: 1,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(vec![node]),
+        };
+        (ebg, geom)
+    }
+
+    // --- projection_fraction ------------------------------------------------
+
+    #[test]
+    fn projection_fraction_endpoints_and_midpoint_of_straight_segment() {
+        // Horizontal edge at lat=0 from lon 0 -> lon 1. At lat=0 the planar
+        // metres/degree in lon is constant, so arc length is exactly linear
+        // in lon and the fractions are hand-derivable.
+        let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
+
+        let (f_start, int_start) = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
+        assert!(
+            f_start.abs() < 1e-9,
+            "start vertex -> fraction 0, got {f_start}"
+        );
+        assert!(
+            !int_start,
+            "an endpoint projection is CLAMPED, not interior"
+        );
+
+        let (f_end, int_end) = projection_fraction(&ebg, &geom, 0, 1.0, 0.0);
+        assert!(
+            (f_end - 1.0).abs() < 1e-9,
+            "end vertex -> fraction 1, got {f_end}"
+        );
+        assert!(!int_end, "an endpoint projection is CLAMPED, not interior");
+
+        let (f_mid, int_mid) = projection_fraction(&ebg, &geom, 0, 0.5, 0.0);
+        assert!(
+            (f_mid - 0.5).abs() < 1e-9,
+            "midpoint -> fraction 0.5, got {f_mid}"
+        );
+        assert!(int_mid, "a mid-edge projection IS interior");
+    }
+
+    #[test]
+    fn projection_fraction_is_clamped_to_unit_interval_past_the_ends() {
+        // A point beyond the head projects onto the head (fraction 1); a point
+        // before the tail projects onto the tail (fraction 0). Both are the
+        // clamp behaviour the seed math relies on (no negative / >1 partials).
+        let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
+        let (f_past, _) = projection_fraction(&ebg, &geom, 0, 5.0, 0.0);
+        assert!(
+            (f_past - 1.0).abs() < 1e-9,
+            "past-the-end clamps to 1, got {f_past}"
+        );
+        let (f_before, _) = projection_fraction(&ebg, &geom, 0, -3.0, 0.0);
+        assert!(
+            f_before.abs() < 1e-9,
+            "before-the-start clamps to 0, got {f_before}"
+        );
+    }
+
+    #[test]
+    fn projection_fraction_perpendicular_offset_does_not_move_the_fraction() {
+        // A point off to the side of the midpoint still projects to the
+        // midpoint: the arc-length fraction is unchanged (0.5), only the
+        // squared distance grows. Locks the "project onto, not snap-to-vertex"
+        // property.
+        let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
+        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.5, 0.01);
+        assert!(
+            (f - 0.5).abs() < 1e-6,
+            "perpendicular offset keeps fraction 0.5, got {f}"
+        );
+        assert!(interior);
+    }
+
+    #[test]
+    fn projection_fraction_uses_arc_length_not_vertex_index() {
+        // Three collinear vertices with UNEQUAL segment lengths: lon 0, 0.001,
+        // 0.003 (seg1 length : seg2 length = 1 : 2, total = 3 units). A query
+        // at lon 0.002 is the midpoint of seg2, so its arc length is
+        // seg1 + 0.5*seg2 = 1 + 1 = 2 units -> fraction 2/3. A vertex-index
+        // scheme would wrongly report 0.75 (3/4 of the way past vertex index).
+        let (ebg, geom) = single_edge(&[(0.0, 0.0), (0.001, 0.0), (0.003, 0.0)]);
+        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.002, 0.0);
+        assert!(
+            (f - 2.0 / 3.0).abs() < 1e-6,
+            "arc-length fraction must be 2/3, got {f}"
+        );
+        assert!(interior);
+    }
+
+    #[test]
+    fn projection_fraction_degenerate_single_point_polyline() {
+        // A polyline with <2 vertices has no direction; the function returns
+        // the documented (0.5, false) sentinel rather than dividing by zero.
+        let (ebg, geom) = single_edge(&[(0.0, 0.0)]);
+        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
+        assert!(
+            (f - 0.5).abs() < 1e-12,
+            "single-point sentinel fraction is 0.5"
+        );
+        assert!(!interior);
+    }
+
+    // --- PhantomEnd::query_seeds_and_shift ----------------------------------
+
+    fn seed(ebg_id: u32, rank: u32, part_time: u32, direct_ok: bool) -> PhantomSeed {
+        PhantomSeed {
+            ebg_id,
+            rank,
+            part_time,
+            part_len: part_time, // irrelevant to the time-channel tests
+            frac: 0.0,
+            direct_ok,
+        }
+    }
+
+    fn phantom(seeds: Vec<PhantomSeed>) -> PhantomEnd {
+        PhantomEnd {
+            primary_ebg: seeds[0].ebg_id,
+            seeds,
+            snapped_lon: 0.0,
+            snapped_lat: 0.0,
+            snap_distance_m: 0.0,
+        }
+    }
+
+    #[test]
+    fn source_seeds_are_the_raw_partials_with_zero_shift() {
+        // A SOURCE label seeds each directed edge with the REMAINDER cost to
+        // its head (`part_time`) and needs no shift.
+        let pe = phantom(vec![seed(0, 10, 30, true), seed(1, 11, 70, true)]);
+        for role in [SnapRole::Src, SnapRole::Either] {
+            let (seeds, shift) = pe.query_seeds_and_shift(role);
+            assert_eq!(shift, 0, "source role carries no shift");
+            assert_eq!(seeds, vec![(10, 30), (11, 70)]);
+        }
+    }
+
+    #[test]
+    fn dst_seeds_shift_by_the_max_suffix_so_every_cost_is_nonnegative() {
+        // A DESTINATION label overpays `suffix = part_time` on the target
+        // edge. Negative seeds aren't representable, so the encoding uses
+        // cost = shift - part_time with shift = max part_time. Invariants:
+        //   * shift == max(part_time)
+        //   * the deepest-suffix seed encodes to cost 0
+        //   * cost + part_time == shift for EVERY seed (the caller subtracts
+        //     shift from the final best to recover the true suffix reduction)
+        let parts = [30u32, 70, 55];
+        let pe = phantom(vec![
+            seed(0, 10, parts[0], true),
+            seed(1, 11, parts[1], true),
+            seed(2, 12, parts[2], true),
+        ]);
+        let (seeds, shift) = pe.query_seeds_and_shift(SnapRole::Dst);
+        assert_eq!(shift, 70, "shift is the max suffix");
+        assert_eq!(seeds[1], (11, 0), "the max-suffix seed encodes to cost 0");
+        for (i, &(rank, cost)) in seeds.iter().enumerate() {
+            assert_eq!(rank, 10 + i as u32);
+            assert_eq!(
+                cost + parts[i],
+                shift,
+                "cost + suffix must equal the constant shift for seed {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn frac_of_and_seed_of_locate_seeds_by_ebg_id() {
+        let pe = phantom(vec![
+            PhantomSeed {
+                frac: 0.25,
+                ..seed(4, 10, 30, true)
+            },
+            PhantomSeed {
+                frac: 0.75,
+                ..seed(5, 11, 70, false)
+            },
+        ]);
+        assert_eq!(pe.frac_of(5), Some(0.75));
+        assert_eq!(pe.frac_of(999), None);
+        assert!(pe.seed_of(4).unwrap().direct_ok);
+        assert!(!pe.seed_of(5).unwrap().direct_ok);
+        assert!(pe.seed_of(999).is_none());
+    }
+
+    // --- SeedExpansion ------------------------------------------------------
+
+    #[test]
+    fn seed_expansion_build_spans_and_placeholder_for_empty_sets() {
+        // endpoint 0: two seeds; endpoint 1: none (invalid) -> one placeholder.
+        let sets = vec![vec![(10u32, 3u32, 1u32, true), (11, 5, 2, false)], vec![]];
+        let exp = SeedExpansion::build(&sets);
+        // exp_ranks = [10, 11, 0(placeholder)]
+        assert_eq!(exp.exp_ranks, vec![10, 11, 0]);
+        // spans: endpoint 0 -> (0,2); endpoint 1 -> (2,1) placeholder.
+        assert_eq!(exp.spans, vec![(0, 2), (2, 1)]);
+        // parts carry (time, len, direct_ok); placeholder is (0,0,false).
+        assert_eq!(exp.parts, vec![(3, 1, true), (5, 2, false), (0, 0, false)]);
+        // slack is the max TIME part across all expanded rows.
+        assert_eq!(exp.slack(), 5);
+    }
+
+    #[test]
+    fn reduce_time_applies_source_plus_minus_target_partial() {
+        // 1 source seed (rank 10, +5 s) x 1 target seed (rank 20, -7 s).
+        // Engine raw time = 100 -> adjusted = 100 + 5 - 7 = 98. The carry
+        // (length-along-time) is read at the SAME argmin cell: 50 + 1 - 2 = 49.
+        let src = SeedExpansion::build(&[vec![(10u32, 5u32, 1u32, true)]]);
+        let tgt = SeedExpansion::build(&[vec![(20u32, 7u32, 2u32, true)]]);
+        let m = vec![100u32];
+        let carry = vec![50u32];
+        let (out, out_c) = src.reduce_time(&tgt, &m, Some(&carry));
+        assert_eq!(out, vec![98]);
+        assert_eq!(out_c.unwrap(), vec![49]);
+    }
+
+    #[test]
+    fn reduce_len_uses_the_length_partials() {
+        // reduce_len picks the LENGTH partials (index .1): 200 + 3 - 4 = 199.
+        let src = SeedExpansion::build(&[vec![(10u32, 5u32, 3u32, true)]]);
+        let tgt = SeedExpansion::build(&[vec![(20u32, 7u32, 4u32, true)]]);
+        let m = vec![200u32];
+        assert_eq!(src.reduce_len(&tgt, &m), vec![199]);
+    }
+
+    #[test]
+    fn reduce_time_rejects_clamped_secondary_same_rank_meet() {
+        // Same rank on both sides is the engine's zero-cost identity cell. It
+        // may ONLY stand in for a real same-edge direct move when BOTH seeds
+        // truly project onto the edge (direct_ok). Here the source seed is a
+        // CLAMPED secondary (direct_ok = false), so the meet is a fabricated
+        // 0-cost move and must be rejected -> cell stays u32::MAX (#502/#509).
+        let src = SeedExpansion::build(&[vec![(10u32, 5u32, 1u32, false)]]);
+        let tgt = SeedExpansion::build(&[vec![(10u32, 5u32, 1u32, true)]]);
+        let m = vec![0u32]; // zero-cost identity cell
+        let (out, _) = src.reduce_time(&tgt, &m, None);
+        assert_eq!(out, vec![u32::MAX], "clamped same-rank meet is not a path");
+    }
+
+    #[test]
+    fn reduce_time_rejects_negative_same_edge_meet_but_keeps_positive() {
+        // Both seeds direct_ok and same rank (same physical edge). The
+        // identity cell v=0 gives adj = src_part - tgt_part. When the source
+        // sits AHEAD of the destination on the edge (src_part < tgt_part) adj
+        // is negative -> an invalid backward "path" -> reject (stays MAX,
+        // #509: clamping to 0 emitted spurious 0 s). When the source is BEHIND
+        // (src_part > tgt_part) adj is the true positive suffix difference.
+        let tgt = SeedExpansion::build(&[vec![(10u32, 10u32, 0u32, true)]]);
+        let m = vec![0u32];
+
+        let src_ahead = SeedExpansion::build(&[vec![(10u32, 4u32, 0u32, true)]]);
+        let (neg, _) = src_ahead.reduce_time(&tgt, &m, None);
+        assert_eq!(
+            neg,
+            vec![u32::MAX],
+            "negative same-edge meet rejected, not clamped to 0"
+        );
+
+        let src_behind = SeedExpansion::build(&[vec![(10u32, 16u32, 0u32, true)]]);
+        let (pos, _) = src_behind.reduce_time(&tgt, &m, None);
+        assert_eq!(pos, vec![6], "behind-on-edge meet = 16 - 10 = 6 s");
+    }
+
+    #[test]
+    fn reduce_time_takes_the_minimum_over_the_seed_cross_product() {
+        // One source with two directional seeds x one target with two seeds:
+        // a 2x2 expanded matrix collapses to a single S*T cell = the minimum
+        // adjusted cost over all four (src_seed, tgt_seed) combinations.
+        let src = SeedExpansion::build(&[vec![(10u32, 0u32, 0u32, true), (11, 0, 0, true)]]);
+        let tgt = SeedExpansion::build(&[vec![(20u32, 0u32, 0u32, true), (21, 0, 0, true)]]);
+        // exp matrix row-major, n_exp_t = 2:
+        //  (10->20)=90 (10->21)=40 / (11->20)=70 (11->21)=55  -> min = 40
+        let m = vec![90u32, 40, 70, 55];
+        let (out, _) = src.reduce_time(&tgt, &m, None);
+        assert_eq!(
+            out,
+            vec![40],
+            "reduce takes the min over the seed cross-product"
+        );
     }
 }
