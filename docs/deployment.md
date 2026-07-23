@@ -134,6 +134,31 @@ Run with `--data-dir /data`. Auto-detected from the `*.butterfly` extension. Use
 
 A `transit/` subdirectory (next to the step tree or container files) triggers transit bootstrap on the primary region. See the transit section in [CLAUDE.md](../CLAUDE.md).
 
+**Runtime calibration inputs (optional, next to the container):**
+
+```
+/data/
+├── belgium.butterfly
+├── edge_speeds.parquet             # directed per-edge observed/freeflow ratios (#454)
+├── edge_speeds.rush_hour.parquet   # optional peak variant → synthetic mode car_rush_hour
+└── recustomize_cache.car-edge.v3.bin   # written by the server (customized-weight cache, #444)
+```
+
+- `edge_speeds.parquet` schema: `osm_node_from INT64, osm_node_to INT64,
+  speed_ratio DOUBLE` — one row per DIRECTED edge keyed by endpoint OSM node
+  ids, ratio in `[0.05, 1.0]`. At boot the server recustomizes `?mode=car`
+  from it (a bad/absent table is non-fatal: it logs and serves the baked
+  weights).
+- Optional parquet KV metadata `time_scale` (sanity `[0.5, 2.0]`, absent →
+  1.0): a global end-to-end factor applied to BOTH link weights and turn
+  penalties before customization (#524). Producers set it to land a measured
+  level anchor exactly in one step — multiplying it into the ratios instead
+  only propagates ~55 % per pass (turn costs are not scaled by ratios) and
+  erodes rank correlation.
+- The cache file is keyed by the parquet bytes + base weights CRC, so
+  refreshing the table (or its metadata) invalidates it automatically;
+  the `.v3` tag bumps whenever the interpretation changes.
+
 ## Health and metrics
 
 ### `/health`
