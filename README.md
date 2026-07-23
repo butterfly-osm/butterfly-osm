@@ -21,10 +21,16 @@ faster than OSRM at scale.
   costs. No wrong-way commitment detours, no 0-second same-edge answers,
   one consistent answer across REST and Flight.
 - **Ground truth**: 1 000 real-world reference trips with independently
-  observed travel times — duration p50 **1.02×**, distance p50 **1.004×**;
-  enforced by a post-deploy gate
-  (fixtures, symmetry, endpoint consistency, close-pair sweep, isochrone
-  containment, edges sums) that blocks promotion on any regression.
+  observed travel times — duration p50 **0.99×**, correlation **0.994**,
+  MAPE **4.0 %**, distance p50 **1.00×**; enforced by a post-deploy gate
+  (invariant fixtures, symmetry, endpoint consistency, close-pair sweep,
+  isochrone containment, edges sums) that blocks promotion on any regression.
+- **Runtime calibration (2026-07)**: the server recustomizes car weights at
+  boot from an optional directed per-edge `edge_speeds.parquet` (observed /
+  freeflow ratios keyed by OSM node pairs, exported/aligned via the
+  `export-edges` tool), including a global `time_scale` KV-metadata factor
+  applied to links AND turn penalties (#524) so a measured level anchor
+  lands exactly — provider-agnostic, data stays outside the repo.
 - **vs OSRM CH (same host, interleaved)**: tied at 200×200, **2.7× faster**
   at 500×500, **4.8× faster** at 1000×1000 over HTTP.
 - **Matrix 10k×10k via Flight gRPC**: 32.5 s end-to-end (vs drivetimes/libosrm 614 s — 19× faster on the wire).

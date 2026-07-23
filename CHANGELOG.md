@@ -10,7 +10,33 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
-### 2026-07-17 — Phantom endpoints, close-pair correctness, in-engine seeded matrices (#502–#517)
+### 2026-07-23 — Route geometry closure, engine-keyed calibration, global time_scale (#521–#524)
+
+- **Foot/route consistency (#522/#523)**: `/route` now clips the polyline,
+  per-edge annotations, and steps at BOTH phantom endpoints (previously only
+  the origin side was clipped on seeded meets), and orients the first edge's
+  geometry against the next edge's nearer endpoint. `distance_m` ≡ polyline
+  length ≡ Σ annotations within 0.01 % over 46.5 km; near-identical foot
+  pairs now return coherent 1.33–1.37 m/s speeds.
+- **`export-edges` tool (#524)**: dumps the NBG edge list
+  (`u_osm, v_osm, way_id, length_m`) and, with `--segments`, the raw OSM
+  segment chains behind every directed edge (1:1 with served polyline
+  vertices) — the engine-side half of an exact external-data alignment; the
+  private speeds pipeline resolves its graph onto these segments (98.9 % of
+  edges) and emits `edge_speeds.parquet` keyed to the engine by construction.
+- **Global `time_scale` (#524)**: `edge_speeds.parquet` may carry a
+  `time_scale` KV-metadata scalar; boot recustomization scales link weights
+  AND turn penalties by it (forbidden-turn sentinels preserved), so a
+  producer-measured end-to-end level anchor lands exactly in one step.
+  Ratio-side anchoring only propagated ~55 % per pass (turns unscaled) and
+  eroded rank correlation. Recustomize cache tags bumped to v3.
+- **Post-deploy gate rewritten to invariants**: sentinel fixtures now check
+  bounded detour vs crow-fly, plausible mean speed, and
+  distance ≡ polyline ≡ Σ annotations — no measured-then-pasted constants
+  anywhere; `edges_batch` sums are checked against the live `/route`.
+- **Validation (Belgium, 1000 independently observed reference trips)**:
+  duration p50 0.992 (was 1.020), corr 0.994 (was 0.963), MAPE 4.0 %
+  (was 10.6 %); distance outliers 39 (max 80). Full gate PASS.
 
 The largest correctness campaign since the CCH landed, deployed fleet-wide
 and locked in by a new post-deploy gate:
