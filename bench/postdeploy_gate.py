@@ -61,18 +61,29 @@ THRESHOLDS = {
     "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs per-edge FCD (butterfly-speeds#9)
     "symmetry_ratio_max": 1.5,
     "symmetry_violations_max": 0,
-    "fixture_tolerance": 0.10,
     "consistency_tolerance_s": 3.0,
     "max_errors": 5,  # unroutable trips (OSM drift) tolerated before failing
 }
 
-# #502/#503 validated fixtures: (name, o_lon, o_lat, d_lon, d_lat,
-#                                expected_duration_s, expected_distance_m)
+# #502/#503 sentinel pairs. NO hardcoded expected values (a measured-then-
+# pasted constant only asserts "the server returns what it returned", and
+# breaks on every legitimate semantic improvement — e.g. #523 end clipping).
+# Instead each pair is checked against invariants that never expire:
+#   1. bounded detour vs crow-fly, ONE global generous bound (a lake crossing
+#      legitimately hits ×6; the #502 pathologies were ×10-40 loops) —
+#      per-pair bounds would be hardcoding by another name
+#   2. physically plausible mean speed  (per mode)
+#   3. internal consistency: distance_m ≡ polyline length ≡ Σ annotations
+#      (the #523 invariant — would have caught #522 automatically)
+# (name, o_lon, o_lat, d_lon, d_lat)
 FIXTURES = [
-    ("Berloz #503", 5.211554, 50.709124, 5.211383, 50.698323, 163, 1258),
-    ("Heers #503", 5.307080, 50.751610, 5.293005, 50.752418, 126, 1073),
-    ("Robertville #502", 6.008464, 50.428652, 6.022535, 50.428452, 435, 5830),
+    ("Berloz #503", 5.211554, 50.709124, 5.211383, 50.698323),
+    ("Heers #503", 5.307080, 50.751610, 5.293005, 50.752418),
+    ("Robertville #502", 6.008464, 50.428652, 6.022535, 50.428452),
 ]
+SENTINEL_MAX_DETOUR = 8.0
+CAR_SPEED_BOUNDS_KMH = (15.0, 135.0)  # mean over a whole route, car mode
+GEOM_CONSISTENCY_TOL = 0.03  # distance_m vs polyline length
 
 
 def http_json(url, timeout=30, data=None, headers=None):
@@ -189,19 +200,75 @@ def gate_symmetry(base, n_pairs=150):
     )
 
 
+def _haversine_m(lon1, lat1, lon2, lat2):
+    import math
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (
+        math.sin((p2 - p1) / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    )
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _polyline_len_m(coords):
+    return sum(
+        _haversine_m(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
+        for i in range(len(coords) - 1)
+    )
+
+
 def gate_fixtures(base):
-    print("== ticket fixtures (#502/#503) ==")
-    tol = THRESHOLDS["fixture_tolerance"]
+    print("== sentinel pairs (#502/#503) — invariant checks, no expected constants ==")
     passed = True
-    for name, olon, olat, dlon, dlat, exp_s, exp_m in FIXTURES:
+    lo_kmh, hi_kmh = CAR_SPEED_BOUNDS_KMH
+    for name, olon, olat, dlon, dlat in FIXTURES:
+        max_detour = SENTINEL_MAX_DETOUR
+        q = urllib.parse.urlencode(
+            {
+                "origin_lon": olon,
+                "origin_lat": olat,
+                "destination_lon": dlon,
+                "destination_lat": dlat,
+                "mode": "car",
+                "geometries": "polyline6",
+                "annotations": "distance,duration",
+            }
+        )
         try:
-            dur_s, dist_m = route(base, olon, olat, dlon, dlat)
+            d = http_json(f"{base}/route?{q}")
         except Exception as e:
             passed &= check(name, False, f"request failed: {e}")
             continue
-        ok = abs(dur_s - exp_s) <= exp_s * tol and abs(dist_m - exp_m) <= exp_m * tol
+        dur_s, dist_m = d["duration_s"], d["distance_m"]
+        crow = _haversine_m(olon, olat, dlon, dlat)
+        detour = dist_m / max(crow, 1.0)
+        kmh = dist_m / max(dur_s, 0.001) * 3.6
+        geom = d.get("geometry", {})
+        poly = geom.get("polyline") or geom.get("coordinates_polyline6") or ""
+        geom_m = _polyline_len_m(_decode_polyline6(poly)) if poly else None
+        ann = d.get("annotations") or {}
+        ann_dist = sum(ann.get("distance") or [])
+        ann_dur = sum(ann.get("duration") or [])
+        ok_detour = detour <= max_detour
+        ok_speed = lo_kmh <= kmh <= hi_kmh
+        ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
+        # annotations may legitimately differ from duration_s by the turn/
+        # junction costs the summary carries; require them within 15%.
+        ok_ann = (
+            ann_dist == 0
+            or (
+                abs(ann_dist - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
+                and abs(ann_dur - dur_s) <= dur_s * 0.15
+            )
+        )
+        ok = ok_detour and ok_speed and ok_geom and ok_ann
+        gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
         passed &= check(
-            name, ok, f"{dur_s:.0f}s/{dist_m:.0f}m (expected {exp_s}s/{exp_m}m ±{tol:.0%})"
+            name,
+            ok,
+            f"{dur_s:.0f}s/{dist_m:.0f}m detour×{detour:.2f}(≤{max_detour}) "
+            f"{kmh:.0f}km/h geom={gtxt} annΣ={ann_dist:.0f}m/{ann_dur:.0f}s",
         )
     return passed
 
