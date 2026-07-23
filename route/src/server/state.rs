@@ -2306,7 +2306,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-rush.v3.bin",
+                "recustomize_cache.car-edge-rush.v4.bin",
                 EdgeTableColumn::Median,
             )?;
 
@@ -2396,7 +2396,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge-eq.v3.bin",
+                "recustomize_cache.car-edge-eq.v4.bin",
                 EdgeTableColumn::Median,
             )?;
 
@@ -2479,12 +2479,12 @@ impl ServerState {
         for (column, cache_file, slot_name) in [
             (
                 EdgeTableColumn::Q25,
-                "recustomize_cache.car-edge-bandpess.v3.bin",
+                "recustomize_cache.car-edge-bandpess.v4.bin",
                 "car#band_pess",
             ),
             (
                 EdgeTableColumn::Q75,
-                "recustomize_cache.car-edge-bandopt.v3.bin",
+                "recustomize_cache.car-edge-bandopt.v4.bin",
                 "car#band_opt",
             ),
         ] {
@@ -2573,7 +2573,7 @@ impl ServerState {
             .recustomized_weights_from_edge_table(
                 &base,
                 edge_speeds_path,
-                "recustomize_cache.car-edge.v3.bin",
+                "recustomize_cache.car-edge.v4.bin",
                 EdgeTableColumn::Median,
             )?;
 
@@ -4518,7 +4518,12 @@ fn recustomize_edge_cache_key(
     cache_file: &str,
 ) -> Option<u64> {
     let mut d = crate::formats::crc::Digest::new();
-    d.update(b"recustomize-car-edge-v3"); // v3: #524 global time_scale (links + turns)
+    // v4: #528 len-along-time refresh from the recustomized middles. BUMP THIS
+    // TAG whenever the served weights OR the len-along-time derivation changes:
+    // a stale cache serves the OLD derivation on HIT (prod's v3 cache-hit served
+    // pre-#528 stale lat while the fresh miss-path was correct — that is exactly
+    // this class of miss).
+    d.update(b"recustomize-car-edge-v4");
     d.update(cache_file.as_bytes()); // column/variant identity (#521 bands)
     d.update(&std::fs::read(path).ok()?);
     d.update(&car_weights_crc.to_le_bytes());
