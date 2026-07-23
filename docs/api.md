@@ -8,7 +8,7 @@ See also: [Quickstart](quickstart.md), [Deployment](deployment.md), [Architectur
 
 | Transport | Port | Wire format | Use for |
 |-----------|------|-------------|---------|
-| REST (Axum) | 3001 | JSON request / JSON response (content-negotiated on `/route`, `/isochrone`) | Human-facing clients, dashboards, single queries |
+| REST (Axum) | 3001 | JSON request / JSON response (content-negotiated on `/route`, `/isochrone`) | **Humans only**: exploration, debugging, Swagger, single queries, GPX |
 | gRPC Flight (tonic) | 3002 | Arrow IPC (`DoGet` ticket + record-batch stream) | Machine-facing bulk pipelines, polars/duckdb consumers |
 
 Architectural rule: **REST stays JSON, Flight stays Arrow.** New bulk Arrow endpoints land on Flight, not on Axum. `/isochrone/bulk` is a pre-Flight exception (length-prefixed WKB stream over HTTP).
@@ -26,6 +26,18 @@ Server-wide layers (defined in `route/src/server/api.rs`):
 - Prometheus metrics exposed at `GET /metrics`
 
 ---
+
+> **RULE OF THUMB — Flight first.** Any programmatic or repeated workload
+> (batch P2P, matrices, isochrone sweeps, per-edge analytics, bulk
+> transit) belongs on the Arrow Flight gRPC port, not REST. Calling
+> `GET /route` in a loop is the #525 anti-pattern: a 3.3 M-pair batch
+> that takes hours over REST is minutes via `route_batch`. REST is the
+> human interface; Flight is the machine interface. Flight actions:
+> `matrix`, `route_batch`, `isochrone`, `catchment`, `edges_batch`,
+> `transit_bulk`. Params use `origins`/`destinations` (see the Flight
+> section below). The Flight port is always REST + 1 in-container
+> (8080→8081); on the staging cluster it is exposed as NodePort
+> `grpc://10.0.3.2:30052`.
 
 ## Endpoint semantics (2026-07)
 
