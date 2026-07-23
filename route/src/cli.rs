@@ -2182,9 +2182,11 @@ impl Cli {
                 verify_full,
             } => crate::pack::inspect(&path, verify, verify_full),
             Commands::Unpack { path, out } => crate::pack::unpack(&path, &out),
-            Commands::ExportEdges { path, out, segments } => {
-                crate::pack::export_edges(&path, &out, segments.as_deref())
-            }
+            Commands::ExportEdges {
+                path,
+                out,
+                segments,
+            } => crate::pack::export_edges(&path, &out, segments.as_deref()),
             Commands::TopologyDiff { path, modes } => {
                 crate::pack::topology_diff(&path, modes.as_deref())
             }
