@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{GeometryFormat, Point, RouteGeometry, build_geometry, build_raw_points};
+use super::geometry::{GeometryFormat, Point, RouteGeometry, build_raw_points};
 use super::query::CchQuery;
 use super::regions::RegionsState;
 use super::state::ServerState;
@@ -688,12 +688,17 @@ pub async fn route_handler(
     // src_rank / dst_rank are passed in so the closure doesn't bind
     // them by reference (which would conflict with the #197 fallback
     // logic that reassigns src_rank / dst_rank on a successful retry).
+    // end_clip = (src_frac, dst_frac) on the path's first/last edge when the
+    // route came from the phantom-seeded query (#522): duration_s already
+    // pays exact partial-edge costs, so geometry, distance_m, annotations
+    // and steps must bill the same partial edges — not the full ones.
     let build_route = |result: &super::query::QueryResult,
                        weights: &super::state::CchWeights,
                        format: GeometryFormat,
                        want_steps: bool,
                        src_rank: u32,
-                       dst_rank: u32|
+                       dst_rank: u32,
+                       end_clip: Option<(f64, f64)>|
      -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
         let rank_path = unpack_path(
             &mode_data.cch_topo,
@@ -711,8 +716,18 @@ pub async fn route_handler(
                 mode_data.filtered_to_original[filtered_id as usize]
             })
             .collect();
-        let (geometry, distance_m) =
-            build_geometry(&ebg_path, &state.ebg_nodes, &state.edge_geom, format);
+        let (mut pts, mut distance_m) =
+            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
+        if let Some((fs, fd)) = end_clip
+            && let (Some(&e0), Some(&en)) = (ebg_path.first(), ebg_path.last())
+        {
+            let head_cut = fs * state.ebg_nodes.nodes[e0 as usize].length_m as f64;
+            let tail_cut = (1.0 - fd) * state.ebg_nodes.nodes[en as usize].length_m as f64;
+            cut_polyline_start(&mut pts, head_cut);
+            cut_polyline_end(&mut pts, tail_cut);
+            distance_m = (distance_m - head_cut - tail_cut).max(0.0);
+        }
+        let geometry = RouteGeometry::from_points(pts, format);
         let duration_s = result.distance as f64;
         let steps = if want_steps {
             Some(build_steps(
@@ -803,6 +818,7 @@ pub async fn route_handler(
         MAX_FALLBACK_COMBOS,
     );
     let mut result_opt: Option<super::query::QueryResult> = None;
+    let mut end_clip: Option<(f64, f64)> = None;
 
     // #502: phantom endpoints — seed BOTH directed twins of each endpoint's
     // snapped edge with exact partial-edge costs and let ONE search decide the
@@ -933,6 +949,14 @@ pub async fn route_handler(
             if let Some(r) = seeded {
                 src_rank = r.src_root;
                 dst_rank = r.dst_root;
+                let to_ebg = |rank: u32| -> u32 {
+                    let f = mode_data.cch_topo.rank_to_filtered[rank as usize];
+                    mode_data.filtered_to_original[f as usize]
+                };
+                end_clip = Some((
+                    sp.frac_of(to_ebg(r.src_root)).unwrap_or(0.0),
+                    dp.frac_of(to_ebg(r.dst_root)).unwrap_or(1.0),
+                ));
                 result_opt = Some(super::query::QueryResult {
                     distance: r.distance.saturating_sub(dst_shift),
                     meeting_node: r.meeting_node,
@@ -1077,14 +1101,39 @@ pub async fn route_handler(
         &mode_data.cch_weights
     };
 
-    let (geometry, duration_s, distance_m, steps, ebg_path) = build_route(
+    let (geometry, duration_s, distance_m, mut steps, ebg_path) = build_route(
         &result,
         active_weights,
         geom_format,
         req.steps,
         src_rank,
         dst_rank,
+        end_clip,
     );
+    // Steps bill full first/last edges; trim them by the same partials.
+    if let (Some((fs, fd)), Some(list)) = (end_clip, steps.as_mut())
+        && !list.is_empty()
+        && let (Some(&e0), Some(&en)) = (ebg_path.first(), ebg_path.last())
+    {
+        let head_cut = fs * state.ebg_nodes.nodes[e0 as usize].length_m as f64;
+        let tail_cut = (1.0 - fd) * state.ebg_nodes.nodes[en as usize].length_m as f64;
+        let first = &mut list[0];
+        let scale0 = if first.distance_m > 0.0 {
+            ((first.distance_m - head_cut) / first.distance_m).max(0.0)
+        } else {
+            1.0
+        };
+        first.distance_m = (first.distance_m - head_cut).max(0.0);
+        first.duration_s *= scale0;
+        let last = list.last_mut().unwrap();
+        let scale_n = if last.distance_m > 0.0 {
+            ((last.distance_m - tail_cut) / last.distance_m).max(0.0)
+        } else {
+            1.0
+        };
+        last.distance_m = (last.distance_m - tail_cut).max(0.0);
+        last.duration_s *= scale_n;
+    }
 
     // GPX output: skip annotations, alternatives, debug — just emit track points
     if wants_gpx(&headers) {
@@ -1106,16 +1155,27 @@ pub async fn route_handler(
                 speed: None,
                 nodes: None,
             };
+            // Per-edge scale factors for the clipped first/last edges (#522):
+            // annotations must sum to what duration_s/distance_m report.
+            let clip_scale = |idx: usize| -> f64 {
+                match end_clip {
+                    Some((fs, fd)) if ebg_path.len() == 1 => (fd - fs).max(0.0),
+                    Some((fs, _)) if idx == 0 => 1.0 - fs,
+                    Some((_, fd)) if idx + 1 == ebg_path.len() => fd,
+                    _ => 1.0,
+                }
+            };
             if want_dur || want_spd {
                 let durations: Vec<f64> = ebg_path
                     .iter()
-                    .map(|&eid| {
+                    .enumerate()
+                    .map(|(i, &eid)| {
                         let w = mode_data
                             .node_weights
                             .get(eid as usize)
                             .copied()
                             .unwrap_or(0);
-                        w as f64
+                        w as f64 * clip_scale(i)
                     })
                     .collect();
                 if want_dur {
@@ -1124,7 +1184,10 @@ pub async fn route_handler(
                 if want_spd {
                     let distances: Vec<f64> = ebg_path
                         .iter()
-                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_m as f64)
+                        .enumerate()
+                        .map(|(i, &eid)| {
+                            state.ebg_nodes.nodes[eid as usize].length_m as f64 * clip_scale(i)
+                        })
                         .collect();
                     ann.speed = Some(
                         durations
@@ -1145,7 +1208,10 @@ pub async fn route_handler(
                 ann.distance = Some(
                     ebg_path
                         .iter()
-                        .map(|&eid| state.ebg_nodes.nodes[eid as usize].length_m as f64)
+                        .enumerate()
+                        .map(|(i, &eid)| {
+                            state.ebg_nodes.nodes[eid as usize].length_m as f64 * clip_scale(i)
+                        })
                         .collect(),
                 );
             }
@@ -1213,6 +1279,7 @@ pub async fn route_handler(
                     req.steps,
                     src_rank,
                     dst_rank,
+                    None,
                 );
 
                 // Penalize this alternative's edges for next iteration
@@ -1942,6 +2009,67 @@ fn build_edge_geometry(
     let poly = edge_geom.polyline(node.geom_idx);
     let points: Vec<Point> = poly.iter().map(|(lon, lat)| Point { lon, lat }).collect();
     RouteGeometry::from_points(points, format)
+}
+
+/// Equirectangular segment length in meters (fine at street scale).
+fn seg_len_m(a: &Point, b: &Point) -> f64 {
+    let ky = 111_320.0;
+    let kx = 111_320.0 * (a.lat.to_radians().cos());
+    let (dx, dy) = ((a.lon - b.lon) * kx, (a.lat - b.lat) * ky);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Remove `cut_m` meters of polyline from the start, inserting an
+/// interpolated boundary point (#522 phantom end clipping).
+fn cut_polyline_start(pts: &mut Vec<Point>, cut_m: f64) {
+    if cut_m <= 0.0 || pts.len() < 2 {
+        return;
+    }
+    let mut acc = 0.0;
+    for i in 0..pts.len() - 1 {
+        let l = seg_len_m(&pts[i], &pts[i + 1]);
+        if acc + l >= cut_m {
+            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
+            let p = Point {
+                lon: pts[i].lon + (pts[i + 1].lon - pts[i].lon) * t,
+                lat: pts[i].lat + (pts[i + 1].lat - pts[i].lat) * t,
+            };
+            pts.drain(0..=i);
+            pts[0] = p;
+            return;
+        }
+        acc += l;
+    }
+    // cut longer than the polyline: keep the final point only
+    let last = *pts.last().unwrap();
+    pts.clear();
+    pts.push(last);
+}
+
+/// Remove `cut_m` meters of polyline from the end (mirror of the above).
+fn cut_polyline_end(pts: &mut Vec<Point>, cut_m: f64) {
+    if cut_m <= 0.0 || pts.len() < 2 {
+        return;
+    }
+    let mut acc = 0.0;
+    for i in (1..pts.len()).rev() {
+        let l = seg_len_m(&pts[i - 1], &pts[i]);
+        if acc + l >= cut_m {
+            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
+            let p = Point {
+                lon: pts[i].lon + (pts[i - 1].lon - pts[i].lon) * t,
+                lat: pts[i].lat + (pts[i - 1].lat - pts[i].lat) * t,
+            };
+            pts.truncate(i + 1);
+            let n = pts.len();
+            pts[n - 1] = p;
+            return;
+        }
+        acc += l;
+    }
+    let first = pts[0];
+    pts.clear();
+    pts.push(first);
 }
 
 /// Build geometry for multiple consecutive edges
