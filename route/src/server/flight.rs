@@ -658,10 +658,12 @@ fn do_matrix(
                 );
             (m, Some(lm), st)
         } else {
-            let (m, st) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+            // #526 shape-aware router (duration-only, plain weights).
+            let (m, st) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
                 n_nodes,
                 up,
                 down,
+                Some((&mode_data.down_adj_flat, mode)),
                 &src_seedsets,
                 &tgt_seedsets,
                 threshold,

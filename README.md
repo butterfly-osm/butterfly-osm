@@ -41,6 +41,31 @@ faster than OSRM at scale.
 - **Coverage**: 4 modes (car, bike, foot, truck) × 4 merged transit feeds (SNCB, De Lijn, TEC, STIB).
 - Belgium artifact `data/belgium/baseline.butterfly` deployed to the production `belgium-latest` container.
 
+## Transport: Arrow Flight first
+
+**If you are calling this engine from CODE, use the Arrow Flight gRPC
+endpoint (port 8081), not REST.** REST exists for humans: interactive
+exploration, debugging, Swagger, single queries, GPX export. Everything
+else — batches, matrices, pipelines, anything in a loop — belongs on
+Flight:
+
+| Workload | WRONG (REST, per-call overhead) | RIGHT (one Flight call) |
+|---|---|---|
+| 3.3 M point-to-point pairs | 3.3 M × `GET /route` (~hours, melts the server) | `route_batch` in chunks (~minutes) |
+| Large duration matrix | chunked `POST /table` | `matrix` (10k×10k in ~18-32 s end-to-end) |
+| Country-scale isochrones | N × `GET /isochrone` | `isochrone` (WKB stream) |
+| Per-edge path analytics | N × `/route?annotations=nodes` | `edges_batch` (unnested OSM node ids) |
+| Bulk transit | N × `GET /transit` | `transit_bulk` (up to 500k queries/call) |
+
+JSON serialisation + HTTP framing + per-request routing dominate small
+REST calls; Flight moves Arrow record batches with zero re-encoding and
+amortises everything. The REST `POST /table/stream` exception is legacy —
+new bulk consumers get no new Arrow-over-HTTP endpoints.
+
+Connect: the Flight port is always REST port + 1 inside the container
+(8080/8081). Docker: publish both (`-p 3001:8080 -p 3002:8081`), then
+`pyarrow.flight.connect("grpc://host:3002")`.
+
 ## Quickstart
 
 ```bash

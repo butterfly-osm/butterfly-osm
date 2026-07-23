@@ -116,6 +116,71 @@ def check(name, ok, detail):
     return ok
 
 
+def gate_lopsided(base):
+    """#526: lopsided (1xN) matrices must take a sublinear plan (seeded
+    PHAST) and stay cell-for-cell consistent with /route. Guards BOTH the
+    selection (scaling ratio — linear bucket would be ~16x) and the
+    correctness of the PHAST field evaluation (route==table equality)."""
+    import time as _t
+
+    print("== lopsided matrix 1xN: sublinear plan + route==table (#526) ==")
+    rng = random.Random(31)
+    origin = (4.3517, 50.8503)
+    dests = [
+        (origin[0] + rng.uniform(-0.25, 0.25), origin[1] + rng.uniform(-0.15, 0.15))
+        for _ in range(800)
+    ]
+
+    def table(dsts):
+        body = json.dumps(
+            {
+                "origins": [list(origin)],
+                "destinations": [list(d) for d in dsts],
+                "mode": "foot",
+            }
+        ).encode()
+        t0 = _t.time()
+        r = http_json(
+            f"{base}/table",
+            timeout=300,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        return r, _t.time() - t0
+
+    table(dests[:50])  # warm + calibrate the router's measured constants
+    big, tb = table(dests)
+    small, ts = table(dests[:50])
+    ratio = tb / max(ts, 1e-3)
+    ok_scale = check(
+        "lopsided scaling",
+        ratio < 6.0,
+        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} (linear bucket ~x16, PHAST ~x1)",
+    )
+    mism = 0
+    checked = 0
+    worst = 0.0
+    for i in rng.sample(range(800), 25):
+        d_t = big["durations"][0][i]
+        if d_t is None:
+            continue
+        try:
+            d_r, _ = route(base, origin[0], origin[1], dests[i][0], dests[i][1], mode="foot")
+        except Exception:
+            continue
+        checked += 1
+        delta = abs(d_r - d_t)
+        worst = max(worst, delta)
+        if delta > THRESHOLDS["consistency_tolerance_s"]:
+            mism += 1
+    ok_eq = check(
+        "lopsided route==table",
+        mism == 0 and checked >= 15,
+        f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s",
+    )
+    return ok_scale and ok_eq
+
+
 def gate_ground_truth(base, trips_path):
     print(f"== ground truth: reference trips ({trips_path}) ==")
     rows = list(csv.DictReader(open(trips_path)))
@@ -500,6 +565,7 @@ def main():
     ok &= gate_consistency(base)
     ok &= gate_isochrone(base)
     ok &= gate_close_pairs(base)
+    ok &= gate_lopsided(base)
     ok &= gate_edges_batch(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)

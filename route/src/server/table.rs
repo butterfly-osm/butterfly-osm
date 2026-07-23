@@ -782,10 +782,18 @@ pub async fn compute_table_bucket_m2m(
         // bound is in effect (reachability is defined by time).
         let time_mat: Option<Vec<u32>> = if need_dur_internal {
             let t_dur = std::time::Instant::now();
-            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+            // #526 shape-aware router: plain-path duration matrices may take
+            // the seeded-PHAST lopsided plan; custom weights keep bucket.
+            let phast_ctx = if custom_weights.is_none() {
+                Some((&mode_data.down_adj_flat, mode))
+            } else {
+                None
+            };
+            let (matrix, _stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
                 n_nodes,
                 time_up,
                 time_down,
+                phast_ctx,
                 &src_seedsets,
                 &tgt_seedsets,
                 threshold,
