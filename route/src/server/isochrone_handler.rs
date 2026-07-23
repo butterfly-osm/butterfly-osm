@@ -543,10 +543,26 @@ pub fn run_phast_bounded_fast_seeded_2ch(
                 for i in up_start..up_end {
                     let v = up_adj_flat.targets[i] as usize;
                     let new_t = d.saturating_add(up_adj_flat.weights.get(i));
-                    if new_t < state.get_dist(v) {
+                    let cur_t = state.get_dist(v);
+                    if new_t < cur_t {
                         let new_l = lu.saturating_add(up_adj_flat_len.weights.get(i));
                         state.set_dist_len(v, new_t, new_l);
                         state.pq.push(Reverse((new_t, v as u32)));
+                    } else if new_t == cur_t && cur_t != u32::MAX {
+                        // #530: lazy lexicographic (time, then length) tie-break —
+                        // at EQUAL time but strictly shorter length, adopt the
+                        // shorter label and re-push so the improvement propagates
+                        // to successors. Mirrors `SearchState2::relax`'s lazy-lex
+                        // so this 2-channel PHAST surface cannot disagree with
+                        // `/route`/`/table` on equal-duration ties. Fires only on
+                        // genuine equal-time ties (never for strictly-positive
+                        // single-direction modes), so non-tying modes are
+                        // byte-identical to the pre-#530 path.
+                        let new_l = lu.saturating_add(up_adj_flat_len.weights.get(i));
+                        if new_l < state.get_len(v) {
+                            state.set_dist_len(v, new_t, new_l);
+                            state.pq.push(Reverse((new_t, v as u32)));
+                        }
                     }
                 }
             }
@@ -568,9 +584,20 @@ pub fn run_phast_bounded_fast_seeded_2ch(
                     for i in down_start..down_end {
                         let v = down_adj_flat.targets[i] as usize;
                         let new_t = d_u.saturating_add(down_adj_flat.weights.get(i));
-                        if new_t < state.get_dist(v) {
+                        let cur_t = state.get_dist(v);
+                        if new_t < cur_t {
                             let new_l = l_u.saturating_add(down_adj_flat_len.weights.get(i));
                             state.set_dist_len(v, new_t, new_l);
+                        } else if new_t == cur_t && cur_t != u32::MAX {
+                            // #530: equal time — keep the shorter length. No
+                            // re-scan needed: the downward pass runs in strictly
+                            // decreasing rank, and DOWN targets have lower rank
+                            // than the current source, so `v` is still processed
+                            // later this pass and picks up the improved length.
+                            let new_l = l_u.saturating_add(down_adj_flat_len.weights.get(i));
+                            if new_l < state.get_len(v) {
+                                state.set_dist_len(v, new_t, new_l);
+                            }
                         }
                     }
                 }
@@ -1745,4 +1772,105 @@ pub async fn isochrone_bulk_handler(
             )
                 .into_response()
         })
+}
+
+#[cfg(test)]
+mod phast_2ch_lex_tests {
+    //! #530: the 2-channel seeded bounded PHAST must apply the same
+    //! (time, then length) lexicographic tie-break as `/route` (query.rs)
+    //! and the bucket matrix (`SearchState2::relax`), so it cannot report a
+    //! LONGER length among equal-duration paths. Without the tie-break the
+    //! per-node length is first-arriving (PQ pop order), which lets the
+    //! PHAST-lopsided 2-channel matrix disagree with `/route` on ties.
+    use super::run_phast_bounded_fast_seeded_2ch;
+    use crate::formats::{ArcCow, WeightArray};
+    use crate::matrix::bucket_ch::{DownAdjFlat, UpAdjFlat};
+    use crate::profile_abi::Mode;
+
+    fn up_flat(offsets: Vec<u64>, targets: Vec<u32>, weights: Vec<u32>) -> UpAdjFlat {
+        UpAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: WeightArray::from_vec_u32(weights),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        }
+    }
+
+    fn down_flat(offsets: Vec<u64>, targets: Vec<u32>, weights: Vec<u32>) -> DownAdjFlat {
+        DownAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: WeightArray::from_vec_u32(weights),
+        }
+    }
+
+    #[test]
+    fn phast_2ch_picks_shorter_length_on_equal_time_tie() {
+        // 4-node CCH, node id == rank. All edges are UP (low→high rank):
+        //   0→1 (t=3, len=100)   0→2 (t=5, len=1)
+        //   1→3 (t=7, len=100)   2→3 (t=5, len=1)
+        // Node 3 is reachable via two EQUAL-TIME (=10) paths from seed 0:
+        //   via node 1: length 200 — and its prefix (t=3) pops FIRST, so the
+        //               order-dependent length would settle at 200.
+        //   via node 2: length   2 — pops second (prefix t=5).
+        // The lexicographic (time, then length) tie-break must report 2.
+        let up_t = up_flat(vec![0, 2, 3, 4, 4], vec![1, 2, 3, 3], vec![3, 5, 7, 5]);
+        let up_l = up_flat(vec![0, 2, 3, 4, 4], vec![1, 2, 3, 3], vec![100, 1, 100, 1]);
+        // No DOWN edges — this isolates the upward-phase tie.
+        let dn_t = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+        let dn_l = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+
+        let seeds = [(0u32, 0u32, 0u32)];
+        let out = run_phast_bounded_fast_seeded_2ch(
+            &up_t,
+            &dn_t,
+            &up_l,
+            &dn_l,
+            &seeds,
+            1000,
+            Mode::from_u8(0),
+        );
+        let node3 = out
+            .iter()
+            .find(|(r, _, _)| *r == 3)
+            .expect("node 3 must be settled within threshold");
+        assert_eq!(node3.1, 10, "duration is the primary key and must stay 10");
+        assert_eq!(
+            node3.2, 2,
+            "must report the SHORTER equal-time length (2), not the \
+             first-arriving 200"
+        );
+    }
+
+    #[test]
+    fn phast_2ch_shorter_length_arriving_first_is_kept() {
+        // Mirror image: the SHORTER path now pops first. The result must be
+        // unchanged (2), proving the tie-break never regresses a correct
+        // first-arriving length. Swap the per-edge times so via-node-2 (the
+        // shorter length) has the smaller prefix time.
+        let up_t = up_flat(vec![0, 2, 3, 4, 4], vec![1, 2, 3, 3], vec![5, 3, 5, 7]);
+        let up_l = up_flat(vec![0, 2, 3, 4, 4], vec![1, 2, 3, 3], vec![100, 1, 100, 1]);
+        let dn_t = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+        let dn_l = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+
+        let seeds = [(0u32, 0u32, 0u32)];
+        let out = run_phast_bounded_fast_seeded_2ch(
+            &up_t,
+            &dn_t,
+            &up_l,
+            &dn_l,
+            &seeds,
+            1000,
+            Mode::from_u8(0),
+        );
+        let node3 = out
+            .iter()
+            .find(|(r, _, _)| *r == 3)
+            .expect("node 3 must be settled within threshold");
+        assert_eq!(node3.1, 10, "duration must stay 10");
+        assert_eq!(
+            node3.2, 2,
+            "shorter length kept regardless of arrival order"
+        );
+    }
 }

@@ -4242,15 +4242,40 @@ impl SearchState2 {
     /// `true` if anything changed.
     #[inline]
     fn relax(&mut self, node: u32, dist: u32, lat: u32) -> bool {
-        let e = &mut self.entries[node as usize];
+        let nid = node as usize;
 
-        if e.version == self.current_version {
-            if dist < e.dist {
-                e.dist = dist;
-                self.lats[node as usize] = lat;
-                let handle = self.handles[node as usize];
+        if self.entries[nid].version == self.current_version {
+            let cur_dist = self.entries[nid].dist;
+            if dist < cur_dist {
+                self.entries[nid].dist = dist;
+                self.lats[nid] = lat;
+                let handle = self.handles[nid];
                 if handle != INVALID_HANDLE && (handle as usize) < self.heap.size() {
                     self.heap.decrease(handle, dist, node, &mut self.handles);
+                    self.pushes += 1;
+                }
+                return true;
+            }
+            // #529: lazy lexicographic (time, then lat) relaxation. At EQUAL
+            // time but strictly shorter length-along-time, adopt the shorter
+            // label so per-node lat becomes the min over all min-time paths
+            // (not the arbitrary first-arriving one). The join already
+            // lex-picks over meeting nodes; this makes the underlying
+            // per-node lat truly lex-minimal, so the 2-channel matrix agrees
+            // with /route's (time, then lat) P2P selection on ties. For
+            // strictly-positive arc times this fires only on genuine
+            // equal-duration ties (never for car/foot/bike), so non-tying
+            // modes are byte-identical to the pre-#529 path.
+            if dist == cur_dist && lat < self.lats[nid] {
+                self.lats[nid] = lat;
+                let handle = self.handles[nid];
+                if handle == INVALID_HANDLE || (handle as usize) >= self.heap.size() {
+                    // Node already settled (popped) — re-insert so the
+                    // shorter label propagates to its successors. A node in
+                    // the heap needs no touch: `pop` reads `self.lats[nid]`
+                    // fresh, so the improved lat rides along.
+                    self.handles[nid] = INVALID_HANDLE;
+                    self.heap.push(dist, node, &mut self.handles);
                     self.pushes += 1;
                 }
                 return true;
@@ -4258,10 +4283,10 @@ impl SearchState2 {
             return false;
         }
 
-        self.handles[node as usize] = INVALID_HANDLE;
-        e.dist = dist;
-        e.version = self.current_version;
-        self.lats[node as usize] = lat;
+        self.handles[nid] = INVALID_HANDLE;
+        self.entries[nid].dist = dist;
+        self.entries[nid].version = self.current_version;
+        self.lats[nid] = lat;
         self.heap.push(dist, node, &mut self.handles);
         self.pushes += 1;
         true

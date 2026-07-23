@@ -35,7 +35,7 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::formats::{
     ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
@@ -361,7 +361,29 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         let up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
         let down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
         (time_up, time_down, up_mid, down_mid)
+    } else if let Some((ref dist_up, ref dist_down)) = dist_pair_opt {
+        // #529: non-traffic build — elect middles by (time, then
+        // length-along-time). Seeds the length channel with the pre-relax
+        // bottom-up DISTANCE weights (length along the contraction
+        // decomposition), which are still owned by `dist_pair_opt` and
+        // consumed unchanged by the DISTANCE relaxation below. TIME
+        // weights are byte-identical to the time-only relaxation; only the
+        // elected middles change (shortest length among equal-time apexes).
+        println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
+        let tr_start = std::time::Instant::now();
+        let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
+            triangle_relax_lex_parallel(&topo, time_up, time_down, dist_up, dist_down, &rev_down);
+        println!(
+            "  ✓ {:.2}s, {} updates in {} passes",
+            tr_start.elapsed().as_secs_f64(),
+            time_relax_count,
+            time_relax_passes
+        );
+        (tu, td, tu_mid, td_mid)
     } else {
+        // Traffic recustomization (no DISTANCE channel available): keep the
+        // time-only middle election. Traffic modes seldom tie on duration,
+        // so the length tie-break is not needed here.
         println!("\n🔺 Triangle relaxation for TIME (parallel)...");
         let tr_start = std::time::Instant::now();
         let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
@@ -1172,6 +1194,240 @@ fn triangle_relax_parallel(
     let down_mid: Vec<u32> = atomic_down
         .iter()
         .map(|a| unpack_middle(a.load(Ordering::Relaxed)))
+        .collect();
+
+    (up, down, up_mid, down_mid, total_relaxations, pass)
+}
+
+/// Pack a (time, length) pair into a u64 for lexicographic `fetch_min`
+/// (time in the high 32 bits, length in the low 32). #529.
+#[inline]
+fn pack_tl(time: u32, len: u32) -> u64 {
+    ((time as u64) << 32) | (len as u64)
+}
+
+#[inline]
+fn tl_time(packed: u64) -> u32 {
+    (packed >> 32) as u32
+}
+
+#[inline]
+fn tl_len(packed: u64) -> u32 {
+    packed as u32
+}
+
+/// #529: TIME triangle relaxation with a (time, then length-along-time)
+/// lexicographic middle election.
+///
+/// The returned `up`/`down` TIME weights are identical to what
+/// [`triangle_relax_parallel`] produces (time is the PRIMARY key, so the
+/// length tie-break can never change a duration). Only the elected
+/// middles differ: among equal-time apexes we keep the one whose
+/// expansion has the SHORTEST length-along-time, with the smallest apex
+/// index as the final deterministic tie-break. This makes `/route`
+/// (which unpacks via these middles) and the 2-channel `/table`/matrix
+/// (which reads the length-along-time weights derived from these middles)
+/// agree on distance even when one-way-agnostic modes tie on duration.
+///
+/// Mechanism: pack (time, length) into one `AtomicU64` and `fetch_min`.
+/// Components are summed SEPARATELY (each `saturating_add`) and only
+/// packed for the comparison, so a length sum can never carry into the
+/// time field. `fetch_min` on the packed value is then exactly the
+/// lexicographic min of (time, length); (min-lex, +) is a valid
+/// shortest-path semiring because lexicographic order is preserved under
+/// componentwise addition, so the fixpoint converges to the lex-min
+/// (time, length) of every edge.
+///
+/// The middle is deliberately NOT tracked during relaxation — writing it
+/// alongside the packed `fetch_min` would race (a stale apex could be
+/// paired with the winning weight). Instead, after convergence a
+/// deterministic recovery pass elects, per shortcut edge, the SMALLEST
+/// apex whose two halves' packed values sum to the edge's converged
+/// packed value. That pass reads only converged (immutable) data, so it
+/// is race-free and reproducible.
+///
+/// `len_up`/`len_down` seed the length channel and MUST be the bottom-up
+/// length-along-contraction-middle weights (the pre-distance-relax
+/// values), so each seed `(time, length)` pair describes ONE real path
+/// (the contraction decomposition) and is therefore a consistent witness.
+fn triangle_relax_lex_parallel(
+    topo: &CchTopo,
+    time_up: Vec<u32>,
+    time_down: Vec<u32>,
+    len_up: &[u32],
+    len_down: &[u32],
+    rev_down: &ReverseDownAdj,
+) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
+    let n_nodes = topo.n_nodes as usize;
+
+    let atomic_up: Vec<AtomicU64> = time_up
+        .iter()
+        .zip(len_up.iter())
+        .map(|(&t, &l)| AtomicU64::new(pack_tl(t, l)))
+        .collect();
+    let atomic_down: Vec<AtomicU64> = time_down
+        .iter()
+        .zip(len_down.iter())
+        .map(|(&t, &l)| AtomicU64::new(pack_tl(t, l)))
+        .collect();
+
+    let mut total_relaxations = 0u64;
+    let mut pass = 0u32;
+
+    loop {
+        pass += 1;
+        let pass_updates = AtomicU64::new(0);
+
+        (0..n_nodes).into_par_iter().for_each(|m| {
+            let rev_start = rev_down.offsets[m] as usize;
+            let rev_end = rev_down.offsets[m + 1] as usize;
+
+            for i_rev in rev_start..rev_end {
+                let x = rev_down.sources[i_rev] as usize;
+                let edge_idx_xm = rev_down.edge_idx[i_rev];
+                let p_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+                let t_xm = tl_time(p_xm);
+                if t_xm == u32::MAX {
+                    continue;
+                }
+                let l_xm = tl_len(p_xm);
+
+                let up_start = topo.up_offsets[m] as usize;
+                let up_end = topo.up_offsets[m + 1] as usize;
+
+                for i_my in up_start..up_end {
+                    let y = topo.up_targets[i_my] as usize;
+                    if y == x {
+                        continue;
+                    }
+                    let p_my = atomic_up[i_my].load(Ordering::Relaxed);
+                    let t_my = tl_time(p_my);
+                    if t_my == u32::MAX {
+                        continue;
+                    }
+
+                    // Components summed separately (no cross-field carry),
+                    // then packed only for the lexicographic comparison.
+                    let new_time = t_xm.saturating_add(t_my);
+                    let new_len = l_xm.saturating_add(tl_len(p_my));
+                    let new_packed = pack_tl(new_time, new_len);
+
+                    if y > x {
+                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
+                        {
+                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
+                            if new_packed < old {
+                                pass_updates.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    } else if let Some(idx) =
+                        find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
+                    {
+                        let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
+                        if new_packed < old {
+                            pass_updates.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        });
+
+        let pu = pass_updates.into_inner();
+        println!("  Pass {}: {} updates", pass, pu);
+        total_relaxations += pu;
+
+        if pu == 0 {
+            break;
+        }
+    }
+
+    // ---- Deterministic middle recovery (race-free) -------------------
+    // For every shortcut edge, elect the SMALLEST apex whose two halves'
+    // converged packed values sum EXACTLY to the edge's converged packed
+    // value. Reads only immutable converged atomics, so `fetch_min` on the
+    // apex index is fully deterministic (smallest apex wins).
+    let n_up = topo.up_targets.len();
+    let n_down = topo.down_targets.len();
+    let mid_up: Vec<AtomicU32> = (0..n_up).map(|_| AtomicU32::new(u32::MAX)).collect();
+    let mid_down: Vec<AtomicU32> = (0..n_down).map(|_| AtomicU32::new(u32::MAX)).collect();
+
+    (0..n_nodes).into_par_iter().for_each(|m| {
+        let rev_start = rev_down.offsets[m] as usize;
+        let rev_end = rev_down.offsets[m + 1] as usize;
+        for i_rev in rev_start..rev_end {
+            let x = rev_down.sources[i_rev] as usize;
+            let edge_idx_xm = rev_down.edge_idx[i_rev];
+            let p_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
+            let t_xm = tl_time(p_xm);
+            if t_xm == u32::MAX {
+                continue;
+            }
+            let l_xm = tl_len(p_xm);
+
+            let up_start = topo.up_offsets[m] as usize;
+            let up_end = topo.up_offsets[m + 1] as usize;
+            for i_my in up_start..up_end {
+                let y = topo.up_targets[i_my] as usize;
+                if y == x {
+                    continue;
+                }
+                let p_my = atomic_up[i_my].load(Ordering::Relaxed);
+                let t_my = tl_time(p_my);
+                if t_my == u32::MAX {
+                    continue;
+                }
+                let cand = pack_tl(t_xm.saturating_add(t_my), l_xm.saturating_add(tl_len(p_my)));
+
+                if y > x {
+                    if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
+                        && topo.up_is_shortcut.bit(idx)
+                        && cand == atomic_up[idx].load(Ordering::Relaxed)
+                    {
+                        mid_up[idx].fetch_min(m as u32, Ordering::Relaxed);
+                    }
+                } else if let Some(idx) =
+                    find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
+                    && topo.down_is_shortcut.bit(idx)
+                    && cand == atomic_down[idx].load(Ordering::Relaxed)
+                {
+                    mid_down[idx].fetch_min(m as u32, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    let up: Vec<u32> = atomic_up
+        .iter()
+        .map(|a| tl_time(a.load(Ordering::Relaxed)))
+        .collect();
+    let down: Vec<u32> = atomic_down
+        .iter()
+        .map(|a| tl_time(a.load(Ordering::Relaxed)))
+        .collect();
+    // Shortcut edges take the recovered lex-min-length apex; non-shortcut
+    // edges keep the contraction middle (unpack ignores it — it gates on
+    // is_shortcut first — but we preserve the array shape). A shortcut with
+    // no recovered apex (must not happen) falls back to the contraction
+    // middle rather than an invalid u32::MAX.
+    let up_mid: Vec<u32> = (0..n_up)
+        .map(|i| {
+            let m = mid_up[i].load(Ordering::Relaxed);
+            if m != u32::MAX {
+                m
+            } else {
+                topo.up_middle.get(i)
+            }
+        })
+        .collect();
+    let down_mid: Vec<u32> = (0..n_down)
+        .map(|i| {
+            let m = mid_down[i].load(Ordering::Relaxed);
+            if m != u32::MAX {
+                m
+            } else {
+                topo.down_middle.get(i)
+            }
+        })
         .collect();
 
     (up, down, up_mid, down_mid, total_relaxations, pass)
@@ -2139,5 +2395,93 @@ mod len_along_time_middle_tests {
             a, b,
             "recompute with identical middles must be bit-for-bit stable"
         );
+    }
+
+    // ---- #529: (time, then length) lexicographic middle election --------
+    //
+    // The reused `topo_4node` has a single UP shortcut 2→3 expandable
+    // through apex 0 or apex 1. `triangle_relax_lex_parallel` is seeded
+    // with per-edge (time, length) and must, among EQUAL-TIME apexes,
+    // elect the SHORTER-length one — and do so deterministically (smallest
+    // apex index on a length tie). These are the invariants that make
+    // `/route` and the 2-channel `/table` agree on one-way-agnostic ties.
+
+    /// Run the lex relaxation on `topo_4node` with the given seeds and
+    /// return `(time_up, up_middles)`.
+    fn run_lex(
+        time_up: Vec<u32>,
+        time_down: Vec<u32>,
+        len_up: Vec<u32>,
+        len_down: Vec<u32>,
+    ) -> (Vec<u32>, Vec<u32>) {
+        let topo = topo_4node();
+        let rev_down = build_reverse_down_adj_for_relax(&topo);
+        let (up, _down, up_mid, _down_mid, _c, _p) =
+            triangle_relax_lex_parallel(&topo, time_up, time_down, &len_up, &len_down, &rev_down);
+        (up, up_mid)
+    }
+
+    #[test]
+    fn lex_election_prefers_shorter_length_among_equal_time() {
+        // apex 0: time 3+7=10, length 3+10=13
+        // apex 1: time 5+5=10, length 5+100=105   (EQUAL time, longer)
+        // Shortcut seeded via the LONGER apex 1 (time 10, len 105); the
+        // relaxation must switch it to apex 0 (same time, shorter length).
+        let (up, up_mid) = run_lex(
+            vec![7, 5, 10], // up:  0→3, 1→3, shortcut 2→3 (seed = apex 1)
+            vec![3, 5],     // down: 2→0, 2→1
+            vec![10, 100, 105],
+            vec![3, 5],
+        );
+        assert_eq!(up[2], 10, "duration must NOT change (time is primary)");
+        assert_eq!(
+            up_mid[2], 0,
+            "must elect apex 0 — the shorter equal-time expansion"
+        );
+    }
+
+    #[test]
+    fn lex_election_is_not_hardwired_to_apex_zero() {
+        // Mirror image: equal times (both 10), but apex 1 is now the shorter
+        // expansion, so the election must pick apex 1 (not a hardcoded 0).
+        // apex 0: time 5+5=10, length 5+100=105
+        // apex 1: time 5+5=10, length 3+10=13   (shorter)
+        let (up, up_mid) = run_lex(
+            vec![5, 5, 10],     // up 0→3 t=5, 1→3 t=5, shortcut seed t=10
+            vec![5, 5],         // down 2→0 t=5, 2→1 t=5  → both apexes time 10
+            vec![100, 10, 999], // up lens: 0→3=100, 1→3=10, shortcut seed worse
+            vec![5, 3],         // down lens: 2→0=5, 2→1=3
+        );
+        assert_eq!(up[2], 10, "duration unchanged");
+        assert_eq!(
+            up_mid[2], 1,
+            "must elect apex 1 — the shorter equal-time expansion"
+        );
+    }
+
+    #[test]
+    fn lex_election_length_tie_breaks_to_smallest_apex_and_is_deterministic() {
+        // Both apexes give the IDENTICAL (time, length) = (10, 10). The final
+        // tie-break must be the smallest apex index, and reproducible.
+        let seeds = || {
+            (
+                vec![7u32, 5, 999], // times: 0→3=7, 1→3=5, shortcut seed worse
+                vec![3u32, 5],      // times: 2→0=3, 2→1=5 → apex0=10, apex1=10
+                vec![6u32, 6, 999], // lens:  0→3=6, 1→3=6
+                vec![4u32, 4],      // lens:  2→0=4, 2→1=4 → apex0=10, apex1=10
+            )
+        };
+        let (a_up, a_mid) = {
+            let (t_u, t_d, l_u, l_d) = seeds();
+            run_lex(t_u, t_d, l_u, l_d)
+        };
+        let (b_up, b_mid) = {
+            let (t_u, t_d, l_u, l_d) = seeds();
+            run_lex(t_u, t_d, l_u, l_d)
+        };
+        assert_eq!(a_up[2], 10, "duration unchanged");
+        assert_eq!(a_mid[2], 0, "equal (time,length): smallest apex index wins");
+        assert_eq!(a_up, b_up, "time weights must be reproducible");
+        assert_eq!(a_mid, b_mid, "elected middles must be reproducible");
     }
 }
