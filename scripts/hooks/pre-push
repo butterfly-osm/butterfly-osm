@@ -1,0 +1,18 @@
+#!/bin/bash
+# LOCAL CI — mirrors .github/workflows/ci.yml (issue #485) so a break is
+# caught BEFORE it reaches main, without relying on the remote runner or a
+# rule bypass. Install: scripts/hooks/install.sh (or make it your
+# core.hooksPath). Skip a single push with BUTTERFLY_NO_VERIFY=1 (emergencies
+# only — the remote build-test check still gates the PR).
+set -uo pipefail
+[ "${BUTTERFLY_NO_VERIFY:-0}" = "1" ] && { echo "[pre-push] SKIPPED (BUTTERFLY_NO_VERIFY=1)"; exit 0; }
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+echo "[pre-push] local CI — fmt, clippy, build, tests (mirrors ci.yml)…"
+step () { echo "[pre-push] → $1"; shift; "$@" || { echo "[pre-push] ✗ FAILED: $*"; echo "[pre-push] push aborted. Fix, or BUTTERFLY_NO_VERIFY=1 git push to force."; exit 1; }; }
+step "rustfmt --check"        cargo fmt --all -- --check
+step "clippy (deny warnings)" cargo clippy --workspace --all-targets --all-features
+step "build (workspace)"      cargo build --workspace
+step "test (butterfly-route)" cargo test -p butterfly-route --lib
+step "test (dl + common)"     cargo test -p butterfly-dl -p butterfly-common
+echo "[pre-push] ✓ all local CI checks passed"
