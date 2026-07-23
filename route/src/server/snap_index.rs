@@ -659,6 +659,15 @@ impl PackedSnapIndex {
         // for /table (200+ snaps per request).
         let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
         let mut best: Vec<(u32, f64, f64, f64, f64)> = Vec::with_capacity(k * 2); // (ebg_id, plon, plat, d, d²)
+        // #525: current K-th smallest d² (INFINITY until k distinct edges
+        // seen). It only ever DECREASES, which gives the cheap reject below:
+        // a sample with d² >= kth can never enter the final top-K, and an
+        // update to an existing entry from such a sample can never change
+        // top-K membership either. Without this, the per-sample select_nth
+        // over an unbounded dedup vec was O(samples × edges) — quadratic in
+        // dense cells, 2.8 s per 450 m foot route in Brussels centre (bike
+        // /nearest: 11 s), while car escaped via its sparser mask.
+        let mut kth_d2 = f64::INFINITY;
 
         self.iterate_rings(lon, lat, |sample_idx, p| -> Option<f64> {
             if !mask_bit_set(&mask.bits, sample_idx) {
@@ -678,34 +687,60 @@ impl PackedSnapIndex {
             if d2 > max2 {
                 return None;
             }
-            // Update per-edge best: linear scan keeps tie-breaking
-            // deterministic (first-encountered wins on exact ties),
-            // and K is small (≤ 64) so the linear scan beats a heap
-            // by ~2x in microbenchmarks.
-            let mut updated = false;
+            // Per-edge dedup scan — the admission rule below keeps this vec
+            // bounded (~k..4k entries), so this is O(k) per sample, not
+            // O(edges). Tie-breaking stays deterministic (first-encountered
+            // wins on exact ties).
+            let mut improved = false;
+            let mut present = false;
             for entry in best.iter_mut() {
                 if entry.0 == p.ebg_id {
+                    present = true;
                     if d2 < entry.4 {
+                        // ALWAYS apply improving updates to tracked edges —
+                        // entries must carry their true per-edge min, or the
+                        // final top-K selection ranks stale values (observed
+                        // as sub-metre candidate jitter at the K boundary).
                         *entry = (p.ebg_id, plon, plat, d2.sqrt(), d2);
+                        improved = d2 < kth_d2;
                     }
-                    updated = true;
                     break;
                 }
             }
-            if !updated {
+            if !present {
+                if best.len() >= k && d2 >= kth_d2 {
+                    // NEW edge at or beyond the current K-th best: kth only
+                    // ever decreases, so this edge's min over its remaining
+                    // samples here is >= final kth — it can never enter the
+                    // top-K. O(1) reject; still feed the ring early-exit.
+                    return Some(kth_d2);
+                }
                 best.push((p.ebg_id, plon, plat, d2.sqrt(), d2));
+                improved = true;
             }
-            // Return the K-th smallest d² once we have ≥k distinct
-            // edges — drives iterate_rings' early-exit without losing
-            // any candidate that would have made it into the top-K.
+            // Recompute the K-th smallest d² only when something moved
+            // below it — rare instead of per-sample (#525: the per-sample
+            // select_nth over an unbounded vec was quadratic in dense
+            // cells: 2.8 s per 450 m foot route in Brussels, 11 s bike
+            // /nearest; car escaped via its sparser mask).
             if best.len() >= k {
-                let mut ds: Vec<f64> = best.iter().map(|e| e.4).collect();
-                // select_nth_unstable is O(n), faster than sort for our
-                // small `k * 2`-ish vec. Use the K-th smallest.
-                ds.select_nth_unstable_by(k - 1, |a, b| {
-                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                Some(ds[k - 1])
+                if improved || kth_d2.is_infinite() {
+                    let mut ds: Vec<f64> = best.iter().map(|e| e.4).collect();
+                    ds.select_nth_unstable_by(k - 1, |a, b| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    kth_d2 = ds[k - 1];
+                    // Bound the dedup vec: entries STRICTLY beyond the
+                    // current kth can never make the final top-K. A pruned
+                    // edge only re-enters with d² < kth, and any of its
+                    // samples in [kth, old value) are >= final kth — so
+                    // per-edge mins stay exact for every possible top-K
+                    // member.
+                    if best.len() >= 4 * k.max(16) {
+                        best.retain(|e| e.4 <= kth_d2);
+                    }
+                }
+                Some(kth_d2)
             } else {
                 None
             }
