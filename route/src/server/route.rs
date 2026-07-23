@@ -67,6 +67,12 @@ pub struct RouteRequest {
     /// Include debug information in response
     #[serde(default)]
     debug: bool,
+    /// Uncertainty bands (#521): set to "bands" to also return
+    /// duration_q25_s / duration_q75_s (TIME quantiles of the diurnal
+    /// distribution, computed on hidden q75-/q25-speed weight sets).
+    /// Explicit opt-in: costs two extra P2P queries. car only.
+    #[serde(default)]
+    uncertainty: Option<String>,
 }
 
 pub fn default_alternatives() -> u32 {
@@ -140,6 +146,12 @@ pub struct RouteResponse {
     /// Debug information (only present if debug=true in request)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<RouteDebugInfo>,
+    /// Optimistic travel time (25th TIME percentile) — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_q25_s: Option<f64>,
+    /// Pessimistic travel time (75th TIME percentile) — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_q75_s: Option<f64>,
 }
 
 /// An alternative route
@@ -213,6 +225,7 @@ pub struct StepManeuver {
         ("annotations" = Option<String>, Query, description = "Per-edge annotations: comma-separated list of 'duration', 'distance', 'speed', 'nodes'", example = json!(null)),
         ("bearings" = Option<String>, Query, description = "Bearing hints: 'angle,range;angle,range' (source;destination). Filters snap by edge bearing.", example = json!(null)),
         ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
+        ("uncertainty" = Option<String>, Query, description = "Set to 'bands' to also return duration_q25_s/duration_q75_s (diurnal TIME quantiles; car only; 2 extra queries)", example = json!(null)),
     ),
     responses(
         (status = 200, description = "Route found", body = RouteResponse),
@@ -418,6 +431,66 @@ pub async fn route_handler(
 
     let mode_data = state.get_mode(mode);
     let num_alternatives = (req.alternatives.min(5)) as usize;
+
+    // #521 uncertainty bands — explicit opt-in, plain car path only.
+    let band_durations: Option<(f64, f64)> = match req.uncertainty.as_deref() {
+        None => None,
+        Some("bands") => {
+            if req.mode != "car"
+                || req.traffic.is_some()
+                || req.avoid_polygons.is_some()
+                || req.exclude.is_some()
+                || req.bearings.is_some()
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "uncertainty=bands is car-only and incompatible with traffic/avoid_polygons/exclude/bearings".into(),
+                    }),
+                )
+                    .into_response();
+            }
+            let Some((pess, opt)) = state.band_modes() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".into(),
+                    }),
+                )
+                    .into_response();
+            };
+            // TIME quantiles: optimistic (q25 time) <- fluid q75-speed set.
+            let q25 = band_p2p_duration(
+                &state,
+                opt,
+                req.origin_lon,
+                req.origin_lat,
+                req.destination_lon,
+                req.destination_lat,
+            );
+            let q75 = band_p2p_duration(
+                &state,
+                pess,
+                req.origin_lon,
+                req.origin_lat,
+                req.destination_lon,
+                req.destination_lat,
+            );
+            match (q25, q75) {
+                (Some(a), Some(b)) => Some((a, b)),
+                _ => None,
+            }
+        }
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     // Compute avoid weights — time-only for P2P route (skip distance + flat adj).
     // Uses sparse triangle relaxation; #238 fix made pass 1 of sparse mark every
@@ -678,6 +751,8 @@ pub async fn route_handler(
             geometry: point_geom,
             steps: if req.steps { Some(vec![]) } else { None },
             annotations: None,
+            duration_q25_s: None,
+            duration_q75_s: None,
             alternatives: None,
             debug: debug_info,
         })
@@ -941,6 +1016,8 @@ pub async fn route_handler(
                     geometry,
                     steps: if req.steps { Some(vec![]) } else { None },
                     annotations: None,
+                    duration_q25_s: band_durations.map(|b| b.0),
+                    duration_q75_s: band_durations.map(|b| b.1),
                     alternatives: None,
                     debug: debug_info,
                 })
@@ -1341,6 +1418,8 @@ pub async fn route_handler(
         annotations: route_annotations,
         alternatives,
         debug: debug_info,
+        duration_q25_s: band_durations.map(|b| b.0),
+        duration_q75_s: band_durations.map(|b| b.1),
     })
     .into_response()
 }
@@ -1565,6 +1644,8 @@ fn cross_region_route_inner(
         geometry: geom,
         steps: None,
         annotations: None,
+        duration_q25_s: None,
+        duration_q75_s: None,
         alternatives: None,
         debug: None,
     })
@@ -1966,6 +2047,86 @@ fn get_edge_bearing(
 }
 
 /// Compute bearing between two points (degrees 0-359)
+/// #521: one seeded P2P duration on a HIDDEN band weight set. Full
+/// re-query (snap -> phantoms -> seeded bidirectional), so the number is
+/// exactly what the engine would serve in that band's world — including a
+/// possibly different optimal path (in the pessimistic world you reroute
+/// too). Plain path only: bearings/avoid/exclude reject bands upstream.
+pub(crate) fn band_p2p_duration(
+    state: &ServerState,
+    band: crate::profile_abi::Mode,
+    o_lon: f64,
+    o_lat: f64,
+    d_lon: f64,
+    d_lat: f64,
+) -> Option<f64> {
+    let md = state.get_mode(band);
+    let src_rf = SnapRole::Src.role_filter(&md);
+    let dst_rf = SnapRole::Dst.role_filter(&md);
+    let src_k = state.snap_index.snap_k_with_info_filtered_role(
+        o_lon,
+        o_lat,
+        band.0,
+        8,
+        Some(&md.mask),
+        src_rf,
+    );
+    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
+        d_lon,
+        d_lat,
+        band.0,
+        8,
+        Some(&md.mask),
+        dst_rf,
+    );
+    let sp = super::phantom::phantom_from_candidates(
+        state,
+        &md,
+        &src_k,
+        o_lon,
+        o_lat,
+        super::types::SnapRole::Src,
+        Some(&md.mask),
+    )?;
+    let dp = super::phantom::phantom_from_candidates(
+        state,
+        &md,
+        &dst_k,
+        d_lon,
+        d_lat,
+        super::types::SnapRole::Dst,
+        Some(&md.mask),
+    )?;
+    let mut direct: Option<u32> = None;
+    for sseed in &sp.seeds {
+        if !sseed.direct_ok {
+            continue;
+        }
+        if let Some(dseed) = dp.seed_of(sseed.ebg_id)
+            && dseed.direct_ok
+            && dseed.frac >= sseed.frac
+        {
+            let w = md.node_weights[sseed.ebg_id as usize] as f64;
+            let c = ((dseed.frac - sseed.frac) * w).round() as u32;
+            if direct.is_none_or(|bc| c < bc) {
+                direct = Some(c);
+            }
+        }
+    }
+    let (src_seeds, _) = sp.query_seeds_and_shift(super::types::SnapRole::Src);
+    let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(super::types::SnapRole::Dst);
+    let query = CchQuery::new(&md);
+    let seeded = query
+        .query_seeded(&src_seeds, &dst_seeds, false)
+        .map(|r| r.distance.saturating_sub(dst_shift));
+    match (direct, seeded) {
+        (Some(d), Some(sd)) => Some(d.min(sd) as f64),
+        (Some(d), None) => Some(d as f64),
+        (None, Some(sd)) => Some(sd as f64),
+        (None, None) => None,
+    }
+}
+
 pub fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> u16 {
     let lat1_r = lat1.to_radians();
     let lat2_r = lat2.to_radians();

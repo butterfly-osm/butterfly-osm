@@ -10,6 +10,24 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-07-23 — Uncertainty bands: single car profile + opt-in Q1/Q3 (#521, dev)
+
+ONE public car profile (the demand-weighted median). `uncertainty=bands` on
+`/route`, `POST /table`, `GET /isochrone`, `POST /trip` adds diurnal TIME
+quantiles (q25 optimistic / q75 pessimistic) computed on two HIDDEN weight
+sets registered at boot from optional `speed_ratio_q25/q75` columns of
+`edge_speeds.parquet` (same clean base, same #481 turn correction, same
+#524 time_scale; slots absent from `mode_lookup`, so no `?mode=` reaches
+them). Default responses are byte-identical to before — bands are an
+explicit opt-in because they cost real compute (2 extra passes). `/route`
+and `/trip` band numbers are full re-queries (the band's world may
+legitimately reroute); isochrones return nested tagged contour features.
+Validated on Belgium: 0 monotonicity violations over routes/table/trip,
+optimistic ⊇ median ⊇ pessimistic isochrone nesting, full gate PASS with
+defaults untouched. Dev-only until the diurnal uplift models fatten with
+survey accumulation (band width is honest but narrow off-corridor —
+uplift spatial-CV R² 0.37/0.25). Flight band columns: follow-up on #521.
+
 ### 2026-07-23 — Route geometry closure, engine-keyed calibration, global time_scale (#521–#524)
 
 - **Foot/route consistency (#522/#523)**: `/route` now clips the polyline,

@@ -303,6 +303,11 @@ pub struct ServerState {
     // `Arc<ModeData>` — holding the Arc keeps the mode alive even if
     // the compactor races to evict.
     pub modes: Vec<ModeSlot>,
+    // #521 uncertainty bands: hidden variant slots (NOT in mode_lookup, so
+    // unreachable via ?mode=). pess = q25-speed weights (slower world),
+    // opt = q75-speed. None until register_car_bands_from_edge_speeds runs.
+    pub band_pess_idx: Option<usize>,
+    pub band_opt_idx: Option<usize>,
     /// Mode names indexed by mode_index (alphabetically sorted)
     pub mode_names: Vec<String>,
     /// Mode name → mode index lookup
@@ -653,6 +658,8 @@ impl ServerState {
             edge_osm: crate::server::edge_osm::EdgeOsmChains::empty(),
             nbg_node_to_osm,
             modes: modes_slots,
+            band_pess_idx: None,
+            band_opt_idx: None,
             mode_names,
             mode_lookup,
             snap_index,
@@ -1610,6 +1617,8 @@ impl ServerState {
             edge_osm,
             nbg_node_to_osm,
             modes: modes_slots,
+            band_pess_idx: None,
+            band_opt_idx: None,
             mode_names,
             mode_lookup,
             snap_index,
@@ -1945,6 +1954,7 @@ impl ServerState {
         base: &ModeData,
         edge_speeds_path: &std::path::Path,
         cache_file: &str,
+        column: EdgeTableColumn,
     ) -> Result<(usize, crate::formats::CchWeights, Vec<u32>)> {
         let mmap = self
             ._mmap_arc
@@ -1965,7 +1975,7 @@ impl ServerState {
             .get("mode/car/weights.time")
             .map(|e| e.crc)
             .unwrap_or(0);
-        let cache_key = recustomize_edge_cache_key(edge_speeds_path, car_weights_crc);
+        let cache_key = recustomize_edge_cache_key(edge_speeds_path, car_weights_crc, cache_file);
         let cached = cache_key.and_then(|k| read_recustomize_cache(&cache_path, k));
 
         let (matched, new_weights, adjusted_node_weights) = if let Some((p, w, nw)) = cached {
@@ -1989,14 +1999,30 @@ impl ServerState {
             // read_edge_speeds enforces exactly one column type per table.
             let mut lut: std::collections::HashMap<(i64, i64), f32> =
                 std::collections::HashMap::with_capacity(rows.len());
-            let table_is_ratio = rows[0].ratio.is_some();
+            // Band columns (#521) are always ratios; the median column is
+            // whichever single value type the reader validated.
+            let table_is_ratio = match column {
+                EdgeTableColumn::Median => rows[0].ratio.is_some(),
+                _ => true,
+            };
             for r in &rows {
-                let v = r
-                    .ratio
-                    .or(r.speed_kmh)
-                    .expect("reader guarantees one value");
-                lut.insert((r.from, r.to), v);
+                let v = match column {
+                    EdgeTableColumn::Median => Some(
+                        r.ratio
+                            .or(r.speed_kmh)
+                            .expect("reader guarantees one value"),
+                    ),
+                    EdgeTableColumn::Q25 => r.q25,
+                    EdgeTableColumn::Q75 => r.q75,
+                };
+                if let Some(v) = v {
+                    lut.insert((r.from, r.to), v);
+                }
             }
+            anyhow::ensure!(
+                !lut.is_empty(),
+                "edge recustomize: no values for column {column:?}"
+            );
 
             // #481: sensors measure DOOR-TO-DOOR speed — their slowdown
             // includes junction dwell that this edge-based engine ALREADY
@@ -2223,6 +2249,7 @@ impl ServerState {
                 &base,
                 edge_speeds_path,
                 "recustomize_cache.car-edge-rush.v3.bin",
+                EdgeTableColumn::Median,
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2305,6 +2332,7 @@ impl ServerState {
                 &base,
                 edge_speeds_path,
                 "recustomize_cache.car-edge-eq.v3.bin",
+                EdgeTableColumn::Median,
             )?;
 
         let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
@@ -2341,6 +2369,107 @@ impl ServerState {
         Ok(matched)
     }
 
+    /// #521 uncertainty bands: register TWO HIDDEN variant weight sets from
+    /// the optional speed_ratio_q25/q75 columns of the SAME edge_speeds
+    /// table — q25-speed (congested tail -> pessimistic TIME) and q75-speed
+    /// (fluid -> optimistic). Same clean base, same #481 turn correction,
+    /// same #524 time_scale as the median. The slots are pushed into
+    /// `modes` but NEVER into `mode_lookup`, so no `?mode=` can reach them:
+    /// the ONLY public car profile stays the median; bands are an explicit
+    /// opt-in (`uncertainty=bands`) because they cost real compute.
+    pub fn register_car_bands_from_edge_speeds(
+        &mut self,
+        edge_speeds_path: &std::path::Path,
+    ) -> Result<()> {
+        let t0 = std::time::Instant::now();
+        if !crate::calibrate::edge_table_has_bands(edge_speeds_path)? {
+            tracing::info!("no band columns in edge_speeds table — bands not registered");
+            return Ok(());
+        }
+        anyhow::ensure!(self.band_pess_idx.is_none(), "bands already registered");
+        let ff_idx = *self
+            .mode_lookup
+            .get("car_freeflow")
+            .ok_or_else(|| anyhow::anyhow!("bands registration: no 'car_freeflow' base"))?
+            as usize;
+        let car_idx = *self
+            .mode_lookup
+            .get("car")
+            .ok_or_else(|| anyhow::anyhow!("bands registration: no 'car' mode"))?
+            as usize;
+        let base: std::sync::Arc<ModeData> = self.modes[ff_idx]
+            .state
+            .read()
+            .as_ref()
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| anyhow::anyhow!("bands registration: car_freeflow not resident"))?;
+
+        for (column, cache_file, slot_name) in [
+            (
+                EdgeTableColumn::Q25,
+                "recustomize_cache.car-edge-bandpess.v3.bin",
+                "car#band_pess",
+            ),
+            (
+                EdgeTableColumn::Q75,
+                "recustomize_cache.car-edge-bandopt.v3.bin",
+                "car#band_opt",
+            ),
+        ] {
+            let (matched, new_weights, adjusted_node_weights) = self
+                .recustomized_weights_from_edge_table(
+                    &base,
+                    edge_speeds_path,
+                    cache_file,
+                    column,
+                )?;
+            let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+            let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
+            let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
+            let mut band = clone_mode_data(&base);
+            band.cch_weights = new_weights;
+            band.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
+            band.up_adj_flat = up_adj_flat;
+            band.down_rev_flat = down_rev_flat;
+            band.down_adj_flat = down_adj_flat;
+
+            let new_index = self.modes.len();
+            let slot = ModeSlot::new_loaded_variant(slot_name.to_string(), band);
+            slot.evictable
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            self.modes.push(slot);
+            // Deliberately NOT inserted into mode_lookup (hidden from ?mode=).
+            self.mode_names.push(slot_name.to_string());
+            if let Some(mask) = self.snap_index.masks.get(car_idx).cloned() {
+                self.snap_index.masks.push(mask);
+            } else {
+                tracing::warn!("car snap mask missing — band snapping degraded");
+            }
+            match column {
+                EdgeTableColumn::Q25 => self.band_pess_idx = Some(new_index),
+                _ => self.band_opt_idx = Some(new_index),
+            }
+            tracing::info!(
+                matched,
+                slot = slot_name,
+                "registered hidden uncertainty band (#521)"
+            );
+        }
+        tracing::info!(
+            elapsed_s = t0.elapsed().as_secs_f64(),
+            "uncertainty bands ready (opt-in via uncertainty=bands)"
+        );
+        Ok(())
+    }
+
+    /// (pessimistic, optimistic) band Modes, if registered (#521).
+    pub fn band_modes(&self) -> Option<(Mode, Mode)> {
+        match (self.band_pess_idx, self.band_opt_idx) {
+            (Some(p), Some(o)) => Some((Mode(p as u8), Mode(o as u8))),
+            _ => None,
+        }
+    }
+
     pub fn recustomize_car_from_edge_speeds(
         &self,
         edge_speeds_path: &std::path::Path,
@@ -2362,6 +2491,7 @@ impl ServerState {
                 &base,
                 edge_speeds_path,
                 "recustomize_cache.car-edge.v3.bin",
+                EdgeTableColumn::Median,
             )?;
 
         // 4. Flats + swap + pin (same as the per-way path).
@@ -4246,9 +4376,24 @@ const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
 /// internal — it changes with every rebuilt artifact, so the cache
 /// invalidates correctly without depending on deploy-side conventions.
 /// `None` (unreadable parquet) disables the cache for this boot.
-fn recustomize_edge_cache_key(path: &std::path::Path, car_weights_crc: u64) -> Option<u64> {
+/// Which value column of the edge_speeds table to recustomize from (#521):
+/// the median (contract base) or one of the optional SPEED-domain band
+/// quantiles (q25 = congested tail -> pessimistic TIME, q75 = fluid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeTableColumn {
+    Median,
+    Q25,
+    Q75,
+}
+
+fn recustomize_edge_cache_key(
+    path: &std::path::Path,
+    car_weights_crc: u64,
+    cache_file: &str,
+) -> Option<u64> {
     let mut d = crate::formats::crc::Digest::new();
     d.update(b"recustomize-car-edge-v3"); // v3: #524 global time_scale (links + turns)
+    d.update(cache_file.as_bytes()); // column/variant identity (#521 bands)
     d.update(&std::fs::read(path).ok()?);
     d.update(&car_weights_crc.to_le_bytes());
     Some(d.finalize())

@@ -365,6 +365,11 @@ pub struct TripRequest {
     /// Avoid polygon(s) as JSON array of coordinate rings
     #[serde(default)]
     pub avoid_polygons: Option<String>,
+    /// Uncertainty bands (#521): "bands" adds duration_q25/duration_q75 on
+    /// the optimized trip (per-leg re-queries on hidden band weight sets).
+    /// Explicit opt-in. car only.
+    #[serde(default)]
+    pub uncertainty: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -424,6 +429,12 @@ pub struct Trip {
     /// Percentage improvement from 2-opt over greedy
     #[schema(example = 12.3)]
     pub improvement_pct: f64,
+    /// Optimistic total (25th TIME percentile) — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_q25: Option<f64>,
+    /// Pessimistic total (75th TIME percentile) — only with uncertainty=bands
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_q75: Option<f64>,
 }
 
 /// A leg connecting two consecutive waypoints in the trip
@@ -588,6 +599,51 @@ pub async fn trip_handler(
             )
                 .into_response();
         }
+    };
+
+    // #521 bands: validate + resolve BEFORE fields are moved out of req.
+    let bands_requested = match req.uncertainty.as_deref() {
+        None => false,
+        Some("bands") => {
+            if req.mode != "car" || req.exclude.is_some() || req.avoid_polygons.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "code": "InvalidOptions",
+                        "message": "uncertainty=bands is car-only and incompatible with exclude/avoid_polygons"
+                    })),
+                )
+                    .into_response();
+            }
+            true
+        }
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "InvalidOptions",
+                    "message": format!("unknown uncertainty value '{other}' (expected 'bands')")
+                })),
+            )
+                .into_response();
+        }
+    };
+    let band_modes = if bands_requested {
+        match state.band_modes() {
+            Some(pair) => Some(pair),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "code": "InvalidOptions",
+                        "message": "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
     };
 
     // Extract owned values before the spawn_blocking closure
@@ -1103,6 +1159,9 @@ pub async fn trip_handler(
             weight: total_duration_s as f64,
             weight_name: "duration".to_string(),
             improvement_pct: tsp_result.improvement_pct,
+
+            duration_q25: None,
+            duration_q75: None,
         };
 
         Ok(TripResponse {
@@ -1118,7 +1177,38 @@ pub async fn trip_handler(
     .await;
 
     let resp = match blocking_result {
-        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Ok(mut response)) => {
+            // #521 bands: re-query each leg of the optimized order on the
+            // hidden band weight sets and attach total-time quantiles.
+            if bands_requested
+                && let Some((pess, opt)) = band_modes
+                && let Some(trip) = response.trips.first_mut()
+            {
+                let mut order: Vec<(usize, [f64; 2])> = response
+                    .waypoints
+                    .iter()
+                    .map(|w| (w.waypoint_index, w.location))
+                    .collect();
+                order.sort_by_key(|(i, _)| *i);
+                let pts: Vec<[f64; 2]> = order.into_iter().map(|(_, p)| p).collect();
+                let mut pairs: Vec<([f64; 2], [f64; 2])> =
+                    pts.windows(2).map(|w| (w[0], w[1])).collect();
+                if round_trip && pts.len() > 1 {
+                    pairs.push((*pts.last().unwrap(), pts[0]));
+                }
+                let sum_band = |band: crate::profile_abi::Mode| -> Option<f64> {
+                    let mut total = 0.0;
+                    for (a, b) in &pairs {
+                        total +=
+                            super::route::band_p2p_duration(&state, band, a[0], a[1], b[0], b[1])?;
+                    }
+                    Some(total)
+                };
+                trip.duration_q25 = sum_band(opt);
+                trip.duration_q75 = sum_band(pess);
+            }
+            Json(response).into_response()
+        }
         Ok(Err((status, json_val))) => (status, Json(json_val)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

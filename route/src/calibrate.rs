@@ -1467,6 +1467,10 @@ pub struct EdgeSpeed {
     pub to: i64,
     pub speed_kmh: Option<f32>,
     pub ratio: Option<f32>,
+    /// #521 uncertainty bands (SPEED-domain quantiles of the diurnal
+    /// distribution): q25 = congested tail, q75 = fluid. Optional columns.
+    pub q25: Option<f32>,
+    pub q75: Option<f32>,
 }
 
 const FROM_ALIASES: &[&str] = &["osm_node_from", "node_from", "from", "u"];
@@ -1510,6 +1514,21 @@ pub fn read_time_scale(path: &Path) -> Result<Option<f64>> {
     Ok(None)
 }
 
+/// #521: cheap schema-only probe — does the table carry the optional
+/// uncertainty-band columns (speed_ratio_q25/q75)?
+pub fn edge_table_has_bands(path: &Path) -> Result<bool> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let file = std::fs::File::open(path)?;
+    let b = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let names: Vec<&str> = b
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    Ok(names.contains(&"speed_ratio_q25") && names.contains(&"speed_ratio_q75"))
+}
+
 pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -1535,6 +1554,8 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
     })?;
     let speed_col = find_col(names(), EDGE_SPEED_ALIASES);
     let ratio_col = find_col(names(), EDGE_RATIO_ALIASES);
+    let q25_col = find_col(names(), &["speed_ratio_q25"]);
+    let q75_col = find_col(names(), &["speed_ratio_q75"]);
     anyhow::ensure!(
         speed_col.is_some() != ratio_col.is_some(),
         "{}: need EXACTLY ONE of a speed column ({}) or a ratio column ({})",
@@ -1573,11 +1594,22 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
                 skipped += 1;
                 continue;
             }
+            let band = |col: Option<usize>| -> Option<f32> {
+                let i = col?;
+                let a = batch.column(i).as_ref();
+                if a.is_null(row) {
+                    return None;
+                }
+                let v = arr_as_f32(a, row).ok()?;
+                (v.is_finite() && v > 0.04 && v <= 1.5).then_some(v)
+            };
             out.push(EdgeSpeed {
                 from,
                 to,
                 speed_kmh: if is_ratio { None } else { Some(v) },
                 ratio: if is_ratio { Some(v) } else { None },
+                q25: band(q25_col),
+                q75: band(q75_col),
             });
         }
     }
