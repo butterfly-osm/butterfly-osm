@@ -874,6 +874,60 @@ fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
 /// rank u, processed first by target-rank sort) and `m→v` (up from m,
 /// `m < u` so processed in an earlier outer iteration) already have
 /// their length-along-time computed.
+/// #528: recompute the length-along-time-shortest weights for a set of TIME
+/// middles produced by an in-memory (re)customization. The base build-time
+/// `cch.lat.<mode>.u32` describes the CLEAN time-shortest paths; after boot
+/// recustomization (#454/#524) the time middles change, so the length that
+/// belongs to the new time-optimal expansion must be recomputed — otherwise
+/// 2-channel `/table` / Flight `matrix` report distances from the OLD paths.
+/// Physical edge lengths are traffic-invariant; only which path is optimal
+/// changes, which is exactly what the (up/down) middles encode.
+pub fn recompute_len_along_time_from_middles(
+    topo: &CchTopo,
+    filtered_to_original: &[u32],
+    ebg_nodes: &EbgNodes,
+    node_weights_time: &[u32],
+    up_middle: &[u32],
+    down_middle: &[u32],
+) -> CchWeights {
+    let n_nodes = topo.n_nodes as usize;
+    let rank_to_filtered = &topo.rank_to_filtered;
+    let sorted_down_indices: Vec<Vec<usize>> = (0..n_nodes)
+        .into_par_iter()
+        .map(|u| {
+            let start = topo.down_offsets[u] as usize;
+            let end = topo.down_offsets[u + 1] as usize;
+            if start >= end {
+                return Vec::new();
+            }
+            let mut indices: Vec<usize> = (start..end).collect();
+            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
+            indices
+        })
+        .collect();
+    let (lat_up, lat_down) = bottom_up_with_external_middles(
+        topo,
+        &sorted_down_indices,
+        up_middle,
+        down_middle,
+        |_u_rank, v_rank| {
+            compute_distance_weight_rank_aligned(
+                v_rank,
+                node_weights_time,
+                &ebg_nodes.nodes,
+                filtered_to_original,
+                rank_to_filtered,
+            )
+        },
+    );
+    CchWeights {
+        up: WeightArray::from_vec_u32(lat_up),
+        down: WeightArray::from_vec_u32(lat_down),
+        up_middle: ArcCow::from_vec(up_middle.to_vec()),
+        down_middle: ArcCow::from_vec(down_middle.to_vec()),
+    }
+}
+
 pub fn bottom_up_with_external_middles(
     topo: &CchTopo,
     sorted_down_indices: &[Vec<usize>],
@@ -1922,5 +1976,126 @@ mod traffic_apply_tests {
         assert_eq!(weights[1], 0, "0 = inaccessible must survive");
         assert_eq!(weights[3], 0, "0 = inaccessible must survive");
         assert_eq!(weights[2], 2500, "accessible node scaled by matrix cell");
+    }
+}
+
+#[cfg(test)]
+mod len_along_time_middle_tests {
+    //! #528 regression: the length-along-time-shortest weight of a shortcut
+    //! is a FUNCTION OF ITS TIME-OPTIMAL MIDDLE, not a traffic-invariant
+    //! physical constant. This is the exact fact that the stale-clone bug
+    //! (both the boot recustomization sites, fixed via
+    //! `refresh_len_along_time`, and the container-baked traffic-variant
+    //! loader in `server/state.rs`) violated: they kept the base car's
+    //! len-along-time bytes while feeding a DIFFERENT set of time weights,
+    //! so the shortcut expansion followed the wrong (clean-car) apex and the
+    //! distance channel of `/table` / Flight `matrix` diverged from `/route`
+    //! by up to 15% on recustomized car.
+    //!
+    //! These are pure-function tests on `bottom_up_with_external_middles`
+    //! (the core of `recompute_len_along_time_from_middles`) with a
+    //! hand-built 4-node CCH — no server, no Belgium container. If anyone
+    //! "optimizes" by treating len-along-time as middle-independent, both
+    //! assertions below fail.
+    use super::*;
+    use crate::formats::BitsetField;
+
+    /// 4-node CCH. Ranks 0,1 are two candidate low-rank apexes; ranks 2,3
+    /// are the high-rank endpoints of a single UP shortcut 2→3 that can be
+    /// expanded through either apex:
+    ///
+    /// ```text
+    ///   UP edges  : 0→3 (orig, len 10), 1→3 (orig, len 100), 2→3 (SHORTCUT)
+    ///   DOWN edges: 2→0 (orig, len 3),  2→1 (orig, len 5)
+    /// ```
+    ///
+    /// via apex 0 : len(2→0)+len(0→3) = 3 + 10  = 13
+    /// via apex 1 : len(2→1)+len(1→3) = 5 + 100 = 105
+    fn topo_4node() -> CchTopo {
+        CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 1,
+            n_original_arcs: 4,
+            inputs_sha: [0u8; 32],
+            // node0:[3] node1:[3] node2:[3] node3:[]
+            up_offsets: ArcCow::from_vec(vec![0u64, 1, 2, 3, 3]),
+            up_targets: ArcCow::from_vec(vec![3u32, 3, 3]),
+            up_is_shortcut: BitsetField::from_bools(&[false, false, true]),
+            // unused by bottom_up_with_external_middles (external middles win)
+            up_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, 0]),
+            // node0:[] node1:[] node2:[0,1] node3:[]  (targets sorted for binary_search)
+            down_offsets: ArcCow::from_vec(vec![0u64, 0, 0, 2, 2]),
+            down_targets: ArcCow::from_vec(vec![0u32, 1]),
+            down_is_shortcut: BitsetField::from_bools(&[false, false]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX]),
+            rank_to_filtered: ArcCow::from_vec(vec![0u32, 1, 2, 3]),
+        }
+    }
+
+    fn leaf_len(u: usize, v: usize) -> u32 {
+        match (u, v) {
+            (0, 3) => 10,
+            (1, 3) => 100,
+            (2, 0) => 3,
+            (2, 1) => 5,
+            _ => panic!("unexpected original edge ({u},{v})"),
+        }
+    }
+
+    #[test]
+    fn shortcut_len_along_time_follows_the_time_optimal_middle() {
+        let topo = topo_4node();
+        // Mirror recompute_len_along_time_from_middles' sorted_down_indices.
+        let sorted_down_indices: Vec<Vec<usize>> =
+            vec![Vec::new(), Vec::new(), vec![0usize, 1], Vec::new()];
+        let down_mid = [u32::MAX, u32::MAX]; // no down shortcuts
+
+        // Expand the 2→3 shortcut through apex 0.
+        let (up_via0, dn_via0) = bottom_up_with_external_middles(
+            &topo,
+            &sorted_down_indices,
+            &[u32::MAX, u32::MAX, 0], // up shortcut idx2 -> apex 0
+            &down_mid,
+            |u, v| leaf_len(u, v),
+        );
+        // Expand the SAME shortcut through apex 1 (as a different set of time
+        // weights would elect).
+        let (up_via1, dn_via1) = bottom_up_with_external_middles(
+            &topo,
+            &sorted_down_indices,
+            &[u32::MAX, u32::MAX, 1], // up shortcut idx2 -> apex 1
+            &down_mid,
+            |u, v| leaf_len(u, v),
+        );
+
+        // Leaf edges are middle-independent: identical across both runs.
+        assert_eq!(dn_via0, dn_via1, "original DOWN edges must not depend on middle");
+        assert_eq!(up_via0[0], up_via1[0], "orig up 0->3 must not depend on middle");
+        assert_eq!(up_via0[1], up_via1[1], "orig up 1->3 must not depend on middle");
+
+        // The shortcut (index 2) length IS a function of the elected apex.
+        assert_eq!(up_via0[2], 13, "via apex 0: 3 + 10");
+        assert_eq!(up_via1[2], 105, "via apex 1: 5 + 100");
+        assert_ne!(
+            up_via0[2], up_via1[2],
+            "#528: len-along-time of a shortcut MUST change with its time-optimal \
+             middle — it is NOT traffic-invariant, so it must be recomputed (never \
+             cloned from base) whenever time weights are recustomized"
+        );
+    }
+
+    #[test]
+    fn unchanged_middles_reproduce_the_same_len_bit_for_bit() {
+        // The other half of the contract: feeding the SAME middles twice is
+        // deterministic and byte-identical (so refresh with unchanged time
+        // middles reproduces the base lat exactly — no spurious drift).
+        let topo = topo_4node();
+        let sorted_down_indices: Vec<Vec<usize>> =
+            vec![Vec::new(), Vec::new(), vec![0usize, 1], Vec::new()];
+        let up_mid = [u32::MAX, u32::MAX, 0];
+        let down_mid = [u32::MAX, u32::MAX];
+        let a = bottom_up_with_external_middles(&topo, &sorted_down_indices, &up_mid, &down_mid, leaf_len);
+        let b = bottom_up_with_external_middles(&topo, &sorted_down_indices, &up_mid, &down_mid, leaf_len);
+        assert_eq!(a, b, "recompute with identical middles must be bit-for-bit stable");
     }
 }

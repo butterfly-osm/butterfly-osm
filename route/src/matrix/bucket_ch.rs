@@ -6092,6 +6092,205 @@ pub fn table_bucket_parallel_seeded_bounded(
     )
 }
 
+/// #527: 2-channel (duration + length-along-time) shape-aware router.
+/// Same selection as the 1-channel path; when it chooses PHAST it runs the
+/// 2-channel field so distance rides the fast plan too. Falls back to the
+/// 2-channel bucket for balanced shapes or when the forward-down len flat
+/// is unavailable.
+#[allow(clippy::too_many_arguments)]
+pub fn table_seeded_bounded_routed_2ch(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_rev_flat_len: &DownReverseAdjFlat,
+    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::profile_abi::Mode)>,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    if n_sources == 0 || n_targets == 0 {
+        let empty = vec![u32::MAX; n_sources * n_targets];
+        return (empty.clone(), empty, BucketM2MStats::default());
+    }
+    if let Some((down_fwd_time, down_fwd_len, mode)) = phast_ctx
+        && phast_wins(mode, n_sources, n_targets, n_nodes)
+    {
+        return table_phast_lopsided_2ch(
+            n_nodes,
+            up_adj_flat,
+            down_rev_flat,
+            down_fwd_time,
+            up_adj_flat_len,
+            down_rev_flat_len,
+            down_fwd_len,
+            mode,
+            src_seedsets,
+            tgt_seedsets,
+            threshold,
+        );
+    }
+    table_bucket_parallel_seeded_len_along_time_bounded(
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        up_adj_flat_len,
+        down_rev_flat_len,
+        src_seedsets,
+        tgt_seedsets,
+        threshold,
+    )
+}
+
+/// #527: 2-channel lopsided PHAST. One 2-channel field per source; each
+/// target completes both channels via `F[rank] - part` (time part_time,
+/// distance part_len) — the bucket's shift-trick semantics on both. Same-
+/// seed-rank (physical-edge) conflicts are recomputed by the 2-channel
+/// bucket so #510/#511 handling stays byte-exact.
+#[allow(clippy::too_many_arguments)]
+fn table_phast_lopsided_2ch(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    down_fwd_time: &DownAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_rev_flat_len: &DownReverseAdjFlat,
+    down_fwd_len: &DownAdjFlat,
+    mode: crate::profile_abi::Mode,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    use rayon::prelude::*;
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+    let max_tgt_part: u32 = tgt_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|s| s.1))
+        .max()
+        .unwrap_or(0);
+    let field_bound = |seeds: &[EngineSeed]| -> u32 {
+        if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold
+                .saturating_add(seeds.iter().map(|s| s.1).max().unwrap_or(0))
+                .saturating_add(max_tgt_part)
+        }
+    };
+    let tgt_ranks: std::collections::HashSet<u32> = tgt_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|x| x.0))
+        .collect();
+
+    let per_source = |seeds: &Vec<EngineSeed>| -> (Vec<u32>, Vec<u32>, Vec<usize>) {
+        let mut trow = vec![u32::MAX; n_targets];
+        let mut lrow = vec![u32::MAX; n_targets];
+        let mut conflicts: Vec<usize> = Vec::new();
+        if seeds.is_empty() {
+            return (trow, lrow, conflicts);
+        }
+        let src_ranks: std::collections::HashSet<u32> = seeds.iter().map(|s| s.0).collect();
+        // 2-channel seeds: (rank, part_time, part_len).
+        let phast_seeds: Vec<(u32, u32, u32)> = seeds.iter().map(|s| (s.0, s.1, s.2)).collect();
+        let settled = crate::server::isochrone_handler::run_phast_bounded_fast_seeded_2ch(
+            up_adj_flat,
+            down_fwd_time,
+            up_adj_flat_len,
+            down_fwd_len,
+            &phast_seeds,
+            field_bound(seeds),
+            mode,
+        );
+        let mut field: std::collections::HashMap<u32, (u32, u32)> =
+            std::collections::HashMap::with_capacity(tgt_ranks.len());
+        for (rank, t, l) in settled {
+            if tgt_ranks.contains(&rank) {
+                field
+                    .entry(rank)
+                    .and_modify(|e| {
+                        if t < e.0 {
+                            *e = (t, l);
+                        }
+                    })
+                    .or_insert((t, l));
+            }
+        }
+        for (t_idx, tseeds) in tgt_seedsets.iter().enumerate() {
+            if tseeds.is_empty() {
+                continue;
+            }
+            if tseeds.iter().any(|x| src_ranks.contains(&x.0)) {
+                conflicts.push(t_idx);
+                continue;
+            }
+            let mut best_t = u32::MAX;
+            let mut best_l = u32::MAX;
+            for &(rank, part_t, part_l, _) in tseeds {
+                if let Some(&(ft, fl)) = field.get(&rank)
+                    && ft != u32::MAX
+                {
+                    let at = ft.saturating_sub(part_t);
+                    if at < best_t {
+                        best_t = at;
+                        best_l = fl.saturating_sub(part_l);
+                    }
+                }
+            }
+            if threshold != u32::MAX && best_t != u32::MAX && best_t > threshold {
+                best_t = u32::MAX;
+                best_l = u32::MAX;
+            }
+            trow[t_idx] = best_t;
+            lrow[t_idx] = best_l;
+        }
+        (trow, lrow, conflicts)
+    };
+
+    let rows: Vec<(Vec<u32>, Vec<u32>, Vec<usize>)> = if n_sources == 1 {
+        src_seedsets.iter().map(per_source).collect()
+    } else {
+        src_seedsets.par_iter().map(per_source).collect()
+    };
+
+    let mut tmat = vec![u32::MAX; n_sources * n_targets];
+    let mut lmat = vec![u32::MAX; n_sources * n_targets];
+    for (s_idx, (trow, lrow, conflicts)) in rows.into_iter().enumerate() {
+        tmat[s_idx * n_targets..(s_idx + 1) * n_targets].copy_from_slice(&trow);
+        lmat[s_idx * n_targets..(s_idx + 1) * n_targets].copy_from_slice(&lrow);
+        if !conflicts.is_empty() {
+            let one_src = vec![src_seedsets[s_idx].clone()];
+            let conf_tgts: Vec<Vec<EngineSeed>> =
+                conflicts.iter().map(|&t| tgt_seedsets[t].clone()).collect();
+            // exact 2-channel recompute for physical-edge conflicts, via the
+            // real reverse flats (same as the 1-channel path delegates).
+            let (subt, subl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+                n_nodes,
+                up_adj_flat,
+                down_rev_flat,
+                up_adj_flat_len,
+                down_rev_flat_len,
+                &one_src,
+                &conf_tgts,
+                threshold,
+            );
+            for (j, &t) in conflicts.iter().enumerate() {
+                tmat[s_idx * n_targets + t] = subt[j];
+                lmat[s_idx * n_targets + t] = subl[j];
+            }
+        }
+    }
+    stats.forward_visited = n_sources;
+    (tmat, lmat, stats)
+}
+
 /// #526 shape-aware ALGORITHM ROUTER. Bucket M2M costs ~(S+T) hierarchy
 /// sweeps + join — optimal for balanced shapes (50x50 = 15 ms) and
 /// pathological for lopsided ones (1x2719 = 2719 backward sweeps, measured

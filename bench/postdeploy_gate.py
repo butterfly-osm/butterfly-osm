@@ -44,6 +44,7 @@ import json
 import random
 import statistics
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -148,6 +149,22 @@ def gate_lopsided(base):
         )
         return r, _t.time() - t0
 
+    def table_dd(dsts):
+        body = json.dumps(
+            {
+                "origins": [list(origin)],
+                "destinations": [list(d) for d in dsts],
+                "mode": "foot",
+                "annotations": "duration,distance",
+            }
+        ).encode()
+        return http_json(
+            f"{base}/table",
+            timeout=300,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+
     table(dests[:50])  # warm + calibrate the router's measured constants
     big, tb = table(dests)
     small, ts = table(dests[:50])
@@ -178,7 +195,125 @@ def gate_lopsided(base):
         mism == 0 and checked >= 15,
         f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s",
     )
-    return ok_scale and ok_eq
+    # #527: 2-channel lopsided — distance channel must equal /route distance_m.
+    dd = table_dd(dests[:300])
+    dmis = 0
+    dchecked = 0
+    dworst = 0.0
+    for i in rng.sample(range(300), 25):
+        d_t = dd["durations"][0][i]
+        m_t = dd["distances"][0][i]
+        if d_t is None or m_t is None:
+            continue
+        try:
+            r = http_json(
+                f"{base}/route?"
+                + urllib.parse.urlencode(
+                    {
+                        "origin_lon": origin[0],
+                        "origin_lat": origin[1],
+                        "destination_lon": dests[i][0],
+                        "destination_lat": dests[i][1],
+                        "mode": "foot",
+                    }
+                )
+            )
+        except Exception:
+            continue
+        dchecked += 1
+        rel = abs(m_t - r["distance_m"]) / max(r["distance_m"], 1.0)
+        dworst = max(dworst, rel)
+        if rel > 0.02:
+            dmis += 1
+    ok_dist = check(
+        "lopsided 2-channel distance==route",
+        dmis == 0 and dchecked >= 15,
+        f"{dchecked} cells, {dmis} mismatches, worst {dworst*100:.2f}%",
+    )
+    return ok_scale and ok_eq and ok_dist
+
+
+def _distance_channel_vs_route(base, mode):
+    """Shared #528 probe: build a 1x200 /table with the 2-channel distance
+    (length-along-time) annotation for `mode`, then compare 30 sampled cells
+    against /route distance_m for the same OD pair on the SAME mode. Returns
+    (checked, mism, worst) or None if the mode is not served (unknown-mode
+    400s are a SKIP, not a FAIL — variants are deploy-dependent)."""
+    rng = random.Random(528)
+    o = (4.3517, 50.8503)
+    dests = [
+        (o[0] + rng.uniform(-0.3, 0.3), o[1] + rng.uniform(-0.2, 0.2))
+        for _ in range(200)
+    ]
+    body = json.dumps(
+        {
+            "origins": [list(o)],
+            "destinations": [list(d) for d in dests],
+            "mode": mode,
+            "annotations": "duration,distance",
+        }
+    ).encode()
+    try:
+        tab = http_json(
+            f"{base}/table",
+            timeout=200,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 404):
+            return None  # mode not served — skip
+        raise
+    mism = 0
+    checked = 0
+    worst = 0.0
+    for i in rng.sample(range(200), 30):
+        m = tab["distances"][0][i]
+        if m is None:
+            continue
+        try:
+            _, dist_r = route(base, o[0], o[1], dests[i][0], dests[i][1], mode=mode)
+        except Exception:
+            continue
+        if dist_r < 1:
+            continue
+        checked += 1
+        rel = abs(m - dist_r) / dist_r
+        worst = max(worst, rel)
+        if rel > 0.02:
+            mism += 1
+    return checked, mism, worst
+
+
+def gate_recustomized_distance(base):
+    """#528: on a RECUSTOMIZED mode, the 2-channel /table distance
+    (length-along-time) must equal /route distance_m. This was the blind
+    spot that let a ~15% car distance error live for months: durations were
+    tested, foot (never recustomized) looked fine, and no test compared the
+    DISTANCE channel across surfaces on the recustomized mode.
+
+    We probe BOTH the boot-recustomized base `car` AND, when it is served,
+    the `car_rush_hour` variant — the variant exercises the second stale-clone
+    site (the container-baked / register-from-edge-speeds variant path), whose
+    len-along-time flats must be recomputed from the VARIANT's own time
+    middles, not cloned from the clean base."""
+    print("== recustomized-mode 2-channel distance==route (#528) ==")
+    passed = True
+    for mode in ("car", "car_rush_hour"):
+        res = _distance_channel_vs_route(base, mode)
+        if res is None:
+            print(f"  [SKIP] {mode} 2-channel distance==route: mode not served")
+            continue
+        checked, mism, worst = res
+        # `car` is always present (hard requirement); a served variant must
+        # also hold. checked>=20 guards against a probe that snapped nothing.
+        need_coverage = checked >= 20 if mode == "car" else checked >= 10
+        passed &= check(
+            f"{mode} 2-channel distance==route",
+            mism == 0 and need_coverage,
+            f"{checked} cells, {mism} mismatches, worst {worst*100:.2f}%",
+        )
+    return passed
 
 
 def gate_ground_truth(base, trips_path):
@@ -566,6 +701,7 @@ def main():
     ok &= gate_isochrone(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
+    ok &= gate_recustomized_distance(base)
     ok &= gate_edges_batch(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
