@@ -997,10 +997,27 @@ fn do_matrix(
                     continue;
                 }
 
-                // #509/#415: seeded engine per source tile, bounded at the
-                // time threshold. u32::MAX = unbounded.
-                let (tile_matrix, st) =
-                    crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+                let n_blk_src = block_src_orig.len();
+                let n_blk_dst = valid_dst.len();
+
+                // #509/#415: seeded engine per source tile, bounded at the time
+                // threshold (u32::MAX = unbounded).
+                //
+                // #534: a block with valid source AND target seeds over a
+                // connected road graph MUST produce at least one meet.
+                // `join_operations == 0` — a whole tile of u32::MAX with
+                // non-empty seeds — is the silent-corruption signature (OK
+                // status, complete grid, valid trailer, zero routable pairs),
+                // NEVER legitimate on the streamed path (>1M-cell tiles). It has
+                // been TRANSIENT in prod (the same tile routes standalone), so
+                // rather than dump the failure on the client we RE-RUN the tile
+                // in place first — this self-heals the transient case with no
+                // client cooperation. Only if it STILL yields zero joins after
+                // the retries do we fail closed with a retryable status.
+                const MAX_TILE_RETRIES: usize = 2;
+                let mut attempt = 0usize;
+                let (tile_matrix, st) = loop {
+                    let (m, s) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                         n_nodes,
                         &up_adj,
                         &down_rev,
@@ -1008,23 +1025,32 @@ fn do_matrix(
                         &tgt_seedsets,
                         threshold,
                     );
+                    if s.join_operations > 0
+                        || tgt_seedsets.is_empty()
+                        || attempt >= MAX_TILE_RETRIES
+                    {
+                        break (m, s);
+                    }
+                    attempt += 1;
+                    // #534 monitoring: alert on the rate of this counter.
+                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "retry")
+                        .increment(1);
+                    tracing::warn!(
+                        attempt,
+                        n_block_sources = n_blk_src,
+                        n_targets = n_blk_dst,
+                        forward_visited = s.forward_visited,
+                        bucket_items = s.bucket_items,
+                        backward_visited = s.backward_visited,
+                        "matrix tile produced ZERO joins with valid seeds — retrying in place (#534)"
+                    );
+                };
 
-                // #534: FAIL-CLOSED invariant + telemetry. A block with valid
-                // source AND target seeds over a connected road graph MUST
-                // produce at least one meet. `join_operations == 0` — a whole
-                // tile of u32::MAX with non-empty seeds — is an internal
-                // invariant violation (the silent-corruption failure #534
-                // flagged: OK status, complete grid, valid trailer, but zero
-                // routable pairs), NOT a legitimate result on the streamed path
-                // (which only ever handles >1M-cell tiles). Fail the RPC with a
-                // non-OK status instead of emitting a corrupt grid under a valid
-                // completeness trailer. Always log the per-tile counters so the
-                // next occurrence is diagnosable (forward/backward visits +
-                // buckets + joins).
-                let n_blk_src = block_src_orig.len();
-                let n_blk_dst = valid_dst.len();
                 if st.join_operations == 0 && !tgt_seedsets.is_empty() {
+                    // Persistent after retries — fail closed (retryable) rather
+                    // than emit a corrupt all-sentinel grid under a valid trailer.
                     tracing::error!(
+                        retries = attempt,
                         n_block_sources = n_blk_src,
                         n_targets = n_blk_dst,
                         forward_visited = st.forward_visited,
@@ -1032,13 +1058,24 @@ fn do_matrix(
                         backward_visited = st.backward_visited,
                         join_operations = st.join_operations,
                         threshold,
-                        "matrix tile produced ZERO joins with valid seeds — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
+                        "matrix tile STILL produced ZERO joins after retries — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
                     );
+                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "failed")
+                        .increment(1);
                     let _ = tx.blocking_send(Err(Status::resource_exhausted(
                         "matrix tile produced no routable pairs despite valid seeds — likely resource pressure; retry (#534)",
                     )));
                     cancelled_bg.store(true, Ordering::Relaxed);
                     break;
+                }
+                if attempt > 0 {
+                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "self_healed")
+                        .increment(1);
+                    tracing::info!(
+                        attempt,
+                        join_operations = st.join_operations,
+                        "matrix tile self-healed on retry (#534)"
+                    );
                 }
                 tracing::debug!(
                     n_block_sources = n_blk_src,
