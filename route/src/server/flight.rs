@@ -965,16 +965,23 @@ fn do_matrix(
         let src_tile_size = 1000usize.min(n_origin).max(1);
 
         tokio::task::spawn_blocking(move || {
-            use rayon::prelude::*;
-
             let src_blocks: Vec<(usize, usize)> = (0..n_origin)
                 .step_by(src_tile_size)
                 .map(|s| (s, (s + src_tile_size).min(n_origin)))
                 .collect();
 
-            src_blocks.par_iter().for_each(|&(src_start, src_end)| {
+            // #534: iterate source blocks SEQUENTIALLY. The seeded engine
+            // (`table_bucket_parallel_seeded_bounded`) is already internally
+            // parallel over the whole rayon pool, so one large request still
+            // uses every worker; a sequential outer loop removes the NESTED
+            // rayon (outer par_iter over blocks + inner par_iter in the engine)
+            // whose completed tiles could block global workers on the bounded
+            // channel and whose nested scheduling was the hardest-to-reason
+            // surface under saturation. It also keeps each block's
+            // `PrefixSumBuckets` L3-resident one block at a time.
+            for &(src_start, src_end) in &src_blocks {
                 if cancelled_bg.load(Ordering::Relaxed) {
-                    return;
+                    break;
                 }
 
                 let mut block_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
@@ -987,12 +994,12 @@ fn do_matrix(
                 }
 
                 if block_seedsets.is_empty() {
-                    return;
+                    continue;
                 }
 
                 // #509/#415: seeded engine per source tile, bounded at the
                 // time threshold. u32::MAX = unbounded.
-                let (tile_matrix, _st) =
+                let (tile_matrix, st) =
                     crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                         n_nodes,
                         &up_adj,
@@ -1001,6 +1008,47 @@ fn do_matrix(
                         &tgt_seedsets,
                         threshold,
                     );
+
+                // #534: FAIL-CLOSED invariant + telemetry. A block with valid
+                // source AND target seeds over a connected road graph MUST
+                // produce at least one meet. `join_operations == 0` — a whole
+                // tile of u32::MAX with non-empty seeds — is an internal
+                // invariant violation (the silent-corruption failure #534
+                // flagged: OK status, complete grid, valid trailer, but zero
+                // routable pairs), NOT a legitimate result on the streamed path
+                // (which only ever handles >1M-cell tiles). Fail the RPC with a
+                // non-OK status instead of emitting a corrupt grid under a valid
+                // completeness trailer. Always log the per-tile counters so the
+                // next occurrence is diagnosable (forward/backward visits +
+                // buckets + joins).
+                let n_blk_src = block_src_orig.len();
+                let n_blk_dst = valid_dst.len();
+                if st.join_operations == 0 && !tgt_seedsets.is_empty() {
+                    tracing::error!(
+                        n_block_sources = n_blk_src,
+                        n_targets = n_blk_dst,
+                        forward_visited = st.forward_visited,
+                        bucket_items = st.bucket_items,
+                        backward_visited = st.backward_visited,
+                        join_operations = st.join_operations,
+                        threshold,
+                        "matrix tile produced ZERO joins with valid seeds — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
+                    );
+                    let _ = tx.blocking_send(Err(Status::resource_exhausted(
+                        "matrix tile produced no routable pairs despite valid seeds — likely resource pressure; retry (#534)",
+                    )));
+                    cancelled_bg.store(true, Ordering::Relaxed);
+                    break;
+                }
+                tracing::debug!(
+                    n_block_sources = n_blk_src,
+                    n_targets = n_blk_dst,
+                    forward_visited = st.forward_visited,
+                    bucket_items = st.bucket_items,
+                    backward_visited = st.backward_visited,
+                    join_operations = st.join_operations,
+                    "matrix tile #534 telemetry"
+                );
 
                 let batch = match build_matrix_tile_batch(
                     &tile_matrix,
@@ -1013,25 +1061,26 @@ fn do_matrix(
                 ) {
                     // #532: a sparse tile with no surviving cell emits zero rows
                     // — don't stream an empty batch. Dense always yields Some.
-                    Ok(None) => return,
+                    Ok(None) => continue,
                     Ok(Some(b)) => b,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
                         cancelled_bg.store(true, Ordering::Relaxed);
-                        return;
+                        break;
                     }
                 };
 
                 if tx.blocking_send(Ok(batch)).is_err() {
                     cancelled_bg.store(true, Ordering::Relaxed);
+                    break;
                 }
-            });
+            }
 
             // #533: mark the stream complete ONLY if every tile was emitted
-            // without a client disconnect or a tile error. A panic inside the
-            // rayon region unwinds PAST this line, so `done` stays false and the
-            // consumer turns the clean channel-close into a non-OK error instead
-            // of a silent OK-with-missing-tiles truncation.
+            // without a client disconnect, a tile error, or the #534 fail-closed
+            // guard tripping. A panic unwinds PAST this line, so `done` stays
+            // false and the consumer turns the clean channel-close into a non-OK
+            // error instead of a silent OK-with-missing-tiles truncation.
             if !cancelled_bg.load(Ordering::Relaxed) {
                 done_bg.store(true, Ordering::Release);
             }
