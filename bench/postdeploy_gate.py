@@ -328,6 +328,50 @@ def gate_recustomized_distance(base):
     return passed
 
 
+def gate_radius_prune(base):
+    """#531: radius_km must actually PRUNE far cells on the UNBOUNDED /table
+    path. It was silently ignored there for a long time — the K-best snap
+    fallback re-populated cells the radius mask had nulled. Guards both the
+    scalar radius and the per-origin array (len == origins)."""
+    print("== radius_km prunes far cells (scalar + per-origin, #531) ==")
+    o = [4.35, 50.85]
+    # ~1.1 / 2.2 / 3.3 km due east at this latitude.
+    dests = [[o[0] + 0.0157, o[1]], [o[0] + 0.0314, o[1]], [o[0] + 0.0471, o[1]]]
+
+    def table(origins, radius):
+        body = json.dumps(
+            {
+                "origins": origins,
+                "destinations": dests,
+                "mode": "foot",
+                "annotations": "duration",
+                "radius_km": radius,
+            }
+        ).encode()
+        r = http_json(
+            f"{base}/table", data=body, headers={"Content-Type": "application/json"}
+        )
+        return r["durations"]
+
+    def kept(row):
+        return [i for i, v in enumerate(row) if v is not None]
+
+    scalar = kept(table([o], 1.5)[0])
+    ok_scalar = check(
+        "scalar radius_km=1.5 prunes",
+        scalar == [0],
+        f"kept {scalar} (want [0] — the ~2.2/3.3 km targets pruned)",
+    )
+    per = table([o, o, o], [1.5, 3.0, 0])
+    rows = [kept(per[i]) for i in range(3)]
+    ok_per = check(
+        "per-origin radius_km prunes each origin",
+        rows == [[0], [0, 1], [0, 1, 2]],
+        f"kept {rows} (want [[0],[0,1],[0,1,2]])",
+    )
+    return ok_scalar and ok_per
+
+
 def gate_ground_truth(base, trips_path):
     print(f"== ground truth: reference trips ({trips_path}) ==")
     rows = list(csv.DictReader(open(trips_path)))
@@ -713,6 +757,7 @@ def main():
     ok &= gate_isochrone(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
+    ok &= gate_radius_prune(base)
     ok &= gate_recustomized_distance(base)
     ok &= gate_edges_batch(base)
     if not args.quick:
