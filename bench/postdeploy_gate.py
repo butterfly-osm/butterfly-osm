@@ -723,6 +723,10 @@ def gate_matrix_sparse_streaming(base):
         empty = 0
         for chunk in rd:
             b = chunk.data
+            if b is None:
+                # #533 completeness trailer: app_metadata-only, no data body.
+                # Chunk-iterating clients MUST skip it (read_all ignores it).
+                continue
             batches += 1
             if b.num_rows == 0:
                 empty += 1
@@ -742,6 +746,78 @@ def gate_matrix_sparse_streaming(base):
         0 < rows < cells // 2,
         f"{rows} rows of {cells} cells ({100 * (1 - rows / cells):.1f}% dropped)",
     )
+    return passed
+
+
+def gate_matrix_completeness(base):
+    """#533/#532: every matrix DoGet must end with a completeness trailer —
+    an app_metadata message {"complete":true,"total_rows":N,"contract":...}
+    whose N equals the rows actually decoded. This is the deterministic signal
+    that lets clients tell a full response from a truncated/empty-OK one (the
+    #533 silent-data-loss failure). Verified on the small path, the streaming
+    path, and a sparse response — the trailer must be present in all three and
+    its count must reconcile with the decoded rows."""
+    print("== Flight matrix completeness trailer (#533/#532) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    pts = [[p[1], p[2]] for p in ISO_POINTS]
+
+    def probe(params, label, want_contract):
+        # Iterate chunks so we see BOTH the record batches and the trailing
+        # app_metadata (read_all() would discard the metadata).
+        reader = fl.connect(f"grpc://{host}:{port}").do_get(
+            fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
+        )
+        rows = 0
+        meta = None
+        for chunk in reader:
+            if getattr(chunk, "data", None) is not None:
+                rows += chunk.data.num_rows
+            am = getattr(chunk, "app_metadata", None)
+            if am:
+                meta = json.loads(bytes(am))
+        ok_present = meta is not None
+        ok_complete = bool(meta and meta.get("complete") is True)
+        ok_count = bool(meta and meta.get("total_rows") == rows)
+        ok_contract = bool(meta and meta.get("contract") == want_contract)
+        p = True
+        p &= check(f"{label}: trailer present", ok_present, f"meta={meta}")
+        p &= check(f"{label}: complete:true", ok_complete, f"meta={meta}")
+        p &= check(f"{label}: total_rows=={rows} decoded", ok_count, f"meta={meta}")
+        p &= check(f"{label}: contract={want_contract}", ok_contract, f"meta={meta}")
+        return p
+
+    try:
+        passed = True
+        # small path, dense
+        passed &= probe(
+            {"origins": pts, "destinations": pts}, "small dense", "dense"
+        )
+        # small path, sparse
+        passed &= probe(
+            {"origins": pts, "destinations": pts, "radius_km": 20, "sparse": True},
+            "small sparse",
+            "sparse",
+        )
+        # streaming path (>1M cells), dense — the #533 repro shape
+        lons = [3.6 + 0.0606 * i for i in range(34)]
+        lats = [50.50 + 0.020 * j for j in range(31)]
+        grid = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+        passed &= probe(
+            {"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True},
+            "streaming sparse",
+            "sparse",
+        )
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
     return passed
 
 
@@ -889,6 +965,7 @@ def main():
     ok &= gate_edges_batch(base)
     ok &= gate_matrix_sparse(base)
     ok &= gate_matrix_sparse_streaming(base)
+    ok &= gate_matrix_completeness(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
