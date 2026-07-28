@@ -5735,6 +5735,65 @@ mod max_minutes_bound_tests {
         }
     }
 
+    /// #534: the SEEDED bounded engine (the one the Flight matrix path uses)
+    /// must also be exact — a bounded seeded sweep must return every in-bound
+    /// cell, never a false u32::MAX. The pre-#534 bug bounded the SHARED
+    /// forward sweep by the source's own partial instead of `threshold + max
+    /// target shift`, so a target with a larger shift than any source had its
+    /// meeting node pruned from the forward buckets → false MAX. Here one
+    /// target carries a large `part_time` (shift); ground truth is the seeded
+    /// UNBOUNDED run, and every cell it puts `<= threshold` must survive the
+    /// bounded run byte-identically. A forward-bound regression drops exactly
+    /// those high-shift cells and fails this test.
+    #[test]
+    fn seeded_bounded_equals_unbounded_filtered() {
+        let (n_nodes, up, down, ..) = broom(12);
+        let n = 12u32;
+        // Each source is a single pure seed (part_time 0).
+        let src_seedsets: Vec<Vec<EngineSeed>> =
+            (0..n).map(|i| vec![(i, 0u32, 0u32, true)]).collect();
+        // Targets: most pure, but a few carry a large shift so the forward
+        // bound must widen past any source partial to keep their meets.
+        let tgt_seedsets: Vec<Vec<EngineSeed>> = (0..n)
+            .map(|j| {
+                let part = if j % 4 == 3 { 50u32 } else { 0u32 };
+                vec![(j, part, 0u32, true)]
+            })
+            .collect();
+
+        let (unb, _) = table_bucket_parallel_seeded_bounded(
+            n_nodes,
+            &up,
+            &down,
+            &src_seedsets,
+            &tgt_seedsets,
+            u32::MAX,
+        );
+        for &thr in &[0u32, 20, 55, 120, 100_000] {
+            let (bnd, _) = table_bucket_parallel_seeded_bounded(
+                n_nodes,
+                &up,
+                &down,
+                &src_seedsets,
+                &tgt_seedsets,
+                thr,
+            );
+            for c in 0..(n as usize * n as usize) {
+                if unb[c] <= thr {
+                    assert_eq!(
+                        bnd[c], unb[c],
+                        "seeded in-bound cell {c} at thr {thr} must survive exactly (#534)"
+                    );
+                } else {
+                    assert!(
+                        bnd[c] >= unb[c],
+                        "seeded bounded must never underestimate at {c}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn unbounded_sentinel_is_byte_identical() {
         // threshold == u32::MAX must reproduce the unbounded matrix exactly.
@@ -6683,6 +6742,28 @@ fn table_bucket_parallel_seeded_monolithic(
         }
     };
 
+    // #534: the FORWARD buckets are SHARED by every target column, so the
+    // forward sweep must reach every node that any target's backward sweep
+    // could meet. The backward sweep for a target with shift `S` initialises at
+    // `S - t` and bounds at `threshold + S`, so a meeting node's forward label
+    // can be as large as `threshold + S`. The forward bound must therefore be
+    // `threshold + max target shift` across ALL targets — NOT the source's own
+    // partial (the pre-#534 bug: a target with a larger shift than any source
+    // partial had its meeting node pruned from the buckets → false u32::MAX,
+    // potentially a whole tile). This is strictly ≥ the old bound, so it never
+    // prunes a needed node; it only widens the forward reach when some target
+    // out-shifts the sources. Inactive when unbounded (bound stays u32::MAX).
+    let max_target_shift: u32 = tgt_seedsets
+        .iter()
+        .map(|s| s.iter().take(8).map(|x| x.1).max().unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    let forward_bound: u32 = if threshold == u32::MAX {
+        u32::MAX
+    } else {
+        threshold.saturating_add(max_target_shift)
+    };
+
     let run_forward =
         |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32)>> {
             if seeds.is_empty() {
@@ -6696,7 +6777,7 @@ fn table_bucket_parallel_seeded_monolithic(
                             if state.entries.len() != n_nodes {
                                 *state = SearchState::new(n_nodes, avg_visited);
                             }
-                            state.dist_threshold = sweep_bound(seeds);
+                            state.dist_threshold = forward_bound; // #534
                             items_cell.with_or_init(Vec::new, |items| {
                                 items.clear();
                                 forward_fill_buckets_flat_seeded(
@@ -7077,6 +7158,20 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
         }
     };
 
+    // #534: forward buckets are shared by all targets — bound the forward sweep
+    // by `threshold + max target shift`, not the source partial (see the
+    // 1-channel path for the full argument). Strictly ≥ old bound; safe.
+    let max_target_shift: u32 = tgt_seedsets
+        .iter()
+        .map(|s| s.iter().take(8).map(|x| x.1).max().unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    let forward_bound: u32 = if threshold == u32::MAX {
+        u32::MAX
+    } else {
+        threshold.saturating_add(max_target_shift)
+    };
+
     let run_forward =
         |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> Option<Vec<(u32, u32, u32, u32)>> {
             if seeds.is_empty() {
@@ -7089,7 +7184,7 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
                         if state.entries.len() != n_nodes {
                             *state = SearchState2::new(n_nodes, avg_visited);
                         }
-                        state.dist_threshold = sweep_bound(seeds);
+                        state.dist_threshold = forward_bound; // #534
                         FORWARD_BUCKET_ITEMS_LAT.with(|items_cell| {
                             items_cell.with_or_init(Vec::new, |items| {
                                 items.clear();

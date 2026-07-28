@@ -84,6 +84,11 @@ FIXTURES = [
 ]
 SENTINEL_MAX_DETOUR = 8.0
 CAR_SPEED_BOUNDS_KMH = (15.0, 135.0)  # mean over a whole route, car mode
+# Physical-plausibility bounds on the IMPLIED mean speed (distance/duration),
+# per mode — not measured values, just "a human can't walk 19 km/h" limits.
+# #522: foot routes were reporting up to 5.3 m/s (19 km/h).
+FOOT_SPEED_BOUNDS_KMH = (2.0, 8.0)
+BIKE_SPEED_BOUNDS_KMH = (5.0, 32.0)
 GEOM_CONSISTENCY_TOL = 0.03  # distance_m vs polyline length
 
 
@@ -524,6 +529,127 @@ def gate_fixtures(base):
             f"{dur_s:.0f}s/{dist_m:.0f}m detour×{detour:.2f}(≤{max_detour}) "
             f"{kmh:.0f}km/h geom={gtxt} annΣ={ann_dist:.0f}m/{ann_dur:.0f}s",
         )
+    return passed
+
+
+def gate_mode_coherence(base):
+    """#522 / #493: foot and bike routes must be internally coherent —
+    distance_m ≡ polyline length ≡ Σ annotation distances (within tol), and the
+    IMPLIED mean speed (distance/duration) must be physically plausible for the
+    mode. Catches #522 (foot routes reporting up to 5.3 m/s ≈ 19 km/h) and #493
+    (foot/bike geometry_wkb ~2× the reported distance — polyline doubled/zigzag).
+    Same invariant the car sentinel gate enforces, extended to the modes where
+    the bugs actually landed."""
+    print("== foot/bike geometry ≡ distance ≡ annotations + plausible speed (#522/#493) ==")
+    passed = True
+    for mode, (lo_kmh, hi_kmh) in (
+        ("foot", FOOT_SPEED_BOUNDS_KMH),
+        ("bike", BIKE_SPEED_BOUNDS_KMH),
+    ):
+        for name, olon, olat, dlon, dlat in FIXTURES:
+            q = urllib.parse.urlencode(
+                {
+                    "origin_lon": olon,
+                    "origin_lat": olat,
+                    "destination_lon": dlon,
+                    "destination_lat": dlat,
+                    "mode": mode,
+                    "geometries": "polyline6",
+                    "annotations": "distance,duration",
+                }
+            )
+            try:
+                d = http_json(f"{base}/route?{q}")
+            except Exception as e:
+                passed &= check(f"{mode} {name}", False, f"request failed: {e}")
+                continue
+            dur_s, dist_m = d["duration_s"], d["distance_m"]
+            if dist_m <= 0 or dur_s <= 0:
+                passed &= check(f"{mode} {name}", False, f"degenerate {dist_m}m/{dur_s}s")
+                continue
+            kmh = dist_m / dur_s * 3.6
+            geom = d.get("geometry", {})
+            poly = geom.get("polyline") or geom.get("coordinates_polyline6") or ""
+            geom_m = _polyline_len_m(_decode_polyline6(poly)) if poly else None
+            ann = d.get("annotations") or {}
+            ann_dist = sum(ann.get("distance") or [])
+            ok_speed = lo_kmh <= kmh <= hi_kmh
+            ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
+            ok_ann = ann_dist == 0 or abs(ann_dist - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
+            gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
+            passed &= check(
+                f"{mode} {name}",
+                ok_speed and ok_geom and ok_ann,
+                f"{dur_s:.0f}s/{dist_m:.0f}m {kmh:.1f}km/h "
+                f"(bound {lo_kmh:.0f}-{hi_kmh:.0f}) geom={gtxt} annΣ={ann_dist:.0f}m",
+            )
+    return passed
+
+
+def gate_bounded_matrix_exactness(base):
+    """#534 / #415: the SEEDED bounded matrix must be EXACT — every cell the
+    unbounded matrix reports at ≤ threshold must survive the bounded run with
+    the same value, never a false u32::MAX. The pre-#534 bug bounded the shared
+    forward sweep by the source's own partial instead of `threshold + max target
+    shift`, so a target that out-shifts the sources had its meeting node pruned →
+    false sentinel. We drive both matrices over the same points (which snap to
+    real multi-candidate phantom seeds with real shifts) and assert the
+    filtered-equality invariant. No stored constant — the unbounded run is the
+    ground truth."""
+    print("== seeded bounded matrix == unbounded filtered (#534/#415) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    MAX = 4294967295
+    # Points span short + long-edge fixtures (large phantom shifts) so the
+    # forward bound is actually exercised.
+    pts = [[p[1], p[2]] for p in ISO_POINTS] + [[f[3], f[4]] for f in FIXTURES]
+
+    def matrix(mode, max_minutes):
+        params = {"origins": pts, "destinations": pts}
+        if max_minutes is not None:
+            params["max_minutes"] = max_minutes
+        tb = fl.connect(f"grpc://{host}:{port}").do_get(
+            fl.Ticket(f"matrix:{mode}:{json.dumps(params)}".encode())
+        ).read_all()
+        s, t, dur = tb.column("source_idx"), tb.column("target_idx"), tb.column("duration_ms")
+        return {(s[i].as_py(), t[i].as_py()): dur[i].as_py() for i in range(tb.num_rows)}
+
+    passed = True
+    try:
+        for mode in ("car", "foot"):
+            unb = matrix(mode, None)
+            # threshold in minutes; ms → minutes for the compare.
+            T_MIN = 15
+            thr_ms = T_MIN * 60 * 1000
+            bnd = matrix(mode, T_MIN)
+            in_bound = {k: v for k, v in unb.items() if v != MAX and v <= thr_ms}
+            missing = [k for k in in_bound if bnd.get(k, MAX) == MAX]
+            wrong = [k for k in in_bound if bnd.get(k, MAX) != MAX and bnd[k] != in_bound[k]]
+            passed &= check(
+                f"{mode}: fixture exercises the bound",
+                len(in_bound) > 0,
+                f"{len(in_bound)} cells ≤ {T_MIN}min",
+            )
+            passed &= check(
+                f"{mode}: no in-bound cell falsely dropped",
+                len(missing) == 0,
+                f"{len(missing)} in-bound cells came back u32::MAX (#534 forward-bound bug)",
+            )
+            passed &= check(
+                f"{mode}: in-bound values identical to unbounded",
+                len(wrong) == 0,
+                f"{len(wrong)} cells differ from the unbounded value",
+            )
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
     return passed
 
 
@@ -1047,6 +1173,8 @@ def main():
     ok &= gate_matrix_sparse_streaming(base)
     ok &= gate_matrix_completeness(base)
     ok &= gate_flight_completeness(base)
+    ok &= gate_mode_coherence(base)
+    ok &= gate_bounded_matrix_exactness(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
