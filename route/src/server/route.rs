@@ -37,9 +37,8 @@ pub struct RouteRequest {
     #[schema(example = "car")]
     mode: String,
     /// Optional traffic profile name. If set, the server routes against
-    /// the synthetic mode `<mode>_<traffic>` (e.g. `car` + `rush_hour` →
-    /// `car_rush_hour`). The variant must have been built by
-    /// `step8-customize --traffic ...` at pipeline time.
+    /// the synthetic mode `<mode>_<profile>`, which must have been built
+    /// by `step8-customize --traffic ...` at pipeline time.
     #[serde(default)]
     traffic: Option<String>,
     /// Geometry encoding: polyline6 (default), geojson, points

@@ -7,7 +7,7 @@ Production-grade routing engine for OSM data. Exact turn-aware edge-based CCH (C
 - **Exact turn-aware P2P routing** — bidirectional CCH on the edge-based graph; turn restrictions and penalties are enforced, not approximated.
 - **Distance matrices** — `POST /table` (Bucket M2M, sparse) and Flight `matrix` (K-lane batched PHAST, streams 50k×50k+).
 - **Isochrones** — time / distance thresholds, depart or arrive direction, multi-contour, bulk endpoint, GeoJSON or WKB.
-- **Routing controls** — `avoid_polygons` (R-tree + sparse CCH recustomization), `exclude=toll,ferry,motorway`, bearing hints, traffic profiles (`?traffic=rush_hour`).
+- **Routing controls** — `avoid_polygons` (R-tree + sparse CCH recustomization), `exclude=toll,ferry,motorway`, bearing hints.
 - **Map matching** — HMM + Viterbi (Newson & Krumm) over GPS traces.
 - **TSP / trip optimization** — nearest-neighbour + 2-opt + or-opt.
 - **Multimodal transit** — RAPTOR over merged GTFS + NeTEx-EPIP feeds, ULTRA-preprocessed foot transfer graph, access/egress legs via the road CCH.
@@ -53,7 +53,7 @@ butterfly-route step8-customize --cch-topo data/step7/cch.car.topo --filtered-eb
 butterfly-route pack            --data-dir data --out belgium.butterfly --region BE
 ```
 
-Repeat steps 3-8 with `--way-attrs bike=...`, `--turn-rules bike=...` etc. to add modes. Modes are discovered from the filenames in each step directory; there are no hardcoded mode names in the Rust code. Traffic recustomization (`step8-customize --traffic rush_hour.traffic.json`) emits an extra `cch.w.<mode>_<variant>.u32` and is auto-discovered by `serve` as a synthetic mode (e.g. `car_rush_hour`).
+Repeat steps 3-8 with `--way-attrs bike=...`, `--turn-rules bike=...` etc. to add modes. Modes are discovered from the filenames in each step directory; there are no hardcoded mode names in the Rust code. Traffic recustomization (`step8-customize --traffic <profile>.traffic.json --bake-as-base`) applies per-density-class speed factors to the base car weights.
 
 See [Architecture](../docs/architecture.md) for the full edge-based CCH derivation.
 

@@ -140,7 +140,6 @@ A `transit/` subdirectory (next to the step tree or container files) triggers tr
 /data/
 ├── belgium.butterfly
 ├── edge_speeds.parquet             # directed per-edge observed/freeflow ratios (#454)
-├── edge_speeds.rush_hour.parquet   # optional peak variant → synthetic mode car_rush_hour
 └── recustomize_cache.car-edge.v3.bin   # written by the server (customized-weight cache, #444)
 ```
 

@@ -100,7 +100,7 @@ Support directories: `bench/` (regression and competitor benches),
 - Multiple alternatives (penalty-based).
 - `exclude=toll,ferry,motorway` via CCH recustomization with sparse triangle relaxation.
 - `avoid_polygons=...` — incremental recustomization seeded by polygon-flagged base edges (#240) plus a bounded LRU cache keyed by canonicalised polygon hash.
-- Traffic-aware variants (`?traffic=rush_hour`, #84): 5-bucket density classification, per-class speed factors, separate `cch.w.<mode>_<variant>.u32` weight set.
+- Traffic-aware weights (#84): 5-bucket density classification with per-class speed factors baked into the base car profile.
 - Turn-by-turn steps with road names from 754K named-roads index.
 - Bearing hints (`bearings=angle,range`).
 

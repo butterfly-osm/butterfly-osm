@@ -133,7 +133,7 @@ The mode string is not the name of any loaded mode. Modes are discovered from th
 
 **Fix**
 
-- Use one of the modes in the error message. Standard packs ship `car`, `bike`, `foot`. Truck and traffic-variant modes (`car_rush_hour`, `car_offpeak`, `car_freeflow`) are present only when those weights were built into the container.
+- Use one of the modes in the error message. Standard packs ship `car`, `bike`, `foot`. Additional modes (e.g. `truck`) are present only when those weights were built into the container.
 - The mode list is dynamic. Adding `truck` requires the build pipeline to have produced `way_attrs.truck.bin` and the rest of the per-mode files. See [Architecture](architecture.md) on the declarative model system.
 
 ---

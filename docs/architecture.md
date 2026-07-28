@@ -108,10 +108,9 @@ flowchart LR
   (Brussels–Antwerp went 77 km / 5583 s without relaxation vs the correct
   45 km / 1947 s).
 
-Step 8 optionally writes traffic-variant weight files
-(`cch.w.car_rush_hour.u32`, …) by applying per-density-class speed factors.
-At boot, the server auto-discovers these and exposes them as synthetic modes
-(`?traffic=rush_hour` query parameter).
+Step 8 optionally applies per-density-class speed factors to the base car
+weights (`--traffic <profile>.traffic.json --bake-as-base`), so the realistic
+friction profile is served directly as `?mode=car` with no separate variant.
 
 ---
 

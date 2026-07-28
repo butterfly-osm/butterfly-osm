@@ -292,11 +292,9 @@ def gate_recustomized_distance(base):
     tested, foot (never recustomized) looked fine, and no test compared the
     DISTANCE channel across surfaces on the recustomized mode.
 
-    We probe BOTH the boot-recustomized base `car` AND, when it is served,
-    the `car_rush_hour` variant — the variant exercises the second stale-clone
-    site (the container-baked / register-from-edge-speeds variant path), whose
-    len-along-time flats must be recomputed from the VARIANT's own time
-    middles, not cloned from the clean base.
+    We probe the boot-recustomized base `car`: its len-along-time flats must
+    be recomputed from the recustomized time middles, not cloned from the
+    clean base.
 
     #529/#530: `car_nodir` (one-way-agnostic) is the canonical equal-DURATION
     tie mode — forward/backward arcs cost the same, so many OD pairs have
@@ -311,7 +309,7 @@ def gate_recustomized_distance(base):
     run under `BUTTERFLY_MATRIX_ALGO=phast`."""
     print("== recustomized-mode 2-channel distance==route (#528/#529) ==")
     passed = True
-    for mode in ("car", "car_rush_hour", "car_nodir"):
+    for mode in ("car", "car_nodir"):
         res = _distance_channel_vs_route(base, mode)
         if res is None:
             print(f"  [SKIP] {mode} 2-channel distance==route: mode not served")
