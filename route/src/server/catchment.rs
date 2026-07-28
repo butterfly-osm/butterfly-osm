@@ -851,6 +851,10 @@ pub async fn catchment_handler(
                 let r = auto_radius_km(std::slice::from_ref(&store_coord), &auto_client_coords);
                 if r > 0.0 { Some(r) } else { None }
             }
+            // #531 per-origin radii are a MATRIX shape (per source); catchment
+            // is store-centred with a single cap, so this input has no meaning
+            // here — fall back to no euclid pre-filter.
+            RadiusParam::PerOrigin(_) => None,
         };
         let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);
 

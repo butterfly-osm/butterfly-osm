@@ -20,7 +20,9 @@ use crate::matrix::bucket_ch::{
     DownReverseAdjFlat, UpAdjFlat, backward_join_with_buckets, forward_build_buckets,
     table_bucket_full_flat, table_bucket_parallel,
 };
-use crate::matrix::neighbors::{RadiusParam, auto_radius_km, build_neighbors, parse_radius};
+use crate::matrix::neighbors::{
+    RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
+};
 use crate::profile_abi::Mode;
 
 use super::regions::RegionsState;
@@ -353,6 +355,23 @@ pub async fn table_post_handler(
         };
 
     let radius_param = parse_radius(req.radius_km.as_ref());
+    // #531: a per-origin radii array must be exactly one entry per origin —
+    // reject a mismatch with 400 rather than silently no-filtering the tail.
+    if let RadiusParam::PerOrigin(radii) = &radius_param
+        && radii.len() != req.origins.len()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "radius_km array length {} must equal origins length {}",
+                    radii.len(),
+                    req.origins.len()
+                ),
+            }),
+        )
+            .into_response();
+    }
 
     let threshold_s = match parse_max_minutes(req.max_minutes) {
         Ok(t) => t,
@@ -657,6 +676,13 @@ pub async fn compute_table_bucket_m2m(
                 None
             }
         }
+        // #531 per-origin radii: validated len==origins upstream; a wrong
+        // length degrades to no-filter for the missing tail (get→inf).
+        RadiusParam::PerOrigin(radii) => Some(build_neighbors_per_origin(
+            &sources_snapped,
+            &targets_snapped,
+            &radii,
+        )),
     };
 
     let n_sources = sources.len();
@@ -1599,6 +1625,11 @@ pub async fn table_stream_handler(
                 None
             }
         }
+        RadiusParam::PerOrigin(radii) => Some(Arc::new(build_neighbors_per_origin(
+            &sources_snapped,
+            &targets_snapped,
+            &radii,
+        ))),
     };
 
     let n_valid_sources = sources_rank.len();

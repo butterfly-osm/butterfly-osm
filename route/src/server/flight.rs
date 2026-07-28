@@ -36,7 +36,9 @@ use serde::Deserialize;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
-use crate::matrix::neighbors::{RadiusParam, auto_radius_km, build_neighbors, parse_radius};
+use crate::matrix::neighbors::{
+    RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
+};
 use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
@@ -590,6 +592,16 @@ fn do_matrix(
     }
 
     let radius_param = parse_radius(params.radius_km.as_ref());
+    // #531: per-origin radii must be exactly one entry per origin.
+    if let RadiusParam::PerOrigin(radii) = &radius_param
+        && radii.len() != params.origins.len()
+    {
+        return Err(Status::invalid_argument(format!(
+            "radius_km array length {} must equal origins length {}",
+            radii.len(),
+            params.origins.len()
+        )));
+    }
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
         RadiusParam::None => None,
         RadiusParam::Km(r) => Some(Arc::new(build_neighbors(
@@ -609,6 +621,11 @@ fn do_matrix(
                 None
             }
         }
+        RadiusParam::PerOrigin(radii) => Some(Arc::new(build_neighbors_per_origin(
+            &origins_snapped,
+            &targets_snapped,
+            &radii,
+        ))),
     };
 
     let n_origin = params.origins.len();
