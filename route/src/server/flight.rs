@@ -970,6 +970,12 @@ fn do_matrix(
         // and large requests must return the SAME columns.
         let up_lat = mode_data.up_adj_flat_len_along_time.clone();
         let dn_lat = mode_data.down_rev_flat_len_along_time.clone();
+        // #526/#534: PHAST context (forward-down time + length flats) so the
+        // streamed path can run the SAME shape-aware 2-channel router as the
+        // small branch — PHAST for lopsided tiles (n_src ≤ n_tgt), bucket
+        // otherwise — instead of always the bucket. Both compute distance_m.
+        let down_adj = mode_data.down_adj_flat.clone();
+        let down_len = mode_data.down_len_flat().cloned();
         let schema = Arc::new(matrix_schema());
         let neighbor_mask_bg = neighbor_mask.clone();
         let sparse = params.sparse; // #532
@@ -1033,20 +1039,25 @@ fn do_matrix(
                 const MAX_TILE_RETRIES: usize = 2;
                 let mut attempt = 0usize;
                 let (tile_matrix, tile_lat, st) = loop {
-                    // #534: 2-channel when the length-along-time flats are loaded
-                    // — populates distance_m on the streamed path exactly like
-                    // the small branch, so large and small requests return the
-                    // same columns. Falls back to duration-only on containers
-                    // without cch.lat (distance_m stays u32::MAX, pre-#372).
+                    // #534/#526: shape-aware 2-channel router when the
+                    // length-along-time flats are loaded — populates distance_m
+                    // AND picks PHAST vs bucket per tile (same as the small
+                    // branch), so large and small requests return the same
+                    // columns and lopsided large tiles get PHAST. Falls back to
+                    // duration-only bucket on containers without cch.lat
+                    // (distance_m stays u32::MAX, pre-#372).
                     let (m, lat_opt, s) = match (up_lat.as_ref(), dn_lat.as_ref()) {
                         (Some(ul), Some(dl)) => {
+                            let phast_ctx =
+                                down_len.as_ref().map(|dl_len| (&down_adj, dl_len, mode));
                             let (t, l, s) =
-                                crate::matrix::bucket_ch::table_bucket_parallel_seeded_len_along_time_bounded(
+                                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
                                     n_nodes,
                                     &up_adj,
                                     &down_rev,
                                     ul,
                                     dl,
+                                    phast_ctx,
                                     &block_seedsets,
                                     &tgt_seedsets,
                                     threshold,
@@ -1066,10 +1077,12 @@ fn do_matrix(
                             (t, None, s)
                         }
                     };
-                    if s.join_operations > 0
-                        || tgt_seedsets.is_empty()
-                        || attempt >= MAX_TILE_RETRIES
-                    {
+                    // #534: algorithm-agnostic corruption signature — the WHOLE
+                    // tile came back u32::MAX (every source→target unreachable)
+                    // with non-empty seeds. `join_operations` is bucket-only (0
+                    // on the PHAST path), so we key on the durations themselves.
+                    let tile_all_max = m.iter().all(|&v| v == u32::MAX);
+                    if !tile_all_max || tgt_seedsets.is_empty() || attempt >= MAX_TILE_RETRIES {
                         break (m, lat_opt, s);
                     }
                     attempt += 1;
@@ -1083,11 +1096,12 @@ fn do_matrix(
                         forward_visited = s.forward_visited,
                         bucket_items = s.bucket_items,
                         backward_visited = s.backward_visited,
-                        "matrix tile produced ZERO joins with valid seeds — retrying in place (#534)"
+                        join_operations = s.join_operations,
+                        "matrix tile came back 100% unreachable with valid seeds — retrying in place (#534)"
                     );
                 };
 
-                if st.join_operations == 0 && !tgt_seedsets.is_empty() {
+                if !tgt_seedsets.is_empty() && tile_matrix.iter().all(|&v| v == u32::MAX) {
                     // Persistent after retries — fail closed (retryable) rather
                     // than emit a corrupt all-sentinel grid under a valid trailer.
                     tracing::error!(
@@ -1099,7 +1113,7 @@ fn do_matrix(
                         backward_visited = st.backward_visited,
                         join_operations = st.join_operations,
                         threshold,
-                        "matrix tile STILL produced ZERO joins after retries — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
+                        "matrix tile STILL 100% unreachable after retries — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
                     );
                     metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "failed")
                         .increment(1);
