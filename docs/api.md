@@ -36,8 +36,8 @@ Server-wide layers (defined in `route/src/server/api.rs`):
 > `matrix`, `route_batch`, `isochrone`, `catchment`, `edges_batch`,
 > `transit_bulk`. Params use `origins`/`destinations` (see the Flight
 > section below). The Flight port is always REST + 1 in-container
-> (8080→8081); on the staging cluster it is exposed as NodePort
-> `grpc://10.0.3.2:30052`.
+> (8080→8081); how it is exposed outside the pod (a service port, ingress, …)
+> is a deployment concern, not part of the engine.
 
 ## Endpoint semantics (2026-07)
 
@@ -596,10 +596,11 @@ so an absent `(source, target)` pair means "no route within bounds" — the same
 sparse contract the legacy drivetimes matrix used. Default `false` preserves the
 dense S×T output. On radius-pruned nearest-facility workloads the sentinel share
 is ~80–83% of the dense payload, so `sparse:true` combined with a per-origin
-`radius_km` is the intended shape for large `S×T` (e.g. 257k×1415 nearest-pharmacy).
-Exposure: gRPC is **not** routed through Traefik on staging (`butterfly.staging.lan`
-→ 502 for h2c, `butterfly-flight.staging.lan` → 404); reach it via the **NodePort
-`grpc://10.0.3.2:30052`** (canopus). In-cluster the port is 3002/8081.
+`radius_km` is the intended shape for large `S×T` (hundreds of thousands of
+origins × thousands of destinations).
+Exposure: the Flight gRPC port is cluster-internal; how it is reached from
+outside the pod (a service port, ingress, port-forward, …) is a deployment
+concern. In-cluster the port is 8081 (REST + 1).
 
 Output schema:
 

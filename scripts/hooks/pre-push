@@ -10,6 +10,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT" || exit 1
 echo "[pre-push] local CI — fmt, clippy, build, tests (mirrors ci.yml)…"
 step () { echo "[pre-push] → $1"; shift; "$@" || { echo "[pre-push] ✗ FAILED: $*"; echo "[pre-push] push aborted. Fix, or BUTTERFLY_NO_VERIFY=1 git push to force."; exit 1; }; }
+step "upstream-clean (public repo)" bash scripts/check-upstream-clean.sh
 step "rustfmt --check"        cargo fmt --all -- --check
 step "clippy (deny warnings)" cargo clippy --workspace --all-targets --all-features
 step "build (workspace)"      cargo build --workspace

@@ -5365,6 +5365,55 @@ mod matrix_sparse_tests {
             .unwrap();
         assert!(rows(&b).iter().all(|r| r.3 == MAX));
     }
+
+    /// CROSS-PATH LOCK (#534): the small-matrix emit (`build_matrix_batch`) and
+    /// the streamed tile emit (`build_matrix_tile_batch`) must produce
+    /// BYTE-IDENTICAL rows — source, target, duration AND distance — for the
+    /// same time+lat matrices. This is exactly the invariant #534 broke: the
+    /// tile path hardcoded distance_m = u32::MAX while the small path emitted
+    /// the real lat distance. Whenever either emit path is touched, this fails
+    /// if they diverge on ANY column, distance included.
+    #[test]
+    fn small_and_tile_emit_agree_on_all_columns_incl_distance() {
+        // src {0,1} × dst {0,1,2}; time + lat, one unreachable + no mask.
+        let time = vec![100, MAX, 300, MAX, 200, 250];
+        let lat = vec![1100, MAX, 3300, MAX, 2200, 2500];
+        let vs = vec![0usize, 1];
+        let vd = vec![0usize, 1, 2];
+        for sparse in [false, true] {
+            let small = build_matrix_batch(
+                &time,
+                Some(&lat),
+                vs.len(),
+                vd.len(),
+                &vs,
+                &vd,
+                schema(),
+                None,
+                sparse,
+            )
+            .unwrap();
+            let tile =
+                build_matrix_tile_batch(&time, Some(&lat), &vs, &vd, MAX, None, schema(), sparse)
+                    .unwrap()
+                    .unwrap();
+            let key = |b: &RecordBatch| {
+                let mut v = rows(b);
+                v.sort();
+                v
+            };
+            assert_eq!(
+                key(&small),
+                key(&tile),
+                "small and tile emit must agree on ALL columns (dur+dist), sparse={sparse} (#534)"
+            );
+            // and the distance really is the lat value, not a sentinel.
+            assert!(
+                rows(&tile).iter().any(|r| r.3 != MAX),
+                "tile must emit real distances from lat"
+            );
+        }
+    }
 }
 
 /// #533/#532: NO streamed Flight do_get action (matrix, route_batch,

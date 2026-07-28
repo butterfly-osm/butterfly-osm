@@ -29,7 +29,7 @@ Checks
 
 Usage
 -----
-    python3 bench/postdeploy_gate.py --base http://butterfly.staging.lan \
+    python3 bench/postdeploy_gate.py --base http://localhost:3001 \
         [--trips /path/to/od.csv] [--quick]
 
 `--quick` skips the 1,000-trip ground truth (runs invariants only, ~30 s).
@@ -59,7 +59,7 @@ THRESHOLDS = {
     "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
-    "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs per-edge FCD (butterfly-speeds#9)
+    "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs richer per-edge speed data
     "symmetry_ratio_max": 1.5,
     "symmetry_violations_max": 0,
     "consistency_tolerance_s": 3.0,
@@ -864,6 +864,7 @@ def gate_matrix_distance_consistency(base):
             dur_max = 0
             dist_max = 0
             sample = None
+            cells = []  # (src_idx, tgt_idx, dur_ms, dist_m) for /route cross-check
             for chunk in rd:
                 b = chunk.data
                 if b is None:
@@ -876,10 +877,13 @@ def gate_matrix_distance_consistency(base):
                     rows += 1
                     if du[k] == MAX:
                         dur_max += 1
-                    elif di[k] == MAX:
+                        continue
+                    if di[k] == MAX:
                         dist_max += 1  # reachable (duration real) but no distance
                         if sample is None:
                             sample = (s[k], t[k])
+                    elif s[k] != t[k] and len(cells) < 8 and rows % 137 == 0:
+                        cells.append((s[k], t[k], du[k], di[k]))
         except Exception as e:
             print(f"  [SKIP] flight unreachable ({e})")
             return True
@@ -894,6 +898,134 @@ def gate_matrix_distance_consistency(base):
             f"{dist_max}/{rows} rows have duration but distance_m==MAX (#534 column-wide MAX)"
             + (f" e.g. {sample}" if sample else ""),
         )
+        # CROSS-PATH: streamed matrix cell values must match /route (the small
+        # single-query path) — duration AND distance — within tolerance. Catches
+        # any streamed-path value divergence (bucket/PHAST/2-channel), not just
+        # the column-wide MAX. The streamed engine is a different code path than
+        # /route, so this is the belt to the CI cross-path suspenders.
+        bad = 0
+        worst = 0.0
+        for si, ti, dur_ms, dist_m in cells:
+            o, d = grid[si], grid[ti]
+            try:
+                r = route(base, o[0], o[1], d[0], d[1], mode)  # (dur_s, dist_m)
+            except Exception:
+                continue
+            dur_ok = abs(dur_ms / 1000.0 - r[0]) <= max(r[0] * 0.02, 1.0)
+            dist_ok = abs(dist_m - r[1]) <= max(r[1] * 0.02, 5.0)
+            worst = max(worst, abs(dist_m - r[1]) / max(r[1], 1.0))
+            if not (dur_ok and dist_ok):
+                bad += 1
+        passed &= check(
+            f"{mode}: streamed cell values == /route",
+            bad == 0 and len(cells) > 0,
+            f"{len(cells)} cells checked, {bad} mismatch (worst dist {worst * 100:.2f}%)",
+        )
+    return passed
+
+
+def gate_all_endpoints_smoke(base):
+    """COVERAGE: ping EVERY REST endpoint and EVERY Flight action so a change
+    that breaks one surface entirely is caught even if you were only touching
+    another. Each must return a valid (non-error) response of the right shape.
+    Optional surfaces (transit, /height) are skipped, not failed, when absent."""
+    print("== all-endpoints smoke: every REST route + Flight action responds ==")
+    import urllib.parse as up
+
+    passed = True
+    o = (4.3517, 50.8503)
+    d = (4.4025, 51.2194)
+
+    # ---- REST ----
+    rest = {
+        "/health": f"{base}/health",
+        "/version": f"{base}/version",
+        "/route": f"{base}/route?origin_lon={o[0]}&origin_lat={o[1]}&destination_lon={d[0]}&destination_lat={d[1]}&mode=car",
+        "/nearest": f"{base}/nearest?lon={o[0]}&lat={o[1]}&mode=car",
+        "/isochrone": f"{base}/isochrone?lon={o[0]}&lat={o[1]}&time_s=300&mode=car",
+    }
+    for name, url in rest.items():
+        try:
+            http_json(url)
+            passed &= check(f"REST {name}", True, "ok")
+        except Exception as e:
+            passed &= check(f"REST {name}", False, f"{e}")
+    # POST /table
+    try:
+        http_json(
+            f"{base}/table",
+            data=json.dumps(
+                {"origins": [list(o), list(d)], "destinations": [list(o), list(d)], "mode": "car", "annotations": "duration,distance"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        passed &= check("REST /table", True, "ok")
+    except Exception as e:
+        passed &= check("REST /table", False, f"{e}")
+    # POST /trip
+    try:
+        http_json(
+            f"{base}/trip",
+            data=json.dumps({"coordinates": [list(o), list(d), [4.35, 50.9]], "mode": "car"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        passed &= check("REST /trip", True, "ok")
+    except Exception as e:
+        passed &= check("REST /trip", False, f"{e}")
+
+    # ---- Flight ----
+    try:
+        import pyarrow as pa
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available for Flight actions")
+        return passed
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    c = fl.connect(f"grpc://{host}:{port}")
+    pairs = [[o[0], o[1], d[0], d[1]]]
+
+    def do_get_ok(name, ticket):
+        try:
+            tb = c.do_get(fl.Ticket(ticket.encode())).read_all()
+            return check(f"Flight {name}", tb.num_rows >= 0, f"{tb.num_rows} rows")
+        except Exception as e:
+            return check(f"Flight {name}", False, f"{str(e)[:80]}")
+
+    passed &= do_get_ok("matrix", f"matrix:car:{json.dumps({'origins': [list(o)], 'destinations': [list(d)]})}")
+    passed &= do_get_ok("route_batch", f"route_batch:car:{json.dumps({'pairs': pairs})}")
+    passed &= do_get_ok("edges_batch", f"edges_batch:car:{json.dumps({'pairs': pairs})}")
+    passed &= do_get_ok("isochrone", f"isochrone:car:{json.dumps({'lon': o[0], 'lat': o[1], 'intervals': [300], 'interval_type': 'time'})}")
+    # transit_bulk — optional (needs transit subsystem)
+    try:
+        q = {"queries": [{"origin_lon": o[0], "origin_lat": o[1], "destination_lon": d[0], "destination_lat": d[1]}]}
+        c.do_get(fl.Ticket(f"transit_bulk:transit:{json.dumps(q)}".encode())).read_all()
+        passed &= check("Flight transit_bulk", True, "ok")
+    except Exception as e:
+        msg = str(e)
+        if "not loaded" in msg or "FailedPrecondition" in msg or "transit" in msg.lower():
+            print("  [SKIP] Flight transit_bulk: transit subsystem not loaded")
+        else:
+            passed &= check("Flight transit_bulk", False, f"{msg[:80]}")
+    # do_exchange: catchment + edges_flow
+    try:
+        tbl = pa.table({
+            "store_id": pa.array(["s1"]), "store_lon": pa.array([o[0]]), "store_lat": pa.array([o[1]]),
+            "client_lon": pa.array([d[0]]), "client_lat": pa.array([d[1]]),
+        })
+        params = {"percentiles": [50], "hull_shape": "isochrone", "remove_outliers": False, "radius_km": "auto"}
+        w, r = c.do_exchange(fl.FlightDescriptor.for_command(f"catchment:car:{json.dumps(params)}".encode()))
+        w.begin(tbl.schema); w.write_table(tbl); w.done_writing(); r.read_all(); w.close()
+        passed &= check("Flight catchment", True, "ok")
+    except Exception as e:
+        passed &= check("Flight catchment", False, f"{str(e)[:80]}")
+    try:
+        tbl = pa.table({"src_lon": pa.array([o[0]]), "src_lat": pa.array([o[1]]), "dst_lon": pa.array([d[0]]), "dst_lat": pa.array([d[1]])})
+        w, r = c.do_exchange(fl.FlightDescriptor.for_command(b"edges_flow:car"))
+        w.begin(tbl.schema); w.write_table(tbl); w.done_writing(); r.read_all(); w.close()
+        passed &= check("Flight edges_flow", True, "ok")
+    except Exception as e:
+        passed &= check("Flight edges_flow", False, f"{str(e)[:80]}")
     return passed
 
 
@@ -1187,7 +1319,8 @@ def gate_matrix_sparse(base):
 
 def gate_matrix_sparse_streaming(base):
     """#532: the STREAMING branch (>1M cells → PHAST-tiled, multi-batch) must
-    honour sparse too — the path PharmaYou's 257k×1415 workload actually takes.
+    honour sparse too — the path a large nearest-facility workload (hundreds of
+    thousands of origins × thousands of destinations) actually takes.
     A single sparse pass over a >1M-cell radius-pruned grid must: stream >1
     batch (confirms the tiled path), leak zero sentinels, drop empty tiles, and
     return far fewer rows than cells (the diagonal + near neighbours survive).
@@ -1528,7 +1661,7 @@ def gate_consistency(base, n_pairs=15):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True, help="e.g. http://butterfly.staging.lan")
+    ap.add_argument("--base", required=True, help="e.g. http://localhost:3001")
     ap.add_argument("--trips", default=DEFAULT_TRIPS)
     ap.add_argument("--quick", action="store_true", help="skip the 1000-trip ground truth")
     args = ap.parse_args()

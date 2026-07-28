@@ -65,7 +65,7 @@ pub fn write<P: AsRef<Path>>(
     let (bbox_min_lat, bbox_min_lon, bbox_max_lat, bbox_max_lon) = calculate_bbox(&sorted_nodes);
 
     // #419: deterministic for byte-reproducible builds. created_unix is never
-    // read for logic; build provenance lives in the lock files + artifact-info.
+    // read for logic; build provenance lives in the lock files + the deploy-side provenance sidecar.
     let created_unix: u64 = 0;
 
     // Write header (we'll calculate CRCs and update later)

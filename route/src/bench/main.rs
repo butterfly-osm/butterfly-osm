@@ -521,7 +521,7 @@ enum Commands {
     /// #438: edges_batch FLAT (per-pair) vs source-GROUPED throughput +
     /// equivalence, on a `.butterfly` container. Builds a source-sharing
     /// workload (n_sources sources × targets_per_source nearby targets,
-    /// mirroring traffic-flow's origin→PoIs shape), runs BOTH paths, asserts
+    /// mirroring a flow-analytics origin→PoIs shape), runs BOTH paths, asserts
     /// they are equivalent (same reachability + same per-pair total duration),
     /// reports the byte-identity rate, and times flat vs grouped. Server-free.
     EdgesBatch {
@@ -4683,7 +4683,7 @@ fn run_p2p_bench(
 
 /// #438: edges_batch FLAT (per-pair) vs source-GROUPED — throughput + the
 /// equivalence oracle. Builds n_sources × targets_per_source pairs (the
-/// source-sharing shape of the real traffic-flow workload), runs both
+/// source-sharing shape of a real source-sharing workload), runs both
 /// `compute_edges_flat` and `compute_edges_grouped` in-process, asserts they
 /// agree (reachability + per-pair CCH distance — the OPTIMIZED metric, #468),
 /// reports byte-identity, and times them. The summed row-duration comparison
@@ -4735,7 +4735,7 @@ fn run_edges_batch_bench(
     let mode = Mode(mode_idx);
     let mode_data = state.get_mode(mode);
 
-    // Build a source-sharing workload mirroring traffic-flow's shape:
+    // Build a source-sharing workload mirroring a source-sharing shape:
     // sources jittered around real Belgian cities (street sections are always
     // on-network — pure random bbox points land in the sea / outside the
     // Belgium graph and skew the run toward unreachable-escalation cost),

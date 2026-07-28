@@ -28,6 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # PUBLIC-REPO guard: fail in seconds (no toolchain needed) if any private
+      # infra / deploy / client / data-provider term leaked into a tracked file.
+      # See scripts/check-upstream-clean.sh + CLAUDE.md "Repo Boundaries".
+      - name: upstream-clean (no infra/provider/client leaks)
+        run: bash scripts/check-upstream-clean.sh
+
       # Pin to the repo's rust-version (Cargo.toml `rust-version = "1.95"`,
       # edition 2024). Bump both together.
       - name: Install Rust 1.95.0
