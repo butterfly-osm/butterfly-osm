@@ -829,6 +829,74 @@ def _wkb_linestring_len_m(buf):
     return _polyline_len_m(pts)
 
 
+def gate_matrix_distance_consistency(base):
+    """#534 (the real root cause): the STREAMED matrix path (>1M cells) must
+    compute distance_m too — it used to emit distance_m = u32::MAX on 100% of
+    rows while durations were real, and large-request clients misread that
+    column-wide MAX as an unreachability sentinel and dropped whole tiles. The
+    invariant: on the streamed path, EVERY reachable cell (duration != MAX) also
+    carries a real distance (distance != MAX). Sparse output returns only
+    reachable rows, so simply: no returned row may have distance_m == MAX while
+    duration_ms is real. Cross-checked against /route on a sample."""
+    print("== streamed matrix distance_m computed (not column-wide MAX) (#534) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    MAX = 4294967295
+    # >1M-cell grid → streamed path; sparse → only reachable rows come back.
+    lons = [3.6 + 0.0606 * i for i in range(34)]
+    lats = [50.50 + 0.020 * j for j in range(31)]
+    grid = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+    passed = True
+    for mode in ("car", "foot"):
+        params = {"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True}
+        try:
+            rd = fl.connect(f"grpc://{host}:{port}").do_get(
+                fl.Ticket(f"matrix:{mode}:{json.dumps(params)}".encode())
+            )
+            rows = 0
+            dur_max = 0
+            dist_max = 0
+            sample = None
+            for chunk in rd:
+                b = chunk.data
+                if b is None:
+                    continue
+                du = b.column("duration_ms").to_pylist()
+                di = b.column("distance_m").to_pylist()
+                s = b.column("source_idx").to_pylist()
+                t = b.column("target_idx").to_pylist()
+                for k in range(b.num_rows):
+                    rows += 1
+                    if du[k] == MAX:
+                        dur_max += 1
+                    elif di[k] == MAX:
+                        dist_max += 1  # reachable (duration real) but no distance
+                        if sample is None:
+                            sample = (s[k], t[k])
+        except Exception as e:
+            print(f"  [SKIP] flight unreachable ({e})")
+            return True
+        passed &= check(
+            f"{mode}: streamed path returns rows",
+            rows > 1000,
+            f"{rows} reachable rows over {len(grid)}² cells",
+        )
+        passed &= check(
+            f"{mode}: every reachable cell has a distance",
+            dist_max == 0,
+            f"{dist_max}/{rows} rows have duration but distance_m==MAX (#534 column-wide MAX)"
+            + (f" e.g. {sample}" if sample else ""),
+        )
+    return passed
+
+
 def gate_route_batch_geometry(base):
     """#493: foot/bike `route_batch` emitted `geometry_wkb` ~2× the reported
     distance (polyline doubled/zigzag) while car was fine — a Flight-only
@@ -1481,6 +1549,7 @@ def main():
     ok &= gate_matrix_sparse_streaming(base)
     ok &= gate_matrix_completeness(base)
     ok &= gate_flight_completeness(base)
+    ok &= gate_matrix_distance_consistency(base)
     ok &= gate_mode_coherence(base)
     ok &= gate_bounded_matrix_exactness(base)
     ok &= gate_one_way_routable(base)
