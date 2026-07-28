@@ -1310,7 +1310,8 @@ fn belgium_flight_transit_bulk_roundtrip() {
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let mut s = do_transit_bulk(&state, params).expect("do_transit_bulk should succeed");
+        let (mut s, _done) =
+            do_transit_bulk(&state, params).expect("do_transit_bulk should succeed");
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
             acc.push(item.expect("RecordBatch should not error"));
@@ -1457,7 +1458,7 @@ fn belgium_flight_transit_bulk_chunks_large_batches() {
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let mut s = do_transit_bulk(&state, params).unwrap();
+        let (mut s, _done) = do_transit_bulk(&state, params).unwrap();
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
             acc.push(item.expect("batch must succeed"));
@@ -1536,7 +1537,7 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let mut s = do_edges_batch(&state, mode, EdgesBatchParams { pairs })
+        let (mut s, _done) = do_edges_batch(&state, mode, EdgesBatchParams { pairs })
             .expect("do_edges_batch should succeed");
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
@@ -1748,7 +1749,7 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let mut s = do_edges_batch(
+        let (mut s, _done) = do_edges_batch(
             &state,
             mode,
             EdgesBatchParams {
