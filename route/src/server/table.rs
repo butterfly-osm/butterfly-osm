@@ -937,6 +937,7 @@ pub async fn compute_table_bucket_m2m(
             destinations,
             &source_valid,
             &target_valid,
+            neighbor_mask.as_deref(),
             snap_mask,
             src_role_filter,
             dst_role_filter,
@@ -1024,6 +1025,7 @@ fn apply_k_best_fallback(
     destinations: &[[f64; 2]],
     source_valid: &[bool],
     target_valid: &[bool],
+    neighbor_mask: Option<&[Vec<u32>]>,
     snap_mask: &[u64],
     src_role_filter: Option<&[u64]>,
     dst_role_filter: Option<&[u64]>,
@@ -1166,6 +1168,14 @@ fn apply_k_best_fallback(
         }
         for tgt_idx in 0..n_targets {
             if !target_valid[tgt_idx] {
+                continue;
+            }
+            // #531: a cell the radius neighbor-mask deliberately pruned is
+            // NOT a snap gap — skip it so the fallback can't re-populate a
+            // pair the caller asked to exclude (rows are sorted → bsearch).
+            if let Some(mask) = neighbor_mask
+                && mask[src_idx].binary_search(&(tgt_idx as u32)).is_err()
+            {
                 continue;
             }
             let dur_missing = durations
