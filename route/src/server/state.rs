@@ -329,7 +329,7 @@ pub struct ServerState {
     /// #450→(single-car): index of the resident clean legal-limit base
     /// (`car_freeflow`). Kept RESIDENT as the internal base the uncertainty
     /// bands recustomize from, but NOT inserted into `mode_lookup` — the ONLY
-    /// public car profile is the TomTom-median `car` (#521). No `?mode=` and
+    /// public car profile is the survey-median `car` (#521). No `?mode=` and
     /// no BUTTERFLY_CAR_PROFILE override reaches it.
     pub car_freeflow_idx: Option<usize>,
     /// Mode names indexed by mode_index (alphabetically sorted)

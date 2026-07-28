@@ -621,7 +621,7 @@ pub async fn serve(
                             "car recustomized from DIRECTED per-edge speeds (#454)"
                         );
                         // #521: ONE public car profile = the demand-weighted
-                        // TomTom median. Distributional friction is the opt-in
+                        // survey median. Distributional friction is the opt-in
                         // uncertainty bands (uncertainty=bands) — hidden weight
                         // sets from the optional q25/q75 columns of the SAME
                         // table. Non-fatal: median car keeps serving without

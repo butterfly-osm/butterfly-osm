@@ -5794,6 +5794,150 @@ mod max_minutes_bound_tests {
         }
     }
 
+    /// Build the broom's 2-channel + PHAST forward-down flats. Length weights
+    /// are 2× the time weights (as in `bounded_2channel_time_bound_carries_length`),
+    /// the forward-down adjacency is apex→leaves (apex = highest rank).
+    #[allow(clippy::type_complexity)]
+    fn broom_full(
+        n_leaf: usize,
+    ) -> (
+        usize,
+        UpAdjFlat,
+        DownReverseAdjFlat,
+        UpAdjFlat,
+        DownReverseAdjFlat,
+        DownAdjFlat,
+        DownAdjFlat,
+        Vec<Vec<EngineSeed>>,
+    ) {
+        let (n_nodes, up, down, wu, wd) = broom(n_leaf);
+        let up_lat = UpAdjFlat {
+            offsets: up.offsets.clone(),
+            targets: up.targets.clone(),
+            weights: WeightArray::from_vec_u32(wu.iter().map(|w| w * 2).collect()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        let dn_lat = DownReverseAdjFlat {
+            offsets: down.offsets.clone(),
+            sources: down.sources.clone(),
+            weights: WeightArray::from_vec_u32(wd.iter().map(|w| w * 2).collect()),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        };
+        // Forward-down: apex (id n_leaf) → each leaf i, weight wd[i].
+        let mut dn_offsets = vec![0u64; n_leaf + 1];
+        dn_offsets.push(n_leaf as u64);
+        let dn_targets: Vec<u32> = (0..n_leaf as u32).collect();
+        let down_fwd_time = DownAdjFlat {
+            offsets: ArcCow::from_vec(dn_offsets.clone()),
+            targets: ArcCow::from_vec(dn_targets.clone()),
+            weights: WeightArray::from_vec_u32(wd.clone()),
+        };
+        let down_fwd_len = DownAdjFlat {
+            offsets: ArcCow::from_vec(dn_offsets),
+            targets: ArcCow::from_vec(dn_targets),
+            weights: WeightArray::from_vec_u32(wd.iter().map(|w| w * 2).collect()),
+        };
+        let seeds: Vec<Vec<EngineSeed>> = (0..n_leaf as u32)
+            .map(|i| vec![(i, 0u32, 0u32, true)])
+            .collect();
+        (
+            n_nodes,
+            up,
+            down,
+            up_lat,
+            dn_lat,
+            down_fwd_time,
+            down_fwd_len,
+            seeds,
+        )
+    }
+
+    /// CROSS-PATH LOCK: the 1-channel and 2-channel seeded bucket engines must
+    /// agree on the DURATION channel — the 2-channel run must not perturb the
+    /// times. Modify either and this catches a divergence.
+    #[test]
+    fn seeded_1ch_time_equals_2ch_time() {
+        let (n_nodes, up, down, up_lat, dn_lat, _, _, seeds) = broom_full(12);
+        for &thr in &[u32::MAX, 200, 55] {
+            let (t1, _) =
+                table_bucket_parallel_seeded_bounded(n_nodes, &up, &down, &seeds, &seeds, thr);
+            let (t2, _l, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+                n_nodes, &up, &down, &up_lat, &dn_lat, &seeds, &seeds, thr,
+            );
+            assert_eq!(
+                t1, t2,
+                "1-channel vs 2-channel duration diverges at thr {thr}"
+            );
+        }
+    }
+
+    /// CROSS-PATH LOCK (#526/#534): bucket and PHAST are two engines for the
+    /// SAME query — they MUST return identical time AND length matrices. This is
+    /// the invariant that lets us swap paths (the streamed matrix now routes
+    /// through PHAST for lopsided tiles); a regression in either makes them
+    /// disagree here.
+    #[test]
+    fn seeded_bucket_2ch_equals_phast_2ch() {
+        let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+        for &thr in &[u32::MAX, 200, 55] {
+            let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+                n_nodes, &up, &down, &up_lat, &dn_lat, &seeds, &seeds, thr,
+            );
+            let (pt, pl, _) = table_phast_lopsided_2ch(
+                n_nodes, &up, &down, &dfwd_t, &up_lat, &dn_lat, &dfwd_l, mode, &seeds, &seeds, thr,
+            );
+            // Compare the SERVED result: both engines agree on every IN-BOUND
+            // cell (time ≤ thr) — time AND length — which is exactly what the
+            // server post-filter keeps. Out-of-bound cells may legitimately
+            // differ (bucket can hold a real value > thr, PHAST early-stops to
+            // MAX); the only invariant there is neither leaks a ≤thr value.
+            for i in 0..bt.len() {
+                if bt[i] <= thr {
+                    assert_eq!(
+                        pt[i], bt[i],
+                        "bucket/PHAST TIME diverge, in-bound cell {i}, thr {thr}"
+                    );
+                    assert_eq!(
+                        pl[i], bl[i],
+                        "bucket/PHAST LEN diverge, in-bound cell {i}, thr {thr}"
+                    );
+                } else {
+                    assert!(
+                        pt[i] > thr,
+                        "PHAST leaked a ≤thr time at out-of-bound cell {i}, thr {thr}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// CROSS-PATH LOCK: the shape-aware 2-channel router must return the SAME
+    /// result whether it internally picks PHAST or bucket — dispatching must be
+    /// transparent to the caller.
+    #[test]
+    fn seeded_router_2ch_matches_engines() {
+        let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+        let thr = u32::MAX;
+        let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+            n_nodes, &up, &down, &up_lat, &dn_lat, &seeds, &seeds, thr,
+        );
+        let (rt, rl, _) = table_seeded_bounded_routed_2ch(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            Some((&dfwd_t, &dfwd_l, mode)),
+            &seeds,
+            &seeds,
+            thr,
+        );
+        assert_eq!(bt, rt, "router time channel must match the engines");
+        assert_eq!(bl, rl, "router length channel must match the engines");
+    }
+
     #[test]
     fn unbounded_sentinel_is_byte_identical() {
         // threshold == u32::MAX must reproduce the unbounded matrix exactly.
