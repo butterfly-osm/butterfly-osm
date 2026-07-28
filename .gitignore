@@ -182,3 +182,7 @@ geocode/data/br/
 !/data/world-corpus/MANIFEST.json
 CLAUDE.md
 .env
+
+# Python bytecode from bench/gate scripts
+__pycache__/
+*.pyc

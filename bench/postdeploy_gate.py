@@ -618,6 +618,135 @@ def gate_edges_batch(base):
     return passed
 
 
+def gate_matrix_sparse(base):
+    """#532: Flight matrix `sparse:true` must be EXACTLY the dense output with
+    the sentinel rows removed — no measured constant, pure equivalence:
+      * dense is the full S×T grid;
+      * the fixture (radius_km=20 over 10 spread-out cities) actually prunes;
+      * sparse emits zero sentinel durations;
+      * the set of surviving (source,target) pairs == dense's non-sentinel set;
+      * every surviving value is byte-identical to its dense value.
+    A regression that dropped a reachable row, kept a sentinel, or changed a
+    value would break one of these."""
+    print("== Flight matrix sparse == dense minus sentinels (#532) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    MAX = 4294967295
+    pts = [[p[1], p[2]] for p in ISO_POINTS]  # 10 spread-out Belgium points
+
+    def fetch(sparse):
+        params = {
+            "origins": pts,
+            "destinations": pts,
+            "radius_km": 20,
+            "sparse": sparse,
+        }
+        t = fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
+        tb = fl.connect(f"grpc://{host}:{port}").do_get(t).read_all()
+        s, d, dur = tb.column("source_idx"), tb.column("target_idx"), tb.column("duration_ms")
+        cells = {(s[i].as_py(), d[i].as_py()): dur[i].as_py() for i in range(tb.num_rows)}
+        return cells, tb.num_rows
+
+    try:
+        dense, dense_n = fetch(False)
+        sp, _sp_n = fetch(True)
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
+
+    n = len(pts)
+    dense_real = {k: v for k, v in dense.items() if v != MAX}
+    passed = True
+    passed &= check("dense is full grid", dense_n == n * n, f"{dense_n} rows (expect {n * n})")
+    passed &= check(
+        "fixture actually prunes",
+        0 < len(dense_real) < dense_n,
+        f"{dense_n - len(dense_real)} sentinels, {len(dense_real)} real of {dense_n}",
+    )
+    leaked = sum(1 for v in sp.values() if v == MAX)
+    passed &= check("sparse emits no sentinels", leaked == 0, f"{leaked} sentinel rows leaked")
+    passed &= check(
+        "sparse keys == dense non-sentinel keys",
+        set(sp.keys()) == set(dense_real.keys()),
+        f"sparse {len(sp)} vs dense-real {len(dense_real)}",
+    )
+    passed &= check(
+        "sparse values identical to dense",
+        all(sp.get(k) == v for k, v in dense_real.items()),
+        "all surviving pairs match dense",
+    )
+    return passed
+
+
+def gate_matrix_sparse_streaming(base):
+    """#532: the STREAMING branch (>1M cells → PHAST-tiled, multi-batch) must
+    honour sparse too — the path PharmaYou's 257k×1415 workload actually takes.
+    A single sparse pass over a >1M-cell radius-pruned grid must: stream >1
+    batch (confirms the tiled path), leak zero sentinels, drop empty tiles, and
+    return far fewer rows than cells (the diagonal + near neighbours survive).
+    No dense comparison here (1M+ dense rows over the wire is the very cost this
+    ticket removes) — the unit tests carry the full dense/sparse equivalence."""
+    print("== Flight matrix sparse STREAMING path (>1M cells, #532) ==")
+    try:
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    MAX = 4294967295
+    # A deterministic ~34×31 grid kept INSIDE Belgium's routable box = 1054
+    # points; 1054² ≈ 1.11M cells > the 1M bucket-M2M threshold, so do_matrix
+    # takes the tiled stream. Coordinates stay clear of the borders: a point
+    # OUTSIDE the BE region hard-errors the matrix request (region dispatch),
+    # whereas an in-region off-network point is silently dropped — we want the
+    # latter, never the former.
+    lons = [3.6 + 0.0606 * i for i in range(34)]  # ~3.60–5.60
+    lats = [50.50 + 0.020 * j for j in range(31)]  # ~50.50–51.10
+    pts = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+    n = len(pts)
+    params = {"origins": pts, "destinations": pts, "radius_km": 6, "sparse": True}
+    try:
+        rd = fl.connect(f"grpc://{host}:{port}").do_get(
+            fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
+        )
+        rows = 0
+        sentinels = 0
+        batches = 0
+        empty = 0
+        for chunk in rd:
+            b = chunk.data
+            batches += 1
+            if b.num_rows == 0:
+                empty += 1
+            rows += b.num_rows
+            sentinels += sum(1 for v in b.column("duration_ms").to_pylist() if v == MAX)
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
+
+    cells = n * n
+    passed = True
+    passed &= check("took the streaming path", batches > 1, f"{batches} batches for {cells} cells")
+    passed &= check("no sentinels streamed", sentinels == 0, f"{sentinels} sentinel rows")
+    passed &= check("no empty batches streamed", empty == 0, f"{empty} empty batches")
+    passed &= check(
+        "sparse << dense",
+        0 < rows < cells // 2,
+        f"{rows} rows of {cells} cells ({100 * (1 - rows / cells):.1f}% dropped)",
+    )
+    return passed
+
+
 def gate_close_pairs(base, n_pairs=150):
     import math
 
@@ -760,6 +889,8 @@ def main():
     ok &= gate_radius_prune(base)
     ok &= gate_recustomized_distance(base)
     ok &= gate_edges_batch(base)
+    ok &= gate_matrix_sparse(base)
+    ok &= gate_matrix_sparse_streaming(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
