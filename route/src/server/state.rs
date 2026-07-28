@@ -326,6 +326,12 @@ pub struct ServerState {
     // opt = q75-speed. None until register_car_bands_from_edge_speeds runs.
     pub band_pess_idx: Option<usize>,
     pub band_opt_idx: Option<usize>,
+    /// #450→(single-car): index of the resident clean legal-limit base
+    /// (`car_freeflow`). Kept RESIDENT as the internal base the uncertainty
+    /// bands recustomize from, but NOT inserted into `mode_lookup` — the ONLY
+    /// public car profile is the TomTom-median `car` (#521). No `?mode=` and
+    /// no BUTTERFLY_CAR_PROFILE override reaches it.
+    pub car_freeflow_idx: Option<usize>,
     /// Mode names indexed by mode_index (alphabetically sorted)
     pub mode_names: Vec<String>,
     /// Mode name → mode index lookup
@@ -678,6 +684,7 @@ impl ServerState {
             modes: modes_slots,
             band_pess_idx: None,
             band_opt_idx: None,
+            car_freeflow_idx: None,
             mode_names,
             mode_lookup,
             snap_index,
@@ -1630,11 +1637,15 @@ impl ServerState {
         // simulation consumers (congested speeds are circular for a sim).
         // Field-clone is cheap (mmap/Arc-backed sections); the slot is
         // non-evictable (no container section backs the synthetic name).
+        let mut car_freeflow_idx: Option<usize> = None;
         if let Some(&car_idx) = mode_lookup.get("car") {
             let freeflow = clone_mode_data(&modes_data[car_idx as usize]);
             let new_index = modes_data.len();
             modes_data.push(freeflow);
-            mode_lookup.insert("car_freeflow".to_string(), new_index as u8);
+            // NOT inserted into mode_lookup — resident base only, hidden from
+            // ?mode= and /health (single public car = median, #521). Kept in
+            // mode_names so the slot has a name (is_variant → pinned).
+            car_freeflow_idx = Some(new_index);
             mode_names.push("car_freeflow".to_string());
             // Snap masks are indexed by mode_idx — the synthetic mode shares
             // car's eligible-edges mask (same fix as the traffic variants;
@@ -1674,6 +1685,7 @@ impl ServerState {
             modes: modes_slots,
             band_pess_idx: None,
             band_opt_idx: None,
+            car_freeflow_idx,
             mode_names,
             mode_lookup,
             snap_index,
@@ -2285,11 +2297,9 @@ impl ServerState {
             !self.mode_lookup.contains_key("car_rush_hour"),
             "car_rush_hour already registered"
         );
-        let ff_idx = *self
-            .mode_lookup
-            .get("car_freeflow")
-            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car_freeflow' base"))?
-            as usize;
+        let ff_idx = self
+            .car_freeflow_idx
+            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car_freeflow' base"))?;
         let car_idx = *self
             .mode_lookup
             .get("car")
@@ -2375,11 +2385,9 @@ impl ServerState {
             !self.mode_lookup.contains_key("car_eq"),
             "car_eq already registered"
         );
-        let ff_idx = *self
-            .mode_lookup
-            .get("car_freeflow")
-            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car_freeflow' base"))?
-            as usize;
+        let ff_idx = self
+            .car_freeflow_idx
+            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car_freeflow' base"))?;
         let car_idx = *self
             .mode_lookup
             .get("car")
@@ -2459,11 +2467,9 @@ impl ServerState {
             return Ok(());
         }
         anyhow::ensure!(self.band_pess_idx.is_none(), "bands already registered");
-        let ff_idx = *self
-            .mode_lookup
-            .get("car_freeflow")
-            .ok_or_else(|| anyhow::anyhow!("bands registration: no 'car_freeflow' base"))?
-            as usize;
+        let ff_idx = self
+            .car_freeflow_idx
+            .ok_or_else(|| anyhow::anyhow!("bands registration: no 'car_freeflow' base"))?;
         let car_idx = *self
             .mode_lookup
             .get("car")

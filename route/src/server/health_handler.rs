@@ -143,7 +143,11 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_s": uptime.as_secs(),
-        "modes": primary_loaded.as_ref().map(|p| p.mode_names.clone()).unwrap_or_default(),
+        "modes": primary_loaded.as_ref().map(|p| {
+            let mut m: Vec<String> = p.mode_lookup.keys().cloned().collect();
+            m.sort();
+            m
+        }).unwrap_or_default(),
         "data_dir": primary_loaded.as_ref().map(|p| p.data_dir.clone()).unwrap_or_default(),
         "nodes_count": primary_loaded.as_ref().map(|p| p.ebg_nodes.n_nodes).unwrap_or(0),
         "edges_count": primary_loaded.as_ref().map(|p| p.ebg_csr.n_arcs).unwrap_or(0),
