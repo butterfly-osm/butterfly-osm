@@ -581,13 +581,23 @@ Params:
 { "origins": [[lon,lat], ...],
   "destinations": [[lon,lat], ...],
   "radius_km": <number | "auto" | [num,...] | null>,
-  "max_minutes": <number | null> }
+  "max_minutes": <number | null>,
+  "sparse": <bool, default false> }
 ```
 
-The action parses exactly `origins`, `destinations`, `radius_km`, `max_minutes`
-— it REJECTS `sources`/`targets` (`InvalidArgument: unknown field \`sources\``).
+The action parses exactly `origins`, `destinations`, `radius_km`, `max_minutes`,
+`sparse` — it REJECTS `sources`/`targets` (`InvalidArgument: unknown field \`sources\``).
 `radius_km` also accepts a PER-ORIGIN array (#531, `len == origins`; length
 mismatch → `InvalidArgument`).
+
+`sparse` (#532): when `true`, cells that are radius-pruned OR unreachable are
+**omitted entirely** rather than streamed as `duration_ms = distance_m =
+u32::MAX` rows. Every emitted row is self-describing via `source_idx`/`target_idx`,
+so an absent `(source, target)` pair means "no route within bounds" — the same
+sparse contract the legacy drivetimes matrix used. Default `false` preserves the
+dense S×T output. On radius-pruned nearest-facility workloads the sentinel share
+is ~80–83% of the dense payload, so `sparse:true` combined with a per-origin
+`radius_km` is the intended shape for large `S×T` (e.g. 257k×1415 nearest-pharmacy).
 Exposure: gRPC is **not** routed through Traefik on staging (`butterfly.staging.lan`
 → 502 for h2c, `butterfly-flight.staging.lan` → 404); reach it via the **NodePort
 `grpc://10.0.3.2:30052`** (canopus). In-cluster the port is 3002/8081.
