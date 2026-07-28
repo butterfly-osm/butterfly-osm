@@ -2010,22 +2010,35 @@ fn do_route_batch(
     state: &Arc<ServerState>,
     mode: Mode,
     params: RouteBatchParams,
-) -> std::result::Result<BatchStream, Status> {
+) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     if params.pairs.is_empty() {
         let schema = Arc::new(route_batch_schema());
         let empty = RecordBatch::new_empty(schema);
-        return Ok(Box::pin(stream::once(async move { Ok(empty) })));
+        // #533: synchronous, complete by construction — done = true.
+        return Ok((
+            Box::pin(stream::once(async move { Ok(empty) })),
+            Arc::new(AtomicBool::new(true)),
+        ));
     }
 
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
+    let done = Arc::new(AtomicBool::new(false)); // #533: full-completion flag
+    let done_bg = done.clone();
 
     tokio::task::spawn_blocking(move || {
         do_route_batch_blocking(state, mode, params, tx);
+        // #533: reached only if the worker returned normally. Every early
+        // return inside `do_route_batch_blocking` already sent an `Err` (Arrow
+        // build) or is a client disconnect (receiver gone), so a `done=true`
+        // there is harmless — the client already saw the non-OK / is gone. A
+        // PANIC unwinds PAST this, leaving `done` false → the consumer emits a
+        // non-OK truncation error instead of a silent OK.
+        done_bg.store(true, Ordering::Release);
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Ok(Box::pin(stream))
+    Ok((Box::pin(stream), done))
 }
 
 // =============================================================================
@@ -3018,11 +3031,15 @@ pub fn do_edges_batch(
     state: &Arc<ServerState>,
     mode: Mode,
     params: EdgesBatchParams,
-) -> std::result::Result<BatchStream, Status> {
+) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     if params.pairs.is_empty() {
         let schema = Arc::new(edges_batch_schema());
         let empty = RecordBatch::new_empty(schema);
-        return Ok(Box::pin(stream::once(async move { Ok(empty) })));
+        // #533: synchronous, complete by construction — done = true.
+        return Ok((
+            Box::pin(stream::once(async move { Ok(empty) })),
+            Arc::new(AtomicBool::new(true)),
+        ));
     }
     if params.pairs.len() > 500_000 {
         return Err(Status::invalid_argument(
@@ -3036,6 +3053,8 @@ pub fn do_edges_batch(
 
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
+    let done = Arc::new(AtomicBool::new(false)); // #533: all-chunks-emitted flag
+    let done_bg = done.clone();
 
     tokio::task::spawn_blocking(move || {
         let mode_data = state.get_mode(mode);
@@ -3206,10 +3225,15 @@ pub fn do_edges_batch(
                 return;
             }
         }
+
+        // #533: both phases emitted without a client disconnect or Arrow error.
+        // A panic in the rayon region unwinds PAST this, leaving `done` false so
+        // the consumer turns the clean channel-close into a non-OK error.
+        done_bg.store(true, Ordering::Release);
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Ok(Box::pin(stream))
+    Ok((Box::pin(stream), done))
 }
 
 // =============================================================================
@@ -3235,7 +3259,7 @@ pub struct TransitBulkParams {
 pub fn do_transit_bulk(
     state: &Arc<ServerState>,
     params: TransitBulkParams,
-) -> std::result::Result<BatchStream, Status> {
+) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     if state.transit.is_none() {
         return Err(Status::failed_precondition(
             "transit subsystem is not loaded",
@@ -3244,7 +3268,11 @@ pub fn do_transit_bulk(
     if params.queries.is_empty() {
         let schema = Arc::new(transit_bulk_schema());
         let empty = RecordBatch::new_empty(schema);
-        return Ok(Box::pin(stream::once(async move { Ok(empty) })));
+        // #533: synchronous, complete by construction — done = true.
+        return Ok((
+            Box::pin(stream::once(async move { Ok(empty) })),
+            Arc::new(AtomicBool::new(true)),
+        ));
     }
     // Soft cap: 500k queries — Flight streaming has no URL-length
     // bottleneck so we can go larger than the JSON `/transit/bulk`
@@ -3257,6 +3285,8 @@ pub fn do_transit_bulk(
 
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
+    let done = Arc::new(AtomicBool::new(false)); // #533: all-chunks-emitted flag
+    let done_bg = done.clone();
 
     tokio::task::spawn_blocking(move || {
         // Apply per-batch defaults to every query that omits the field.
@@ -3396,10 +3426,15 @@ pub fn do_transit_bulk(
                 return;
             }
         }
+
+        // #533: every chunk emitted without a client disconnect or Arrow error.
+        // A panic in the rayon region unwinds PAST this, leaving `done` false so
+        // the consumer turns the clean channel-close into a non-OK error.
+        done_bg.store(true, Ordering::Release);
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Ok(Box::pin(stream))
+    Ok((Box::pin(stream), done))
 }
 
 // =============================================================================
@@ -3422,56 +3457,57 @@ fn batches_to_flight_data(schema: SchemaRef, batch_stream: BatchStream) -> Fligh
     }))
 }
 
-/// #533/#532: encode the matrix batch stream, then append a deterministic
-/// completeness signal so clients can fail loud on truncation — under BOTH the
-/// dense and the sparse output contract.
+/// #533: count rows flowing through a `do_get` batch stream so the completeness
+/// trailer can report the exact total.
+fn count_rows_into(batch_stream: BatchStream, rows: Arc<AtomicU64>) -> BatchStream {
+    Box::pin(batch_stream.map(move |r| {
+        if let Ok(b) = &r {
+            rows.fetch_add(b.num_rows() as u64, Ordering::Relaxed);
+        }
+        r
+    }))
+}
+
+/// #533/#532: encode a `do_get` batch stream, then append a deterministic
+/// completeness signal so clients can fail loud on truncation. Shared by
+/// `matrix`, `edges_batch` and `transit_bulk` — every streamed do_get action
+/// runs its producer in a `spawn_blocking` + rayon region feeding an mpsc
+/// channel, where a panic drops the sender and the receiver reads the clean
+/// channel-close as a normal gRPC-OK end-of-stream (silent data loss).
 ///
-/// Counts emitted rows as batches pass, then after the encoded stream drains:
-/// - if `done` is set (the producer emitted every tile), append ONE trailing
+/// After the encoded stream drains:
+/// - if `done` is set (the producer emitted everything), append ONE trailing
 ///   FlightData with empty body and `app_metadata` =
-///   `{"complete":true,"total_rows":N,"contract":"dense|sparse"}`;
-/// - if `done` is NOT set (the producer panicked, was aborted, or otherwise
-///   closed the channel early — the #533 failure), append a non-OK error
-///   instead. A gRPC-OK stream missing the trailer is impossible.
+///   `{"complete":true,"total_rows":N<extra>}`;
+/// - if `done` is NOT set (panic / abort / early close), append a non-OK error.
 ///
-/// Why this matters for sparse (#532): the dense contract let clients verify
-/// integrity via `rows == S×T`; sparse output removes that check, so a
-/// legitimately-empty response (`total_rows:0, complete:true`) would otherwise
-/// be indistinguishable from a truncated one. The trailer restores a
-/// deterministic completeness guarantee for both.
-fn matrix_flight_stream(
+/// A gRPC-OK stream missing the trailer is impossible. `extra` injects extra
+/// JSON key/values verbatim (e.g. the matrix `,"contract":"dense"`), `""` for
+/// none. Why the trailer and not just the error: it also lets a client
+/// distinguish a legitimately-empty response (`total_rows:0, complete:true`)
+/// from a truncated one, which matters once radius/sparse pruning removes the
+/// `rows == expected` check (#532).
+fn completed_flight_stream(
     schema: SchemaRef,
     batch_stream: BatchStream,
     done: Arc<AtomicBool>,
-    sparse: bool,
+    extra: &'static str,
 ) -> FlightDataStream {
     let rows = Arc::new(AtomicU64::new(0));
-    let rows_ctr = rows.clone();
-    let counted: BatchStream = Box::pin(batch_stream.map(move |r| {
-        if let Ok(b) = &r {
-            rows_ctr.fetch_add(b.num_rows() as u64, Ordering::Relaxed);
-        }
-        r
-    }));
-
+    let counted = count_rows_into(batch_stream, rows.clone());
     let encoded = batches_to_flight_data(schema, counted);
 
     let trailer = futures::stream::once(async move {
         if done.load(Ordering::Acquire) {
             let n = rows.load(Ordering::Relaxed);
-            let contract = if sparse { "sparse" } else { "dense" };
-            let json =
-                format!("{{\"complete\":true,\"total_rows\":{n},\"contract\":\"{contract}\"}}");
+            let json = format!("{{\"complete\":true,\"total_rows\":{n}{extra}}}");
             Ok(FlightData {
                 app_metadata: json.into_bytes().into(),
                 ..Default::default()
             })
         } else {
-            // #533: the channel closed without the producer signalling
-            // completion — a partial/empty grid. Fail the RPC so clients retry
-            // instead of silently accepting missing tiles.
             Err(Status::internal(
-                "matrix stream truncated before completion — retry (#533)",
+                "flight stream truncated before completion — retry (#533)",
             ))
         }
     });
@@ -3650,8 +3686,12 @@ async fn do_exchange_edges_flow(
                 return; // client went away — cooperative cancel
             }
         }
+        // #533: `complete:true` makes the summary the completeness signal —
+        // it is sent ONLY here, after every chunk streamed successfully. A
+        // panic earlier unwinds the closure, drops `sum_tx` unsent, and the
+        // consumer below turns that into a non-OK error.
         let summary_json = format!(
-            r#"{{"n_pairs":{},"n_unreachable":{},"total_weight_in":{},"total_weight_assigned":{}}}"#,
+            r#"{{"complete":true,"n_pairs":{},"n_unreachable":{},"total_weight_in":{},"total_weight_assigned":{}}}"#,
             summary.n_pairs,
             summary.n_unreachable,
             summary.total_weight_in,
@@ -3662,13 +3702,20 @@ async fn do_exchange_edges_flow(
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
     let flight_stream = batches_to_flight_data(schema, batch_stream);
-    // Trailing summary message: empty body, JSON app_metadata.
+    // #533: trailing completeness/summary message (empty body, JSON
+    // app_metadata) — OR a non-OK error if the producer died before sending
+    // the summary (sum_tx dropped ⇒ RecvError), so a truncated edges_flow can
+    // never be mistaken for a complete one.
     let trailer = futures::stream::once(async move {
-        let json = sum_rx.await.unwrap_or_default();
-        Ok(FlightData {
-            app_metadata: json.into_bytes().into(),
-            ..Default::default()
-        })
+        match sum_rx.await {
+            Ok(json) => Ok(FlightData {
+                app_metadata: json.into_bytes().into(),
+                ..Default::default()
+            }),
+            Err(_) => Err(Status::internal(
+                "edges_flow stream truncated before completion — retry (#533)",
+            )),
+        }
     });
     Ok(Response::new(Box::pin(flight_stream.chain(trailer))))
 }
@@ -3755,6 +3802,8 @@ async fn do_exchange_catchment(
 
     let schema = Arc::new(catchment_schema());
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(32);
+    let done = Arc::new(AtomicBool::new(false)); // #533: completion flag
+    let done_bg = done.clone();
 
     let schema_clone = schema.clone();
     tokio::task::spawn_blocking(move || {
@@ -3921,8 +3970,8 @@ async fn do_exchange_catchment(
             }
         }
 
-        if store_idx_b.len() > 0
-            && let Ok(batch) = RecordBatch::try_new(
+        if store_idx_b.len() > 0 {
+            match RecordBatch::try_new(
                 schema_clone,
                 vec![
                     Arc::new(store_idx_b.finish()),
@@ -3933,19 +3982,33 @@ async fn do_exchange_catchment(
                     Arc::new(total_b.finish()),
                     Arc::new(wkb_b.finish()),
                 ],
-            )
-        {
-            let _ = tx.blocking_send(Ok(batch));
+            ) {
+                Ok(batch) => {
+                    let _ = tx.blocking_send(Ok(batch));
+                }
+                Err(e) => {
+                    // #533: don't silently drop the result on an Arrow build
+                    // failure — send the error and leave `done` false.
+                    let _ = tx.blocking_send(Err(Status::internal(format!(
+                        "catchment Arrow build: {e}"
+                    ))));
+                    return;
+                }
+            }
         }
 
         tracing::info!(
             elapsed_s = start.elapsed().as_secs_f64(),
             "do_exchange catchment done"
         );
+        // #533: all results emitted. A panic during computation unwinds past
+        // this, leaving `done` false → the consumer emits a non-OK error.
+        done_bg.store(true, Ordering::Release);
     });
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
-    let flight_stream = batches_to_flight_data(schema, batch_stream);
+    // #533: completeness trailer or non-OK error on truncation.
+    let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
     Ok(Response::new(flight_stream))
 }
 
@@ -4014,7 +4077,12 @@ impl FlightService for ButterflyFlight {
                 // #533/#532: append a completeness trailer (or a non-OK error on
                 // truncation) so clients can fail loud instead of silently
                 // accepting a partial/empty-OK grid.
-                let flight_stream = matrix_flight_stream(schema, batch_stream, done, sparse);
+                let extra = if sparse {
+                    ",\"contract\":\"sparse\""
+                } else {
+                    ",\"contract\":\"dense\""
+                };
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, extra);
                 Ok(Response::new(flight_stream))
             }
             "route_batch" => {
@@ -4055,9 +4123,10 @@ impl FlightService for ButterflyFlight {
                     self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let batch_stream = do_route_batch(&state, mode, params)?;
+                let (batch_stream, done) = do_route_batch(&state, mode, params)?;
                 let schema = Arc::new(route_batch_schema());
-                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                // #533: completeness trailer or non-OK error on truncation.
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
                 Ok(Response::new(flight_stream))
             }
             "isochrone" => {
@@ -4089,9 +4158,10 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid transit_bulk params: {}", e))
                     })?;
-                let batch_stream = do_transit_bulk(&state, params)?;
+                let (batch_stream, done) = do_transit_bulk(&state, params)?;
                 let schema = Arc::new(transit_bulk_schema());
-                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                // #533: completeness trailer or non-OK error on truncation.
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
                 Ok(Response::new(flight_stream))
             }
             "edges_batch" => {
@@ -4122,14 +4192,21 @@ impl FlightService for ButterflyFlight {
                     let schema = Arc::new(edges_batch_schema());
                     let batch_stream: BatchStream =
                         Box::pin(stream::iter(all_null_edges_batches(params.pairs.len())));
-                    let flight_stream = batches_to_flight_data(schema, batch_stream);
+                    // #533: fully materialised, complete by construction.
+                    let flight_stream = completed_flight_stream(
+                        schema,
+                        batch_stream,
+                        Arc::new(AtomicBool::new(true)),
+                        "",
+                    );
                     return Ok(Response::new(flight_stream));
                 };
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let batch_stream = do_edges_batch(&state, mode, params)?;
+                let (batch_stream, done) = do_edges_batch(&state, mode, params)?;
                 let schema = Arc::new(edges_batch_schema());
-                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                // #533: completeness trailer or non-OK error on truncation.
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
                 Ok(Response::new(flight_stream))
             }
             other => Err(Status::invalid_argument(format!(
@@ -5096,20 +5173,26 @@ mod matrix_sparse_tests {
     }
 }
 
-/// #533/#532: the Flight `matrix` stream must never terminate gRPC-OK with an
-/// incomplete grid. `matrix_flight_stream` appends a deterministic completeness
+/// #533/#532: NO streamed Flight do_get action (matrix, route_batch,
+/// edges_batch, transit_bulk) may terminate gRPC-OK with an incomplete stream.
+/// The shared `completed_flight_stream` appends a deterministic completeness
 /// trailer when the producer signalled `done`, and a non-OK error when it did
 /// not (panic / abort / early close). These tests drive the FlightData stream
-/// end-to-end.
+/// end-to-end. `extra` is the per-action trailer suffix — `,"contract":"…"` for
+/// matrix, `""` for edges_batch / transit_bulk / route_batch.
 #[cfg(test)]
-mod matrix_completeness_tests {
-    use super::{BatchStream, matrix_flight_stream, matrix_schema};
+mod flight_completeness_tests {
+    use super::{BatchStream, completed_flight_stream, matrix_schema};
     use arrow::array::{ArrayRef, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use arrow_flight::FlightData;
     use futures::StreamExt;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+
+    const DENSE: &str = ",\"contract\":\"dense\"";
+    const SPARSE: &str = ",\"contract\":\"sparse\"";
+    const NONE: &str = ""; // edges_batch / transit_bulk / route_batch
 
     fn batch(n: usize) -> RecordBatch {
         let col = || Arc::new(UInt32Array::from(vec![0u32; n])) as ArrayRef;
@@ -5119,15 +5202,15 @@ mod matrix_completeness_tests {
     fn drive(
         batches: Vec<RecordBatch>,
         done: bool,
-        sparse: bool,
+        extra: &'static str,
     ) -> Vec<std::result::Result<FlightData, tonic::Status>> {
         let bs: BatchStream =
             Box::pin(futures::stream::iter(batches).map(Ok::<RecordBatch, tonic::Status>));
-        let stream = matrix_flight_stream(
+        let stream = completed_flight_stream(
             Arc::new(matrix_schema()),
             bs,
             Arc::new(AtomicBool::new(done)),
-            sparse,
+            extra,
         );
         futures::executor::block_on(stream.collect())
     }
@@ -5141,7 +5224,7 @@ mod matrix_completeness_tests {
     /// app_metadata reports the exact row count and complete:true.
     #[test]
     fn complete_appends_trailer_with_row_count() {
-        let items = drive(vec![batch(3), batch(2)], true, false);
+        let items = drive(vec![batch(3), batch(2)], true, DENSE);
         assert!(
             items.iter().all(|i| i.is_ok()),
             "a complete stream must carry no error"
@@ -5154,29 +5237,32 @@ mod matrix_completeness_tests {
 
     /// #533: a truncated stream (producer never signalled done) ends with a
     /// non-OK Internal error — never a clean OK — and never emits a
-    /// completeness trailer that a client could mistake for success.
+    /// completeness trailer that a client could mistake for success. Holds for
+    /// EVERY action (extra-agnostic).
     #[test]
     fn truncated_yields_non_ok_error() {
-        let items = drive(vec![batch(3)], false, false);
-        let err = items
-            .last()
-            .unwrap()
-            .as_ref()
-            .expect_err("truncated stream must end in an error");
-        assert_eq!(err.code(), tonic::Code::Internal);
-        assert!(
-            err.message().contains("truncated"),
-            "msg: {}",
-            err.message()
-        );
-        // No "complete" trailer leaked among the OK items.
-        assert!(
-            items
-                .iter()
-                .filter_map(|i| i.as_ref().ok())
-                .all(|f| !String::from_utf8_lossy(&f.app_metadata).contains("complete")),
-            "a truncated stream must not emit a completeness trailer"
-        );
+        for extra in [DENSE, SPARSE, NONE] {
+            let items = drive(vec![batch(3)], false, extra);
+            let err = items
+                .last()
+                .unwrap()
+                .as_ref()
+                .expect_err("truncated stream must end in an error");
+            assert_eq!(err.code(), tonic::Code::Internal);
+            assert!(
+                err.message().contains("truncated"),
+                "msg: {}",
+                err.message()
+            );
+            // No "complete" trailer leaked among the OK items.
+            assert!(
+                items
+                    .iter()
+                    .filter_map(|i| i.as_ref().ok())
+                    .all(|f| !String::from_utf8_lossy(&f.app_metadata).contains("complete")),
+                "a truncated stream must not emit a completeness trailer"
+            );
+        }
     }
 
     /// #532: an empty-but-COMPLETE sparse response (nothing within radius) is
@@ -5184,7 +5270,7 @@ mod matrix_completeness_tests {
     /// total_rows:0, complete:true, whereas a truncation errors.
     #[test]
     fn sparse_empty_complete_is_not_truncation() {
-        let items = drive(vec![], true, true);
+        let items = drive(vec![], true, SPARSE);
         assert!(items.iter().all(|i| i.is_ok()));
         let meta = trailer_meta(&items);
         assert!(meta.contains("\"complete\":true"), "meta: {meta}");
@@ -5196,7 +5282,33 @@ mod matrix_completeness_tests {
     /// client can cross-check it against the rows it actually decoded.
     #[test]
     fn trailer_row_count_sums_all_batches() {
-        let items = drive(vec![batch(10), batch(1), batch(4)], true, true);
+        let items = drive(vec![batch(10), batch(1), batch(4)], true, SPARSE);
         assert!(trailer_meta(&items).contains("\"total_rows\":15"));
+    }
+
+    /// The non-matrix actions (edges_batch / transit_bulk / route_batch) carry
+    /// the SAME completeness contract with NO `contract` field: a complete
+    /// stream ends with `{complete:true,total_rows:N}` and nothing else.
+    #[test]
+    fn non_matrix_actions_trailer_has_no_contract() {
+        let items = drive(vec![batch(7)], true, NONE);
+        assert!(items.iter().all(|i| i.is_ok()));
+        let meta = trailer_meta(&items);
+        assert!(meta.contains("\"complete\":true"), "meta: {meta}");
+        assert!(meta.contains("\"total_rows\":7"), "meta: {meta}");
+        assert!(!meta.contains("contract"), "no contract field: {meta}");
+    }
+
+    /// Trailer JSON is well-formed for every action variant (parses back).
+    #[test]
+    fn trailer_is_valid_json() {
+        for extra in [DENSE, SPARSE, NONE] {
+            let items = drive(vec![batch(2)], true, extra);
+            let meta = trailer_meta(&items);
+            let v: serde_json::Value =
+                serde_json::from_str(&meta).unwrap_or_else(|_| panic!("bad JSON: {meta}"));
+            assert_eq!(v["complete"], true);
+            assert_eq!(v["total_rows"], 2);
+        }
     }
 }

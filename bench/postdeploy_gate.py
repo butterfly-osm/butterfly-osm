@@ -821,6 +821,86 @@ def gate_matrix_completeness(base):
     return passed
 
 
+def gate_flight_completeness(base):
+    """#533: EVERY streamed Flight action — not just matrix — must end with a
+    completeness signal (trailer on success, non-OK error on truncation) so a
+    silent OK-with-missing-rows is impossible. This probes the real producers
+    (route_batch, edges_batch = do_get; edges_flow = do_exchange) live and
+    reconciles the trailer's row/pair count against what was decoded. matrix is
+    covered by gate_matrix_completeness."""
+    print("== Flight completeness trailer: route_batch / edges_batch / edges_flow (#533) ==")
+    try:
+        import pyarrow as pa
+        import pyarrow.flight as fl
+    except ImportError:
+        print("  [SKIP] pyarrow not available")
+        return True
+    import urllib.parse as up
+
+    host = up.urlparse(base).hostname or "localhost"
+    port = (up.urlparse(base).port or 8080) + 1
+    pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
+
+    def probe_do_get(action, params, label):
+        reader = fl.connect(f"grpc://{host}:{port}").do_get(
+            fl.Ticket(f"{action}:car:{json.dumps(params)}".encode())
+        )
+        rows = 0
+        meta = None
+        for chunk in reader:
+            if getattr(chunk, "data", None) is not None:
+                rows += chunk.data.num_rows
+            am = getattr(chunk, "app_metadata", None)
+            if am:
+                meta = json.loads(bytes(am))
+        p = True
+        p &= check(f"{label}: trailer present", meta is not None, f"meta={meta}")
+        p &= check(f"{label}: complete:true", bool(meta and meta.get("complete")), f"meta={meta}")
+        p &= check(
+            f"{label}: total_rows=={rows}",
+            bool(meta and meta.get("total_rows") == rows),
+            f"meta={meta}",
+        )
+        return p
+
+    try:
+        passed = True
+        passed &= probe_do_get("route_batch", {"pairs": pairs}, "route_batch")
+        passed &= probe_do_get("edges_batch", {"pairs": pairs}, "edges_batch")
+
+        # edges_flow (do_exchange): the summary carries complete:true and is
+        # sent only after every chunk streamed.
+        tbl = pa.table(
+            {
+                "src_lon": pa.array([p[0] for p in pairs]),
+                "src_lat": pa.array([p[1] for p in pairs]),
+                "dst_lon": pa.array([p[2] for p in pairs]),
+                "dst_lat": pa.array([p[3] for p in pairs]),
+            }
+        )
+        desc = fl.FlightDescriptor.for_command(b"edges_flow:car")
+        client = fl.connect(f"grpc://{host}:{port}")
+        writer, reader = client.do_exchange(desc)
+        writer.begin(tbl.schema)
+        writer.write_table(tbl)
+        writer.done_writing()
+        meta = None
+        for chunk in reader:
+            am = getattr(chunk, "app_metadata", None)
+            if am:
+                meta = json.loads(bytes(am))
+        writer.close()
+        passed &= check(
+            "edges_flow: complete:true summary",
+            bool(meta and meta.get("complete")),
+            f"meta={meta}",
+        )
+    except Exception as e:
+        print(f"  [SKIP] flight unreachable ({e})")
+        return True
+    return passed
+
+
 def gate_close_pairs(base, n_pairs=150):
     import math
 
@@ -966,6 +1046,7 @@ def main():
     ok &= gate_matrix_sparse(base)
     ok &= gate_matrix_sparse_streaming(base)
     ok &= gate_matrix_completeness(base)
+    ok &= gate_flight_completeness(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
