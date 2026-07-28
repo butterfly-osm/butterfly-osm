@@ -966,7 +966,7 @@ def gate_all_endpoints_smoke(base):
     try:
         http_json(
             f"{base}/trip",
-            data=json.dumps({"coordinates": [list(o), list(d), [4.35, 50.9]], "mode": "car"}).encode(),
+            data=json.dumps({"points": [list(o), list(d), [4.35, 50.9]], "mode": "car"}).encode(),
             headers={"Content-Type": "application/json"},
         )
         passed &= check("REST /trip", True, "ok")
