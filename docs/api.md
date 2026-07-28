@@ -82,7 +82,6 @@ Point-to-point routing with geometry, optional turn-by-turn steps with road name
 | `src_lon`, `src_lat` | f64 | required | Source coordinate |
 | `dst_lon`, `dst_lat` | f64 | required | Destination coordinate |
 | `mode` | string | required | `car` / `bike` / `foot` (or any loaded mode) |
-| `traffic` | string | none | Maps to synthetic mode `<mode>_<traffic>` (e.g. `rush_hour`). Variant must exist from `step8-customize --traffic`. |
 | `geometries` | string | `polyline6` | `polyline6` / `geojson` / `points` |
 | `alternatives` | u32 | `0` | Up to 5 alternative routes (penalty-based) |
 | `steps` | bool | `false` | Include turn-by-turn instructions with road names |

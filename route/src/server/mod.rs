@@ -620,20 +620,12 @@ pub async fn serve(
                             matched,
                             "car recustomized from DIRECTED per-edge speeds (#454)"
                         );
-                        // #467: optional PEAK cut alongside the typical-day
-                        // car — registered as `car_rush_hour` when its table
-                        // is staged. Failure is non-fatal (typical car keeps
-                        // serving).
-                        //
-                        // #521: car_rush_hour / car_eq RETIRED — ONE public car
-                        // profile = the demand-weighted TomTom median. Peak /
-                        // equilibrium friction is superseded by the opt-in
-                        // uncertainty bands (uncertainty=bands) below; a second
-                        // public car speed profile duplicated it. No longer
-                        // registered regardless of any staged rush/eq parquet.
-                        // #521: hidden uncertainty-band weight sets from the
-                        // optional q25/q75 columns of the SAME table.
-                        // Non-fatal: median car keeps serving without bands.
+                        // #521: ONE public car profile = the demand-weighted
+                        // TomTom median. Distributional friction is the opt-in
+                        // uncertainty bands (uncertainty=bands) — hidden weight
+                        // sets from the optional q25/q75 columns of the SAME
+                        // table. Non-fatal: median car keeps serving without
+                        // bands.
                         if let Err(e) = state_owned.register_car_bands_from_edge_speeds(edge_path) {
                             tracing::warn!(
                                 region = %region_id,
@@ -669,7 +661,7 @@ pub async fn serve(
                 ),
             }
         })?;
-        // #467: dynamic mode registrations (car_rush_hour) happen AFTER the
+        // Dynamic mode registrations (e.g. car_freeflow) happen AFTER the
         // RegionEntry cached its registration-time mode list — refresh it so
         // the regions dispatch (has_mode / available_modes / the "Invalid
         // mode across loaded regions" check) sees the live set. Same class

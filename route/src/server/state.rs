@@ -223,7 +223,7 @@ impl ModeData {
 ///   while in-flight queries continue to hold their own Arc clones —
 ///   the data only actually drops when the last clone is released.
 pub struct ModeSlot {
-    /// Mode name (`"car"`, `"bike"`, `"car_rush_hour"`, ...) used by
+    /// Mode name (`"car"`, `"bike"`, `"foot"`, ...) used by
     /// the lazy reloader to call back into the loader.
     pub mode_name: String,
     /// The actual mode data. `Some` when resident, `None` after the
@@ -233,7 +233,7 @@ pub struct ModeSlot {
     /// `get_mode(...)` that found this slot resident. Drives idle
     /// eviction.
     pub last_used_ms: std::sync::atomic::AtomicU64,
-    /// #402: traffic-variant modes (e.g. `car_rush_hour`) have a
+    /// #402: traffic-variant modes (e.g. `car_freeflow`) have a
     /// different load shape — rebuilt by cloning the base mode's
     /// topology + reading a recustomised `cch.w` section.
     /// `load_mode_data_from_bundle` doesn't handle that yet. For v1
@@ -251,7 +251,7 @@ pub struct ModeSlot {
 /// #402: a mode name is a traffic-variant iff it has the shape
 /// `<base>_<variant>` where `<base>` is also present in the loaded
 /// mode set. The boot loader pushes both base modes (e.g. `car`) and
-/// variants (e.g. `car_rush_hour`) into the same `mode_names` Vec, so
+/// variants (e.g. `car_freeflow`) into the same `mode_names` Vec, so
 /// we detect variants by walking prefixes.
 fn is_variant_mode_name(name: &str, all_names: &[String]) -> bool {
     for sep in name.match_indices('_') {
@@ -1662,7 +1662,7 @@ impl ServerState {
         // container path retains _mmap_arc + lazy, so the slow path
         // in `get_mode` (lazy reload after compactor eviction) can
         // call back into `load_mode_data_from_bundle`. Variant modes
-        // (e.g. `car_rush_hour`) get the non-evictable variant flag —
+        // (e.g. `car_freeflow`) get the non-evictable variant flag —
         // their reload shape differs from base modes.
         let modes_slots: Vec<ModeSlot> = modes_data
             .into_iter()
@@ -2284,171 +2284,6 @@ impl ServerState {
         Ok((matched, new_weights, adjusted_node_weights))
     }
 
-    /// #467: register `car_rush_hour` — the PEAK cut of the flow-derived
-    /// ratios (w=1.0 table) applied to the CLEAN base (`car_freeflow`),
-    /// exposed as its own mode alongside the typical-day `car`. Pinned
-    /// non-evictable (synthetic mode, no container section backs it).
-    pub fn register_car_rush_hour_from_edge_speeds(
-        &mut self,
-        edge_speeds_path: &std::path::Path,
-    ) -> Result<usize> {
-        let t0 = std::time::Instant::now();
-        anyhow::ensure!(
-            !self.mode_lookup.contains_key("car_rush_hour"),
-            "car_rush_hour already registered"
-        );
-        let ff_idx = self
-            .car_freeflow_idx
-            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car_freeflow' base"))?;
-        let car_idx = *self
-            .mode_lookup
-            .get("car")
-            .ok_or_else(|| anyhow::anyhow!("rush registration: no 'car' mode"))?
-            as usize;
-        let base: std::sync::Arc<ModeData> = self.modes[ff_idx]
-            .state
-            .read()
-            .as_ref()
-            .map(std::sync::Arc::clone)
-            .ok_or_else(|| anyhow::anyhow!("rush registration: car_freeflow not resident"))?;
-
-        let (matched, new_weights, adjusted_node_weights) = self
-            .recustomized_weights_from_edge_table(
-                &base,
-                edge_speeds_path,
-                "recustomize_cache.car-edge-rush.v4.bin",
-                EdgeTableColumn::Median,
-            )?;
-
-        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
-        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
-        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
-        // #528: recompute len-along-time from THIS variant's new time middles.
-        let (lat_w, lat_up, lat_dn) =
-            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
-        let mut rush = clone_mode_data(&base);
-        rush.cch_weights = new_weights;
-        rush.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
-        rush.up_adj_flat = up_adj_flat;
-        rush.down_rev_flat = down_rev_flat;
-        rush.down_adj_flat = down_adj_flat;
-        rush.cch_weights_len_along_time = lat_w;
-        rush.up_adj_flat_len_along_time = lat_up;
-        rush.down_rev_flat_len_along_time = lat_dn;
-        rush.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
-
-        let new_index = self.modes.len();
-        let slot = ModeSlot::new_loaded_variant("car_rush_hour".to_string(), rush);
-        // Variant slots are non-evictable by construction; assert the
-        // invariant rather than trusting it silently.
-        slot.evictable
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        self.modes.push(slot);
-        self.mode_lookup
-            .insert("car_rush_hour".to_string(), new_index as u8);
-        self.mode_names.push("car_rush_hour".to_string());
-        // Snap mask: share car's eligible-edge mask (same graph shape).
-        if let Some(mask) = self.snap_index.masks.get(car_idx).cloned() {
-            self.snap_index.masks.push(mask);
-        } else {
-            tracing::warn!("car snap mask missing — car_rush_hour snapping degraded");
-        }
-        tracing::info!(
-            matched,
-            elapsed_s = t0.elapsed().as_secs_f64(),
-            "registered car_rush_hour (peak flow-derived ratios on the clean base, #467)"
-        );
-        Ok(matched)
-    }
-
-    /// traffic-flow#26 (#480): register `car_eq` — the MSA-equilibrium
-    /// cut of the flow-derived ratios (w=1.0 table) applied to the CLEAN
-    /// base (`car_freeflow`), exposed as its own mode alongside the
-    /// typical-day `car` and the peak `car_rush_hour`. Pinned
-    /// non-evictable (synthetic mode, no container section backs it).
-    ///
-    /// Restored on `feat/route-batch-prune-482`: PR #480's merge to main
-    /// (commit af2edfb) shipped ONLY the `mod.rs` call site for this
-    /// method — the `state.rs` definition (described in the PR as one of
-    /// two "thin wrappers" over the shared
-    /// `recustomized_weights_from_edge_table` core) was dropped, leaving
-    /// `origin/main` non-compiling. This is a faithful sibling of
-    /// [`register_car_rush_hour_from_edge_speeds`]: same clean base, same
-    /// flat rebuild + pinned-variant registration, distinct mode name
-    /// (`car_eq`), input table (`edge_speeds.eq.parquet`), and cache key.
-    pub fn register_car_eq_from_edge_speeds(
-        &mut self,
-        edge_speeds_path: &std::path::Path,
-    ) -> Result<usize> {
-        let t0 = std::time::Instant::now();
-        anyhow::ensure!(
-            !self.mode_lookup.contains_key("car_eq"),
-            "car_eq already registered"
-        );
-        let ff_idx = self
-            .car_freeflow_idx
-            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car_freeflow' base"))?;
-        let car_idx = *self
-            .mode_lookup
-            .get("car")
-            .ok_or_else(|| anyhow::anyhow!("car_eq registration: no 'car' mode"))?
-            as usize;
-        let base: std::sync::Arc<ModeData> = self.modes[ff_idx]
-            .state
-            .read()
-            .as_ref()
-            .map(std::sync::Arc::clone)
-            .ok_or_else(|| anyhow::anyhow!("car_eq registration: car_freeflow not resident"))?;
-
-        let (matched, new_weights, adjusted_node_weights) = self
-            .recustomized_weights_from_edge_table(
-                &base,
-                edge_speeds_path,
-                "recustomize_cache.car-edge-eq.v4.bin",
-                EdgeTableColumn::Median,
-            )?;
-
-        let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &new_weights, true);
-        let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &new_weights, true);
-        let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &new_weights);
-        // #528: recompute len-along-time from THIS variant's new time middles.
-        let (lat_w, lat_up, lat_dn) =
-            refresh_len_along_time(&base, &self.ebg_nodes, &new_weights, &adjusted_node_weights);
-        let mut eq = clone_mode_data(&base);
-        eq.cch_weights = new_weights;
-        eq.node_weights = std::borrow::Cow::Owned(adjusted_node_weights);
-        eq.up_adj_flat = up_adj_flat;
-        eq.down_rev_flat = down_rev_flat;
-        eq.down_adj_flat = down_adj_flat;
-        eq.cch_weights_len_along_time = lat_w;
-        eq.up_adj_flat_len_along_time = lat_up;
-        eq.down_rev_flat_len_along_time = lat_dn;
-        eq.down_adj_flat_len_along_time_lazy = std::sync::OnceLock::new();
-
-        let new_index = self.modes.len();
-        let slot = ModeSlot::new_loaded_variant("car_eq".to_string(), eq);
-        // Variant slots are non-evictable by construction; assert the
-        // invariant rather than trusting it silently.
-        slot.evictable
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        self.modes.push(slot);
-        self.mode_lookup
-            .insert("car_eq".to_string(), new_index as u8);
-        self.mode_names.push("car_eq".to_string());
-        // Snap mask: share car's eligible-edge mask (same graph shape).
-        if let Some(mask) = self.snap_index.masks.get(car_idx).cloned() {
-            self.snap_index.masks.push(mask);
-        } else {
-            tracing::warn!("car snap mask missing — car_eq snapping degraded");
-        }
-        tracing::info!(
-            matched,
-            elapsed_s = t0.elapsed().as_secs_f64(),
-            "registered car_eq (MSA-equilibrium flow-derived ratios on the clean base, #480)"
-        );
-        Ok(matched)
-    }
-
     /// #521 uncertainty bands: register TWO HIDDEN variant weight sets from
     /// the optional speed_ratio_q25/q75 columns of the SAME edge_speeds
     /// table — q25-speed (congested tail -> pessimistic TIME) and q75-speed
@@ -2784,7 +2619,7 @@ pub(crate) fn discover_traffic_variants(
     let mut variants: Vec<(String, String)> = Vec::new();
 
     // Sort longest-first so a base mode like "car" matches before "ca" when
-    // scanning a synthetic name "car_rush_hour".
+    // scanning a synthetic name like "car_freeflow".
     let mut bases_sorted: Vec<&str> = base_modes.iter().map(String::as_str).collect();
     bases_sorted.sort_by_key(|s| std::cmp::Reverse(s.len()));
 

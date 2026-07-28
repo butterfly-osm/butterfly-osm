@@ -41,9 +41,9 @@ MODELS_DIR="${BUTTERFLY_MODELS_DIR:-/opt/butterfly/models}"
 # #433: car traffic is no longer baked at build time — the build ships a
 # provider-clean single legal-limit car and the engine recustomizes it at
 # serve boot from a runtime observed_speeds.parquet (see the step8 section
-# below). The build-time bake (#392), rush_hour variant (#415) and
-# observed-speeds calibration (#388) are gone, so TRAFFIC_DIR / the per-role
-# profile names are no longer consulted here.
+# below). The build-time bake (#392) and observed-speeds calibration (#388)
+# are gone, so TRAFFIC_DIR / the per-role profile names are no longer
+# consulted here.
 #
 # Bumping RECIPE_VERSION forces a one-time rebuild on the next deploy so the
 # existing traffic-BAKED container on the PVC is replaced with the clean one
@@ -304,8 +304,7 @@ done
 # pipeline now ships a PROVIDER-CLEAN, single legal-limit car (the step8 loop
 # above is the whole story for car). The build no longer:
 #   - reads BUTTERFLY_OBSERVED_SPEEDS / runs calibrate-traffic (#388),
-#   - bakes a 'realistic' friction profile into base car (#392),
-#   - builds a car_rush_hour variant (#415).
+#   - bakes a 'realistic' friction profile into base car (#392).
 # Instead, at serve startup the engine fits ONE car profile from a runtime
 # `observed_speeds.parquet` staged on the data volume by a deploy init
 # container, and recustomizes the car CCH weights in memory — see

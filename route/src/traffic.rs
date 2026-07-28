@@ -12,7 +12,7 @@
 //!
 //! ```json
 //! {
-//!   "name": "rush_hour",
+//!   "name": "car_realistic",
 //!   "base_model": "car",
 //!   "speed_factors": {
 //!     "urban_high": 0.55,
@@ -39,7 +39,7 @@
 //!
 //! ```json
 //! {
-//!   "name": "rush_hour",
+//!   "name": "car_realistic",
 //!   "base_model": "car",
 //!   "speed_factors": { "urban_high": 0.55, "urban_medium": 0.70,
 //!                      "urban_low": 0.85, "suburban": 0.90, "rural": 0.95 },
@@ -389,9 +389,9 @@ pub fn discover_profiles(dir: &Path) -> Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
 
-    fn rush_hour_json() -> &'static str {
+    fn sample_profile_json() -> &'static str {
         r#"{
-          "name": "rush_hour",
+          "name": "sample",
           "base_model": "car",
           "speed_factors": {
             "urban_high": 0.55,
@@ -405,8 +405,8 @@ mod tests {
 
     #[test]
     fn parses_well_formed_profile() {
-        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
-        assert_eq!(p.name, "rush_hour");
+        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
+        assert_eq!(p.name, "sample");
         assert_eq!(p.base_model, "car");
         assert!((p.factor_for(DensityClass::UrbanHigh) - 0.55).abs() < 1e-6);
         assert!((p.factor_for(DensityClass::Rural) - 0.95).abs() < 1e-6);
@@ -476,18 +476,16 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
+        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
         let s = p.to_json_string().unwrap();
         let p2 = TrafficProfile::from_json(&s).unwrap();
         assert_eq!(p, p2);
     }
 
     #[test]
-    fn ships_realistic_and_rush_hour_profiles() {
-        // Post-#392: only two profiles ship — `car_realistic` (baked
-        // into base car) and `rush_hour` (variant). Freeflow + offpeak
-        // were dropped (freeflow became identical to post-#390
-        // legal-limit base, offpeak overlapped with realistic).
+    fn ships_realistic_profile() {
+        // ONE public car profile: `car_realistic` is baked into base car
+        // (`--bake-as-base`), so it is the only profile shipped in `traffic/`.
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let traffic_dir = workspace.parent().unwrap().join("traffic");
         if !traffic_dir.exists() {
@@ -509,7 +507,6 @@ mod tests {
             "got: {:?}",
             names
         );
-        assert!(names.contains(&"rush_hour".to_string()), "got: {:?}", names);
 
         for f in &files {
             let p = TrafficProfile::load(f).expect("ship profile must load");
@@ -525,7 +522,7 @@ mod tests {
 
     fn matrix_json() -> &'static str {
         r#"{
-          "name": "rush_hour_matrix",
+          "name": "sample_matrix",
           "base_model": "car",
           "speed_factors": {
             "urban_high": 0.55,
@@ -563,7 +560,7 @@ mod tests {
 
     #[test]
     fn vector_only_profile_has_no_matrix_and_cell_lookup_matches_vector() {
-        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
+        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
         assert!(!p.has_matrix());
         for code in [0u16, 1, 12, 99, u16::MAX] {
             for c in DensityClass::ALL {
@@ -584,7 +581,7 @@ mod tests {
 
     #[test]
     fn vector_only_profile_serializes_without_matrix_key() {
-        let p = TrafficProfile::from_json(rush_hour_json()).unwrap();
+        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
         let s = p.to_json_string().unwrap();
         assert!(!s.contains("matrix"), "unexpected matrix key in {s}");
     }
@@ -715,14 +712,14 @@ mod tests {
     #[test]
     fn discovers_profile_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("rush_hour.traffic.json"), rush_hour_json()).unwrap();
+        std::fs::write(
+            tmp.path().join("sample.traffic.json"),
+            sample_profile_json(),
+        )
+        .unwrap();
         std::fs::write(tmp.path().join("not_a_profile.json"), "{}").unwrap();
         let files = discover_profiles(tmp.path()).unwrap();
         assert_eq!(files.len(), 1);
-        assert!(
-            files[0]
-                .to_string_lossy()
-                .ends_with("rush_hour.traffic.json")
-        );
+        assert!(files[0].to_string_lossy().ends_with("sample.traffic.json"));
     }
 }
