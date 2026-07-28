@@ -23,14 +23,18 @@ use crate::nbg::haversine_distance;
 /// - omitted / null / 0 / "" → [`RadiusParam::None`]
 /// - positive number ("50.0" or 50) → [`RadiusParam::Km`]
 /// - string "auto" (case-insensitive) → [`RadiusParam::Auto`]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RadiusParam {
     /// No filter applied.
     None,
     /// Server-computed radius (p95 of pairwise haversine distances × 1.1).
     Auto,
-    /// Explicit kilometre hard cap.
+    /// Explicit kilometre hard cap (same radius for every origin).
     Km(f64),
+    /// #531: one kilometre cap PER ORIGIN (`len == origins`). Gravity-model
+    /// capture radii that vary per origin, pruned tighter server-side than a
+    /// single global radius (or the client's bucket-and-multi-call workaround).
+    PerOrigin(Vec<f64>),
 }
 
 /// Parse a `radius_km` JSON value into a [`RadiusParam`].
@@ -66,6 +70,22 @@ pub fn parse_radius(raw: Option<&serde_json::Value>) -> RadiusParam {
                 Ok(f) if f.is_finite() && f > 0.0 => RadiusParam::Km(f),
                 _ => RadiusParam::None,
             }
+        }
+        serde_json::Value::Array(arr) => {
+            // Per-origin radii. A non-positive / non-finite / null entry means
+            // "no filter for THIS origin" (represented as +inf, so build keeps
+            // every target for it). An empty array collapses to no filter.
+            if arr.is_empty() {
+                return RadiusParam::None;
+            }
+            let radii: Vec<f64> = arr
+                .iter()
+                .map(|v| match v.as_f64() {
+                    Some(f) if f.is_finite() && f > 0.0 => f,
+                    _ => f64::INFINITY,
+                })
+                .collect();
+            RadiusParam::PerOrigin(radii)
         }
         _ => RadiusParam::None,
     }
@@ -145,12 +165,35 @@ pub fn build_neighbors(
     targets: &[(f64, f64)],
     radius_km: f64,
 ) -> Vec<Vec<u32>> {
+    // Historical scalar contract: an invalid radius filters EVERYTHING (all
+    // rows empty). Preserved explicitly so the wrapper can't inherit the
+    // per-origin "inf = no filter" semantics (that path is array-only, #531).
+    if !radius_km.is_finite() || radius_km <= 0.0 {
+        return vec![Vec::new(); sources.len()];
+    }
+    // Otherwise share the single per-origin implementation so the band-search
+    // + antimeridian logic lives once.
+    build_neighbors_per_origin(sources, targets, &vec![radius_km; sources.len()])
+}
+
+/// #531: like [`build_neighbors`] but with ONE radius per origin
+/// (`radii.len() == sources.len()`). A non-finite / non-positive radius for an
+/// origin means "no filter for that origin" (every target kept). Targets are
+/// still sorted by longitude ONCE; each origin band-searches with its own
+/// radius, so a tight origin prunes hard while a wide one keeps more — no
+/// bucket-and-multi-call workaround needed.
+pub fn build_neighbors_per_origin(
+    sources: &[(f64, f64)],
+    targets: &[(f64, f64)],
+    radii: &[f64],
+) -> Vec<Vec<u32>> {
     let n_sources = sources.len();
     let n_targets = targets.len();
 
-    if n_sources == 0 || !radius_km.is_finite() || radius_km <= 0.0 {
-        return vec![Vec::new(); n_sources];
+    if n_sources == 0 {
+        return Vec::new();
     }
+    debug_assert_eq!(radii.len(), n_sources, "radii must be one per source");
 
     if n_targets == 0 {
         return vec![Vec::new(); n_sources];
@@ -166,10 +209,15 @@ pub fn build_neighbors(
     });
     let sorted_lons: Vec<f64> = order.iter().map(|&i| targets[i as usize].0).collect();
 
-    let radius_m = radius_km * 1000.0;
-
     let mut result: Vec<Vec<u32>> = Vec::with_capacity(n_sources);
-    for &(slon, slat) in sources {
+    for (si, &(slon, slat)) in sources.iter().enumerate() {
+        let radius_km = radii.get(si).copied().unwrap_or(f64::INFINITY);
+        // No-filter origin (inf / non-positive): keep every target for it.
+        if !radius_km.is_finite() || radius_km <= 0.0 {
+            result.push((0..n_targets as u32).collect());
+            continue;
+        }
+        let radius_m = radius_km * 1000.0;
         // Longitude half-width. At high latitudes cos(lat) -> 0 so we must guard.
         let cos_lat = slat.to_radians().cos().abs();
         let lon_half_deg = if cos_lat < 1e-9 {
@@ -260,6 +308,75 @@ pub fn second_bound_for_radius(mode_name: &str, radius_km: f64) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn parse_radius_array_is_per_origin() {
+        // #531: an array parses to PerOrigin; non-positive/null entries become
+        // +inf ("no filter for this origin"); an empty array is None.
+        match parse_radius(Some(&json!([1.5, 2.0, 0, null]))) {
+            RadiusParam::PerOrigin(r) => {
+                assert_eq!(r.len(), 4);
+                assert_eq!(r[0], 1.5);
+                assert_eq!(r[1], 2.0);
+                assert!(r[2].is_infinite(), "0 -> no filter (inf)");
+                assert!(r[3].is_infinite(), "null -> no filter (inf)");
+            }
+            other => panic!("want PerOrigin, got {other:?}"),
+        }
+        assert_eq!(parse_radius(Some(&json!([]))), RadiusParam::None);
+    }
+
+    #[test]
+    fn per_origin_radius_prunes_each_origin_by_its_own_radius() {
+        // Two origins at the SAME point; three targets at ~1.1, ~2.2, ~3.3 km
+        // due east. Origin 0 gets a 1.5 km cap (keeps only the nearest),
+        // origin 1 gets 3 km (keeps the two nearest). Same geometry, different
+        // radius -> different neighbor sets, which a single global radius
+        // cannot express (the whole point of #531).
+        let o = (4.35, 50.85);
+        let sources = vec![o, o];
+        // 1 deg lon at 50.85N ~ 70.2 km, so +0.0157 deg ~ 1.1 km, etc.
+        let targets = vec![
+            (o.0 + 0.0157, o.1), // ~1.1 km
+            (o.0 + 0.0314, o.1), // ~2.2 km
+            (o.0 + 0.0471, o.1), // ~3.3 km
+        ];
+        let out = build_neighbors_per_origin(&sources, &targets, &[1.5, 3.0]);
+        assert_eq!(out.len(), 2);
+        // Origin 0 (1.5 km): only target 0.
+        assert_eq!(
+            out[0],
+            vec![0u32],
+            "1.5 km origin keeps only the ~1.1 km target"
+        );
+        // Origin 1 (3.0 km): targets 0 and 1, not the ~3.3 km one.
+        assert_eq!(
+            out[1],
+            vec![0u32, 1u32],
+            "3 km origin keeps the two nearest"
+        );
+    }
+
+    #[test]
+    fn per_origin_inf_radius_keeps_all_targets_for_that_origin() {
+        let o = (4.35, 50.85);
+        let sources = vec![o, o];
+        let targets = vec![(o.0 + 0.2, o.1), (o.0 + 0.4, o.1)];
+        // Origin 0 tight (0.5 km -> nothing); origin 1 inf (-> everything).
+        let out = build_neighbors_per_origin(&sources, &targets, &[0.5, f64::INFINITY]);
+        assert!(out[0].is_empty(), "tight origin prunes all far targets");
+        assert_eq!(out[1], vec![0u32, 1u32], "inf origin keeps every target");
+    }
+
+    #[test]
+    fn per_origin_scalar_wrapper_matches_uniform_array() {
+        // build_neighbors(r) must equal build_neighbors_per_origin(vec![r; n]).
+        let sources = vec![(4.35, 50.85), (4.40, 50.80), (5.0, 51.0)];
+        let targets = vec![(4.36, 50.86), (4.50, 50.90), (5.2, 51.1)];
+        let scalar = build_neighbors(&sources, &targets, 5.0);
+        let per = build_neighbors_per_origin(&sources, &targets, &[5.0, 5.0, 5.0]);
+        assert_eq!(scalar, per, "uniform per-origin must equal the scalar path");
+    }
 
     #[test]
     fn parse_radius_none_variants() {

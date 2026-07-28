@@ -164,15 +164,15 @@ Many-to-many distance/duration matrix using Bucket M2M CH. Source: `route/src/se
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `sources` | `[[lon,lat], ...]` | required | One or more |
+| `origins` | `[[lon,lat], ...]` | required | One or more (the field is `origins`, NOT `sources` — `deny_unknown_fields` rejects `sources` with 400) |
 | `destinations` | `[[lon,lat], ...]` | required | One or more |
 | `mode` | string | required | Transport mode |
 | `annotations` | string | `"duration"` | `duration`, `distance`, or `duration,distance` |
 | `exclude` | string | none | Same tokens as `/route` |
 | `avoid_polygons` | string | none | Same shape as `/route` |
-| `radius_km` | number / `"auto"` / null | none | Euclidean pre-filter; pairs beyond are emitted as `null` |
+| `radius_km` | number / `"auto"` / `[num,...]` / null | none | Euclidean pre-filter; pairs beyond are emitted as `null`. **#531**: an ARRAY sets a radius PER ORIGIN (`len == origins`; a `0`/`null` entry = no filter for that origin). A length mismatch is a 400. |
 
-Hard cap: `sources × destinations ≤ 10_000_000` cells. Larger workloads must use the Flight `matrix` action (port 3002).
+Hard cap: `origins × destinations ≤ 10_000_000` cells. Larger workloads must use the Flight `matrix` action (port 3002).
 
 **Response (OSRM-compatible)**
 
@@ -181,7 +181,7 @@ Hard cap: `sources × destinations ≤ 10_000_000` cells. Larger workloads must 
   "code": "Ok",
   "durations": [[seconds | null, ...], ...],     // present if duration requested
   "distances": [[meters | null, ...], ...],      // present if distance requested
-  "sources":      [{ "location": [lon,lat], "name": "" }, ...],
+  "origins":      [{ "location": [lon,lat], "name": "" }, ...],
   "destinations": [{ "location": [lon,lat], "name": "" }, ...]
 }
 ```
@@ -190,7 +190,7 @@ Unreachable cells are `null`. `distances` are shortest-distance routes (separate
 
 **Errors**
 
-- 400 — empty sources/destinations, invalid coord, matrix too large, bad annotation/exclude token, mixed-region inputs
+- 400 — empty origins/destinations, invalid coord, matrix too large, bad annotation/exclude token, mixed-region inputs
 
 **Notes**
 
@@ -578,10 +578,19 @@ Common output: a stream of Arrow `RecordBatch`es. Bound-checking errors surface 
 Params:
 
 ```json
-{ "sources": [[lon,lat], ...],
+{ "origins": [[lon,lat], ...],
   "destinations": [[lon,lat], ...],
-  "radius_km": <number | "auto" | null> }
+  "radius_km": <number | "auto" | [num,...] | null>,
+  "max_minutes": <number | null> }
 ```
+
+The action parses exactly `origins`, `destinations`, `radius_km`, `max_minutes`
+— it REJECTS `sources`/`targets` (`InvalidArgument: unknown field \`sources\``).
+`radius_km` also accepts a PER-ORIGIN array (#531, `len == origins`; length
+mismatch → `InvalidArgument`).
+Exposure: gRPC is **not** routed through Traefik on staging (`butterfly.staging.lan`
+→ 502 for h2c, `butterfly-flight.staging.lan` → 404); reach it via the **NodePort
+`grpc://10.0.3.2:30052`** (canopus). In-cluster the port is 3002/8081.
 
 Output schema:
 
@@ -589,8 +598,8 @@ Output schema:
 |--------|------------|-------|
 | `source_idx` | u32 | Original input position |
 | `target_idx` | u32 | |
-| `duration_ms` | u32 | `u32::MAX` for unreachable |
-| `distance_m` | u32 | `u32::MAX` (distance not computed under the time metric in this action) |
+| `duration_ms` | u32 | Milliseconds along the time-optimal path; `u32::MAX` for an unreachable pair |
+| `distance_m` | u32 | Real metres **along that same time-optimal path** (length-along-time, #372/#528 — cross-checks within ~1.5% of the legacy drivetimes matrix); `u32::MAX` only for an unreachable pair. Distance IS computed. |
 
 ### Action: `route_batch`
 
