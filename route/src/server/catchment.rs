@@ -1,11 +1,15 @@
 //! Catchment area computation.
 //!
-//! Three hull modes:
+//! Hull modes:
 //! - `Convex`: Convex hull with straight edges (fast, clean)
-//! - `Road`: Angular sector lasso — farthest client per 20-degree sector,
-//!   consecutive extreme points connected by CCH P2P routes
-//! - `Isochrone`: PHAST-based reachability polygon at threshold duration
-//!   (exact road-reachability, ~5ms per polygon)
+//! - `Road` / `Isochrone`: PHAST-based reachability polygon at the percentile
+//!   threshold duration (exact road-reachability, ~5ms per polygon). `Road` is
+//!   an alias of `Isochrone` since #536: the former angular-sector lasso
+//!   (farthest client per 20° sector, extremes joined by P2P routes) produced
+//!   angular hulls whose connecting roads cut INSIDE the covered area —
+//!   excluding within-threshold clients — and swallowed empty sectors. The
+//!   threshold isochrone contains every within-threshold client by
+//!   construction and follows roads for real.
 //!
 //! Optional outlier removal via k-NN IQR method (auto-tuned, no parameters).
 
@@ -18,11 +22,9 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{build_isochrone_geometry, build_raw_points};
+use super::geometry::build_isochrone_geometry;
 use super::isochrone_handler::run_phast_bounded_fast_seeded;
-use super::query::CchQuery;
 use super::state::ServerState;
-use super::unpack::unpack_path;
 
 // ===========================================================================
 // Types
@@ -34,7 +36,8 @@ use super::unpack::unpack_path;
 pub enum HullMode {
     /// Convex hull of clients within threshold
     Convex,
-    /// Angular sector lasso with CCH route edges
+    /// Alias of `Isochrone` (#536) — kept for API compatibility ("road" is
+    /// what existing callers send); the polygon literally follows roads now.
     Road,
     /// PHAST isochrone at threshold duration
     Isochrone,
@@ -199,151 +202,6 @@ pub fn convex_hull(points: &[(f64, f64)]) -> Option<Vec<(f64, f64)>> {
 }
 
 // ===========================================================================
-// Road-following lasso
-// ===========================================================================
-
-/// Angular sector lasso: find the farthest client per 20-degree sector,
-/// connect consecutive extreme points with CCH P2P routes.
-///
-/// The resulting ring is the polygon boundary following actual roads.
-pub fn road_lasso(
-    state: &ServerState,
-    mode: Mode,
-    store: (f64, f64),
-    points: &[(f64, f64)],
-) -> Vec<(f64, f64)> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-
-    let step = 20.0f64; // degrees per sector
-    let n_sectors = (360.0 / step).ceil() as usize;
-
-    // For each sector, find the farthest point
-    let mut extreme: Vec<Option<(f64, f64)>> = vec![None; n_sectors];
-    let mut extreme_dist: Vec<f64> = vec![0.0; n_sectors];
-
-    for &(px, py) in points {
-        let angle = ((py - store.1).atan2(px - store.0)).to_degrees();
-        let angle_norm = (angle + 360.0) % 360.0;
-        let sector = ((angle_norm / step) as usize).min(n_sectors - 1);
-
-        let dx = px - store.0;
-        let dy = py - store.1;
-        let dist_sq = dx * dx + dy * dy;
-
-        if dist_sq > extreme_dist[sector] {
-            extreme_dist[sector] = dist_sq;
-            extreme[sector] = Some((px, py));
-        }
-    }
-
-    // Collect non-empty sectors in order
-    let vertices: Vec<(f64, f64)> = extreme.into_iter().flatten().collect();
-    if vertices.len() < 3 {
-        return convex_hull(points).unwrap_or_default();
-    }
-
-    // Route between consecutive extreme points using CCH P2P
-    let mode_data = state.get_mode(mode);
-    let n_verts = vertices.len();
-    let mut ring: Vec<(f64, f64)> = Vec::new();
-
-    for i in 0..n_verts {
-        let src = vertices[i];
-        let dst = vertices[(i + 1) % n_verts];
-
-        let route_points = route_between(state, &mode_data, mode, src, dst);
-        if route_points.len() > 1 {
-            // Append all but last (to avoid duplication with next segment's first)
-            ring.extend_from_slice(&route_points[..route_points.len() - 1]);
-        } else {
-            ring.push(src);
-        }
-    }
-
-    // Close the ring
-    if let Some(&first) = ring.first() {
-        ring.push(first);
-    }
-
-    // Deduplicate consecutive points
-    ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-10 && (a.1 - b.1).abs() < 1e-10);
-
-    ring
-}
-
-/// Route between two lon/lat points using CCH P2P query, returning coordinate list.
-fn route_between(
-    state: &ServerState,
-    mode_data: &super::state::ModeData,
-    mode: Mode,
-    src: (f64, f64),
-    dst: (f64, f64),
-) -> Vec<(f64, f64)> {
-    // K-best snap + combo fallback (#197); src needs has_outbound and
-    // dst needs has_inbound, both connectivity-aware after the SCC
-    // role-mask change.
-    const SNAP_K: usize = 64;
-    let src_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        src.0,
-        src.1,
-        super::types::SnapRole::Src,
-        None,
-        SNAP_K,
-    );
-    let dst_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        dst.0,
-        dst.1,
-        super::types::SnapRole::Dst,
-        None,
-        SNAP_K,
-    );
-
-    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-        return vec![src, dst];
-    }
-
-    let query = CchQuery::new(mode_data);
-    let (src_rank, dst_rank, result) = match super::snap_kbest::p2p_with_kbest_fallback(
-        &query,
-        &src_snap.ranks,
-        &dst_snap.ranks,
-        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-    ) {
-        Some(triple) => triple,
-        None => return vec![src, dst],
-    };
-
-    let rank_path = unpack_path(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &result.forward_parent,
-        &result.backward_parent,
-        src_rank,
-        dst_rank,
-        result.meeting_node,
-    );
-
-    let ebg_path: Vec<u32> = rank_path
-        .iter()
-        .map(|&rank| {
-            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            mode_data.filtered_to_original[filt_id as usize]
-        })
-        .collect();
-
-    let (points, _distance_m) = build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
-    points.iter().map(|p| (p.lon, p.lat)).collect()
-}
-
-// ===========================================================================
 // Isochrone hull
 // ===========================================================================
 
@@ -503,7 +361,6 @@ pub fn compute_catchment(
     percentiles.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mut results = Vec::new();
-    let mut prev_extreme_points: Vec<(f64, f64)> = Vec::new();
 
     for &pct in &percentiles {
         // 1. Percentile threshold
@@ -550,7 +407,7 @@ pub fn compute_catchment(
 
         // 4. Generate hull polygon
         let ring = match params.hull_shape {
-            HullMode::Isochrone => {
+            HullMode::Isochrone | HullMode::Road => {
                 // Use PHAST isochrone at threshold duration
                 let wkb = isochrone_hull(state, mode, store.0, store.1, threshold);
                 if wkb.is_empty() {
@@ -582,20 +439,6 @@ pub fn compute_catchment(
                     clients_total: within.len() as u32,
                 });
                 continue;
-            }
-            HullMode::Road => {
-                // Angular sector lasso with foot-profile route edges + nested containment
-                let mut all_points = within_points.clone();
-                all_points.extend_from_slice(&prev_extreme_points);
-
-                let lasso_ring = road_lasso(state, mode, store, &all_points);
-                // Save extreme vertices for next percentile (nested containment)
-                prev_extreme_points = lasso_ring
-                    .iter()
-                    .copied()
-                    .take(lasso_ring.len().saturating_sub(1))
-                    .collect();
-                lasso_ring
             }
             HullMode::Convex => match convex_hull(&within_points) {
                 Some(h) => h,
