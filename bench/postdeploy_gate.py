@@ -43,6 +43,7 @@ import csv
 import json
 import random
 import statistics
+import struct
 import sys
 import urllib.error
 import urllib.parse
@@ -1659,6 +1660,116 @@ def gate_consistency(base, n_pairs=15):
     return check("route==table", ok, f"{tested} pairs, worst delta {worst:.1f}s (max {tol}s)")
 
 
+
+def _wkb_polygon_rings(buf):
+    """Parse a little/big-endian WKB Polygon (or the first polygon of a
+    MultiPolygon) into rings of (lon, lat). Minimal, stdlib-only."""
+    e = "<" if buf[0] == 1 else ">"
+    gtype = struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
+    off = 5
+    if gtype == 6:  # MultiPolygon: descend into the first polygon
+        off += 4  # n_polygons
+        e = "<" if buf[off] == 1 else ">"
+        gtype = struct.unpack_from(e + "I", buf, off + 1)[0] & 0xFF
+        off += 5
+    if gtype != 3:
+        return []
+    nrings = struct.unpack_from(e + "I", buf, off)[0]
+    off += 4
+    rings = []
+    for _ in range(nrings):
+        npts = struct.unpack_from(e + "I", buf, off)[0]
+        off += 4
+        ring = []
+        for _ in range(npts):
+            x, y = struct.unpack_from(e + "dd", buf, off)
+            off += 16
+            ring.append((x, y))
+        rings.append(ring)
+    return rings
+
+
+def _pip(lon, lat, ring):
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def gate_catchment_containment(base):
+    """#536: hull_shape "road" must be the threshold isochrone — every
+    within-percentile client counted covered (the old sector lasso silently
+    excluded up to ~7% of them), rings must nest across percentiles, and the
+    polygon must be a real road-following contour (far more vertices than the
+    18-sector lasso could ever emit)."""
+    print("== catchment: road hull covers its percentile + nests (#536) ==")
+    import pyarrow as pa
+    import pyarrow.flight as fl
+    up = urllib.parse.urlparse(base)
+    host = up.hostname or "localhost"
+    port = (up.port or 8080) + 1
+    ok = True
+    store = (4.4025, 51.2194)  # Antwerp
+    rng = random.Random(536)
+    clients = [(store[0] + rng.uniform(-0.12, 0.12), store[1] + rng.uniform(-0.08, 0.08))
+               for _ in range(300)]
+    n = len(clients)
+    tbl = pa.table({
+        "store_id": pa.array(["s"] * n),
+        "store_lon": pa.array([store[0]] * n), "store_lat": pa.array([store[1]] * n),
+        "client_lon": pa.array([c[0] for c in clients]), "client_lat": pa.array([c[1] for c in clients]),
+    })
+    params = {"percentiles": [50, 80], "hull_shape": "road", "remove_outliers": False, "radius_km": 0}
+    try:
+        c = fl.connect(f"grpc://{host}:{port}")
+        w, r = c.do_exchange(fl.FlightDescriptor.for_command(f"catchment:car:{json.dumps(params)}".encode()))
+        w.begin(tbl.schema); w.write_table(tbl); w.done_writing()
+        rows = r.read_all().to_pylist(); w.close()
+    except Exception as e:
+        return check("catchment road hull", False, f"{str(e)[:100]}")
+    rows.sort(key=lambda x: x["percentile"])
+    rings = {}
+    for row in rows:
+        pct = row["percentile"]
+        ok &= check(f"p{pct:.0f}: all within-threshold clients covered",
+                    row["clients_covered"] == row["clients_total"] and row["clients_total"] > 0,
+                    f"{row['clients_covered']}/{row['clients_total']}")
+        rr = _wkb_polygon_rings(bytes(row["polygon_wkb"]))
+        ok &= check(f"p{pct:.0f}: polygon parses + road-contour vertex count",
+                    bool(rr) and len(rr[0]) > 50,
+                    f"{len(rr[0]) if rr else 0} vertices (sector lasso capped at 18 extremes)")
+        rings[pct] = rr[0] if rr else []
+    if rings.get(50.0) and rings.get(80.0):
+        # Vertex-in-ring is too strict against contour-simplification jitter
+        # (same lesson as gate_isochrone_upper_bound): assert directional
+        # max-reach monotonicity + area ordering instead — jitter-proof, still
+        # catches any gross inversion.
+        import math
+        def reach(ring, bearing_deg):
+            b = math.radians(bearing_deg)
+            ux, uy = math.sin(b), math.cos(b)
+            mx = math.cos(math.radians(store[1])) * 111320.0
+            return max((v[0] - store[0]) * mx * ux + (v[1] - store[1]) * 111320.0 * uy
+                       for v in ring)
+        bad = [br for br in range(0, 360, 45)
+               if reach(rings[80.0], br) < reach(rings[50.0], br) * 0.98]
+        ok &= check("nesting: p80 reach >= p50 reach in all directions", not bad,
+                    f"violated bearings: {bad}" if bad else "8/8 directions monotone")
+        def area(ring):
+            a = 0.0
+            for i in range(len(ring) - 1):
+                a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
+            return abs(a) / 2
+        ok &= check("nesting: area(p80) >= area(p50)", area(rings[80.0]) >= area(rings[50.0]),
+                    f"{area(rings[80.0]):.2e} vs {area(rings[50.0]):.2e}")
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="e.g. http://localhost:3001")
@@ -1691,6 +1802,8 @@ def main():
     ok &= gate_motorway_speed_floor(base)
     ok &= gate_route_batch_geometry(base)
     ok &= gate_route_batch_max_meters(base)
+    ok &= gate_catchment_containment(base)
+    ok &= gate_all_endpoints_smoke(base)
     if not args.quick:
         ok &= gate_ground_truth(base, args.trips)
     print("\nGATE:", "PASS" if ok else "FAIL")
