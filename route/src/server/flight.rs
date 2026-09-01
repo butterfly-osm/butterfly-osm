@@ -719,16 +719,23 @@ fn do_matrix(
             params.origins.len()
         )));
     }
+    // #538: the largest radius in play, kept so the compute bound below can
+    // be derived from it (the mask alone doesn't retain the km value).
+    let mut radius_max_km: Option<f64> = None;
     let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
         RadiusParam::None => None,
-        RadiusParam::Km(r) => Some(Arc::new(build_neighbors(
-            &origins_snapped,
-            &targets_snapped,
-            r,
-        ))),
+        RadiusParam::Km(r) => {
+            radius_max_km = Some(r);
+            Some(Arc::new(build_neighbors(
+                &origins_snapped,
+                &targets_snapped,
+                r,
+            )))
+        }
         RadiusParam::Auto => {
             let r = auto_radius_km(&origins_snapped, &targets_snapped);
             if r > 0.0 {
+                radius_max_km = Some(r);
                 Some(Arc::new(build_neighbors(
                     &origins_snapped,
                     &targets_snapped,
@@ -738,11 +745,16 @@ fn do_matrix(
                 None
             }
         }
-        RadiusParam::PerOrigin(radii) => Some(Arc::new(build_neighbors_per_origin(
-            &origins_snapped,
-            &targets_snapped,
-            &radii,
-        ))),
+        RadiusParam::PerOrigin(radii) => {
+            radius_max_km = radii.iter().copied().fold(None, |acc: Option<f64>, r| {
+                Some(acc.map_or(r, |a| a.max(r)))
+            });
+            Some(Arc::new(build_neighbors_per_origin(
+                &origins_snapped,
+                &targets_snapped,
+                &radii,
+            )))
+        }
     };
 
     let n_origin = params.origins.len();
@@ -774,6 +786,48 @@ fn do_matrix(
             .up_adj_flat_len_along_time
             .as_ref()
             .zip(mode_data.down_rev_flat_len_along_time.as_ref());
+        // #538: radius_km must prune COMPUTE, not just the emitted rows.
+        // Two exact levers, both engine-signature-free:
+        //  1. endpoints with NO in-radius counterpart get their seedset
+        //     emptied — the engine's forward/backward sweep for an empty
+        //     seedset is a no-op and the row/column stays MAX (masked at
+        //     emit anyway);
+        //  2. the engine runs under an effective bound derived from the
+        //     radius: crow-fly can't bound road TIME exactly, so the cap is
+        //     deliberately conservative (RADIUS_SEC_PER_KM × r + base) and
+        //     every in-radius cell it still cuts is recomputed EXACTLY by
+        //     the rescue pass below. The constants trade rescue frequency
+        //     against sweep pruning — never correctness.
+        const RADIUS_SEC_PER_KM: f64 = 180.0; // ≥ detour 1.8 at 36 km/h
+        const RADIUS_BASE_S: f64 = 900.0;
+        let radius_cap_s: Option<u32> = radius_max_km.map(|r| {
+            (r * RADIUS_SEC_PER_KM + RADIUS_BASE_S)
+                .ceil()
+                .min(u32::MAX as f64) as u32
+        });
+        let eff_threshold = radius_cap_s.map_or(threshold, |c| threshold.min(c));
+
+        let mut src_seedsets = src_seedsets;
+        let mut tgt_seedsets = tgt_seedsets;
+        if let Some(nm) = &neighbor_mask {
+            let mut tgt_active = vec![false; n_dst];
+            for i in 0..n_valid_origin {
+                let row = &nm[valid_origin[i]];
+                if row.is_empty() {
+                    src_seedsets[i].clear();
+                } else {
+                    for &t in row.iter() {
+                        tgt_active[t as usize] = true;
+                    }
+                }
+            }
+            for j in 0..n_valid_dst {
+                if !tgt_active[valid_dst[j]] {
+                    tgt_seedsets[j].clear();
+                }
+            }
+        }
+
         // #509: seeds go INTO the bucket engine (super-source forward,
         // shift-trick backward, pure-meet guard) — S×T cells, replacing the
         // #502 API-layer SeedExpansion (~(avg seeds)^2 engine cells).
@@ -793,7 +847,7 @@ fn do_matrix(
                     phast_ctx2,
                     &src_seedsets,
                     &tgt_seedsets,
-                    threshold,
+                    eff_threshold,
                 )
             };
             (m, Some(lm), st)
@@ -806,10 +860,85 @@ fn do_matrix(
                 Some((&mode_data.down_adj_flat, mode)),
                 &src_seedsets,
                 &tgt_seedsets,
-                threshold,
+                eff_threshold,
             );
             (m, None, st)
         };
+
+        // #538 rescue: the radius cap is a heuristic COMPUTE bound, not an
+        // output contract — any in-radius cell it cut (MAX under
+        // eff_threshold < user threshold) is recomputed exactly here, per
+        // affected source via the bucket engine (1 × its cut targets), under
+        // the USER bound only. Sources/targets emptied above can't appear
+        // (their cells are out-of-radius by construction).
+        if let Some(nm) = &neighbor_mask
+            && eff_threshold < threshold
+        {
+            use rayon::prelude::*;
+            let in_radius = |i: usize, j: usize| -> bool {
+                nm[valid_origin[i]]
+                    .binary_search(&(valid_dst[j] as u32))
+                    .is_ok()
+            };
+            let rescue_work: Vec<(usize, Vec<usize>)> = (0..n_valid_origin)
+                .filter_map(|i| {
+                    if src_seedsets[i].is_empty() {
+                        return None;
+                    }
+                    // A cell > eff_threshold is EITHER cut (MAX) or a
+                    // non-minimal bounded-join artifact (#415) — both need
+                    // the exact recompute; only values ≤ eff_threshold are
+                    // trustworthy under the cap.
+                    let cut: Vec<usize> = (0..n_valid_dst)
+                        .filter(|&j| {
+                            !tgt_seedsets[j].is_empty()
+                                && matrix[i * n_valid_dst + j] > eff_threshold
+                                && in_radius(i, j)
+                        })
+                        .collect();
+                    if cut.is_empty() { None } else { Some((i, cut)) }
+                })
+                .collect();
+            if !rescue_work.is_empty() {
+                let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
+                tracing::debug!(
+                    sources = rescue_work.len(),
+                    cells = n_cells,
+                    eff_threshold,
+                    "radius cap rescue (#538): exact recompute of cut in-radius cells"
+                );
+                type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
+                let patches: Vec<RescuePatch> = rescue_work
+                    .par_iter()
+                    .map(|(i, cut)| {
+                        let one_src = vec![src_seedsets[*i].clone()];
+                        let sel_tgts: Vec<Vec<(u32, u32, u32, bool)>> =
+                            cut.iter().map(|&j| tgt_seedsets[j].clone()).collect();
+                        if let Some((up_lat, dn_lat)) = lat_flats {
+                            let (t, l, _) =
+                                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                                    n_nodes, up, down, up_lat, dn_lat, None, &one_src, &sel_tgts,
+                                    threshold,
+                                );
+                            (*i, cut.clone(), t, Some(l))
+                        } else {
+                            let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+                                n_nodes, up, down, None, &one_src, &sel_tgts, threshold,
+                            );
+                            (*i, cut.clone(), t, None)
+                        }
+                    })
+                    .collect();
+                for (i, cut, t, l) in patches {
+                    for (k, &j) in cut.iter().enumerate() {
+                        matrix[i * n_valid_dst + j] = t[k];
+                        if let (Some(lm), Some(lv)) = (lat_matrix_opt.as_mut(), l.as_ref()) {
+                            lm[i * n_valid_dst + j] = lv[k];
+                        }
+                    }
+                }
+            }
+        }
 
         // Per-cell K-best fallback for INF cells (mirrors /table POST).
         // With SCC-aware role masks this is now a rare per-cell rescue
@@ -835,6 +964,15 @@ fn do_matrix(
             for (i, _) in valid_origin.iter().enumerate() {
                 for (j, _) in valid_dst.iter().enumerate() {
                     if matrix[i * n_valid_dst + j] == u32::MAX {
+                        // #538: out-of-radius cells are pruned at emit —
+                        // never burn an unbounded P2P rescuing one.
+                        if let Some(nm) = &neighbor_mask
+                            && nm[valid_origin[i]]
+                                .binary_search(&(valid_dst[j] as u32))
+                                .is_err()
+                        {
+                            continue;
+                        }
                         work.push((i, j));
                         needed_src.insert(valid_origin[i]);
                         needed_dst.insert(valid_dst[j]);
