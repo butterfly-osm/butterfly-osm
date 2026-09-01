@@ -4316,6 +4316,22 @@ impl FlightService for ButterflyFlight {
         &self,
         request: Request<Ticket>,
     ) -> std::result::Result<Response<Self::DoGetStream>, Status> {
+        // #539: engine compute must NEVER run on a tokio runtime worker — a
+        // burst of concurrent do_get calls used to block every worker and
+        // starve /health into liveness kills (observed: /health unanswered
+        // for >5 min under a saturating matrix benchmark; the orchestrator
+        // then killed the healthy process, exit 137). Each action's (sync,
+        // possibly seconds-long) do_* body runs on the blocking pool; the
+        // streamed variants inside already spawn their producers, which is
+        // harmless under this wrapper.
+        async fn off_runtime<T: Send + 'static>(
+            f: impl FnOnce() -> std::result::Result<T, Status> + Send + 'static,
+        ) -> std::result::Result<T, Status> {
+            tokio::task::spawn_blocking(f)
+                .await
+                .map_err(|e| Status::internal(format!("compute task failed: {e}")))?
+        }
+
         let ticket = request.into_inner();
         let parsed = parse_ticket(&ticket)?;
 
@@ -4352,7 +4368,8 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let sparse = params.sparse; // #532: labels the completeness trailer
-                let (batch_stream, done) = do_matrix(&state, mode, params)?;
+                let (batch_stream, done) =
+                    off_runtime(move || do_matrix(&state, mode, params)).await?;
                 let schema = Arc::new(matrix_schema());
                 // #533/#532: append a completeness trailer (or a non-OK error on
                 // truncation) so clients can fail loud instead of silently
@@ -4403,7 +4420,8 @@ impl FlightService for ButterflyFlight {
                     self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let (batch_stream, done) = do_route_batch(&state, mode, params)?;
+                let (batch_stream, done) =
+                    off_runtime(move || do_route_batch(&state, mode, params)).await?;
                 let schema = Arc::new(route_batch_schema());
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
@@ -4420,7 +4438,7 @@ impl FlightService for ButterflyFlight {
                     self.dispatch_for_point(params.lon, params.lat, &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let batch_stream = do_isochrone(&state, mode, params)?;
+                let batch_stream = off_runtime(move || do_isochrone(&state, mode, params)).await?;
                 let schema = Arc::new(isochrone_schema());
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
@@ -4438,7 +4456,8 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid transit_bulk params: {}", e))
                     })?;
-                let (batch_stream, done) = do_transit_bulk(&state, params)?;
+                let (batch_stream, done) =
+                    off_runtime(move || do_transit_bulk(&state, params)).await?;
                 let schema = Arc::new(transit_bulk_schema());
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
@@ -4483,7 +4502,8 @@ impl FlightService for ButterflyFlight {
                 };
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let (batch_stream, done) = do_edges_batch(&state, mode, params)?;
+                let (batch_stream, done) =
+                    off_runtime(move || do_edges_batch(&state, mode, params)).await?;
                 let schema = Arc::new(edges_batch_schema());
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream = completed_flight_stream(schema, batch_stream, done, "");

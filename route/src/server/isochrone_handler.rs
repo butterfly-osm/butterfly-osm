@@ -1650,6 +1650,15 @@ pub async fn isochrone_bulk_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<BulkIsochroneRequest>,
 ) -> impl IntoResponse {
+    // #539: seconds of sync rayon work — demote this worker out of the async
+    // scheduler so bulk storms can't starve /health (liveness kills).
+    tokio::task::block_in_place(move || isochrone_bulk_sync(regions, req))
+}
+
+fn isochrone_bulk_sync(
+    regions: Arc<RegionsState>,
+    req: BulkIsochroneRequest,
+) -> axum::response::Response {
     use crate::range::contour::ContourResult;
     use crate::range::wkb_stream::encode_polygon_wkb;
 

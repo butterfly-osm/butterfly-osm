@@ -550,6 +550,12 @@ pub async fn catchment_handler(
     State(regions): State<Arc<RegionsState>>,
     Json(req): Json<CatchmentRequest>,
 ) -> impl IntoResponse {
+    // #539: seconds of sync PHAST/hull work — demote this worker out of the
+    // async scheduler so concurrent catchments can't starve /health.
+    tokio::task::block_in_place(move || catchment_sync(regions, req))
+}
+
+fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::response::Response {
     // Region dispatch (#91): every store + every client must lie in
     // the same region. Cross-region catchments require the overlay
     // (PR C / Phase 2) and are 501 here.

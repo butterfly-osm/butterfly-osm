@@ -380,19 +380,23 @@ pub async fn table_post_handler(
         }
     };
 
-    let resp = compute_table_bucket_m2m(
-        &state,
-        mode,
-        &req.origins,
-        &req.destinations,
-        want_duration,
-        want_distance,
-        custom_weights_ref,
-        &snap_mask,
-        radius_param,
-        threshold_s,
-    )
-    .await;
+    // #539: the whole matrix compute is sync CPU work — demote this worker
+    // out of the async scheduler so concurrent /table storms cannot pin
+    // every tokio worker and starve /health into liveness kills.
+    let resp = tokio::task::block_in_place(|| {
+        compute_table_bucket_m2m(
+            &state,
+            mode,
+            &req.origins,
+            &req.destinations,
+            want_duration,
+            want_distance,
+            custom_weights_ref,
+            &snap_mask,
+            radius_param,
+            threshold_s,
+        )
+    });
 
     // #521 uncertainty bands: two more full matrix passes on the hidden band
     // weight sets, merged into the median response as durations_q25/q75
@@ -421,19 +425,20 @@ pub async fn table_post_handler(
             let mut band_grids: Vec<serde_json::Value> = Vec::with_capacity(2);
             for band in [opt, pess] {
                 let md = state.get_mode(band);
-                let r = compute_table_bucket_m2m(
-                    &state,
-                    band,
-                    &req.origins,
-                    &req.destinations,
-                    true,
-                    false,
-                    None,
-                    &md.mask,
-                    parse_radius(req.radius_km.as_ref()),
-                    threshold_s,
-                )
-                .await;
+                let r = tokio::task::block_in_place(|| {
+                    compute_table_bucket_m2m(
+                        &state,
+                        band,
+                        &req.origins,
+                        &req.destinations,
+                        true,
+                        false,
+                        None,
+                        &md.mask,
+                        parse_radius(req.radius_km.as_ref()),
+                        threshold_s,
+                    )
+                });
                 let bytes = match axum::body::to_bytes(r.into_body(), 256 * 1024 * 1024).await {
                     Ok(b) => b,
                     Err(e) => {
@@ -518,7 +523,7 @@ pub async fn table_post_handler(
 
 /// Core table computation using bucket M2M algorithm
 #[allow(clippy::too_many_arguments)]
-pub async fn compute_table_bucket_m2m(
+pub fn compute_table_bucket_m2m(
     state: &Arc<ServerState>,
     mode: Mode,
     sources: &[[f64; 2]],
