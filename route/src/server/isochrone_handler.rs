@@ -780,6 +780,120 @@ pub fn run_phast_bounded_fast_reverse_seeded(
     })
 }
 
+/// #527: 2-channel reverse seeded PHAST — `d(all → target)` with the
+/// length-along-time channel carried. Mirror of
+/// `run_phast_bounded_fast_seeded_2ch` with swapped adjacencies: the upward
+/// phase relaxes DOWN-reverse edges (time ordering, length carried), the
+/// downward phase PULLs via UP edges (no block-gating — PULL cannot
+/// propagate block activation, same constraint as the 1-channel reverse).
+/// #530 lazy-lex (time, then length) tie-break in both phases so this
+/// surface cannot disagree with `/route`/`/table` on equal-duration ties.
+pub fn run_phast_bounded_fast_reverse_seeded_2ch(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    up_adj_flat_len: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat_len: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+) -> Vec<(u32, u32, u32)> {
+    use std::cmp::Reverse;
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mode_idx = mode.index();
+    let cap = phast_mode_lru_cap();
+    PHAST_STATES_REV.with(|cell| {
+        cell.with_or_init(PhastSlots::empty, |states| {
+            let state_slot = states.touch(mode_idx, cap);
+            let state = state_slot.get_or_insert_with(|| PhastState::new(n_nodes));
+            if state.dist.len() != n_nodes {
+                *state = PhastState::new(n_nodes);
+            }
+            state.start_query();
+            state.ensure_len();
+            for &(r, t, l) in seeds {
+                if t < state.get_dist(r as usize) {
+                    state.set_dist_len(r as usize, t, l);
+                }
+            }
+            // Phase 1: upward PQ over DOWN-reverse edges (time-ordered).
+            for &(r, t, _) in seeds {
+                if state.get_dist(r as usize) == t {
+                    state.pq.push(Reverse((t, r)));
+                }
+            }
+            while let Some(Reverse((d, u))) = state.pq.pop() {
+                if d > threshold {
+                    break;
+                }
+                if d > state.get_dist(u as usize) {
+                    continue;
+                }
+                let lu = state.get_len(u as usize);
+                let start = down_rev_flat.offsets[u as usize] as usize;
+                let end = down_rev_flat.offsets[u as usize + 1] as usize;
+                for i in start..end {
+                    let v = down_rev_flat.sources[i] as usize; // higher rank
+                    let w = down_rev_flat.weights.get(i);
+                    if w == u32::MAX {
+                        continue;
+                    }
+                    let new_t = d.saturating_add(w);
+                    let cur_t = state.get_dist(v);
+                    if new_t < cur_t {
+                        let new_l = lu.saturating_add(down_rev_flat_len.weights.get(i));
+                        state.set_dist_len(v, new_t, new_l);
+                        state.pq.push(Reverse((new_t, v as u32)));
+                    } else if new_t == cur_t && cur_t != u32::MAX {
+                        let new_l = lu.saturating_add(down_rev_flat_len.weights.get(i));
+                        if new_l < state.get_len(v) {
+                            state.set_dist_len(v, new_t, new_l);
+                            state.pq.push(Reverse((new_t, v as u32)));
+                        }
+                    }
+                }
+            }
+            // Phase 2: downward PULL scan via UP edges, length carried.
+            for v in (0..n_nodes).rev() {
+                let up_start = up_adj_flat.offsets[v] as usize;
+                let up_end = up_adj_flat.offsets[v + 1] as usize;
+                for i in up_start..up_end {
+                    let u = up_adj_flat.targets[i] as usize; // higher rank
+                    let d_u = state.get_dist(u);
+                    if d_u == u32::MAX || d_u > threshold {
+                        continue;
+                    }
+                    let new_t = d_u.saturating_add(up_adj_flat.weights.get(i));
+                    let cur_t = state.get_dist(v);
+                    if new_t < cur_t {
+                        let new_l = state
+                            .get_len(u)
+                            .saturating_add(up_adj_flat_len.weights.get(i));
+                        state.set_dist_len(v, new_t, new_l);
+                    } else if new_t == cur_t && cur_t != u32::MAX {
+                        let new_l = state
+                            .get_len(u)
+                            .saturating_add(up_adj_flat_len.weights.get(i));
+                        if new_l < state.get_len(v) {
+                            state.set_dist_len(v, new_t, new_l);
+                        }
+                    }
+                }
+            }
+            // Collect settled nodes (full scan — no block-gating in PULL).
+            let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            for rank in 0..n_nodes {
+                if state.version[rank] == state.current_gen {
+                    let d = state.dist[rank];
+                    if d <= threshold {
+                        result.push((rank as u32, d, state.len[rank]));
+                    }
+                }
+            }
+            result
+        })
+    })
+}
+
 // ============ Handlers ============
 
 /// Calculate isochrone (reachable area within time limit)
