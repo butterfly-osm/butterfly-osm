@@ -5912,6 +5912,101 @@ mod max_minutes_bound_tests {
         }
     }
 
+    /// #527: parts-rich seedsets (multi-seed, non-zero time/len partials) to
+    /// stress the shift algebra of BOTH field directions. Shared ranks across
+    /// src/tgt exist by construction so the conflict-delegation path fires.
+    type SeedPair<'a> = (&'a [Vec<EngineSeed>], &'a [Vec<EngineSeed>]);
+
+    fn parts_rich_seeds(n: usize) -> (Vec<Vec<EngineSeed>>, Vec<Vec<EngineSeed>>) {
+        let srcs: Vec<Vec<EngineSeed>> = (0..n as u32)
+            .map(|i| {
+                let mut v = vec![(i, i % 7, 2 * (i % 7), true)];
+                if i % 3 == 0 {
+                    v.push(((i + 2) % n as u32, (i % 5) + 1, 2 * ((i % 5) + 1), true));
+                }
+                v
+            })
+            .collect();
+        let tgts: Vec<Vec<EngineSeed>> = (0..n as u32)
+            .map(|i| {
+                let mut v = vec![(i, (i % 4) + 1, 2 * ((i % 4) + 1), true)];
+                if i % 4 == 1 {
+                    v.push(((i + 5) % n as u32, i % 6, 2 * (i % 6), false));
+                }
+                v
+            })
+            .collect();
+        (srcs, tgts)
+    }
+
+    #[test]
+    fn seeded_reverse_phast_2ch_equals_bucket_2ch() {
+        // #527: tall-shape reverse field vs the bucket engine, in-bound cells
+        // must agree on BOTH channels. Runs the same square seedsets as the
+        // forward test (conflict delegation on the diagonal) AND parts-rich
+        // multi-seed sets (shift algebra under non-zero partials).
+        let (n_nodes, up, down, up_lat, dn_lat, _dfwd_t, _dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+        let (psrc, ptgt) = parts_rich_seeds(12);
+        let cases: Vec<SeedPair> = vec![(&seeds, &seeds), (&psrc, &ptgt), (&psrc, &seeds)];
+        for (srcs, tgts) in cases {
+            for &thr in &[u32::MAX, 200, 55] {
+                let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+                    n_nodes, &up, &down, &up_lat, &dn_lat, srcs, tgts, thr,
+                );
+                let (rt, rl, _) = table_phast_lopsided_reverse_2ch(
+                    n_nodes, &up, &down, &up_lat, &dn_lat, mode, srcs, tgts, thr,
+                );
+                for i in 0..bt.len() {
+                    if bt[i] <= thr {
+                        assert_eq!(
+                            rt[i], bt[i],
+                            "bucket/REVERSE-PHAST TIME diverge, in-bound cell {i}, thr {thr}"
+                        );
+                        assert_eq!(
+                            rl[i], bl[i],
+                            "bucket/REVERSE-PHAST LEN diverge, in-bound cell {i}, thr {thr}"
+                        );
+                    } else {
+                        assert!(
+                            rt[i] > thr,
+                            "REVERSE-PHAST leaked a ≤thr time at out-of-bound cell {i}, thr {thr}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_reverse_phast_1ch_equals_bucket_1ch() {
+        let (n_nodes, up, down, _up_lat, _dn_lat, _dfwd_t, _dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+        let (psrc, ptgt) = parts_rich_seeds(12);
+        let cases: Vec<SeedPair> = vec![(&seeds, &seeds), (&psrc, &ptgt)];
+        for (srcs, tgts) in cases {
+            for &thr in &[u32::MAX, 200, 55] {
+                let (b, _) =
+                    table_bucket_parallel_seeded_bounded(n_nodes, &up, &down, srcs, tgts, thr);
+                let (r, _) =
+                    table_phast_lopsided_reverse(n_nodes, &up, &down, mode, srcs, tgts, thr);
+                for i in 0..b.len() {
+                    if b[i] <= thr {
+                        assert_eq!(
+                            r[i], b[i],
+                            "bucket/REVERSE-PHAST 1ch diverge, in-bound cell {i}, thr {thr}"
+                        );
+                    } else {
+                        assert!(
+                            r[i] > thr,
+                            "REVERSE-PHAST 1ch leaked ≤thr at out-of-bound cell {i}, thr {thr}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// CROSS-PATH LOCK: the shape-aware 2-channel router must return the SAME
     /// result whether it internally picks PHAST or bucket — dispatching must be
     /// transparent to the caller.
@@ -6343,22 +6438,39 @@ pub fn table_seeded_bounded_routed_2ch(
         let empty = vec![u32::MAX; n_sources * n_targets];
         return (empty.clone(), empty, BucketM2MStats::default());
     }
-    if let Some((down_fwd_time, down_fwd_len, mode)) = phast_ctx
-        && phast_wins(mode, n_sources, n_targets, n_nodes)
-    {
-        return table_phast_lopsided_2ch(
-            n_nodes,
-            up_adj_flat,
-            down_rev_flat,
-            down_fwd_time,
-            up_adj_flat_len,
-            down_rev_flat_len,
-            down_fwd_len,
-            mode,
-            src_seedsets,
-            tgt_seedsets,
-            threshold,
-        );
+    if let Some((down_fwd_time, down_fwd_len, mode)) = phast_ctx {
+        match phast_dir(mode, n_sources, n_targets, n_nodes) {
+            Some(FieldDir::Fwd) => {
+                return table_phast_lopsided_2ch(
+                    n_nodes,
+                    up_adj_flat,
+                    down_rev_flat,
+                    down_fwd_time,
+                    up_adj_flat_len,
+                    down_rev_flat_len,
+                    down_fwd_len,
+                    mode,
+                    src_seedsets,
+                    tgt_seedsets,
+                    threshold,
+                );
+            }
+            Some(FieldDir::Rev) => {
+                let _ = (down_fwd_time, down_fwd_len);
+                return table_phast_lopsided_reverse_2ch(
+                    n_nodes,
+                    up_adj_flat,
+                    down_rev_flat,
+                    up_adj_flat_len,
+                    down_rev_flat_len,
+                    mode,
+                    src_seedsets,
+                    tgt_seedsets,
+                    threshold,
+                );
+            }
+            None => {}
+        }
     }
     table_bucket_parallel_seeded_len_along_time_bounded(
         n_nodes,
@@ -6549,19 +6661,34 @@ pub fn table_seeded_bounded_routed(
             BucketM2MStats::default(),
         );
     }
-    if let Some((down_fwd_flat, mode)) = phast_ctx
-        && phast_wins(mode, n_sources, n_targets, n_nodes)
-    {
-        return table_phast_lopsided(
-            n_nodes,
-            up_adj_flat,
-            down_rev_flat,
-            down_fwd_flat,
-            mode,
-            src_seedsets,
-            tgt_seedsets,
-            threshold,
-        );
+    if let Some((down_fwd_flat, mode)) = phast_ctx {
+        match phast_dir(mode, n_sources, n_targets, n_nodes) {
+            Some(FieldDir::Fwd) => {
+                return table_phast_lopsided(
+                    n_nodes,
+                    up_adj_flat,
+                    down_rev_flat,
+                    down_fwd_flat,
+                    mode,
+                    src_seedsets,
+                    tgt_seedsets,
+                    threshold,
+                );
+            }
+            Some(FieldDir::Rev) => {
+                let _ = down_fwd_flat;
+                return table_phast_lopsided_reverse(
+                    n_nodes,
+                    up_adj_flat,
+                    down_rev_flat,
+                    mode,
+                    src_seedsets,
+                    tgt_seedsets,
+                    threshold,
+                );
+            }
+            None => {}
+        }
     }
     table_bucket_inner(
         n_nodes,
@@ -6659,6 +6786,9 @@ fn table_bucket_inner_untimed(
 /// n_nodes/400), which can only UNDER-select PHAST.
 static SWEEP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SCAN_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// #527: reverse fields use a PULL downward scan (no block-gating), which is
+/// structurally slower than the forward push scan — measured separately.
+static SCAN_REV_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn update_cost_ewma(cell: &std::sync::atomic::AtomicU64, sample_ns: u64) {
     let prev = cell.load(std::sync::atomic::Ordering::Relaxed);
@@ -6670,39 +6800,60 @@ fn update_cost_ewma(cell: &std::sync::atomic::AtomicU64, sample_ns: u64) {
     cell.store(next.max(1), std::sync::atomic::Ordering::Relaxed);
 }
 
-/// #526 router predicate: does min(S,T) full scans beat (S+T) sweeps?
-/// v1 handles the FORWARD lopsided shape only (few sources, many targets);
-/// tall shapes (many sources, few targets) stay on bucket until the
-/// reverse-field variant lands.
-fn phast_wins(
+/// #526/#527 field direction for the shape-aware router.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FieldDir {
+    /// One forward field per SOURCE (few sources, many targets).
+    Fwd,
+    /// One reverse field per TARGET (many sources, few targets — #527).
+    Rev,
+}
+
+/// #526/#527 router predicate: does min(S,T) full scans beat (S+T) sweeps,
+/// and in which direction? Forward fields cover S ≤ T (one push scan per
+/// source), reverse fields cover S > T (one pull scan per target). The two
+/// scan flavours are costed with SEPARATE measured EWMAs — the reverse pull
+/// scan cannot block-gate and is structurally slower.
+fn phast_dir(
     _mode: crate::profile_abi::Mode,
     n_sources: usize,
     n_targets: usize,
     n_nodes: usize,
-) -> bool {
+) -> Option<FieldDir> {
+    let dir = if n_sources <= n_targets {
+        FieldDir::Fwd
+    } else {
+        FieldDir::Rev
+    };
     match std::env::var("BUTTERFLY_MATRIX_ALGO").as_deref() {
-        Ok("bucket") => return false,
-        Ok("phast") => return n_sources <= n_targets,
+        Ok("bucket") => return None,
+        Ok("phast") => return Some(dir),
         _ => {}
     }
-    if n_sources > n_targets {
-        return false; // reverse-field variant: follow-up on #526
-    }
     let sweep = SWEEP_NS.load(std::sync::atomic::Ordering::Relaxed);
-    let scan = SCAN_NS.load(std::sync::atomic::Ordering::Relaxed);
+    let scan = match dir {
+        FieldDir::Fwd => SCAN_NS.load(std::sync::atomic::Ordering::Relaxed),
+        FieldDir::Rev => SCAN_REV_NS.load(std::sync::atomic::Ordering::Relaxed),
+    };
     let (scan_cost, sweep_cost) = if sweep > 0 && scan > 0 {
         (scan as u128, sweep as u128)
     } else {
         // Structural fallback: equal per-relaxation cost. avg sweep visits
         // ~n_nodes/400 (the engine's own working-set proxy), a scan relaxes
-        // ~n_nodes. Conservative: real sweeps are cache-hostile (80-87%
-        // miss) while the scan streams, so this only delays PHAST adoption
+        // ~n_nodes (×2 for the reverse pull: no block-gating, every rank
+        // pulled). Conservative: real sweeps are cache-hostile (80-87%
+        // miss) while the scan streams, so this only delays field adoption
         // until the first measurement.
-        (n_nodes as u128, (n_nodes / 400).clamp(500, 20_000) as u128)
+        let scan_relax = match dir {
+            FieldDir::Fwd => n_nodes as u128,
+            FieldDir::Rev => 2 * n_nodes as u128,
+        };
+        (scan_relax, (n_nodes / 400).clamp(500, 20_000) as u128)
     };
-    let phast_cost = n_sources as u128 * scan_cost;
+    let n_fields = n_sources.min(n_targets);
+    let phast_cost = n_fields as u128 * scan_cost;
     let bucket_cost = (n_sources + n_targets) as u128 * sweep_cost;
-    phast_cost < bucket_cost
+    if phast_cost < bucket_cost { Some(dir) } else { None }
 }
 
 /// #526: lopsided-shape matrix via one seeded bounded PHAST field per
@@ -6850,6 +7001,304 @@ fn table_phast_lopsided(
         "matrix router: seeded PHAST lopsided path (#526)"
     );
     (matrix, stats)
+}
+
+/// #527: REVERSE lopsided-shape matrix (many sources, few targets) via one
+/// seeded bounded REVERSE PHAST field per TARGET — `G[rank]` = shifted cost
+/// from state `rank` to the target.
+///
+/// Semantics (exact mirror of the forward path's shift-trick derivation):
+/// the target's seed suffix `part_t` must be SUBTRACTED from any path that
+/// fully traverses the target edge, so the reverse field is seeded at
+/// `shift − part_t` (shift = max suffix, keeps inits non-negative) and each
+/// source evaluates `part_s + G[rank_s] − shift` — identical algebra to the
+/// bucket's backward sweep ("initialises at `shift - suffix` … the whole
+/// column is shifted back down after the sweep"). Pairs whose source and
+/// target share a physical-edge seed rank carry the #510/#511 same-edge
+/// subtleties and are recomputed exactly by the bucket engine (conflicted
+/// sources × 1 target — a handful of sweeps at most).
+fn table_phast_lopsided_reverse(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    mode: crate::profile_abi::Mode,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, BucketM2MStats) {
+    use rayon::prelude::*;
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    // Field values are probed at exactly the ranks the sources sit on —
+    // identical for every target, hoisted out of the per-target closure.
+    let src_ranks: std::collections::HashSet<u32> = src_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|x| x.0))
+        .collect();
+
+    let per_target = |(_t_idx, tseeds): (usize, &Vec<EngineSeed>)| -> (Vec<u32>, Vec<usize>) {
+        let mut col = vec![u32::MAX; n_sources];
+        let mut conflicts: Vec<usize> = Vec::new();
+        if tseeds.is_empty() {
+            return (col, conflicts);
+        }
+        let tgt_ranks: std::collections::HashSet<u32> = tseeds.iter().map(|s| s.0).collect();
+        let shift: u32 = tseeds.iter().map(|s| s.1).max().unwrap_or(0);
+        let phast_seeds: Vec<(u32, u32)> = tseeds.iter().map(|s| (s.0, shift - s.1)).collect();
+        // Any cell with true d ≤ threshold has G ≤ threshold + shift
+        // (the source partial only ADDS on top), so this bound is exact.
+        let field_bound = if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold.saturating_add(shift)
+        };
+        let t0 = std::time::Instant::now();
+        let settled = crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded(
+            up_adj_flat,
+            down_rev_flat,
+            &phast_seeds,
+            field_bound,
+            mode,
+        );
+        update_cost_ewma(&SCAN_REV_NS, t0.elapsed().as_nanos() as u64);
+        let mut field: std::collections::HashMap<u32, u32> =
+            std::collections::HashMap::with_capacity(src_ranks.len());
+        for (rank, dist) in settled {
+            if src_ranks.contains(&rank) {
+                field
+                    .entry(rank)
+                    .and_modify(|d| *d = (*d).min(dist))
+                    .or_insert(dist);
+            }
+        }
+        for (s_idx, sseeds) in src_seedsets.iter().enumerate() {
+            if sseeds.is_empty() {
+                continue;
+            }
+            if sseeds.iter().any(|x| tgt_ranks.contains(&x.0)) {
+                // Same-physical-edge pair: exact via the bucket engine.
+                conflicts.push(s_idx);
+                continue;
+            }
+            let mut best = u32::MAX;
+            for &(rank, part, _, _) in sseeds {
+                // part_s = remaining cost from the source snap to its edge's
+                // END, added up-front exactly as the forward sweep seeds it;
+                // subtracting the shift undoes the field's seed offset.
+                if let Some(&g) = field.get(&rank)
+                    && g != u32::MAX
+                {
+                    best = best.min(g.saturating_add(part).saturating_sub(shift));
+                }
+            }
+            if threshold != u32::MAX && best != u32::MAX && best > threshold {
+                best = u32::MAX;
+            }
+            col[s_idx] = best;
+        }
+        (col, conflicts)
+    };
+
+    let cols: Vec<(Vec<u32>, Vec<usize>)> = if n_targets == 1 {
+        tgt_seedsets.iter().enumerate().map(per_target).collect()
+    } else {
+        tgt_seedsets
+            .par_iter()
+            .enumerate()
+            .map(per_target)
+            .collect()
+    };
+
+    let mut matrix = vec![u32::MAX; n_sources * n_targets];
+    for (t_idx, (col, conflicts)) in cols.into_iter().enumerate() {
+        for (s_idx, &v) in col.iter().enumerate() {
+            matrix[s_idx * n_targets + t_idx] = v;
+        }
+        if !conflicts.is_empty() {
+            let one_tgt = vec![tgt_seedsets[t_idx].clone()];
+            let conf_srcs: Vec<Vec<EngineSeed>> =
+                conflicts.iter().map(|&s| src_seedsets[s].clone()).collect();
+            let (sub, _) = table_bucket_inner_untimed(
+                n_nodes,
+                up_adj_flat,
+                down_rev_flat,
+                &conf_srcs,
+                &one_tgt,
+                threshold,
+            );
+            for (j, &s) in conflicts.iter().enumerate() {
+                matrix[s * n_targets + t_idx] = sub[j];
+            }
+        }
+    }
+    stats.forward_visited = n_targets; // one field per target
+    tracing::debug!(
+        n_sources,
+        n_targets,
+        "matrix router: seeded REVERSE PHAST lopsided path (#527)"
+    );
+    (matrix, stats)
+}
+
+/// #527: 2-channel reverse lopsided PHAST. Same algebra as
+/// `table_phast_lopsided_reverse` with the length-along-time channel carried
+/// through the reverse field: seed inits `(shift_t − part_t, shift_l −
+/// part_l)`, source eval `(part + G − shift)` on both channels — each seed's
+/// init embeds its own −part so the single end-of-eval shift subtraction is
+/// consistent whichever seed the time-argmin picked.
+#[allow(clippy::too_many_arguments)]
+fn table_phast_lopsided_reverse_2ch(
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_rev_flat_len: &DownReverseAdjFlat,
+    mode: crate::profile_abi::Mode,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    use rayon::prelude::*;
+    let n_sources = src_seedsets.len();
+    let n_targets = tgt_seedsets.len();
+    let mut stats = BucketM2MStats {
+        n_sources,
+        n_targets,
+        ..Default::default()
+    };
+
+    let src_ranks: std::collections::HashSet<u32> = src_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|x| x.0))
+        .collect();
+
+    type Col = (Vec<u32>, Vec<u32>, Vec<usize>);
+    let per_target = |(_t_idx, tseeds): (usize, &Vec<EngineSeed>)| -> Col {
+        let mut tcol = vec![u32::MAX; n_sources];
+        let mut lcol = vec![u32::MAX; n_sources];
+        let mut conflicts: Vec<usize> = Vec::new();
+        if tseeds.is_empty() {
+            return (tcol, lcol, conflicts);
+        }
+        let tgt_ranks: std::collections::HashSet<u32> = tseeds.iter().map(|s| s.0).collect();
+        let shift_t: u32 = tseeds.iter().map(|s| s.1).max().unwrap_or(0);
+        let shift_l: u32 = tseeds.iter().map(|s| s.2).max().unwrap_or(0);
+        let phast_seeds: Vec<(u32, u32, u32)> = tseeds
+            .iter()
+            .map(|s| (s.0, shift_t - s.1, shift_l - s.2))
+            .collect();
+        let field_bound = if threshold == u32::MAX {
+            u32::MAX
+        } else {
+            threshold.saturating_add(shift_t)
+        };
+        let t0 = std::time::Instant::now();
+        let settled =
+            crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded_2ch(
+                up_adj_flat,
+                down_rev_flat,
+                up_adj_flat_len,
+                down_rev_flat_len,
+                &phast_seeds,
+                field_bound,
+                mode,
+            );
+        update_cost_ewma(&SCAN_REV_NS, t0.elapsed().as_nanos() as u64);
+        let mut field: std::collections::HashMap<u32, (u32, u32)> =
+            std::collections::HashMap::with_capacity(src_ranks.len());
+        for (rank, t, l) in settled {
+            if src_ranks.contains(&rank) {
+                field
+                    .entry(rank)
+                    .and_modify(|e| {
+                        if t < e.0 {
+                            *e = (t, l);
+                        }
+                    })
+                    .or_insert((t, l));
+            }
+        }
+        for (s_idx, sseeds) in src_seedsets.iter().enumerate() {
+            if sseeds.is_empty() {
+                continue;
+            }
+            if sseeds.iter().any(|x| tgt_ranks.contains(&x.0)) {
+                conflicts.push(s_idx);
+                continue;
+            }
+            let mut best_t = u32::MAX;
+            let mut best_l = u32::MAX;
+            for &(rank, part_t, part_l, _) in sseeds {
+                if let Some(&(gt, gl)) = field.get(&rank)
+                    && gt != u32::MAX
+                {
+                    let at = gt.saturating_add(part_t).saturating_sub(shift_t);
+                    if at < best_t {
+                        best_t = at;
+                        best_l = gl.saturating_add(part_l).saturating_sub(shift_l);
+                    }
+                }
+            }
+            if threshold != u32::MAX && best_t != u32::MAX && best_t > threshold {
+                best_t = u32::MAX;
+                best_l = u32::MAX;
+            }
+            tcol[s_idx] = best_t;
+            lcol[s_idx] = best_l;
+        }
+        (tcol, lcol, conflicts)
+    };
+
+    let cols: Vec<Col> = if n_targets == 1 {
+        tgt_seedsets.iter().enumerate().map(per_target).collect()
+    } else {
+        tgt_seedsets
+            .par_iter()
+            .enumerate()
+            .map(per_target)
+            .collect()
+    };
+
+    let mut tmat = vec![u32::MAX; n_sources * n_targets];
+    let mut lmat = vec![u32::MAX; n_sources * n_targets];
+    for (t_idx, (tcol, lcol, conflicts)) in cols.into_iter().enumerate() {
+        for s_idx in 0..n_sources {
+            tmat[s_idx * n_targets + t_idx] = tcol[s_idx];
+            lmat[s_idx * n_targets + t_idx] = lcol[s_idx];
+        }
+        if !conflicts.is_empty() {
+            let one_tgt = vec![tgt_seedsets[t_idx].clone()];
+            let conf_srcs: Vec<Vec<EngineSeed>> =
+                conflicts.iter().map(|&s| src_seedsets[s].clone()).collect();
+            let (subt, subl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+                n_nodes,
+                up_adj_flat,
+                down_rev_flat,
+                up_adj_flat_len,
+                down_rev_flat_len,
+                &conf_srcs,
+                &one_tgt,
+                threshold,
+            );
+            for (j, &s) in conflicts.iter().enumerate() {
+                tmat[s * n_targets + t_idx] = subt[j];
+                lmat[s * n_targets + t_idx] = subl[j];
+            }
+        }
+    }
+    stats.forward_visited = n_targets; // one field per target
+    tracing::debug!(
+        n_sources,
+        n_targets,
+        "matrix router: seeded REVERSE PHAST lopsided 2ch path (#527)"
+    );
+    (tmat, lmat, stats)
 }
 
 fn table_bucket_parallel_seeded_monolithic(
