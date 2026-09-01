@@ -6853,7 +6853,11 @@ fn phast_dir(
     let n_fields = n_sources.min(n_targets);
     let phast_cost = n_fields as u128 * scan_cost;
     let bucket_cost = (n_sources + n_targets) as u128 * sweep_cost;
-    if phast_cost < bucket_cost { Some(dir) } else { None }
+    if phast_cost < bucket_cost {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 /// #526: lopsided-shape matrix via one seeded bounded PHAST field per
@@ -7199,16 +7203,15 @@ fn table_phast_lopsided_reverse_2ch(
             threshold.saturating_add(shift_t)
         };
         let t0 = std::time::Instant::now();
-        let settled =
-            crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded_2ch(
-                up_adj_flat,
-                down_rev_flat,
-                up_adj_flat_len,
-                down_rev_flat_len,
-                &phast_seeds,
-                field_bound,
-                mode,
-            );
+        let settled = crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded_2ch(
+            up_adj_flat,
+            down_rev_flat,
+            up_adj_flat_len,
+            down_rev_flat_len,
+            &phast_seeds,
+            field_bound,
+            mode,
+        );
         update_cost_ewma(&SCAN_REV_NS, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, (u32, u32)> =
             std::collections::HashMap::with_capacity(src_ranks.len());
