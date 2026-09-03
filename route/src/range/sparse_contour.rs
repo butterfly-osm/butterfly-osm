@@ -11,7 +11,36 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 
+use super::contour::ContourPolygon;
 use super::frontier::ReachableSegment;
+
+// ---------------------------------------------------------------------------
+// Topology filters (2026-09-03). All thresholds are in CELL units, so they
+// scale with the threshold tier (30 m cells at ≤10 min car … 200 m at 2 h):
+// a "hole" must be meaningfully larger at the scale of a 2-hour polygon.
+// ---------------------------------------------------------------------------
+
+/// An enclosed unreachable pocket is emitted as a hole only when its area is
+/// at least this many cells² (30 m cells → ~0.2 km², a ~470 m disk). Smaller
+/// pockets are the gaps between reachable streets — the block behind the
+/// road IS reachable on foot from it — and are filled, as they always were.
+const HOLE_MIN_AREA_CELLS: f64 = 220.0;
+
+/// … and only when it is not a thin strip: area / perimeter is ~half the
+/// width of a strip, so this keeps pockets at least ~10 cells wide (300 m
+/// at 30 m cells). A railway corridor or river between two reachable roads
+/// is filled; a forest, lake or military domain is not.
+const HOLE_MIN_HALFWIDTH_CELLS: f64 = 5.0;
+
+/// Detached reachable components below this area (cells²) are raster
+/// crumbs, not reach — dropped unless they contain the query origin (#497).
+/// Sized for the +1-cell halo: a 1-3 cell fragment (a side street entered
+/// for a few metres before the threshold) grows to 9-17 cells² of
+/// centre-ring area; 64 cells² is an 8×8 centre box (10×10 raw, ~300 m at
+/// the 10-min car tier). Measured on Namur: side-street confetti survived
+/// a 36-cell cut at 1.1-1.5 ha; a genuinely reached hamlet is hundreds of
+/// cells². Anything smaller is not a place you drove to.
+const COMPONENT_MIN_AREA_CELLS: f64 = 64.0;
 
 /// Tile size in cells (64x64 = 4096 bits = 512 bytes per tile)
 const TILE_SIZE: usize = 64;
@@ -460,6 +489,26 @@ pub struct SparseContourConfig {
     pub dilation_rounds: usize,
     pub erosion_rounds: usize,
     pub simplify_tolerance_m: f64,
+    /// Net outward growth applied AFTER the balanced closing (2026-09-03):
+    /// every reachable feature gets at least `2·halo+1` cells of width, so a
+    /// lone road no longer traces as a zero-width hair with sliver flags at
+    /// its tip but as a rounded tongue (+1 cell ≈ +30 m at the 10-min car
+    /// tier). The #431 closing stays balanced; this is the cartographic
+    /// buffer every isochrone product applies, kept to a single cell so the
+    /// outer boundary moves by less than the snap tolerance.
+    pub halo_cells: usize,
+    /// Emit enclosed unreachable pockets as holes (subject to the size
+    /// filters). OFF by default (2026-09-03): a pocket ringed by reachable
+    /// roads holds no reachable address, so filling it changes no count, and
+    /// every isochrone product fills them — a rural 10-min car isochrone with
+    /// a 9 km² white pocket in the middle reads as a defect (#542), not as
+    /// precision. The full topology stays available for consumers that want
+    /// lakes/forests/military domains excluded.
+    pub keep_holes: bool,
+    /// Detached components below this area (cells²) are dropped as raster
+    /// crumbs (unless they hold the origin). See `COMPONENT_MIN_AREA_CELLS`;
+    /// 0 disables (pure-geometry configs such as `no_morphology`).
+    pub crumb_min_cells: f64,
 }
 
 impl SparseContourConfig {
@@ -479,6 +528,9 @@ impl SparseContourConfig {
             dilation_rounds: 2,
             erosion_rounds: 2,
             simplify_tolerance_m: 30.0,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -489,6 +541,9 @@ impl SparseContourConfig {
             dilation_rounds: 3,
             erosion_rounds: 3,
             simplify_tolerance_m: 40.0,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -499,6 +554,9 @@ impl SparseContourConfig {
             dilation_rounds: 3,
             erosion_rounds: 3,
             simplify_tolerance_m: 25.0,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -541,6 +599,9 @@ impl SparseContourConfig {
             dilation_rounds: base.dilation_rounds,
             erosion_rounds: base.erosion_rounds,
             simplify_tolerance_m: base.simplify_tolerance_m * simplify_mult,
+            halo_cells: base.halo_cells,
+            keep_holes: base.keep_holes,
+            crumb_min_cells: base.crumb_min_cells,
         }
     }
 
@@ -551,6 +612,9 @@ impl SparseContourConfig {
             dilation_rounds: 2,
             erosion_rounds: 1,
             simplify_tolerance_m: 50.0, // Match Valhalla default generalize
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -561,6 +625,9 @@ impl SparseContourConfig {
             dilation_rounds: 2,
             erosion_rounds: 1,
             simplify_tolerance_m: 25.0,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -571,6 +638,9 @@ impl SparseContourConfig {
             dilation_rounds: 2,
             erosion_rounds: 1,
             simplify_tolerance_m: 15.0,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -581,6 +651,9 @@ impl SparseContourConfig {
             dilation_rounds: 2,
             erosion_rounds: 1,
             simplify_tolerance_m,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -596,6 +669,9 @@ impl SparseContourConfig {
             dilation_rounds,
             erosion_rounds,
             simplify_tolerance_m,
+            halo_cells: 1,
+            keep_holes: false,
+            crumb_min_cells: COMPONENT_MIN_AREA_CELLS,
         }
     }
 
@@ -606,6 +682,9 @@ impl SparseContourConfig {
             dilation_rounds: 0,
             erosion_rounds: 0,
             simplify_tolerance_m: 0.0,
+            halo_cells: 0,
+            keep_holes: false,
+            crumb_min_cells: 0.0,
         }
     }
 }
@@ -625,10 +704,16 @@ pub struct SparseContourStats {
     pub simplify_time_us: u64,
 }
 
-/// Result of sparse contour generation
+/// Result of sparse contour generation.
+///
+/// `outer_ring`/`holes` are the PRIMARY polygon (the component containing
+/// the anchor, else the largest); `polygons` carries every component, the
+/// primary first — a MultiPolygon when the reachable set is disconnected at
+/// raster resolution.
 pub struct SparseContourResult {
     pub outer_ring: Vec<(f64, f64)>, // WGS84 (lon, lat) pairs
     pub holes: Vec<Vec<(f64, f64)>>,
+    pub polygons: Vec<ContourPolygon>,
     pub stats: SparseContourStats,
 }
 
@@ -661,6 +746,7 @@ pub fn generate_sparse_contour_anchored(
         return Ok(SparseContourResult {
             outer_ring: vec![],
             holes: vec![],
+            polygons: vec![],
             stats,
         });
     }
@@ -760,39 +846,84 @@ pub fn generate_sparse_contour_anchored(
     for _ in 0..config.erosion_rounds {
         closed = erode_sparse(&closed);
     }
+    for _ in 0..config.halo_cells {
+        closed = dilate_sparse(&closed);
+    }
 
     stats.active_tiles_after_morphology = closed.tiles.len();
     stats.total_cells_set = closed.count_set_cells();
     stats.morphology_time_us = morph_start.elapsed().as_micros() as u64;
 
-    // Step 4: Extract contour using marching squares on sparse tiles
+    // Bresenham stamps and the erosion can leave two reachable cells touching
+    // only at a corner; the 4-neighbour tracer would split them into two
+    // "components" (the #497 symptom). Bridge every diagonal-only link.
+    let closed = bridge_diagonals(&closed);
+
+    // Step 4: trace EVERY boundary ring and assemble the topology — outer
+    // rings vs holes by orientation, holes nested into their component,
+    // raster crumbs and street-gap pockets filtered, spurs peeled.
     let contour_start = std::time::Instant::now();
-    let contour = extract_contour_sparse(&closed, anchor_cell);
-    stats.contour_vertices_before_simplify = contour.len();
+    let cell_polys = extract_topology_sparse(
+        &closed,
+        anchor_cell,
+        true,
+        config.keep_holes,
+        config.crumb_min_cells,
+    );
+    stats.contour_vertices_before_simplify = cell_polys.first().map_or(0, |p| p.outer.len());
     stats.contour_time_us = contour_start.elapsed().as_micros() as u64;
 
-    if contour.is_empty() {
+    if cell_polys.is_empty() {
         return Ok(SparseContourResult {
             outer_ring: vec![],
             holes: vec![],
+            polygons: vec![],
             stats,
         });
     }
 
-    // Step 5: Convert to WGS84 and simplify
+    // Step 5: Convert to WGS84 and simplify, ring by ring
     let simplify_start = std::time::Instant::now();
-
-    let mut wgs84_contour: Vec<(f64, f64)> = contour
-        .iter()
-        .map(|&(col, row)| {
-            let x = min_x + col * cell_size_merc;
-            let y = min_y + row * cell_size_merc;
-            from_mercator(x, y)
-        })
-        .collect();
-
     let tolerance_deg = config.simplify_tolerance_m / 111000.0;
-    wgs84_contour = douglas_peucker(&wgs84_contour, tolerance_deg);
+    let to_wgs84 = |ring: &[(f64, f64)]| -> Vec<(f64, f64)> {
+        ring.iter()
+            .map(|&(col, row)| {
+                let x = min_x + col * cell_size_merc;
+                let y = min_y + row * cell_size_merc;
+                from_mercator(x, y)
+            })
+            .collect()
+    };
+
+    let mut polygons: Vec<ContourPolygon> = Vec::with_capacity(cell_polys.len());
+    for (i, p) in cell_polys.iter().enumerate() {
+        let raw = to_wgs84(&p.outer);
+        let mut outer = douglas_peucker(&raw, tolerance_deg);
+        if outer.len() < 3 {
+            if i == 0 {
+                // The primary (origin's) polygon must survive simplification —
+                // a tiny origin component is still the truth (#497).
+                outer = raw;
+            } else {
+                continue;
+            }
+        }
+        let holes: Vec<Vec<(f64, f64)>> = p
+            .holes
+            .iter()
+            .map(|h| douglas_peucker(&to_wgs84(h), tolerance_deg))
+            .filter(|h| h.len() >= 3)
+            .collect();
+        polygons.push(ContourPolygon { outer, holes });
+    }
+    let wgs84_contour = polygons
+        .first()
+        .map(|p| p.outer.clone())
+        .unwrap_or_default();
+    let primary_holes = polygons
+        .first()
+        .map(|p| p.holes.clone())
+        .unwrap_or_default();
     stats.contour_vertices_after_simplify = wgs84_contour.len();
     stats.simplify_time_us = simplify_start.elapsed().as_micros() as u64;
 
@@ -815,7 +946,8 @@ pub fn generate_sparse_contour_anchored(
 
     Ok(SparseContourResult {
         outer_ring: wgs84_contour,
-        holes: vec![],
+        holes: primary_holes,
+        polygons,
         stats,
     })
 }
@@ -828,16 +960,51 @@ pub fn generate_sparse_contour_anchored(
 /// For maps with multiple disconnected components, we trace ALL boundaries and return
 /// the LARGEST one (by vertex count). This handles cases where roads reach far-away
 /// areas without connecting to intermediate regions.
+#[cfg(test)]
 fn extract_contour_sparse(map: &SparseTileMap, anchor_cell: Option<(f64, f64)>) -> Vec<(f64, f64)> {
+    // Legacy single-ring view: the primary polygon's outer ring. The
+    // production path uses `extract_topology_sparse` directly; this wrapper
+    // keeps the unfiltered semantics the ring-geometry tests were written
+    // against (tiny synthetic blocks would otherwise be crumb-filtered).
+    extract_topology_sparse(map, anchor_cell, false, true, 0.0)
+        .into_iter()
+        .next()
+        .map(|p| p.outer)
+        .unwrap_or_default()
+}
+
+/// Trace every boundary ring of the stamped set and assemble polygons.
+///
+/// The tracer walks each boundary with the filled side on its right, so all
+/// OUTER rings share one orientation and all HOLE rings the other; the ring
+/// with the largest |area| is necessarily an outer ring and fixes the sign
+/// convention. Holes are nested into the smallest outer ring containing
+/// them. Returned in CELL units, primary polygon first: the component that
+/// contains the anchor (#497 — an isochrone must include its own origin,
+/// however small its component; "contains" tolerates one cell because thin
+/// components trace zero-area rings the origin sits ON), else the largest.
+///
+/// `filter` applies the production cleanup: spur peeling, crumb components
+/// and street-gap / thin-strip holes dropped (see the module constants).
+/// (ring, area in cells², contains the anchor)
+type OuterRing = (Vec<(f64, f64)>, f64, bool);
+
+fn extract_topology_sparse(
+    map: &SparseTileMap,
+    anchor_cell: Option<(f64, f64)>,
+    filter: bool,
+    keep_holes: bool,
+    crumb_min_cells: f64,
+) -> Vec<ContourPolygon> {
     if map.tiles.is_empty() {
         return vec![];
     }
 
     // Track which cells have been visited (as part of a boundary)
     let mut visited_edges: HashSet<(i32, i32, u8)> = HashSet::new();
-    let mut all_contours: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut rings: Vec<Vec<(f64, f64)>> = Vec::new();
 
-    // Find all boundary starts and trace each component.
+    // Find all boundary starts and trace each ring.
     //
     // Sort for determinism (#431): the start list is collected in HashMap
     // iteration order, which is process-random. The ring's starting vertex
@@ -848,50 +1015,226 @@ fn extract_contour_sparse(map: &SparseTileMap, anchor_cell: Option<(f64, f64)>) 
     boundary_starts.sort_unstable();
 
     for (start_col, start_row, start_edge) in boundary_starts {
-        // Skip if this edge was already traced
         if visited_edges.contains(&(start_col, start_row, start_edge)) {
             continue;
         }
-
-        // Trace this boundary
-        let contour = trace_boundary_edges_with_visited(
+        let mut ring = trace_boundary_edges_with_visited(
             map,
             start_col,
             start_row,
             start_edge,
             &mut visited_edges,
         );
-
-        if contour.len() >= 3 {
-            all_contours.push(contour);
+        if filter {
+            ring = peel_spurs(&ring);
+        }
+        if ring.len() >= 3 {
+            rings.push(ring);
         }
     }
+    if rings.is_empty() {
+        return vec![];
+    }
 
-    // #497: prefer the contour CONTAINING the anchor (the snapped query
-    // origin) — an isochrone must include its own origin, however small its
-    // component. Fall back to the largest contour (by vertex count) when no
-    // anchor is given or no ring contains it.
-    if let Some(anchor) = anchor_cell {
-        let mut containing: Option<&Vec<(f64, f64)>> = None;
-        for c in &all_contours {
-            // "Contains" must tolerate thin components: ring vertices are
-            // emitted at CELL CENTERS (#431), so a 1-cell-wide corridor traces
-            // a zero-area ring and its own origin lies ON it, never strictly
-            // inside. Accept strictly-inside OR within one cell of the ring.
-            if (point_in_ring(anchor, c) || ring_near(anchor, c, 1.0))
-                && containing.is_none_or(|b| c.len() > b.len())
-            {
-                containing = Some(c);
+    // Orientation: the biggest ring is an outer ring; its sign is "outer".
+    let areas: Vec<f64> = rings.iter().map(|r| ring_area2(r)).collect();
+    let (big_idx, _) = areas
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+        .expect("non-empty");
+    let outer_sign = areas[big_idx].signum();
+
+    let contains_anchor = |ring: &[(f64, f64)]| -> bool {
+        anchor_cell.is_some_and(|a| point_in_ring(a, ring) || ring_near(a, ring, 1.0))
+    };
+
+    // Outer rings (kept) and hole rings (kept), each with |area| in cells².
+    let mut outers: Vec<OuterRing> = Vec::new(); // ring, area, has_anchor
+    let mut holes: Vec<(Vec<(f64, f64)>, f64)> = Vec::new();
+    for (ring, a2) in rings.into_iter().zip(areas) {
+        let area = a2.abs() / 2.0;
+        let is_outer = a2 == 0.0 || a2.signum() == outer_sign;
+        if is_outer {
+            let anchored = contains_anchor(&ring);
+            if filter && !anchored && area < crumb_min_cells {
+                continue;
+            }
+            outers.push((ring, area, anchored));
+        } else {
+            if !keep_holes {
+                continue; // pocket filled (default)
+            }
+            if filter {
+                let perimeter = ring_perimeter(&ring);
+                if area < HOLE_MIN_AREA_CELLS
+                    || perimeter <= 0.0
+                    || area / perimeter < HOLE_MIN_HALFWIDTH_CELLS
+                {
+                    continue; // street gap / thin strip: filled
+                }
+            }
+            holes.push((ring, area));
+        }
+    }
+    if outers.is_empty() {
+        return vec![];
+    }
+
+    // Primary first: the anchor's component (largest such ring if several
+    // qualify, as before), else the largest; the rest by area, descending.
+    outers.sort_by(|a, b| {
+        b.2.cmp(&a.2)
+            .then_with(|| b.1.total_cmp(&a.1))
+            .then_with(|| a.0.len().cmp(&b.0.len()))
+    });
+
+    // Nest each hole into the smallest outer ring that contains it.
+    let bboxes: Vec<(f64, f64, f64, f64)> = outers.iter().map(|(r, _, _)| ring_bbox(r)).collect();
+    let mut polygons: Vec<ContourPolygon> = outers
+        .iter()
+        .map(|(r, _, _)| ContourPolygon {
+            outer: r.clone(),
+            holes: vec![],
+        })
+        .collect();
+    for (hole, _) in holes {
+        let probe = hole[0];
+        let mut best: Option<(usize, f64)> = None;
+        for (i, (outer, area, _)) in outers.iter().enumerate() {
+            let (x0, y0, x1, y1) = bboxes[i];
+            if probe.0 < x0 || probe.0 > x1 || probe.1 < y0 || probe.1 > y1 {
+                continue;
+            }
+            if point_in_ring(probe, outer) && best.is_none_or(|(_, a)| *area < a) {
+                best = Some((i, *area));
             }
         }
-        if let Some(c) = containing {
-            return c.clone();
+        if let Some((i, _)) = best {
+            polygons[i].holes.push(hole);
         }
     }
-    all_contours
-        .into_iter()
-        .max_by_key(|c| c.len())
-        .unwrap_or_default()
+    polygons
+}
+
+/// Cell-space fix for the 4-neighbour tracer: Bresenham stamping and the
+/// closing's erosion can leave two filled cells touching only at a corner.
+/// Set one of the two empty orthogonal neighbours (always the east one, for
+/// determinism) so every 8-connected link becomes 4-connected and one
+/// reachable blob traces as ONE ring instead of two "components".
+fn bridge_diagonals(map: &SparseTileMap) -> SparseTileMap {
+    let mut out = SparseTileMap::new(map.cell_size_m, map.origin_x, map.origin_y);
+    for (&coord, tile) in &map.tiles {
+        let mut copy = TileBitmap::new();
+        copy.bits = tile.bits.clone();
+        out.tiles.insert(coord, copy);
+    }
+    for (&coord, tile) in &map.tiles {
+        let base_col = coord.tx * TILE_SIZE as i32;
+        let base_row = coord.ty * TILE_SIZE as i32;
+        for local_row in 0..TILE_SIZE {
+            let row_bits = tile.bits[local_row];
+            if row_bits == 0 {
+                continue;
+            }
+            for local_col in 0..TILE_SIZE {
+                if (row_bits >> local_col) & 1 == 0 {
+                    continue;
+                }
+                let (c, r) = (base_col + local_col as i32, base_row + local_row as i32);
+                let east = map.get_cell(c + 1, r);
+                if !east {
+                    if map.get_cell(c + 1, r + 1) && !map.get_cell(c, r + 1) {
+                        out.set_cell(c + 1, r);
+                    }
+                    if map.get_cell(c + 1, r - 1) && !map.get_cell(c, r - 1) {
+                        out.set_cell(c + 1, r);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Remove zero-width spurs from a ring. Vertices are emitted at cell
+/// centers (#431), so a 1-cell-wide dead-end corridor traces as an
+/// out-and-back run `… a b c b a …` — a spike of zero area that renders as a
+/// stray line and makes the polygon self-touching. Peeling every immediate
+/// backtrack (`a b a → a`) until none is left removes exactly those spurs and
+/// nothing else (a corridor LEADING to a blob is not a backtrack); the
+/// enclosed area is unchanged. Cyclic: the ring's wrap-around is peeled too.
+fn peel_spurs(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut st: Vec<(f64, f64)> = Vec::with_capacity(ring.len());
+    for &v in ring {
+        if st.len() >= 2 && st[st.len() - 2] == v {
+            st.pop();
+        } else if st.last() != Some(&v) {
+            st.push(v);
+        }
+    }
+    loop {
+        let n = st.len();
+        if n < 3 {
+            break;
+        }
+        if st[n - 1] == st[1] {
+            // … x | tip x … : the first vertex is a spur tip
+            st.remove(0);
+            st.remove(0);
+        } else if st[n - 2] == st[0] {
+            // … x tip | x … : the last vertex is a spur tip
+            st.pop();
+            st.pop();
+        } else if st[n - 1] == st[0] {
+            st.pop();
+        } else {
+            break;
+        }
+    }
+    st
+}
+
+/// Twice the signed area (shoelace) in cell units.
+fn ring_area2(ring: &[(f64, f64)]) -> f64 {
+    let n = ring.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut s = 0.0;
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        s += x1 * y2 - x2 * y1;
+    }
+    s
+}
+
+fn ring_perimeter(ring: &[(f64, f64)]) -> f64 {
+    let n = ring.len();
+    let mut p = 0.0;
+    for i in 0..n {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % n];
+        p += ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt();
+    }
+    p
+}
+
+fn ring_bbox(ring: &[(f64, f64)]) -> (f64, f64, f64, f64) {
+    let mut b = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for &(x, y) in ring {
+        b.0 = b.0.min(x);
+        b.1 = b.1.min(y);
+        b.2 = b.2.max(x);
+        b.3 = b.3.max(y);
+    }
+    b
 }
 
 /// True when `pt` is within `tol` (cell units) of any ring segment.
@@ -1568,6 +1911,280 @@ mod tests {
                 "vertex ({x}, {y}) outside the largest component"
             );
         }
+    }
+
+    #[test]
+    fn halo_is_one_cell_for_every_mode_and_tier() {
+        for mode in ["car", "bike", "foot"] {
+            for t in [300u32, 600, 1800, 3600, 7200] {
+                let c = SparseContourConfig::for_mode_name_with_threshold(mode, t);
+                assert_eq!(c.halo_cells, 1, "{mode} {t}s");
+                assert_eq!(
+                    c.dilation_rounds, c.erosion_rounds,
+                    "closing stays balanced"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn halo_widens_a_lone_road_into_a_tongue() {
+        // One 40-cell road segment, no other geometry: with the halo the
+        // contour is a strip ≥ 3 cells wide (rounded tongue), not a hair.
+        let seg = ReachableSegment {
+            points: (0..40)
+                .map(|i| (500_000_000 + i * 2_700, 40_000_000))
+                .collect(),
+        };
+        let cfg = SparseContourConfig::for_car();
+        let res = generate_sparse_contour(&[seg], &cfg).unwrap();
+        assert_eq!(res.polygons.len(), 1);
+        let ring = &res.outer_ring;
+        assert!(ring.len() >= 4, "degenerate hair: {ring:?}");
+        let (mut min_lat, mut max_lat) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &(_, lat) in ring {
+            min_lat = min_lat.min(lat);
+            max_lat = max_lat.max(lat);
+        }
+        let width_m = (max_lat - min_lat) * 111_000.0;
+        assert!(
+            width_m >= 2.0 * cfg.cell_size_m * 0.9,
+            "tongue width {width_m} m"
+        );
+    }
+
+    // ==================================================================
+    // 2026-09-03: full topology — holes, components, spurs, bridging
+    // ==================================================================
+
+    /// Filled block `[c0, c1) × [r0, r1)` minus an optional empty block.
+    fn block(
+        c0: i32,
+        c1: i32,
+        r0: i32,
+        r1: i32,
+        hole: Option<(i32, i32, i32, i32)>,
+    ) -> Vec<(i32, i32)> {
+        let mut cells = Vec::new();
+        for c in c0..c1 {
+            for r in r0..r1 {
+                if let Some((hc0, hc1, hr0, hr1)) = hole
+                    && (hc0..hc1).contains(&c)
+                    && (hr0..hr1).contains(&r)
+                {
+                    continue;
+                }
+                cells.push((c, r));
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn topology_emits_a_large_enclosed_pocket_as_a_hole() {
+        // 80×80 block with a 40×40 empty pocket: area 1600 cells² ≥ 220,
+        // area/perimeter ≈ 1521/156 ≈ 9.8 ≥ 5 → one polygon with one hole.
+        let cells = block(0, 80, 0, 80, Some((20, 60, 20, 60)));
+        let polys = extract_topology_sparse(
+            &map_with_cells(&cells),
+            None,
+            true,
+            true,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(polys.len(), 1, "one component");
+        assert_eq!(polys[0].holes.len(), 1, "the pocket must be a hole");
+        let hole = &polys[0].holes[0];
+        assert!(
+            point_in_ring((40.0, 40.0), hole),
+            "hole ring encloses the pocket center"
+        );
+        assert!(
+            point_in_ring((40.0, 40.0), &polys[0].outer),
+            "outer ring still encloses it"
+        );
+        assert!(
+            !point_in_ring((5.0, 5.0), hole),
+            "hole does not cover filled cells"
+        );
+    }
+
+    #[test]
+    fn holes_are_off_by_default_and_the_pocket_is_filled() {
+        let cells = block(0, 80, 0, 80, Some((20, 60, 20, 60)));
+        let polys = extract_topology_sparse(
+            &map_with_cells(&cells),
+            None,
+            true,
+            false,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(polys.len(), 1);
+        assert!(polys[0].holes.is_empty(), "default: pocket filled");
+        assert!(!SparseContourConfig::for_car().keep_holes);
+    }
+
+    #[test]
+    fn topology_fills_street_gap_pockets_and_thin_strips() {
+        // 80×80 block with a small 6×6 pocket (area 25 < 220) — filled.
+        let small = block(0, 80, 0, 80, Some((30, 36, 30, 36)));
+        let polys = extract_topology_sparse(
+            &map_with_cells(&small),
+            None,
+            true,
+            true,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(polys.len(), 1);
+        assert!(
+            polys[0].holes.is_empty(),
+            "street-gap pocket must be filled"
+        );
+        // 120×120 block with a 4×70 slot: area 207 < 220 and thin — filled.
+        let slot = block(0, 120, 0, 120, Some((50, 54, 20, 90)));
+        let polys = extract_topology_sparse(
+            &map_with_cells(&slot),
+            None,
+            true,
+            true,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(polys.len(), 1);
+        assert!(polys[0].holes.is_empty(), "thin strip must be filled");
+    }
+
+    #[test]
+    fn topology_keeps_every_component_primary_first() {
+        // 5×5 block at the origin + far 12×12 block: BOTH are emitted; with
+        // the anchor in the small one it comes first, else the big one.
+        let mut cells = block(0, 10, 0, 10, None); // 81 cells² at centers ≥ COMPONENT_MIN
+        cells.extend(block(300, 312, 300, 312, None));
+        let map = map_with_cells(&cells);
+        let polys = extract_topology_sparse(&map, None, true, true, COMPONENT_MIN_AREA_CELLS);
+        assert_eq!(polys.len(), 2, "no component may be dropped");
+        assert!(
+            point_in_ring((306.0, 306.0), &polys[0].outer),
+            "largest first without anchor"
+        );
+        let anchored =
+            extract_topology_sparse(&map, Some((2.5, 2.5)), true, true, COMPONENT_MIN_AREA_CELLS);
+        assert_eq!(anchored.len(), 2);
+        assert!(
+            point_in_ring((2.5, 2.5), &anchored[0].outer),
+            "anchor's component first"
+        );
+        assert!(point_in_ring((306.0, 306.0), &anchored[1].outer));
+    }
+
+    #[test]
+    fn topology_drops_raster_crumbs_but_never_the_anchor() {
+        // 10×10 block + a lone cell far away: the crumb is dropped … unless
+        // it is where the origin sits.
+        // (A lone cell traces a 1-vertex ring and is degenerate by construction;
+        // production always stamps a 3×3 disk at the origin, #497.)
+        let mut cells = block(0, 10, 0, 10, None);
+        cells.extend(block(200, 202, 200, 202, None)); // area 1 cell² < COMPONENT_MIN
+        let map = map_with_cells(&cells);
+        assert_eq!(
+            extract_topology_sparse(&map, None, true, true, COMPONENT_MIN_AREA_CELLS).len(),
+            1,
+            "crumb dropped"
+        );
+        let anchored = extract_topology_sparse(
+            &map,
+            Some((201.0, 201.0)),
+            true,
+            true,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(anchored.len(), 2, "origin component is kept");
+        assert!(point_in_ring((201.0, 201.0), &anchored[0].outer));
+    }
+
+    #[test]
+    fn diagonal_only_link_traces_as_one_component() {
+        // Two 10×10 blocks touching only at a corner: (0..10)² and (10..20)².
+        let mut cells = block(0, 10, 0, 10, None);
+        cells.extend(block(10, 20, 10, 20, None));
+        let raw = map_with_cells(&cells);
+        let raw_polys = extract_topology_sparse(&raw, None, true, true, COMPONENT_MIN_AREA_CELLS);
+        assert_eq!(raw_polys.len(), 1, "the tracer follows the corner link");
+        let dup = |ring: &[(f64, f64)]| {
+            let mut seen = std::collections::HashSet::new();
+            ring.iter()
+                .any(|&(x, y)| !seen.insert(((x * 2.0) as i64, (y * 2.0) as i64)))
+        };
+        assert!(
+            dup(&raw_polys[0].outer),
+            "sanity: unbridged, the ring pinches through the corner (self-touching)"
+        );
+        let bridged = bridge_diagonals(&raw);
+        let polys = extract_topology_sparse(&bridged, None, true, true, COMPONENT_MIN_AREA_CELLS);
+        assert_eq!(polys.len(), 1);
+        assert!(
+            !dup(&polys[0].outer),
+            "bridged: a simple ring, no repeated vertex"
+        );
+        assert!(point_in_ring((2.5, 2.5), &polys[0].outer));
+        assert!(point_in_ring((9.5, 9.5), &polys[0].outer));
+    }
+
+    #[test]
+    fn spur_peeling_removes_zero_width_spikes_only() {
+        // 10×10 block with a 1-cell-wide, 15-cell-long dead-end corridor.
+        let mut cells = block(0, 10, 0, 10, None);
+        cells.extend((10..25).map(|c| (c, 5)));
+        let map = map_with_cells(&cells);
+        let raw_ring = extract_contour_sparse(&map, None);
+        assert!(
+            raw_ring.iter().any(|&(x, _)| x > 12.0),
+            "sanity: the unfiltered ring runs out along the spur"
+        );
+        let polys = extract_topology_sparse(&map, None, true, true, COMPONENT_MIN_AREA_CELLS);
+        assert_eq!(polys.len(), 1);
+        let ring = &polys[0].outer;
+        assert!(
+            ring.iter().all(|&(x, _)| x <= 10.5),
+            "spike must be peeled down to (at most) its root cell: {ring:?}"
+        );
+        // Area is unchanged up to that one root cell: the spur itself had none.
+        let da = (ring_area2(ring).abs() - ring_area2(&raw_ring).abs()).abs() / 2.0;
+        assert!(da <= 1.0, "area drift {da} > 1 cell²");
+        // A corridor that LEADS somewhere is not a spur: block—corridor—block.
+        let mut cells = block(0, 10, 0, 10, None);
+        cells.extend((10..25).map(|c| (c, 5)));
+        cells.extend(block(25, 35, 0, 10, None));
+        let polys = extract_topology_sparse(
+            &map_with_cells(&cells),
+            None,
+            true,
+            true,
+            COMPONENT_MIN_AREA_CELLS,
+        );
+        assert_eq!(polys.len(), 1, "connected through the corridor");
+        assert!(
+            point_in_ring((30.0, 5.0), &polys[0].outer),
+            "far block kept"
+        );
+    }
+
+    #[test]
+    fn peel_spurs_handles_wraparound() {
+        // Ring whose spur straddles the start: tip at index 0.
+        let ring = vec![
+            (9.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (0.0, 0.0),
+            (1.0, 0.0),
+        ];
+        let peeled = peel_spurs(&ring);
+        assert!(
+            !peeled.contains(&(9.0, 0.0)),
+            "wrap-around tip peeled: {peeled:?}"
+        );
+        assert_eq!(peeled.len(), 4);
     }
 
     // ==================================================================

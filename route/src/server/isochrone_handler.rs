@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{GeometryFormat, Point, build_isochrone_geometry, encode_polyline6};
+use super::geometry::{GeometryFormat, Point, build_isochrone_topology, encode_polyline6};
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
 use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
+use crate::range::ContourPolygon;
 
 // ============ Types ============
 
@@ -79,12 +80,59 @@ pub struct ContourFeature {
     /// Polygon as point array [{lon, lat}, ...]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon_points: Option<Vec<Point>>,
+    /// Full GeoJSON geometry (`geometries=geojson` only): a `Polygon` with
+    /// holes, or a `MultiPolygon` when the reachable set is disconnected.
+    /// `polygon`/`polygon_geojson`/`polygon_points` stay the primary
+    /// polygon's OUTER ring for backward compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub geometry: Option<serde_json::Value>,
     /// Number of reachable edges within this contour
     pub reachable_edges: usize,
     /// Band tag (only with uncertainty=bands): "optimistic" | "pessimistic";
     /// absent on the median contour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub band: Option<&'static str>,
+}
+
+/// GeoJSON geometry for a full contour topology: `Polygon` (one component)
+/// or `MultiPolygon`, outer rings CCW, holes CW, rings closed, 5 decimals.
+fn topology_geojson(polys: &[ContourPolygon]) -> serde_json::Value {
+    use crate::range::wkb_stream::{ensure_ccw, ensure_cw};
+    let trunc = |v: f64| (v * 1e5).round() / 1e5;
+    let ring_json = |ring: &[(f64, f64)], cw: bool| -> serde_json::Value {
+        let mut coords: Vec<(f64, f64)> = ring.iter().map(|&(x, y)| (trunc(x), trunc(y))).collect();
+        if cw {
+            ensure_cw(&mut coords);
+        } else {
+            ensure_ccw(&mut coords);
+        }
+        if let (Some(&first), Some(&last)) = (coords.first(), coords.last())
+            && first != last
+        {
+            coords.push(first);
+        }
+        serde_json::Value::Array(
+            coords
+                .into_iter()
+                .map(|(x, y)| serde_json::json!([x, y]))
+                .collect(),
+        )
+    };
+    let poly_json = |p: &ContourPolygon| -> serde_json::Value {
+        let mut rings = vec![ring_json(&p.outer, false)];
+        rings.extend(p.holes.iter().map(|h| ring_json(h, true)));
+        serde_json::Value::Array(rings)
+    };
+    let polys: Vec<&ContourPolygon> = polys.iter().filter(|p| p.outer.len() >= 3).collect();
+    match polys.len() {
+        0 => serde_json::json!({"type": "Polygon", "coordinates": []}),
+        1 => serde_json::json!({"type": "Polygon", "coordinates": poly_json(polys[0])}),
+        _ => serde_json::json!({
+            "type": "MultiPolygon",
+            "coordinates": polys.iter().map(|p| poly_json(p)).collect::<Vec<_>>()
+        }),
+    }
 }
 
 /// Isochrone response -- always returns a `contours` array (even for a single contour)
@@ -1284,9 +1332,10 @@ pub async fn isochrone_handler(
         settled.push((original_id, dist));
     }
 
-    // Helper: build polygon for a single contour threshold from the settled set
-    let build_contour_polygon = |threshold: u32| -> Vec<Point> {
-        build_isochrone_geometry(
+    // Full topology per threshold (2026-09-03): components + holes. The
+    // legacy single-ring fields are derived from its primary polygon.
+    let build_contour_topology = |threshold: u32| -> Vec<ContourPolygon> {
+        build_isochrone_topology(
             &settled,
             threshold,
             node_weights,
@@ -1355,13 +1404,7 @@ pub async fn isochrone_handler(
             )
                 .into_response();
         }
-        let polygon = build_contour_polygon(thresholds[0].0);
-        let coords: Vec<(f64, f64)> = polygon.iter().map(|p| (p.lon, p.lat)).collect();
-        let contour = ContourResult {
-            outer_ring: coords,
-            holes: vec![],
-            stats: Default::default(),
-        };
+        let contour = ContourResult::from_polygons(build_contour_topology(thresholds[0].0));
         super::region_metrics::record_query(
             &region_id,
             "isochrone",
@@ -1381,7 +1424,16 @@ pub async fn isochrone_handler(
     let contour_features: Vec<ContourFeature> = thresholds
         .iter()
         .map(|&(threshold, time_s)| {
-            let polygon = build_contour_polygon(threshold);
+            let topology = build_contour_topology(threshold);
+            let polygon: Vec<Point> = topology
+                .first()
+                .map(|p| {
+                    p.outer
+                        .iter()
+                        .map(|&(lon, lat)| Point { lon, lat })
+                        .collect()
+                })
+                .unwrap_or_default();
             let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
             let (poly_enc, poly_geo, poly_pts) = encode_polygon(&polygon, geom_format);
             ContourFeature {
@@ -1389,6 +1441,8 @@ pub async fn isochrone_handler(
                 polygon: poly_enc,
                 polygon_geojson: poly_geo,
                 polygon_points: poly_pts,
+                geometry: matches!(geom_format, GeometryFormat::GeoJson)
+                    .then(|| topology_geojson(&topology)),
                 reachable_edges: reachable,
                 band: None,
             }
@@ -1524,7 +1578,7 @@ fn band_isochrone_features(
     }
     let mut out = Vec::with_capacity(thresholds.len());
     for &(threshold, time_s) in thresholds {
-        let polygon = build_isochrone_geometry(
+        let topology = build_isochrone_topology(
             &settled,
             threshold,
             &md.node_weights,
@@ -1533,6 +1587,15 @@ fn band_isochrone_features(
             &req.mode,
             anchor,
         );
+        let polygon: Vec<Point> = topology
+            .first()
+            .map(|p| {
+                p.outer
+                    .iter()
+                    .map(|&(lon, lat)| Point { lon, lat })
+                    .collect()
+            })
+            .unwrap_or_default();
         let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
         let (poly_enc, poly_geo, poly_pts) = match geom_format {
             GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
@@ -1557,6 +1620,8 @@ fn band_isochrone_features(
             polygon: poly_enc,
             polygon_geojson: poly_geo,
             polygon_points: poly_pts,
+            geometry: matches!(geom_format, GeometryFormat::GeoJson)
+                .then(|| topology_geojson(&topology)),
             reachable_edges: reachable,
             band: Some(tag),
         });
@@ -1575,8 +1640,13 @@ pub fn build_network_geometry(
     ebg_nodes: &crate::formats::EbgNodes,
     edge_geom: &crate::server::edge_geom::EdgeGeometry,
 ) -> Vec<Vec<[f64; 2]>> {
+    use std::collections::HashSet;
     let mut network: Vec<Vec<[f64; 2]>> = Vec::with_capacity(settled.len());
 
+    // Pass 1: fully reachable edges, whole; collect their endpoints (the NBG
+    // nodes the reachable tree passes through) to orient frontier edges.
+    let mut reached_ends: HashSet<(i32, i32)> = HashSet::with_capacity(settled.len() * 2);
+    let mut frontier: Vec<(u32, u32, u32)> = Vec::new();
     for &(ebg_id, dist_s) in settled {
         if dist_s > time_s {
             continue;
@@ -1602,26 +1672,42 @@ pub fn build_network_geometry(
 
         if dist_end_s <= time_s {
             // Fully reachable — emit every (lon, lat) f64 pair.
+            reached_ends.insert(polyline.at_lat_lon_e7(0));
+            reached_ends.insert(polyline.at_lat_lon_e7(polyline.len() - 1));
             let coords: Vec<[f64; 2]> = polyline.iter().map(|(lon, lat)| [lon, lat]).collect();
             if coords.len() >= 2 {
                 network.push(coords);
             }
         } else {
-            // Partially reachable - clip to cut_idx (inclusive).
-            let cut_fraction = (time_s - dist_s) as f32 / weight_s as f32;
-            let n_pts = polyline.len();
-            let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
-            let cut_idx = cut_idx.min(n_pts - 1).max(1);
+            frontier.push((ebg_id, dist_s, weight_s));
+        }
+    }
 
-            let coords: Vec<[f64; 2]> = (0..=cut_idx)
-                .map(|i| {
-                    let (lon, lat) = polyline.at(i);
-                    [lon, lat]
-                })
-                .collect();
-            if coords.len() >= 2 {
-                network.push(coords);
-            }
+    // Pass 2: partially reachable edges, clipped at the threshold FROM THEIR
+    // TRUE START. The stored polyline is shared by both directed twins
+    // (#493); cutting from index 0 for the backward twin drew the fragment at
+    // the far end — the same defect the polygon had (#542).
+    for (ebg_id, dist_s, weight_s) in frontier {
+        let node = &ebg_nodes.nodes[ebg_id as usize];
+        let polyline = edge_geom.polyline(node.geom_idx);
+        let pts_e7: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
+        let reversed = match super::geometry::frontier_orientation(&pts_e7, &reached_ends) {
+            Some(r) => r,
+            None => continue,
+        };
+        let cut_fraction = (time_s - dist_s) as f32 / weight_s as f32;
+        let n_pts = polyline.len();
+        let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
+        let cut_idx = cut_idx.min(n_pts - 1).max(1);
+        let idx = |i: usize| if reversed { n_pts - 1 - i } else { i };
+        let coords: Vec<[f64; 2]> = (0..=cut_idx)
+            .map(|i| {
+                let (lon, lat) = polyline.at(idx(i));
+                [lon, lat]
+            })
+            .collect();
+        if coords.len() >= 2 {
+            network.push(coords);
         }
     }
 
@@ -1840,7 +1926,7 @@ fn isochrone_bulk_sync(
             }
 
             // Build polygon using frontier-based concave hull
-            let points = build_isochrone_geometry(
+            let contour = ContourResult::from_polygons(build_isochrone_topology(
                 &settled,
                 time_s,
                 &mode_data.node_weights,
@@ -1848,13 +1934,7 @@ fn isochrone_bulk_sync(
                 &state.edge_geom,
                 &req.mode,
                 center_anchor,
-            );
-            let outer_ring: Vec<(f64, f64)> = points.iter().map(|p| (p.lon, p.lat)).collect();
-            let contour = ContourResult {
-                outer_ring,
-                holes: vec![],
-                stats: Default::default(),
-            };
+            ));
 
             // Encode WKB
             encode_polygon_wkb(&contour).map(|wkb| (idx as u32, wkb))

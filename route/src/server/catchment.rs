@@ -22,7 +22,7 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::build_isochrone_geometry;
+use super::geometry::build_isochrone_topology;
 use super::isochrone_handler::run_phast_bounded_fast_seeded;
 use super::state::ServerState;
 
@@ -268,7 +268,9 @@ pub fn isochrone_hull(
 
     let node_weights = &mode_data.node_weights;
 
-    let polygon_points = build_isochrone_geometry(
+    // Full topology (2026-09-03): holes for enclosed unreachable pockets and
+    // every detached reachable component — the same shape /isochrone serves.
+    let contour = ContourResult::from_polygons(build_isochrone_topology(
         &settled_original,
         threshold_s_u32,
         node_weights,
@@ -276,14 +278,7 @@ pub fn isochrone_hull(
         &state.edge_geom,
         mode_name,
         center_anchor,
-    );
-
-    let coords: Vec<(f64, f64)> = polygon_points.iter().map(|p| (p.lon, p.lat)).collect();
-    let contour = ContourResult {
-        outer_ring: coords,
-        holes: vec![],
-        stats: Default::default(),
-    };
+    ));
 
     encode_polygon_wkb(&contour).unwrap_or_default()
 }

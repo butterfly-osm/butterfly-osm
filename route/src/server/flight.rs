@@ -43,7 +43,7 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{Point, build_isochrone_geometry};
+use super::geometry::{Point, build_isochrone_topology};
 use super::isochrone_handler::{
     run_phast_bounded_fast_reverse_seeded, run_phast_bounded_fast_seeded,
 };
@@ -2437,7 +2437,9 @@ fn do_isochrone(
 
     for &interval_s in &params.intervals {
         // No scaling: thresholds and weights are both in seconds (post-#297).
-        let polygon_points = build_isochrone_geometry(
+        // Full topology (2026-09-03): Polygon with holes, or MultiPolygon when
+        // the reachable set is disconnected — nothing is dropped any more.
+        let contour = ContourResult::from_polygons(build_isochrone_topology(
             &settled_original,
             interval_s,
             node_weights,
@@ -2445,14 +2447,7 @@ fn do_isochrone(
             &state.edge_geom,
             mode_name,
             center_anchor,
-        );
-
-        let coords: Vec<(f64, f64)> = polygon_points.iter().map(|p| (p.lon, p.lat)).collect();
-        let contour = ContourResult {
-            outer_ring: coords,
-            holes: vec![],
-            stats: Default::default(),
-        };
+        ));
 
         let wkb = encode_polygon_wkb(&contour).unwrap_or_default();
         intervals_s.push(interval_s);
