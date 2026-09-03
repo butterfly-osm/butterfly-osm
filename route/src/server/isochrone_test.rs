@@ -292,6 +292,7 @@ mod tests {
             &state.edge_geom,
             mode_name,
             None,
+            None,
             &crate::server::geometry::ReachModel::Depart { frontier: &[] },
         )
         .into_iter()

@@ -2471,6 +2471,9 @@ struct IsochroneParams {
     /// Named bands (2026-09-03): "bands" → typical, best, worst polygons, `band` column.
     #[serde(default)]
     uncertainty: Option<String>,
+    /// #541: clip the contour to `<data>/clip/<name>.geojson` (e.g. "country").
+    #[serde(default)]
+    clip: Option<String>,
 }
 
 fn default_direction() -> String {
@@ -2485,6 +2488,13 @@ fn do_isochrone(
     if params.intervals.is_empty() {
         return Err(Status::invalid_argument("intervals must not be empty"));
     }
+    // #541 clip mask (generic, opt-in)
+    let clip_mask = match params.clip.as_deref() {
+        None | Some("") => None,
+        Some(name) => {
+            Some(super::clip::load(&state.data_dir, name).map_err(Status::failed_precondition)?)
+        }
+    };
     if params.intervals.len() > 10 {
         return Err(Status::invalid_argument("max 10 intervals"));
     }
@@ -2591,7 +2601,7 @@ fn do_isochrone(
             )
         };
         let model = ReachModel::for_direction(is_reverse, &frontier);
-        let contour = ContourResult::from_polygons(build_isochrone_topology(
+        let topology = build_isochrone_topology(
             &settled_original,
             interval_s,
             node_weights,
@@ -2599,8 +2609,11 @@ fn do_isochrone(
             &state.edge_geom,
             mode_name,
             center_anchor,
+            Some((params.lon, params.lat)),
             &model,
-        ));
+        );
+        let topology = super::clip::apply(clip_mask.as_deref(), topology, center_anchor);
+        let contour = ContourResult::from_polygons(topology);
 
         let wkb = encode_polygon_wkb(&contour).unwrap_or_default();
         intervals_s.push(interval_s);

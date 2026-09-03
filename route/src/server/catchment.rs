@@ -287,6 +287,7 @@ pub fn isochrone_hull(
         &state.edge_geom,
         mode_name,
         center_anchor,
+        Some((store_lon, store_lat)),
         &super::geometry::ReachModel::Depart {
             frontier: &frontier,
         },

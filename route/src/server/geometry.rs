@@ -247,6 +247,7 @@ pub fn build_isochrone_geometry(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat) of the query origin (#497/#506)
+    pin: Option<(f64, f64)>,
     model: &ReachModel<'_>,
 ) -> Vec<Point> {
     build_isochrone_topology(
@@ -257,6 +258,7 @@ pub fn build_isochrone_geometry(
         edge_geom,
         mode_name,
         origin_anchor,
+        pin,
         model,
     )
     .into_iter()
@@ -282,6 +284,7 @@ pub fn build_isochrone_topology(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>,
+    pin: Option<(f64, f64)>,
     model: &ReachModel<'_>,
 ) -> Vec<ContourPolygon> {
     let geo_start = std::time::Instant::now();
@@ -293,6 +296,7 @@ pub fn build_isochrone_topology(
         edge_geom,
         mode_name,
         origin_anchor,
+        pin,
         model,
     );
     let geo_us = geo_start.elapsed().as_micros();
@@ -444,6 +448,10 @@ pub fn build_isochrone_geometry_sparse(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-label edge start
+    // The raw query point (lon, lat). #535: a pin in a car-free zone snaps
+    // tens of metres away and used to sit OUTSIDE its own isochrone; the
+    // access leg pin→snap (≤ 500 m) is stamped so the pin is always inside.
+    pin: Option<(f64, f64)>,
     model: &ReachModel<'_>,
 ) -> Vec<ContourPolygon> {
     let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time);
@@ -458,10 +466,22 @@ pub fn build_isochrone_geometry_sparse(
     if polylines.is_empty() {
         return vec![];
     }
-    let segments: Vec<ReachableSegment> = polylines
+    let mut segments: Vec<ReachableSegment> = polylines
         .into_iter()
         .map(|points| ReachableSegment { points })
         .collect();
+    if let (Some((slon, slat)), Some((plon, plat))) = (origin_anchor, pin) {
+        let kx = 111_320.0 * slat.to_radians().cos();
+        let access_m = ((plon - slon) * kx).hypot((plat - slat) * 110_540.0);
+        if access_m > 1.0 && access_m <= 500.0 {
+            segments.push(ReachableSegment {
+                points: vec![
+                    ((plat * 1e7) as i32, (plon * 1e7) as i32),
+                    ((slat * 1e7) as i32, (slon * 1e7) as i32),
+                ],
+            });
+        }
+    }
 
     // Prefer the EXACT snapped origin when the handler supplies it (#506 —
     // the derived min-label edge START can sit a whole edge away from the
