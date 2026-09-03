@@ -34,7 +34,6 @@ pub mod api;
 pub mod avoid;
 pub mod border;
 pub mod catchment;
-pub mod clip;
 pub mod cross_region;
 pub mod edge_geom;
 pub mod edge_osm;
