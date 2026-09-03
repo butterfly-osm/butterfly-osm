@@ -2128,62 +2128,6 @@ def gate_bands(base, refs_prefix, flight_base=None):
     return passed
 
 
-def gate_isochrone_clip(base):
-    """#541 (2026-09-03): `clip=country` intersects the contour with the mask
-    shipped under <data>/clip/country.geojson. Invariants on border origins:
-    clipped ⊆ unclipped (every clipped vertex inside or on the unclipped
-    ring), the origin stays inside, the clipped area is strictly smaller
-    where the unclipped contour crossed the border, and the result is still
-    ONE simple polygon. SKIP when the server has no mask."""
-    print("== isochrone clip to mask (#541) ==")
-    passed = True
-    try:
-        http_json(f"{base}/isochrone?lon=3.12&lat=50.80&time_s=300&mode=car&clip=country", timeout=120)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")
-        if e.code == 400 and "not available" in body:
-            print("  [SKIP] clip=country: no mask on this server")
-            return passed
-        passed &= check("clip=country probe", False, f"HTTP {e.code}: {body[:120]}")
-        return passed
-    # The served graph is a Belgium+Luxembourg extract: only the Luxembourg
-    # side carries roads to spill into (FR/NL/DE are just the extract buffer),
-    # so trimming is REQUIRED at LU-border origins and merely allowed elsewhere.
-    origins = [("Arlon (LU border)", 5.81, 49.68, True), ("Martelange (LU border)", 5.74, 49.83, True),
-               ("Menen (FR border, buffer only)", 3.12, 50.80, False), ("Brussels (inland)", 4.3517, 50.8503, False)]
-    n_ok = 0
-    for name, lon, lat, must_trim in origins:
-        try:
-            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=1200&mode=car",
-                                         headers={"Accept": "application/octet-stream"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                raw = _wkb_multipolygon(r.read())
-            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=1200&mode=car&clip=country",
-                                         headers={"Accept": "application/octet-stream"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                wkb = r.read()
-                clipped = _wkb_multipolygon(wkb)
-            ok = (wkb[0] in (0, 1)) and len(clipped) == 1 and len(clipped[0]) == 1
-            ring_u, ring_c = raw[0][0], clipped[0][0]
-            a_u, a_c = _ring_area2(ring_u), _ring_area2(ring_c)
-            ok &= a_c > 0 and a_c <= a_u * 1.001
-            ok &= _point_in_ring((lon, lat), ring_c[:-1]) or _dist_to_ring_m((lon, lat), ring_c) < 150
-            outside = sum(1 for p in ring_c[:-1] if not _point_in_ring(p, ring_u[:-1]) and _dist_to_ring_m(p, ring_u) > 5.0)
-            ok &= outside == 0
-            if "inland" in name:
-                ok &= abs(a_c - a_u) <= a_u * 0.001  # nothing to clip inland
-            elif must_trim:
-                ok &= a_c < a_u * 0.999  # LU-border origins DO lose area
-            n_ok += ok
-            if not ok:
-                print(f"    {name}: parts={len(clipped)} area {a_c/a_u:.3f} of unclipped, vertices outside {outside}")
-        except Exception as ex:
-            print(f"    {name}: {ex}")
-    passed &= check("clip=country (20 min): one polygon, ⊆ unclipped, origin kept, LU-border origins trimmed, inland untouched",
-                    n_ok == len(origins), f"{n_ok}/{len(origins)} origins")
-    return passed
-
-
 def gate_ticket_invariants(base):
     """One named invariant per user ticket, so none of them can regress
     silently (2026-09-03). Where an existing gate already IS the invariant it
@@ -2192,7 +2136,8 @@ def gate_ticket_invariants(base):
            pedestrian city centre the pin itself lies in (or ≤ 30 m from) the
            ONE polygon (the pin→snap access leg is stamped), snap ≤ 300 m;
       #536 square lasso, missing clients        → gate_catchment_containment;
-      #541 clip to the border                   → gate_isochrone_clip;
+      #541 clip to the border                   → consumer-side (the map
+           dashboard / the MCP layer); the engine stays generic;
       #542 islands / confetti                    → gate_isochrone_topology
            (one simple polygon) + gate_isochrone_reach_truth + gate_graph_holes;
       #543 isochrones too big vs a traffic-aware reference → gate_bands
@@ -2389,7 +2334,6 @@ def main():
     ok &= gate_isochrone_topology(base)
     ok &= gate_isochrone_reach_truth(base)
     ok &= gate_bands(base, args.refs_prefix)
-    ok &= gate_isochrone_clip(base)
     ok &= gate_ticket_invariants(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
