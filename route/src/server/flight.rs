@@ -392,11 +392,15 @@ pub fn transit_bulk_schema() -> Schema {
 // Matrix endpoint
 // =============================================================================
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)] // #415: reject unsupported params (e.g. max_minutes on an old build) instead of silently ignoring
 struct MatrixParams {
     origins: Vec<[f64; 2]>,
     destinations: Vec<[f64; 2]>,
+    /// Named bands (2026-09-03): "bands" streams typical, then best, then
+    /// worst rows, tagged by a trailing `band` column. Car only.
+    #[serde(default)]
+    uncertainty: Option<String>,
     /// Optional Euclidean pre-filter radius in kilometres. Accepts a
     /// positive number, the string "auto", or null/0 to disable.
     #[serde(default)]
@@ -584,6 +588,135 @@ fn build_matrix_tile_batch(
 
 pub type BatchStream =
     Pin<Box<dyn futures::Stream<Item = std::result::Result<RecordBatch, Status>> + Send>>;
+
+// =============================================================================
+// Named bands on Flight (2026-09-03): best / typical / worst
+// =============================================================================
+//
+// `"uncertainty":"bands"` on matrix / route_batch / isochrone streams the
+// typical rows first, then the SAME request on the hidden best (nights,
+// free-flow) and worst (weekday peaks) weight sets — the profiles the
+// speeds artefact carries as `speed_ratio_best` / `speed_ratio_worst`. Every
+// batch gains a trailing `band` Utf8 column ("typical" | "best" | "worst");
+// without the option the schema is unchanged. Car only, like REST. The
+// passes run one after the other, each started on the blocking pool
+// (#539), and the completeness trailer is only appended when all three
+// passes reported complete.
+
+type BandPlan = Vec<(Mode, &'static str)>;
+
+fn band_plan(
+    state: &ServerState,
+    profile: &str,
+    mode: Mode,
+    uncertainty: Option<&str>,
+) -> std::result::Result<Option<BandPlan>, Status> {
+    match uncertainty {
+        None | Some("") => Ok(None),
+        Some("bands") => {
+            if profile != "car" {
+                return Err(Status::invalid_argument(
+                    "uncertainty=bands is car-only (best/typical/worst are car profiles)",
+                ));
+            }
+            let Some((worst, best)) = state.band_modes() else {
+                return Err(Status::failed_precondition(
+                    "bands not available: the loaded edge_speeds table has no best/worst columns",
+                ));
+            };
+            Ok(Some(vec![
+                (mode, "typical"),
+                (best, "best"),
+                (worst, "worst"),
+            ]))
+        }
+        Some(other) => Err(Status::invalid_argument(format!(
+            "unknown uncertainty value '{other}' (expected 'bands')"
+        ))),
+    }
+}
+
+fn banded_schema(base: Schema) -> Schema {
+    let mut fields: Vec<Field> = base.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields.push(Field::new("band", DataType::Utf8, false));
+    Schema::new(fields)
+}
+
+fn append_band(b: RecordBatch, band: &'static str) -> std::result::Result<RecordBatch, Status> {
+    let n = b.num_rows();
+    let mut cols: Vec<ArrayRef> = b.columns().to_vec();
+    cols.push(Arc::new(StringArray::from(vec![band; n])) as ArrayRef);
+    let schema = Arc::new(banded_schema(b.schema().as_ref().clone()));
+    RecordBatch::try_new(schema, cols).map_err(|e| Status::internal(format!("band column: {e}")))
+}
+
+type BandRun =
+    dyn Fn(Mode) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> + Send + Sync;
+
+/// Drives `run` for each (mode, band) of `plan` IN TURN — the next pass only
+/// starts after the previous stream is drained — each on the blocking pool.
+/// `done_all` becomes true iff every pass reported complete.
+fn chain_bands(plan: BandPlan, run: Arc<BandRun>, done_all: Arc<AtomicBool>) -> BatchStream {
+    struct St {
+        plan: std::vec::IntoIter<(Mode, &'static str)>,
+        cur: Option<(BatchStream, Arc<AtomicBool>, &'static str)>,
+        all_ok: bool,
+    }
+    let st = St {
+        plan: plan.into_iter(),
+        cur: None,
+        all_ok: true,
+    };
+    Box::pin(stream::unfold(st, move |mut st| {
+        let run = run.clone();
+        let done_all = done_all.clone();
+        async move {
+            loop {
+                if let Some((s, done, band)) = st.cur.as_mut() {
+                    match s.next().await {
+                        Some(item) => {
+                            let band = *band;
+                            return Some((item.and_then(|b| append_band(b, band)), st));
+                        }
+                        None => {
+                            if !done.load(Ordering::SeqCst) {
+                                st.all_ok = false;
+                            }
+                            st.cur = None;
+                        }
+                    }
+                }
+                match st.plan.next() {
+                    Some((mode, band)) => {
+                        let run = run.clone();
+                        match tokio::task::spawn_blocking(move || run(mode)).await {
+                            Ok(Ok((s, done))) => st.cur = Some((s, done, band)),
+                            Ok(Err(e)) => {
+                                st.plan = Vec::new().into_iter();
+                                st.all_ok = false;
+                                return Some((Err(e), st));
+                            }
+                            Err(e) => {
+                                st.plan = Vec::new().into_iter();
+                                st.all_ok = false;
+                                return Some((
+                                    Err(Status::internal(format!("compute task failed: {e}"))),
+                                    st,
+                                ));
+                            }
+                        }
+                    }
+                    None => {
+                        if st.all_ok {
+                            done_all.store(true, Ordering::SeqCst);
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+    }))
+}
 
 /// Execute the matrix Flight action.
 fn do_matrix(
@@ -1326,10 +1459,13 @@ fn do_matrix(
 // Route batch endpoint
 // =============================================================================
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct RouteBatchParams {
     pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
+    /// Named bands (2026-09-03): "bands" → typical, best, worst passes, `band` column.
+    #[serde(default)]
+    uncertainty: Option<String>,
     /// #482: optional DISTANCE prune (meters). When set, only pairs whose
     /// distance-metric shortest route is `<= max_meters` emit a row; the
     /// rest are DROPPED. The bounded CCH search early-terminates at the
@@ -2325,13 +2461,16 @@ fn do_route_batch(
 // Isochrone endpoint
 // =============================================================================
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct IsochroneParams {
     lon: f64,
     lat: f64,
     intervals: Vec<u32>, // seconds
     #[serde(default = "default_direction")]
     direction: String,
+    /// Named bands (2026-09-03): "bands" → typical, best, worst polygons, `band` column.
+    #[serde(default)]
+    uncertainty: Option<String>,
 }
 
 fn default_direction() -> String {
@@ -4377,9 +4516,6 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let sparse = params.sparse; // #532: labels the completeness trailer
-                let (batch_stream, done) =
-                    off_runtime(move || do_matrix(&state, mode, params)).await?;
-                let schema = Arc::new(matrix_schema());
                 // #533/#532: append a completeness trailer (or a non-OK error on
                 // truncation) so clients can fail loud instead of silently
                 // accepting a partial/empty-OK grid.
@@ -4387,6 +4523,20 @@ impl FlightService for ButterflyFlight {
                     ",\"contract\":\"sparse\""
                 } else {
                     ",\"contract\":\"dense\""
+                };
+                let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
+                let (schema, batch_stream, done) = if let Some(plan) = plan {
+                    let done_all = Arc::new(AtomicBool::new(false));
+                    let st = state.clone();
+                    let run: Arc<BandRun> = Arc::new(move |m| do_matrix(&st, m, params.clone()));
+                    (
+                        Arc::new(banded_schema(matrix_schema())),
+                        chain_bands(plan, run, done_all.clone()),
+                        done_all,
+                    )
+                } else {
+                    let (bs, done) = off_runtime(move || do_matrix(&state, mode, params)).await?;
+                    (Arc::new(matrix_schema()), bs, done)
                 };
                 let flight_stream = completed_flight_stream(schema, batch_stream, done, extra);
                 Ok(Response::new(flight_stream))
@@ -4429,9 +4579,22 @@ impl FlightService for ButterflyFlight {
                     self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let (batch_stream, done) =
-                    off_runtime(move || do_route_batch(&state, mode, params)).await?;
-                let schema = Arc::new(route_batch_schema());
+                let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
+                let (schema, batch_stream, done) = if let Some(plan) = plan {
+                    let done_all = Arc::new(AtomicBool::new(false));
+                    let st = state.clone();
+                    let run: Arc<BandRun> =
+                        Arc::new(move |m| do_route_batch(&st, m, params.clone()));
+                    (
+                        Arc::new(banded_schema(route_batch_schema())),
+                        chain_bands(plan, run, done_all.clone()),
+                        done_all,
+                    )
+                } else {
+                    let (bs, done) =
+                        off_runtime(move || do_route_batch(&state, mode, params)).await?;
+                    (Arc::new(route_batch_schema()), bs, done)
+                };
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
                 Ok(Response::new(flight_stream))
@@ -4447,8 +4610,21 @@ impl FlightService for ButterflyFlight {
                     self.dispatch_for_point(params.lon, params.lat, &parsed.profile)?;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
-                let batch_stream = off_runtime(move || do_isochrone(&state, mode, params)).await?;
-                let schema = Arc::new(isochrone_schema());
+                let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
+                let (schema, batch_stream) = if let Some(plan) = plan {
+                    let st = state.clone();
+                    let run: Arc<BandRun> = Arc::new(move |m| {
+                        do_isochrone(&st, m, params.clone())
+                            .map(|s| (s, Arc::new(AtomicBool::new(true))))
+                    });
+                    (
+                        Arc::new(banded_schema(isochrone_schema())),
+                        chain_bands(plan, run, Arc::new(AtomicBool::new(false))),
+                    )
+                } else {
+                    let bs = off_runtime(move || do_isochrone(&state, mode, params)).await?;
+                    (Arc::new(isochrone_schema()), bs)
+                };
                 let flight_stream = batches_to_flight_data(schema, batch_stream);
                 Ok(Response::new(flight_stream))
             }

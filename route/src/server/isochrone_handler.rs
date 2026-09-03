@@ -60,8 +60,8 @@ pub struct IsochroneRequest {
     /// Avoid polygon(s) as JSON: `[[lon,lat],...]` or `[[[lon,lat],...],...]`
     #[serde(default)]
     pub avoid_polygons: Option<String>,
-    /// Uncertainty bands (#521): "bands" adds optimistic/pessimistic contour
-    /// features per threshold (hidden q75-/q25-speed weight sets). Explicit
+    /// Bands (#521): "bands" adds best/worst contour features per threshold
+    /// (hidden best-/worst-speed weight sets: nights / weekday peaks). Explicit
     /// opt-in (2 extra PHAST passes). car only, JSON only.
     #[serde(default)]
     pub uncertainty: Option<String>,
@@ -92,7 +92,7 @@ pub struct ContourFeature {
     pub geometry: Option<serde_json::Value>,
     /// Number of reachable edges within this contour
     pub reachable_edges: usize,
-    /// Band tag (only with uncertainty=bands): "optimistic" | "pessimistic";
+    /// Band tag (only with uncertainty=bands): "best" | "worst";
     /// absent on the median contour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub band: Option<&'static str>,
@@ -1472,19 +1472,19 @@ pub async fn isochrone_handler(
     let mut contour_features = contour_features;
 
     // #521 uncertainty bands: two extra seeded PHAST passes on the hidden
-    // band weight sets — optimistic (fluid q75-speed) reaches farther,
-    // pessimistic (congested q25-speed) less far. Same thresholds.
+    // band weight sets — best (night speeds) reaches farther, worst (weekday
+    // peak speeds) less far. Same thresholds.
     if bands_requested {
         let Some((pess, opt)) = state.band_modes() else {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".to_string(),
+                    error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".to_string(),
                 }),
             )
                 .into_response();
         };
-        for (band_mode, tag) in [(opt, "optimistic"), (pess, "pessimistic")] {
+        for (band_mode, tag) in [(opt, "best"), (pess, "worst")] {
             match band_isochrone_features(
                 &state,
                 band_mode,

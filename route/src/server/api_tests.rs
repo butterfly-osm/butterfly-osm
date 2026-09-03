@@ -1069,8 +1069,8 @@ fn test_route_response_with_annotations() {
         }),
         alternatives: None,
         debug: None,
-        duration_q25_s: None,
-        duration_q75_s: None,
+        duration_best_s: None,
+        duration_worst_s: None,
     };
     let json = serde_json::to_value(&resp).unwrap();
     assert!(json["annotations"]["duration"].is_array());

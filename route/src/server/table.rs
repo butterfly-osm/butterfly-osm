@@ -74,8 +74,8 @@ pub struct TablePostRequest {
     /// matrix filtered to ≤ `max_minutes`. Orthogonal to `radius_km`.
     #[serde(default)]
     pub max_minutes: Option<f64>,
-    /// Uncertainty bands (#521): "bands" adds durations_q25/durations_q75
-    /// (diurnal TIME quantiles from hidden q75-/q25-speed weight sets).
+    /// Uncertainty bands (#521): "bands" adds durations_best/durations_worst
+    /// (best = nights/free-flow, worst = weekday peaks; hidden weight sets).
     /// Explicit opt-in: runs the matrix three times. car only.
     #[serde(default)]
     pub uncertainty: Option<String>,
@@ -124,12 +124,12 @@ pub struct TableResponse {
     /// Destination waypoints with snapped locations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destinations: Option<Vec<Waypoint>>,
-    /// Optimistic (25th TIME percentile) durations — only with uncertainty=bands
+    /// Optimistic (best band: nights, free-flow) durations — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub durations_q25: Option<Vec<Vec<Option<f64>>>>,
-    /// Pessimistic (75th TIME percentile) durations — only with uncertainty=bands
+    pub durations_best: Option<Vec<Vec<Option<f64>>>>,
+    /// Pessimistic (worst band: weekday peaks) durations — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub durations_q75: Option<Vec<Vec<Option<f64>>>>,
+    pub durations_worst: Option<Vec<Vec<Option<f64>>>>,
 }
 
 /// Request for streaming table computation
@@ -399,8 +399,8 @@ pub async fn table_post_handler(
     });
 
     // #521 uncertainty bands: two more full matrix passes on the hidden band
-    // weight sets, merged into the median response as durations_q25/q75
-    // (TIME quantiles: q25 <- fluid q75-speed set). Opt-in only — 3x cost.
+    // weight sets, merged into the typical response as durations_best /
+    // durations_worst. Opt-in only — 3x cost.
     let resp = match req.uncertainty.as_deref() {
         None => resp,
         Some("bands") => {
@@ -417,7 +417,7 @@ pub async fn table_post_handler(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".into(),
+                        error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".into(),
                     }),
                 )
                     .into_response();
@@ -486,8 +486,8 @@ pub async fn table_post_handler(
                     let q75 = band_grids.pop().unwrap_or(serde_json::Value::Null);
                     let q25 = band_grids.pop().unwrap_or(serde_json::Value::Null);
                     if let Some(obj) = v.as_object_mut() {
-                        obj.insert("durations_q25".into(), q25);
-                        obj.insert("durations_q75".into(), q75);
+                        obj.insert("durations_best".into(), q25);
+                        obj.insert("durations_worst".into(), q75);
                     }
                     Json(v).into_response()
                 }
@@ -997,8 +997,8 @@ pub fn compute_table_bucket_m2m(
         distances,
         origins: Some(source_waypoints),
         destinations: Some(dest_waypoints),
-        durations_q25: None,
-        durations_q75: None,
+        durations_best: None,
+        durations_worst: None,
     })
     .into_response();
     tracing::debug!(

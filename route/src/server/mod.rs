@@ -623,7 +623,7 @@ pub async fn serve(
                         // #521: ONE public car profile = the demand-weighted
                         // survey median. Distributional friction is the opt-in
                         // uncertainty bands (uncertainty=bands) — hidden weight
-                        // sets from the optional q25/q75 columns of the SAME
+                        // sets from the optional best/worst columns of the SAME
                         // table. Non-fatal: median car keeps serving without
                         // bands.
                         if let Err(e) = state_owned.register_car_bands_from_edge_speeds(edge_path) {

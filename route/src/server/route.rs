@@ -67,8 +67,8 @@ pub struct RouteRequest {
     #[serde(default)]
     debug: bool,
     /// Uncertainty bands (#521): set to "bands" to also return
-    /// duration_q25_s / duration_q75_s (TIME quantiles of the diurnal
-    /// distribution, computed on hidden q75-/q25-speed weight sets).
+    /// duration_best_s / duration_worst_s (best = nights/free-flow, worst =
+    /// weekday peaks; computed on the hidden best-/worst-speed weight sets).
     /// Explicit opt-in: costs two extra P2P queries. car only.
     #[serde(default)]
     uncertainty: Option<String>,
@@ -145,12 +145,12 @@ pub struct RouteResponse {
     /// Debug information (only present if debug=true in request)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<RouteDebugInfo>,
-    /// Optimistic travel time (25th TIME percentile) — only with uncertainty=bands
+    /// Optimistic travel time (best band: nights, free-flow) — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_q25_s: Option<f64>,
-    /// Pessimistic travel time (75th TIME percentile) — only with uncertainty=bands
+    pub duration_best_s: Option<f64>,
+    /// Pessimistic travel time (worst band: weekday peaks) — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_q75_s: Option<f64>,
+    pub duration_worst_s: Option<f64>,
 }
 
 /// An alternative route
@@ -224,7 +224,7 @@ pub struct StepManeuver {
         ("annotations" = Option<String>, Query, description = "Per-edge annotations: comma-separated list of 'duration', 'distance', 'speed', 'nodes'", example = json!(null)),
         ("bearings" = Option<String>, Query, description = "Bearing hints: 'angle,range;angle,range' (source;destination). Filters snap by edge bearing.", example = json!(null)),
         ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
-        ("uncertainty" = Option<String>, Query, description = "Set to 'bands' to also return duration_q25_s/duration_q75_s (diurnal TIME quantiles; car only; 2 extra queries)", example = json!(null)),
+        ("uncertainty" = Option<String>, Query, description = "Set to 'bands' to also return duration_best_s/duration_worst_s (best = nights/free-flow, worst = weekday peaks; car only; 2 extra queries)", example = json!(null)),
     ),
     responses(
         (status = 200, description = "Route found", body = RouteResponse),
@@ -453,12 +453,12 @@ pub async fn route_handler(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns".into(),
+                        error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".into(),
                     }),
                 )
                     .into_response();
             };
-            // TIME quantiles: optimistic (q25 time) <- fluid q75-speed set.
+            // best time <- best-speed (night) set; worst time <- worst-speed (peak) set.
             let q25 = band_p2p_duration(
                 &state,
                 opt,
@@ -750,8 +750,8 @@ pub async fn route_handler(
             geometry: point_geom,
             steps: if req.steps { Some(vec![]) } else { None },
             annotations: None,
-            duration_q25_s: None,
-            duration_q75_s: None,
+            duration_best_s: None,
+            duration_worst_s: None,
             alternatives: None,
             debug: debug_info,
         })
@@ -1015,8 +1015,8 @@ pub async fn route_handler(
                     geometry,
                     steps: if req.steps { Some(vec![]) } else { None },
                     annotations: None,
-                    duration_q25_s: band_durations.map(|b| b.0),
-                    duration_q75_s: band_durations.map(|b| b.1),
+                    duration_best_s: band_durations.map(|b| b.0),
+                    duration_worst_s: band_durations.map(|b| b.1),
                     alternatives: None,
                     debug: debug_info,
                 })
@@ -1417,8 +1417,8 @@ pub async fn route_handler(
         annotations: route_annotations,
         alternatives,
         debug: debug_info,
-        duration_q25_s: band_durations.map(|b| b.0),
-        duration_q75_s: band_durations.map(|b| b.1),
+        duration_best_s: band_durations.map(|b| b.0),
+        duration_worst_s: band_durations.map(|b| b.1),
     })
     .into_response()
 }
@@ -1643,8 +1643,8 @@ fn cross_region_route_inner(
         geometry: geom,
         steps: None,
         annotations: None,
-        duration_q25_s: None,
-        duration_q75_s: None,
+        duration_best_s: None,
+        duration_worst_s: None,
         alternatives: None,
         debug: None,
     })
