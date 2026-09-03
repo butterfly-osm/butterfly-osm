@@ -1467,10 +1467,10 @@ pub struct EdgeSpeed {
     pub to: i64,
     pub speed_kmh: Option<f32>,
     pub ratio: Option<f32>,
-    /// #521 uncertainty bands (SPEED-domain quantiles of the diurnal
-    /// distribution): q25 = congested tail, q75 = fluid. Optional columns.
-    pub q25: Option<f32>,
-    pub q75: Option<f32>,
+    /// #521 bands, named profiles since 2026-09-03 (SPEED domain): worst =
+    /// weekday peaks, best = nights / free-flow. Optional columns.
+    pub worst: Option<f32>,
+    pub best: Option<f32>,
 }
 
 const FROM_ALIASES: &[&str] = &["osm_node_from", "node_from", "from", "u"];
@@ -1515,7 +1515,7 @@ pub fn read_time_scale(path: &Path) -> Result<Option<f64>> {
 }
 
 /// #521: cheap schema-only probe — does the table carry the optional
-/// uncertainty-band columns (speed_ratio_q25/q75)?
+/// band columns (`speed_ratio_best` + `speed_ratio_worst`, or the legacy q75/q25 pair)?
 pub fn edge_table_has_bands(path: &Path) -> Result<bool> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     let file = std::fs::File::open(path)?;
@@ -1526,7 +1526,8 @@ pub fn edge_table_has_bands(path: &Path) -> Result<bool> {
         .iter()
         .map(|f| f.name().as_str())
         .collect();
-    Ok(names.contains(&"speed_ratio_q25") && names.contains(&"speed_ratio_q75"))
+    let has = |a: &str, b: &str| names.contains(&a) || names.contains(&b);
+    Ok(has("speed_ratio_worst", "speed_ratio_q25") && has("speed_ratio_best", "speed_ratio_q75"))
 }
 
 pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
@@ -1554,8 +1555,12 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
     })?;
     let speed_col = find_col(names(), EDGE_SPEED_ALIASES);
     let ratio_col = find_col(names(), EDGE_RATIO_ALIASES);
-    let q25_col = find_col(names(), &["speed_ratio_q25"]);
-    let q75_col = find_col(names(), &["speed_ratio_q75"]);
+    // Named profiles (2026-09-03): worst = weekday peaks, best = nights /
+    // free-flow. The pre-rename artefacts carried the same two profiles as
+    // diurnal quantiles `speed_ratio_q25` (congested) / `speed_ratio_q75`
+    // (fluid) — still accepted so a fleet can roll one side at a time.
+    let worst_col = find_col(names(), &["speed_ratio_worst", "speed_ratio_q25"]);
+    let best_col = find_col(names(), &["speed_ratio_best", "speed_ratio_q75"]);
     anyhow::ensure!(
         speed_col.is_some() != ratio_col.is_some(),
         "{}: need EXACTLY ONE of a speed column ({}) or a ratio column ({})",
@@ -1608,8 +1613,8 @@ pub fn read_edge_speeds(path: &Path) -> Result<Vec<EdgeSpeed>> {
                 to,
                 speed_kmh: if is_ratio { None } else { Some(v) },
                 ratio: if is_ratio { Some(v) } else { None },
-                q25: band(q25_col),
-                q75: band(q75_col),
+                worst: band(worst_col),
+                best: band(best_col),
             });
         }
     }

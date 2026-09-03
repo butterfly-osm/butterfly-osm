@@ -322,10 +322,10 @@ pub struct ServerState {
     // the compactor races to evict.
     pub modes: Vec<ModeSlot>,
     // #521 uncertainty bands: hidden variant slots (NOT in mode_lookup, so
-    // unreachable via ?mode=). pess = q25-speed weights (slower world),
-    // opt = q75-speed. None until register_car_bands_from_edge_speeds runs.
-    pub band_pess_idx: Option<usize>,
-    pub band_opt_idx: Option<usize>,
+    // unreachable via ?mode=). pess = worst-speed weights (slower world),
+    // opt = best-speed. None until register_car_bands_from_edge_speeds runs.
+    pub band_worst_idx: Option<usize>,
+    pub band_best_idx: Option<usize>,
     /// #450→(single-car): index of the resident clean legal-limit base
     /// (`car_freeflow`). Kept RESIDENT as the internal base the uncertainty
     /// bands recustomize from, but NOT inserted into `mode_lookup` — the ONLY
@@ -682,8 +682,8 @@ impl ServerState {
             edge_osm: crate::server::edge_osm::EdgeOsmChains::empty(),
             nbg_node_to_osm,
             modes: modes_slots,
-            band_pess_idx: None,
-            band_opt_idx: None,
+            band_worst_idx: None,
+            band_best_idx: None,
             car_freeflow_idx: None,
             mode_names,
             mode_lookup,
@@ -1683,8 +1683,8 @@ impl ServerState {
             edge_osm,
             nbg_node_to_osm,
             modes: modes_slots,
-            band_pess_idx: None,
-            band_opt_idx: None,
+            band_worst_idx: None,
+            band_best_idx: None,
             car_freeflow_idx,
             mode_names,
             mode_lookup,
@@ -2082,8 +2082,8 @@ impl ServerState {
                             .or(r.speed_kmh)
                             .expect("reader guarantees one value"),
                     ),
-                    EdgeTableColumn::Q25 => r.q25,
-                    EdgeTableColumn::Q75 => r.q75,
+                    EdgeTableColumn::Worst => r.worst,
+                    EdgeTableColumn::Best => r.best,
                 };
                 if let Some(v) = v {
                     lut.insert((r.from, r.to), v);
@@ -2285,8 +2285,8 @@ impl ServerState {
     }
 
     /// #521 uncertainty bands: register TWO HIDDEN variant weight sets from
-    /// the optional speed_ratio_q25/q75 columns of the SAME edge_speeds
-    /// table — q25-speed (congested tail -> pessimistic TIME) and q75-speed
+    /// the optional speed_ratio_worst/best columns of the SAME edge_speeds
+    /// table — worst-speed (congested tail -> pessimistic TIME) and best-speed
     /// (fluid -> optimistic). Same clean base, same #481 turn correction,
     /// same #524 time_scale as the median. The slots are pushed into
     /// `modes` but NEVER into `mode_lookup`, so no `?mode=` can reach them:
@@ -2301,7 +2301,7 @@ impl ServerState {
             tracing::info!("no band columns in edge_speeds table — bands not registered");
             return Ok(());
         }
-        anyhow::ensure!(self.band_pess_idx.is_none(), "bands already registered");
+        anyhow::ensure!(self.band_worst_idx.is_none(), "bands already registered");
         let ff_idx = self
             .car_freeflow_idx
             .ok_or_else(|| anyhow::anyhow!("bands registration: no 'car_freeflow' base"))?;
@@ -2319,14 +2319,14 @@ impl ServerState {
 
         for (column, cache_file, slot_name) in [
             (
-                EdgeTableColumn::Q25,
-                "recustomize_cache.car-edge-bandpess.v4.bin",
-                "car#band_pess",
+                EdgeTableColumn::Worst,
+                "recustomize_cache.car-edge-worst.v5.bin",
+                "car#worst",
             ),
             (
-                EdgeTableColumn::Q75,
-                "recustomize_cache.car-edge-bandopt.v4.bin",
-                "car#band_opt",
+                EdgeTableColumn::Best,
+                "recustomize_cache.car-edge-best.v5.bin",
+                "car#best",
             ),
         ] {
             let (matched, new_weights, adjusted_node_weights) = self
@@ -2370,8 +2370,8 @@ impl ServerState {
                 tracing::warn!("car snap mask missing — band snapping degraded");
             }
             match column {
-                EdgeTableColumn::Q25 => self.band_pess_idx = Some(new_index),
-                _ => self.band_opt_idx = Some(new_index),
+                EdgeTableColumn::Worst => self.band_worst_idx = Some(new_index),
+                _ => self.band_best_idx = Some(new_index),
             }
             tracing::info!(
                 matched,
@@ -2386,9 +2386,9 @@ impl ServerState {
         Ok(())
     }
 
-    /// (pessimistic, optimistic) band Modes, if registered (#521).
+    /// (worst, best) band Modes, if registered (#521).
     pub fn band_modes(&self) -> Option<(Mode, Mode)> {
-        match (self.band_pess_idx, self.band_opt_idx) {
+        match (self.band_worst_idx, self.band_best_idx) {
             (Some(p), Some(o)) => Some((Mode(p as u8), Mode(o as u8))),
             _ => None,
         }
@@ -4345,12 +4345,14 @@ const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v1";
 /// `None` (unreadable parquet) disables the cache for this boot.
 /// Which value column of the edge_speeds table to recustomize from (#521):
 /// the median (contract base) or one of the optional SPEED-domain band
-/// quantiles (q25 = congested tail -> pessimistic TIME, q75 = fluid).
+/// named profiles (worst = weekday peaks, best = nights / free-flow).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeTableColumn {
     Median,
-    Q25,
-    Q75,
+    /// weekday-peak profile (`speed_ratio_worst`, legacy `speed_ratio_q25`)
+    Worst,
+    /// night/free-flow profile (`speed_ratio_best`, legacy `speed_ratio_q75`)
+    Best,
 }
 
 fn recustomize_edge_cache_key(

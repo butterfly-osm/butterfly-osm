@@ -365,7 +365,7 @@ pub struct TripRequest {
     /// Avoid polygon(s) as JSON array of coordinate rings
     #[serde(default)]
     pub avoid_polygons: Option<String>,
-    /// Uncertainty bands (#521): "bands" adds duration_q25/duration_q75 on
+    /// Uncertainty bands (#521): "bands" adds duration_best/duration_worst on
     /// the optimized trip (per-leg re-queries on hidden band weight sets).
     /// Explicit opt-in. car only.
     #[serde(default)]
@@ -429,12 +429,12 @@ pub struct Trip {
     /// Percentage improvement from 2-opt over greedy
     #[schema(example = 12.3)]
     pub improvement_pct: f64,
-    /// Optimistic total (25th TIME percentile) — only with uncertainty=bands
+    /// Optimistic total (best band: nights, free-flow) — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_q25: Option<f64>,
-    /// Pessimistic total (75th TIME percentile) — only with uncertainty=bands
+    pub duration_best: Option<f64>,
+    /// Pessimistic total (worst band: weekday peaks) — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_q75: Option<f64>,
+    pub duration_worst: Option<f64>,
 }
 
 /// A leg connecting two consecutive waypoints in the trip
@@ -636,7 +636,7 @@ pub async fn trip_handler(
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
                         "code": "InvalidOptions",
-                        "message": "uncertainty bands not available: the loaded edge_speeds table has no q25/q75 columns"
+                        "message": "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns"
                     })),
                 )
                     .into_response();
@@ -1160,8 +1160,8 @@ pub async fn trip_handler(
             weight_name: "duration".to_string(),
             improvement_pct: tsp_result.improvement_pct,
 
-            duration_q25: None,
-            duration_q75: None,
+            duration_best: None,
+            duration_worst: None,
         };
 
         Ok(TripResponse {
@@ -1204,8 +1204,8 @@ pub async fn trip_handler(
                     }
                     Some(total)
                 };
-                trip.duration_q25 = sum_band(opt);
-                trip.duration_q75 = sum_band(pess);
+                trip.duration_best = sum_band(opt);
+                trip.duration_worst = sum_band(pess);
             }
             Json(response).into_response()
         }

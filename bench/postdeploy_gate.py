@@ -37,6 +37,7 @@ Thresholds are set from the measured 2026-07-16 baseline (see BASELINE below)
 with modest slack; RATCHET THEM DOWN as tails get fixed, never up.
 """
 
+import os
 import math
 import argparse
 import concurrent.futures as cf
@@ -50,7 +51,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_TRIPS = "/home/pierre/explorations/reference_trips/od.csv"
+# Reference trip sets are generic CSV inputs (route_id,long_1,lat_1,long_2,
+# lat_2,ref_min,ref_km) staged by the private deploy tooling into
+# $BUTTERFLY_REFS_DIR (default /data/reference-trips). 2026-09-03: durations
+# are judged on the TIME-STAMPED typical set (weekday 07-19 h observed
+# historic times); the old od.csv (1 000 long trips, no hour) is free-flow
+# and let a free-flow engine pass at p50 1.0.
+REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR", "/data/reference-trips")
+DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
 
 # BASELINE 2026-07-16 (engine d97168d, 1000 trips, zero errors):
 #   duration ratio: p05=0.854 p50=1.029 p90=1.246 p95=1.304 mean=1.048
@@ -377,9 +385,19 @@ def gate_radius_prune(base):
     return ok_scalar and ok_per
 
 
-def gate_ground_truth(base, trips_path):
-    print(f"== ground truth: reference trips ({trips_path}) ==")
-    rows = list(csv.DictReader(open(trips_path)))
+# Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
+# free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
+# a solid route-length truth (motorway-dominated), which the ~40-min regional
+# od_typical pairs are not (the reference router and the engine pick
+# different regional routes on ~17 % of them, identically on a free-flow
+# engine — see #545).
+LEGACY_TRIPS_DISTANCE = os.path.join(REFS_DIR, "od.csv")
+
+
+def gate_ground_truth(base, trips_path, checks="all"):
+    """checks: "all" | "duration" (errors + duration only) | "distance"."""
+    print(f"== ground truth: reference trips ({trips_path}, {checks}) ==")
+    rows = _ref_trips(trips_path)  # local path or s3:// (mc)
 
     def one(r):
         try:
@@ -400,28 +418,34 @@ def gate_ground_truth(base, trips_path):
     outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
     t = THRESHOLDS
     passed = True
-    passed &= check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
+    if checks in ("all", "duration"):
+        passed &= check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
     p50d = pct(dur, 0.5)
-    passed &= check(
-        "duration p50",
-        t["dur_p50"][0] <= p50d <= t["dur_p50"][1],
-        f"{p50d:.3f} (bounds {t['dur_p50']})",
-    )
+    if checks in ("all", "duration"):
+        passed &= check(
+            "duration p50",
+            t["dur_p50"][0] <= p50d <= t["dur_p50"][1],
+            f"{p50d:.3f} (bounds {t['dur_p50']})",
+        )
     p90d = pct(dur, 0.9)
-    passed &= check("duration p90", p90d <= t["dur_p90_max"], f"{p90d:.3f} (max {t['dur_p90_max']})")
+    if checks in ("all", "duration"):
+        passed &= check("duration p90", p90d <= t["dur_p90_max"], f"{p90d:.3f} (max {t['dur_p90_max']})")
     p50m = pct(dist, 0.5)
-    passed &= check(
-        "distance p50",
-        t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
-        f"{p50m:.3f} (bounds {t['dist_p50']})",
-    )
+    if checks in ("all", "distance"):
+        passed &= check(
+            "distance p50",
+            t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
+            f"{p50m:.3f} (bounds {t['dist_p50']})",
+        )
     p90m = pct(dist, 0.9)
-    passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
-    passed &= check(
-        "distance outliers",
-        outliers <= t["dist_outliers_max"],
-        f"{outliers} (max {t['dist_outliers_max']})",
-    )
+    if checks in ("all", "distance"):
+        passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
+    if checks in ("all", "distance"):
+        passed &= check(
+            "distance outliers",
+            outliers <= t["dist_outliers_max"],
+            f"{outliers} (max {t['dist_outliers_max']})",
+        )
     print(
         f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
         f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}"
@@ -1907,6 +1931,181 @@ def gate_isochrone_reach_truth(base):
     return passed
 
 
+def _ref_trips(path):
+    """Reference trips CSV (local file under $BUTTERFLY_REFS_DIR) → list of dicts."""
+    import csv as _csv
+    with open(path) as f:
+        return list(_csv.DictReader(f))
+
+
+def gate_bands(base, refs_prefix, flight_base=None):
+    """best / typical / worst (2026-09-03). ONE public car profile = typical
+    (weekday 07-19 h), two opt-in bands on the same artefact: best = nights
+    (free-flow), worst = weekday peaks. Invariants:
+      (a) every API serves the bands on request: REST /route, /table (1×n,
+          n×1, n×n), /trip, /isochrone; Flight matrix, route_batch,
+          isochrone (`band` column, typical rows first);
+      (b) ordering with a REAL spread: best ≤ typical ≤ worst per cell /
+          route; isochrone best ⊇ typical ⊇ worst (areas); median
+          worst/best over the reference trips ≥ 1.10;
+      (c) level: median(engine/reference) within ±6 % for each profile
+          against its own TIME-STAMPED reference set (observed historic times
+          in the same window; the old 1 000 trips carried no hour and were
+          free-flow), and typical within ±10 % on Brussels-internal pairs.
+    """
+    import json as _json, statistics as _st
+    print("== best / typical / worst bands: every API, ordering, level (2026-09-03) ==")
+    passed = True
+
+    # ---- (a)+(b) REST surfaces on a few fixture pairs
+    pairs = [((4.3517, 50.8503), (4.4025, 51.2194)), ((4.85, 50.55), (4.79, 50.60)),
+             ((3.7174, 51.0543), (3.65, 51.02)), ((5.65, 50.1), (5.60, 50.15))]
+    ok_route, n_route, spread = True, 0, []
+    for (a, b) in pairs:
+        try:
+            r = http_json(f"{base}/route?origin_lon={a[0]}&origin_lat={a[1]}&destination_lon={b[0]}&destination_lat={b[1]}&mode=car&uncertainty=bands")
+            bt, t, wt = r.get("duration_best_s"), r.get("duration_s"), r.get("duration_worst_s")
+            n_route += 1
+            if not (bt and wt and bt <= t + 0.5 and t <= wt + 0.5):
+                ok_route = False
+            if bt:
+                spread.append(wt / bt)
+        except Exception as ex:
+            ok_route = False
+            print(f"    /route bands: {ex}")
+    passed &= check("/route uncertainty=bands: duration_best_s ≤ duration_s ≤ duration_worst_s",
+                    ok_route and n_route == len(pairs), f"{n_route} pairs")
+    # /table 1×n, n×1, n×n
+    pts = [[4.3517, 50.8503], [4.4025, 51.2194], [3.7174, 51.0543], [4.85, 50.55], [5.65, 50.1]]
+    ok_table = True
+    for shape, origins, dests in (("1×n", pts[:1], pts), ("n×1", pts, pts[:1]), ("n×n", pts, pts)):
+        try:
+            r = http_json(f"{base}/table", data=_json.dumps({"origins": origins, "destinations": dests, "mode": "car",
+                                                              "annotations": "duration", "uncertainty": "bands"}).encode(),
+                          headers={"Content-Type": "application/json"})
+            d, bt, wt = r["durations"], r.get("durations_best"), r.get("durations_worst")
+            if not bt or not wt:
+                ok_table = False
+                print(f"    /table {shape}: no band grids")
+                continue
+            for i in range(len(origins)):
+                for j in range(len(dests)):
+                    if d[i][j] is None:
+                        continue
+                    if not (bt[i][j] <= d[i][j] + 0.5 and d[i][j] <= wt[i][j] + 0.5):
+                        ok_table = False
+        except Exception as ex:
+            ok_table = False
+            print(f"    /table {shape}: {ex}")
+    passed &= check("/table uncertainty=bands (1×n, n×1, n×n): best ≤ typical ≤ worst per cell", ok_table, "3 shapes")
+    # /trip
+    try:
+        r = http_json(f"{base}/trip", data=_json.dumps({"points": pts[:4], "mode": "car", "uncertainty": "bands"}).encode(),
+                      headers={"Content-Type": "application/json"})
+        tr = (r.get("trips") or [r])[0]  # OSRM-shaped: {code, waypoints, trips:[{duration,...}]}
+        bt, t, wt = tr.get("duration_best"), tr.get("duration_s") or tr.get("duration"), tr.get("duration_worst")
+        ok_trip = bool(bt and wt and t and bt <= t + 0.5 and t <= wt + 0.5)
+        detail = f"best {bt:.0f} ≤ typical {t:.0f} ≤ worst {wt:.0f}" if ok_trip else str({k: tr.get(k) for k in ('duration_best', 'duration_s', 'duration_worst')})
+    except Exception as ex:
+        ok_trip, detail = False, str(ex)
+    passed &= check("/trip uncertainty=bands: duration_best ≤ duration ≤ duration_worst", ok_trip, detail)
+    # /isochrone: areas ordered
+    def _area(ring):
+        return abs(sum(ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1] for i in range(len(ring) - 1))) / 2
+    ok_iso, n_iso = True, 0
+    for lon, lat in ((4.3517, 50.8503), (4.85, 50.55)):
+        try:
+            r = http_json(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=600&mode=car&uncertainty=bands&geometries=geojson")
+            feats = r.get("contours") or []
+            areas = {}
+            for f in feats:
+                tag = f.get("band") or "typical"
+                g = f.get("geometry") or {}
+                if g.get("type") == "Polygon":
+                    areas[tag] = _area(g["coordinates"][0])
+            n_iso += 1
+            if not ("best" in areas and "worst" in areas and "typical" in areas
+                    and areas["best"] >= areas["typical"] * 0.999 and areas["typical"] >= areas["worst"] * 0.999):
+                ok_iso = False
+                print(f"    /isochrone bands areas: {areas}")
+        except Exception as ex:
+            ok_iso = False
+            print(f"    /isochrone bands: {ex}")
+    passed &= check("/isochrone uncertainty=bands: best ⊇ typical ⊇ worst (areas)", ok_iso and n_iso == 2, f"{n_iso} origins")
+
+    # ---- Flight
+    try:
+        import pyarrow.flight as fl
+        fb = flight_base or base.replace("http://", "grpc://").replace(":3901", ":3902")
+        cl = fl.FlightClient(fb)
+        def get(action, params):
+            return cl.do_get(fl.Ticket(f"{action}:car:{_json.dumps(params)}".encode())).read_all().to_pandas()
+        m = get("matrix", {"origins": pts, "destinations": pts, "uncertainty": "bands"})
+        okm = "band" in m.columns and sorted(m["band"].unique()) == ["best", "typical", "worst"] and len(m) == 3 * len(pts) ** 2
+        if okm:
+            piv = m.pivot_table(index=["source_idx", "target_idx"], columns="band", values="duration_ms")
+            okm = bool(((piv["best"] <= piv["typical"] + 1) & (piv["typical"] <= piv["worst"] + 1)).all())
+        passed &= check("Flight matrix uncertainty=bands: band column, 3 passes, best ≤ typical ≤ worst", okm, f"{len(m)} rows")
+        rb = get("route_batch", {"pairs": [[a[0], a[1], b[0], b[1]] for a, b in pairs], "uncertainty": "bands"})
+        okr = "band" in rb.columns and len(rb) == 3 * len(pairs)
+        if okr:
+            piv = rb.pivot_table(index="pair_idx", columns="band", values="duration_s")
+            okr = bool(((piv["best"] <= piv["typical"] + 0.5) & (piv["typical"] <= piv["worst"] + 0.5)).all())
+        passed &= check("Flight route_batch uncertainty=bands: band column, best ≤ typical ≤ worst", okr, f"{len(rb)} rows")
+        iso = get("isochrone", {"lon": 4.85, "lat": 50.55, "intervals": [600], "uncertainty": "bands"})
+        oki = "band" in iso.columns and len(iso) == 3
+        if oki:
+            sizes = {r["band"]: len(r["polygon_wkb"]) for _, r in iso.iterrows()}
+            oki = all(k in sizes for k in ("best", "typical", "worst"))
+        passed &= check("Flight isochrone uncertainty=bands: one polygon per band", oki, f"{len(iso)} rows")
+    except ImportError:
+        print("  [SKIP] pyarrow not available for Flight bands")
+    except Exception as ex:
+        passed &= check("Flight bands", False, str(ex)[:160])
+
+    # ---- (c) level per profile against its time-stamped reference set
+    import concurrent.futures as _cf
+    def route_bands(t):
+        q = (f"{base}/route?origin_lon={t['long_1']}&origin_lat={t['lat_1']}&destination_lon={t['long_2']}"
+             f"&destination_lat={t['lat_2']}&mode=car&uncertainty=bands")
+        try:
+            d = http_json(q, timeout=60)
+            return (d["duration_s"] / 60.0, (d.get("duration_best_s") or 0) / 60.0, (d.get("duration_worst_s") or 0) / 60.0)
+        except Exception:
+            return None
+    levels = {}
+    for name, field in (("typical", 0), ("best", 1), ("worst", 2)):
+        try:
+            trips = _ref_trips(f"{refs_prefix}_{name}.csv")
+        except Exception as ex:
+            passed &= check(f"{name} level vs reference", False, f"cannot read reference set: {ex}")
+            continue
+        with _cf.ThreadPoolExecutor(8) as ex:
+            res = list(ex.map(route_bands, trips))
+        ratios = sorted(r[field] / float(t["ref_min"]) for r, t in zip(res, trips) if r and r[field] > 0 and float(t["ref_min"]) > 0)
+        if len(ratios) < 100:
+            passed &= check(f"{name} level vs reference", False, f"only {len(ratios)} usable trips")
+            continue
+        med = _st.median(ratios)
+        levels[name] = med
+        tol = 0.06
+        passed &= check(f"{name}: median(engine/{name} reference) within ±{int(tol*100)} %", abs(med - 1.0) <= tol,
+                        f"{med:.3f} (p10 {ratios[len(ratios)//10]:.3f}, p90 {ratios[9*len(ratios)//10]:.3f}, n={len(ratios)})")
+        if name == "typical":
+            bx = [(r, t) for r, t in zip(res, trips) if r and all(4.25 <= float(t[k]) <= 4.50 for k in ("long_1", "long_2"))
+                  and all(50.76 <= float(t[k]) <= 50.92 for k in ("lat_1", "lat_2"))]
+            if len(bx) >= 10:
+                mb = _st.median(r[0] / float(t["ref_min"]) for r, t in bx)
+                passed &= check("typical: Brussels-internal pairs within ±10 %", abs(mb - 1.0) <= 0.10, f"{mb:.3f} (n={len(bx)})")
+            else:
+                print(f"    (Brussels-internal typical pairs: {len(bx)} — not enough to check)")
+            wb = [r[2] / r[1] for r in res if r and r[1] > 0]
+            if wb:
+                ms = _st.median(wb)
+                passed &= check("spread: median(worst/best) over the typical trips ≥ 1.10", ms >= 1.10, f"{ms:.3f}")
+    return passed
+
+
 def gate_consistency(base, n_pairs=15):
     print(f"== /route vs /table consistency ({n_pairs} pairs) ==")
     rng = random.Random(7)
@@ -2055,6 +2254,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="e.g. http://localhost:3001")
     ap.add_argument("--trips", default=DEFAULT_TRIPS)
+    ap.add_argument("--refs-prefix", default=os.path.join(REFS_DIR, "od"),
+                    help="time-stamped reference sets <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR")
     ap.add_argument("--quick", action="store_true", help="skip the 1000-trip ground truth")
     args = ap.parse_args()
     base = args.base.rstrip("/")
@@ -2067,6 +2268,7 @@ def main():
     ok &= gate_isochrone(base)
     ok &= gate_isochrone_topology(base)
     ok &= gate_isochrone_reach_truth(base)
+    ok &= gate_bands(base, args.refs_prefix)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
     ok &= gate_radius_prune(base)
@@ -2088,7 +2290,8 @@ def main():
     ok &= gate_catchment_containment(base)
     ok &= gate_all_endpoints_smoke(base)
     if not args.quick:
-        ok &= gate_ground_truth(base, args.trips)
+        ok &= gate_ground_truth(base, args.trips, checks="duration")
+        ok &= gate_ground_truth(base, LEGACY_TRIPS_DISTANCE, checks="distance")
     print("\nGATE:", "PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 
