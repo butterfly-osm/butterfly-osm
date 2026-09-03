@@ -49,6 +49,18 @@ scan "data provider" \
   'tomtom|telraam|\bwaze\b' \
   "${FILES_NO_MKT[@]}"
 
+# Commit MESSAGES are published too. Scan every commit not yet on the
+# upstream branch (the pre-push range); files alone let a message leak through
+# on 2026-09-03.
+if upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null); then
+  msg_hits=$(git log "$upstream..HEAD" --format='%h %s%n%b' 2>/dev/null |
+    grep -niE 'kubectl|argocd|registry\.lan|\bminio\b|staging\.lan|10\.0\.[0-9]+\.[0-9]+|butterfly-deploy|butterfly-speeds|drivetimes-survey|sirius_map|tomtom|telraam|\bwaze\b|s3://' || true)
+  if [[ -n "$msg_hits" ]]; then
+    echo "❌ upstream leak — commit message(s) in $upstream..HEAD:"
+    echo "$msg_hits" | sed 's/^/    /'
+    fail=1
+  fi
+fi
 if [[ $fail -ne 0 ]]; then
   echo
   echo "This repo is PUBLIC. The above belongs in the private repos"
