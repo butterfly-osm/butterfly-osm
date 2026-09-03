@@ -238,6 +238,7 @@ pub fn build_geometry(
 /// 4. Extracts boundary via Moore-neighbor tracing (O(perimeter))
 ///
 /// This respects road network topology and produces geometrically correct isochrones.
+#[allow(clippy::too_many_arguments)]
 pub fn build_isochrone_geometry(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, distance) — seconds for time, meters for isodistance (post-#297)
     max_threshold: u32,
@@ -246,6 +247,7 @@ pub fn build_isochrone_geometry(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat) of the query origin (#497/#506)
+    model: &ReachModel<'_>,
 ) -> Vec<Point> {
     build_isochrone_topology(
         settled_nodes,
@@ -255,6 +257,7 @@ pub fn build_isochrone_geometry(
         edge_geom,
         mode_name,
         origin_anchor,
+        model,
     )
     .into_iter()
     .next()
@@ -270,6 +273,7 @@ pub fn build_isochrone_geometry(
 /// Full isochrone topology: every reachable component (primary — the one
 /// containing the origin — first) with its holes, WGS84 `(lon, lat)`.
 /// `build_isochrone_geometry` is the single-outer-ring view of this.
+#[allow(clippy::too_many_arguments)]
 pub fn build_isochrone_topology(
     settled_nodes: &[(u32, u32)],
     max_threshold: u32,
@@ -278,6 +282,7 @@ pub fn build_isochrone_topology(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>,
+    model: &ReachModel<'_>,
 ) -> Vec<ContourPolygon> {
     let geo_start = std::time::Instant::now();
     let result = build_isochrone_geometry_sparse(
@@ -288,6 +293,7 @@ pub fn build_isochrone_topology(
         edge_geom,
         mode_name,
         origin_anchor,
+        model,
     );
     let geo_us = geo_start.elapsed().as_micros();
     tracing::debug!(
@@ -302,120 +308,164 @@ pub fn build_isochrone_topology(
     result
 }
 
-/// Build isochrone geometry with mode-specific configuration
+/// How PHAST labels map onto road reach (2026-09-03, found via #543's gate).
 ///
-/// Stamps reachable edges into a sparse tile grid, then traces the boundary.
-///
-/// For large thresholds (>10 min), applies **near-frontier filtering**: only
-/// stamps edges whose `dist >= near_frontier_ratio * threshold`. Interior edges
-/// are deep inside the reachable set and do not affect the boundary shape, so
-/// skipping them saves the majority of stamp work. For small thresholds the
-/// full set is stamped (ratio = 0.0) to avoid sparse-frontier artifacts.
-///
-/// Cell size and simplification tolerance also scale with threshold via
-/// `SparseContourConfig::for_mode_name_with_threshold()`.
-pub fn build_isochrone_geometry_sparse(
-    settled_nodes: &[(u32, u32)], // (original_ebg_id, distance_ds)
-    max_time_ds: u32,
-    node_weights: &[u32], // Edge costs indexed by original EBG node ID
+/// Every PHAST label is the cost at the **head** of the directed edge: a
+/// depart seed is the remainder of the origin edge past the snap
+/// (`phantom.rs`) and an original CCH arc `e→f` weighs `w(f) + turn(e,f)`
+/// (`customization.rs`). Consequences:
+/// * **Depart**: `label(e) ≤ T` ⇒ the WHOLE edge is driven within T. The
+///   partially reachable edges are the unreached successors `f`, entered at
+///   `label(e) + turn(e,f) < T`; they are NOT in the settled set and are
+///   enumerated from the reached edges' arcs (`depart_frontier`). The former
+///   rule (`label + w(e) ≤ T` else cut the edge itself) counted the edge's
+///   own weight twice: every fast edge at the boundary was cut one full
+///   weight early (a 3.9 km motorway edge lost its last ~200 m), the edges
+///   beyond it (reached, shorter) became detached islands, and the true
+///   frontier was never drawn. Measured on dev: 4-6 % of road points >150 m
+///   outside the polygon were reachable within T (up to 178 s early).
+/// * **Arrive**: the seed is the prefix up to the snap and the label of `x`
+///   is the cost from x's tail to the target; the settled edge itself is the
+///   partial: whole iff `label + w ≤ T`, else its head-side fraction
+///   `(T − label)/w`. Verified against `/table` (no outside road point
+///   reached before 0.98 T).
+pub enum ReachModel<'a> {
+    /// `(original EBG id, fraction of the edge driven from its tail before T)`
+    Depart {
+        frontier: &'a [(u32, f32)],
+    },
+    Arrive,
+}
+
+impl<'a> ReachModel<'a> {
+    /// `Arrive` for a reverse (arrive) field, else `Depart` with `frontier`.
+    pub fn for_direction(reverse: bool, frontier: &'a [(u32, f32)]) -> Self {
+        if reverse {
+            ReachModel::Arrive
+        } else {
+            ReachModel::Depart { frontier }
+        }
+    }
+}
+
+/// Lat-first e7 polylines plus the legacy anchor fallback.
+pub type ReachPolylines = (Vec<Vec<(i32, i32)>>, Option<(i32, i32)>);
+
+/// ONE definition of "which part of which road is reached", shared by the
+/// polygon stamp and `include=network` so they can never disagree. Returns
+/// lat-first e7 polylines (whole edges, then oriented frontier fragments)
+/// and the legacy anchor fallback (start of the minimum-label edge).
+pub fn reachable_polylines(
+    settled_nodes: &[(u32, u32)], // (original_ebg_id, label)
+    max_threshold: u32,
+    node_weights: &[u32],
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
-    mode_name: &str,
-    origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-dist edge start
-) -> Vec<ContourPolygon> {
-    let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
-
-    // Stamp ALL reachable edges. Do NOT use near-frontier filtering — it creates
-    // holes in the polygon when the frontier has gaps in some directions.
-    // (Previously tried near_frontier_min_ds = 60% threshold; reverted because
-    // it produced missing polygon areas exactly like this.)
-
-    let mut segments: Vec<ReachableSegment> = Vec::new();
-    // #497: the snapped origin — geometry point of the MINIMUM-distance settled
-    // edge (with #506 phantom seeds the origin edge starts at a partial cost,
-    // not 0). Used to pick the contour component CONTAINING the origin when
-    // the stamped set is disconnected at tile resolution.
+    model: &ReachModel<'_>,
+) -> ReachPolylines {
+    let mut out: Vec<Vec<(i32, i32)>> = Vec::with_capacity(settled_nodes.len());
     let mut anchor: Option<(i32, i32)> = None;
     let mut anchor_dist = u32::MAX;
-
-    // Pass 1: fully reachable edges — stamped whole, orientation irrelevant.
-    // Their polyline endpoints are the NBG nodes the reachable tree passes
-    // through; every frontier edge's TRUE start is one of them.
+    // Endpoints of whole edges: a frontier fragment hangs off one of them.
     let mut reached_ends: HashSet<(i32, i32)> = HashSet::with_capacity(settled_nodes.len() * 2);
-    let mut frontier: Vec<(u32, u32, u32)> = Vec::new(); // (ebg_id, dist, weight)
-    for &(ebg_id, dist_ds) in settled_nodes {
-        if dist_ds > max_time_ds {
+    let mut partial: Vec<(u32, f32)> = Vec::new();
+
+    for &(ebg_id, dist) in settled_nodes {
+        if dist > max_threshold {
             continue;
         }
-
-        let weight_ds = if (ebg_id as usize) < node_weights.len() {
-            node_weights[ebg_id as usize]
-        } else {
+        let Some(&weight) = node_weights.get(ebg_id as usize) else {
             continue;
         };
-
-        if weight_ds == 0 || weight_ds == u32::MAX {
+        if weight == 0 || weight == u32::MAX {
             continue;
         }
-
-        let dist_end_ds = dist_ds.saturating_add(weight_ds);
-
-        // Get geometry
         let node = &ebg_nodes.nodes[ebg_id as usize];
         let polyline = edge_geom.polyline(node.geom_idx);
         if polyline.is_empty() {
             continue;
         }
-
-        if dist_ds < anchor_dist {
-            anchor_dist = dist_ds;
+        if dist < anchor_dist {
+            anchor_dist = dist;
             anchor = Some(polyline.at_lat_lon_e7(0));
         }
-
-        if dist_end_ds <= max_time_ds {
-            // Fully reachable edge — stamp it (lat-first ordering for the
-            // sparse contour stamper, matching the legacy code).
+        let whole = match model {
+            ReachModel::Depart { .. } => true,
+            ReachModel::Arrive => dist.saturating_add(weight) <= max_threshold,
+        };
+        if whole {
             let points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
             reached_ends.insert(points[0]);
             reached_ends.insert(points[points.len() - 1]);
-            segments.push(ReachableSegment { points });
+            out.push(points);
         } else {
-            frontier.push((ebg_id, dist_ds, weight_ds));
+            partial.push((ebg_id, (max_threshold - dist) as f32 / weight as f32));
         }
     }
+    if let ReachModel::Depart { frontier } = model {
+        partial.extend_from_slice(frontier);
+    }
 
-    // Pass 2: frontier edges (partially reachable), cut at the threshold.
-    // A per-edge polyline is stored in ONE orientation shared by both
-    // directed twins (#493), so "from index 0 to the cut" is wrong for the
-    // twin that traverses it backwards: the stamped fragment then sits at the
-    // FAR end, detached from the reachable set — the confetti components
-    // Charlotte reported as islands (#542). Orient by endpoints: the true
-    // start of a frontier edge is an endpoint of an already-reached edge.
-    for (ebg_id, dist_ds, weight_ds) in frontier {
+    // Frontier fragments. A stored polyline is shared by both directed twins
+    // (#493), so "from index 0 to the cut" is wrong for the twin that runs it
+    // backwards: the fragment would sit at the FAR end, detached (#542
+    // confetti). The true start of a fragment is an endpoint of a whole edge.
+    for (ebg_id, fraction) in partial {
         let node = &ebg_nodes.nodes[ebg_id as usize];
         let polyline = edge_geom.polyline(node.geom_idx);
+        if polyline.is_empty() {
+            continue;
+        }
         let mut points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
         match frontier_orientation(&points, &reached_ends) {
             Some(true) => points.reverse(),
             Some(false) => {}
-            None => continue, // hangs off nothing we stamped: confetti only
+            None => continue, // hangs off nothing we drew: confetti only
         }
-        let cut_fraction = (max_time_ds - dist_ds) as f32 / weight_ds as f32;
-        let partial = partial_polyline(&points, cut_fraction);
-        if !partial.is_empty() {
-            segments.push(ReachableSegment { points: partial });
+        let cut = partial_polyline(&points, fraction.clamp(0.0, 1.0));
+        if !cut.is_empty() {
+            out.push(cut);
         }
     }
+    (out, anchor)
+}
 
-    if segments.is_empty() {
+/// Sparse-raster isochrone topology from a PHAST field (see `ReachModel`).
+///
+/// Pipeline: reachable polylines → stamp (sparse 64×64 bit tiles) → balanced
+/// closing → +1-cell halo → boundary tracing → ONE simple polygon (the
+/// origin's component, #497).
+#[allow(clippy::too_many_arguments)]
+pub fn build_isochrone_geometry_sparse(
+    settled_nodes: &[(u32, u32)], // (original_ebg_id, label)
+    max_time: u32,
+    node_weights: &[u32], // Edge costs indexed by original EBG node ID
+    ebg_nodes: &EbgNodes,
+    edge_geom: &EdgeGeometry,
+    mode_name: &str,
+    origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-label edge start
+    model: &ReachModel<'_>,
+) -> Vec<ContourPolygon> {
+    let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time);
+    let (polylines, anchor) = reachable_polylines(
+        settled_nodes,
+        max_time,
+        node_weights,
+        ebg_nodes,
+        edge_geom,
+        model,
+    );
+    if polylines.is_empty() {
         return vec![];
     }
+    let segments: Vec<ReachableSegment> = polylines
+        .into_iter()
+        .map(|points| ReachableSegment { points })
+        .collect();
 
-    // Generate contour using sparse tile rasterization + boundary tracing.
     // Prefer the EXACT snapped origin when the handler supplies it (#506 —
-    // the derived min-dist edge START can sit a whole edge away from the snap
-    // on long rural chains); the derived anchor remains the fallback for
-    // callers without snap context.
+    // the derived min-label edge START can sit a whole edge away from the
+    // snap on long rural chains); the derived anchor remains the fallback.
     let anchor = origin_anchor
         .map(|(lon, lat)| ((lat * 1e7) as i32, (lon * 1e7) as i32))
         .or(anchor);

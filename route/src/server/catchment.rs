@@ -268,8 +268,17 @@ pub fn isochrone_hull(
 
     let node_weights = &mode_data.node_weights;
 
-    // Full topology (2026-09-03): holes for enclosed unreachable pockets and
-    // every detached reachable component — the same shape /isochrone serves.
+    // 2026-09-03: ONE simple polygon — the store's component — with the exact
+    // depart frontier (labels are head arrivals), the same shape /isochrone
+    // serves.
+    let frontier = super::isochrone_handler::depart_frontier(
+        &settled,
+        threshold_s_u32,
+        &mode_data.up_adj_flat,
+        &mode_data.down_adj_flat,
+        &mode_data,
+        node_weights,
+    );
     let contour = ContourResult::from_polygons(build_isochrone_topology(
         &settled_original,
         threshold_s_u32,
@@ -278,6 +287,9 @@ pub fn isochrone_hull(
         &state.edge_geom,
         mode_name,
         center_anchor,
+        &super::geometry::ReachModel::Depart {
+            frontier: &frontier,
+        },
     ));
 
     encode_polygon_wkb(&contour).unwrap_or_default()

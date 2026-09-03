@@ -43,7 +43,7 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{Point, build_isochrone_topology};
+use super::geometry::{Point, ReachModel, build_isochrone_topology};
 use super::isochrone_handler::{
     run_phast_bounded_fast_reverse_seeded, run_phast_bounded_fast_seeded,
 };
@@ -2439,6 +2439,19 @@ fn do_isochrone(
         // No scaling: thresholds and weights are both in seconds (post-#297).
         // Full topology (2026-09-03): Polygon with holes, or MultiPolygon when
         // the reachable set is disconnected — nothing is dropped any more.
+        let frontier = if is_reverse {
+            Vec::new()
+        } else {
+            super::isochrone_handler::depart_frontier(
+                &settled,
+                interval_s,
+                &mode_data.up_adj_flat,
+                &mode_data.down_adj_flat,
+                &mode_data,
+                node_weights,
+            )
+        };
+        let model = ReachModel::for_direction(is_reverse, &frontier);
         let contour = ContourResult::from_polygons(build_isochrone_topology(
             &settled_original,
             interval_s,
@@ -2447,6 +2460,7 @@ fn do_isochrone(
             &state.edge_geom,
             mode_name,
             center_anchor,
+            &model,
         ));
 
         let wkb = encode_polygon_wkb(&contour).unwrap_or_default();

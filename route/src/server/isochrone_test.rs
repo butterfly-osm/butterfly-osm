@@ -282,6 +282,8 @@ mod tests {
         }
 
         // Build isochrone polygon
+        // Whole reached edges only (no frontier fragments): this test checks
+        // ring validity, not reach fidelity — see `gate_isochrone_reach_truth`.
         let polygon_points = build_isochrone_geometry_sparse(
             &settled,
             threshold_s,
@@ -290,6 +292,7 @@ mod tests {
             &state.edge_geom,
             mode_name,
             None,
+            &crate::server::geometry::ReachModel::Depart { frontier: &[] },
         )
         .into_iter()
         .next()

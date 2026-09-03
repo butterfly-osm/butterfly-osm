@@ -37,6 +37,7 @@ Thresholds are set from the measured 2026-07-16 baseline (see BASELINE below)
 with modest slack; RATCHET THEM DOWN as tails get fixed, never up.
 """
 
+import math
 import argparse
 import concurrent.futures as cf
 import csv
@@ -1668,6 +1669,28 @@ def _ring_area2(ring):
     return s
 
 
+def _dist_to_ring_m(p, ring):
+    """Metres from (lon, lat) `p` to the nearest SIDE of `ring` — not to its
+    vertices: after Douglas-Peucker a straight 450 m side has no vertex near a
+    road that grazes it, and a vertex-distance reports ~200 m for a point
+    5 m off the boundary."""
+    kx = 111_320.0 * math.cos(math.radians(p[1]))
+    ky = 110_540.0
+    best = float("inf")
+    px, py = 0.0, 0.0
+    for i in range(len(ring) - 1):
+        ax, ay = (ring[i][0] - p[0]) * kx, (ring[i][1] - p[1]) * ky
+        bx, by = (ring[i + 1][0] - p[0]) * kx, (ring[i + 1][1] - p[1]) * ky
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0.0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / l2))
+        cx, cy = ax + t * dx - px, ay + t * dy - py
+        d = math.hypot(cx, cy)
+        if d < best:
+            best = d
+    return best
+
+
 def gate_isochrone_topology(base):
     """2026-09-03 (#535/#542 root cause): the contour used to keep ONE ring —
     every hole and every detached reachable component was silently dropped,
@@ -1684,7 +1707,7 @@ def gate_isochrone_topology(base):
         polygon (sub-300 m detached stubs are deliberately not drawn);
       * `geometries=geojson` carries a `geometry` object whose ring count
         matches the WKB."""
-    print("== isochrone topology: holes, components, no spurs (2026-09-03) ==")
+    print("== isochrone topology: ONE simple polygon, no spurs, faithful to the network (2026-09-03) ==")
     passed = True
     mode, time_s = "car", 600
     n_ok = 0
@@ -1715,6 +1738,13 @@ def gate_isochrone_topology(base):
         n += 1
         ok = bool(polys)
         why = []
+        # Product rule (2026-09-03): an isochrone IS one simple polygon —
+        # a MultiPolygon of fragments or a polygon with holes is a defect.
+        e = "<" if wkb[0] == 1 else ">"
+        if (struct.unpack_from(e + "I", wkb, 1)[0] & 0xFF) != 3 or len(polys) != 1:
+            ok = False; why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
+        elif len(polys[0]) != 1:
+            ok = False; why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
         for pi, rings in enumerate(polys):
             for ri, ring in enumerate(rings):
                 if len(ring) < 4 or ring[0] != ring[-1]:
@@ -1746,10 +1776,7 @@ def gate_isochrone_topology(base):
             )
             if inside:
                 continue
-            dmin = min(
-                (_haversine_m(p[0], p[1], v[0], v[1]) for rings in polys for v in rings[0]),
-                default=1e9,
-            )
+            dmin = min((_dist_to_ring_m(p, rings[0]) for rings in polys), default=1e9)
             if dmin > 150.0:
                 far += 1
         far_total += far
@@ -1787,6 +1814,96 @@ def gate_isochrone_topology(base):
         f"{n_ok}/{n} origins; network vertices > 150 m outside: "
         f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)",
     )
+    return passed
+
+
+def gate_isochrone_reach_truth(base):
+    """2026-09-03: the polygon must reproduce the ENGINE's reach — both ways —
+    with `/table` as the independent truth (found via #543: PHAST labels are
+    HEAD arrivals; the stamp counted an edge's weight twice, cut every fast
+    boundary edge one weight early and never drew the true frontier: 4-6 % of
+    rural road points >150 m outside the polygon were reachable within T).
+      (a) inside: the exposed vertices of the served network (last point of
+          each polyline) are reachable within 1.02 T (≥ 99 %; the rest is
+          /table snapping onto a neighbouring edge);
+      (b) outside: road points > 150 m outside the polygon (taken from the
+          1.4 T network) are NOT reachable within 0.95 T (≤ 0.5 %).
+    depart = origin→point, arrive = point→origin."""
+    import json as _json, random as _random
+    print("== isochrone ≡ engine reach (/table truth, depart + arrive) (2026-09-03) ==")
+    passed = True
+    mode, T = "car", 600
+
+    def table(origins, dests):
+        body = _json.dumps({"origins": origins, "destinations": dests, "mode": mode,
+                            "annotations": "duration"}).encode()
+        req = urllib.request.Request(f"{base}/table", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return _json.load(r)["durations"]
+
+    for direction in ("depart", "arrive"):
+        n_in = n_in_over = n_out = n_out_reached = 0
+        worst_out = None
+        details = []
+        for name, lon, lat in ISO_POINTS:
+            try:
+                q = f"lon={lon}&lat={lat}&mode={mode}&direction={direction}"
+                req = urllib.request.Request(f"{base}/isochrone?{q}&time_s={T}",
+                                             headers={"Accept": "application/octet-stream"})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    polys = _wkb_multipolygon(r.read())
+                ring = polys[0][0]
+                net = http_json(f"{base}/isochrone?{q}&time_s={T}&include=network").get("network", [])
+                big = http_json(f"{base}/isochrone?{q}&time_s={int(T * 1.4)}&include=network").get("network", [])
+            except Exception as ex:
+                details.append(f"{name}: {ex}")
+                continue
+            rnd = _random.Random(7)
+            ends = [tuple(s[-1]) for s in net]
+            rnd.shuffle(ends)
+            ends = ends[:150]
+            pts = [tuple(p) for s in big for p in s]
+            rnd.shuffle(pts)
+            far = []
+            for p in pts:
+                if len(far) >= 150:
+                    break
+                if _point_in_ring(p, ring[:-1]):
+                    continue
+                if _dist_to_ring_m(p, ring) > 150.0:
+                    far.append(p)
+            if direction == "depart":
+                d_in = table([[lon, lat]], [list(e) for e in ends])[0]
+                d_out = table([[lon, lat]], [list(p) for p in far])[0] if far else []
+            else:
+                d_in = [row[0] for row in table([list(e) for e in ends], [[lon, lat]])]
+                d_out = [row[0] for row in table([list(p) for p in far], [[lon, lat]])] if far else []
+            d_in = [x for x in d_in if x is not None]
+            d_out = [x for x in d_out if x is not None]
+            n_in += len(d_in)
+            n_in_over += sum(1 for x in d_in if x > 1.02 * T)
+            n_out += len(d_out)
+            reached = [x for x in d_out if x <= 0.95 * T]
+            n_out_reached += len(reached)
+            if reached:
+                m = min(reached)
+                if worst_out is None or m < worst_out[0]:
+                    worst_out = (m, name)
+                details.append(f"{name}: {len(reached)}/{len(d_out)} outside road points reachable ≤ 0.95T (min {m:.0f} s)")
+        for d in details[:4]:
+            print(f"    {d}")
+        ok_in = n_in > 0 and n_in_over <= max(1, n_in // 100)
+        ok_out = n_out_reached <= max(1, n_out // 200)
+        passed &= check(
+            f"{direction} {T}s: served network reachable within 1.02T",
+            ok_in, f"{n_in - n_in_over}/{n_in} vertices",
+        )
+        passed &= check(
+            f"{direction} {T}s: nothing reachable ≤ 0.95T lies > 150 m outside",
+            ok_out,
+            f"{n_out_reached}/{n_out} road points" + (f", earliest {worst_out[0]:.0f} s at {worst_out[1]}" if worst_out else ""),
+        )
     return passed
 
 
@@ -1949,6 +2066,7 @@ def main():
     ok &= gate_consistency(base)
     ok &= gate_isochrone(base)
     ok &= gate_isochrone_topology(base)
+    ok &= gate_isochrone_reach_truth(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
     ok &= gate_radius_prune(base)
