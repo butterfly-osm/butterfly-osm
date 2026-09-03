@@ -53,6 +53,7 @@ struct TileCoord {
 }
 
 /// A single tile's bitmap (TILE_SIZE x TILE_SIZE)
+#[derive(Clone)]
 struct TileBitmap {
     bits: Vec<u64>, // TILE_SIZE rows, each row is a u64 (64 bits)
 }
@@ -86,6 +87,7 @@ impl TileBitmap {
 }
 
 /// Sparse tile map
+#[derive(Clone)]
 struct SparseTileMap {
     tiles: HashMap<TileCoord, TileBitmap>,
     cell_size_m: f64,
@@ -916,6 +918,11 @@ pub fn generate_sparse_contour_anchored(
             .collect();
         polygons.push(ContourPolygon { outer, holes });
     }
+    // An isochrone (or a catchment lasso) is BY DEFINITION one simple polygon
+    // (product rule, 2026-09-03): the traced topology drives the choice of the
+    // origin's component and the crumb/spur cleanup, but only that component
+    // is served — never a MultiPolygon of detached fragments.
+    polygons.truncate(1);
     let wgs84_contour = polygons
         .first()
         .map(|p| p.outer.clone())
@@ -2006,6 +2013,96 @@ mod tests {
         assert!(
             !point_in_ring((5.0, 5.0), hole),
             "hole does not cover filled cells"
+        );
+    }
+
+    #[test]
+    fn served_result_is_exactly_one_simple_polygon() {
+        // Two far-apart blobs stamped from segments: the produced result must
+        // carry ONE polygon (the anchor's), no holes, no extra components.
+        let seg = |lat0: f64, lon0: f64, lat1: f64, lon1: f64| ReachableSegment {
+            points: vec![
+                ((lat0 * 1e7) as i32, (lon0 * 1e7) as i32),
+                ((lat1 * 1e7) as i32, (lon1 * 1e7) as i32),
+            ],
+        };
+        let segs = vec![
+            seg(50.0, 4.0, 50.0, 4.02),    // ~1.4 km road at the origin
+            seg(50.05, 4.10, 50.05, 4.12), // detached ~1.4 km road far away
+        ];
+        let cfg = SparseContourConfig::for_car();
+        let res =
+            generate_sparse_contour_anchored(&segs, &cfg, Some((500_000_000, 40_000_000))).unwrap();
+        assert_eq!(res.polygons.len(), 1, "one polygon, never a MultiPolygon");
+        assert!(res.holes.is_empty(), "no holes by default");
+        assert!(res.outer_ring.len() >= 4);
+        let (min_lon, max_lon) = res
+            .outer_ring
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &(lon, _)| {
+                (a.min(lon), b.max(lon))
+            });
+        assert!(
+            min_lon < 4.03 && max_lon < 4.05,
+            "origin's blob, not the far one: {min_lon}..{max_lon}"
+        );
+    }
+
+    fn real_network_fixture() -> (Vec<ReachableSegment>, (i32, i32)) {
+        let j: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/car_600s_reachable_network.json")).unwrap();
+        let segs = j["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| ReachableSegment {
+                points: s
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| (p[0].as_i64().unwrap() as i32, p[1].as_i64().unwrap() as i32))
+                    .collect(),
+            })
+            .collect();
+        let a = &j["anchor_lat_lon_e7"];
+        (
+            segs,
+            (a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32),
+        )
+    }
+
+    /// Real 600 s car field from the gate's "rural WB" origin (1417 reached
+    /// polylines incl. a 3.9 km motorway edge and the interchange beyond it).
+    /// The raster pipeline must return ONE component that covers every
+    /// reached vertex — the motorway corridor may not break.
+    #[test]
+    fn real_network_is_one_component_covering_every_vertex() {
+        let (segs, anchor) = real_network_fixture();
+        let cfg = SparseContourConfig::for_mode_name_with_threshold("car", 600);
+        let res = generate_sparse_contour_anchored(&segs, &cfg, Some(anchor)).unwrap();
+        assert_eq!(res.polygons.len(), 1);
+        let ring = &res.outer_ring; // (lon, lat)
+        let mut outside = 0usize;
+        let mut total = 0usize;
+        for s in &segs {
+            for &(lat_e7, lon_e7) in &s.points {
+                total += 1;
+                let p = (lon_e7 as f64 / 1e7, lat_e7 as f64 / 1e7);
+                if !point_in_ring(p, ring) {
+                    // Detached stubs under ~300 m are deliberately not drawn
+                    // (crumb filter); anything else must be within 150 m.
+                    let near = ring.iter().any(|&(x, y)| {
+                        ((x - p.0) * 111_320.0 * 0.64).hypot((y - p.1) * 111_320.0) < 150.0
+                    });
+                    if !near {
+                        outside += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            outside * 100 <= total, // ≤ 1 % (the served gate tolerates 1.5 %)
+            "{outside}/{total} reached vertices lie > 150 m outside the single polygon"
         );
     }
 

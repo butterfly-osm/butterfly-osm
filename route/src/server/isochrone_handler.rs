@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use super::geometry::{GeometryFormat, Point, build_isochrone_topology, encode_polyline6};
+use super::geometry::{
+    GeometryFormat, Point, ReachModel, build_isochrone_topology, encode_polyline6,
+    reachable_polylines,
+};
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
@@ -1324,17 +1327,34 @@ pub async fn isochrone_handler(
         run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, phast_threshold, mode)
     };
 
-    // Convert to original IDs
+    // Convert to original IDs (ranks kept: the depart frontier scans arcs)
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-    for (rank, dist) in phast_settled {
+    for &(rank, dist) in &phast_settled {
         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
         let original_id = mode_data.filtered_to_original[filtered_id as usize];
         settled.push((original_id, dist));
     }
+    // Reach model per threshold (see `ReachModel`): depart frontiers are the
+    // unreached successors, enumerated once per threshold.
+    let frontier_at = |threshold: u32| -> Vec<(u32, f32)> {
+        if reverse {
+            Vec::new()
+        } else {
+            depart_frontier(
+                &phast_settled,
+                threshold,
+                up_flat,
+                down_fwd_flat,
+                &mode_data,
+                node_weights,
+            )
+        }
+    };
 
-    // Full topology per threshold (2026-09-03): components + holes. The
-    // legacy single-ring fields are derived from its primary polygon.
+    // Full topology per threshold (2026-09-03): ONE simple polygon — the
+    // origin's component. The legacy single-ring fields derive from it.
     let build_contour_topology = |threshold: u32| -> Vec<ContourPolygon> {
+        let frontier = frontier_at(threshold);
         build_isochrone_topology(
             &settled,
             threshold,
@@ -1343,6 +1363,7 @@ pub async fn isochrone_handler(
             &state.edge_geom,
             &req.mode,
             center_anchor,
+            &ReachModel::for_direction(reverse, &frontier),
         )
     };
 
@@ -1496,6 +1517,7 @@ pub async fn isochrone_handler(
             node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
+            &ReachModel::for_direction(reverse, &frontier_at(phast_threshold)),
         ))
     } else {
         None
@@ -1572,12 +1594,25 @@ fn band_isochrone_features(
         )
     };
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-    for (rank, dist) in phast_settled {
+    for &(rank, dist) in &phast_settled {
         let filtered_id = md.cch_topo.rank_to_filtered[rank as usize];
         settled.push((md.filtered_to_original[filtered_id as usize], dist));
     }
     let mut out = Vec::with_capacity(thresholds.len());
     for &(threshold, time_s) in thresholds {
+        let frontier = if reverse {
+            Vec::new()
+        } else {
+            depart_frontier(
+                &phast_settled,
+                threshold,
+                &md.up_adj_flat,
+                &md.down_adj_flat,
+                &md,
+                &md.node_weights,
+            )
+        };
+        let model = ReachModel::for_direction(reverse, &frontier);
         let topology = build_isochrone_topology(
             &settled,
             threshold,
@@ -1586,6 +1621,7 @@ fn band_isochrone_features(
             &state.edge_geom,
             &req.mode,
             anchor,
+            &model,
         );
         let polygon: Vec<Point> = topology
             .first()
@@ -1629,89 +1665,105 @@ fn band_isochrone_features(
     Some(out)
 }
 
-/// Build network geometry - all reachable road segments as polylines.
-/// `time_s` is the threshold in seconds (post-#297); node_weights are also
-/// in seconds. For isodistance queries the units are meters but the math is
-/// identical (the function operates on opaque integer weight units).
+/// `include=network`: the reached road polylines as (lon, lat) f64 — the SAME
+/// set the polygon is stamped from (`reachable_polylines`), by construction.
 pub fn build_network_geometry(
     settled: &[(u32, u32)],
     time_s: u32,
     node_weights: &[u32],
     ebg_nodes: &crate::formats::EbgNodes,
     edge_geom: &crate::server::edge_geom::EdgeGeometry,
+    model: &ReachModel<'_>,
 ) -> Vec<Vec<[f64; 2]>> {
-    use std::collections::HashSet;
-    let mut network: Vec<Vec<[f64; 2]>> = Vec::with_capacity(settled.len());
+    reachable_polylines(settled, time_s, node_weights, ebg_nodes, edge_geom, model)
+        .0
+        .into_iter()
+        .filter(|p| p.len() >= 2)
+        .map(|p| {
+            p.into_iter()
+                .map(|(lat_e7, lon_e7)| [lon_e7 as f64 / 1e7, lat_e7 as f64 / 1e7])
+                .collect()
+        })
+        .collect()
+}
 
-    // Pass 1: fully reachable edges, whole; collect their endpoints (the NBG
-    // nodes the reachable tree passes through) to orient frontier edges.
-    let mut reached_ends: HashSet<(i32, i32)> = HashSet::with_capacity(settled.len() * 2);
-    let mut frontier: Vec<(u32, u32, u32)> = Vec::new();
-    for &(ebg_id, dist_s) in settled {
-        if dist_s > time_s {
-            continue;
+/// Depart-field frontier (2026-09-03): PHAST labels are HEAD arrivals, so the
+/// partially reachable edges are the UNREACHED successors of reached edges.
+/// Scans every CCH arc (original + shortcut) out of each reached node: an arc
+/// `e→f` of weight `w_arc` arrives at f's head at `label(e) + w_arc`, having
+/// entered f at `label(e) + w_arc − w(f)` (an original arc weighs
+/// `w(f) + turn(e,f)`; a shortcut is a real path ending with f, so the same
+/// subtraction is a valid, possibly later, entry). Every original arc is in
+/// the hierarchy, so the minimum over reached predecessors IS f's true entry.
+/// Returns `(original EBG id, fraction of f driven before T)`, sorted.
+pub fn depart_frontier(
+    settled_ranks: &[(u32, u32)],
+    threshold: u32,
+    up: &crate::matrix::bucket_ch::UpAdjFlat,
+    down: &crate::matrix::bucket_ch::DownAdjFlat,
+    md: &super::state::ModeData,
+    node_weights: &[u32],
+) -> Vec<(u32, f32)> {
+    use std::collections::HashMap;
+    let n_nodes = up.offsets.len() - 1;
+    let mut reached = vec![0u64; n_nodes.div_ceil(64)];
+    for &(r, d) in settled_ranks {
+        if d <= threshold {
+            reached[(r >> 6) as usize] |= 1u64 << (r & 63);
         }
-
-        let weight_s = if (ebg_id as usize) < node_weights.len() {
-            node_weights[ebg_id as usize]
-        } else {
-            continue;
-        };
-
-        if weight_s == 0 || weight_s == u32::MAX {
-            continue;
-        }
-
-        let node = &ebg_nodes.nodes[ebg_id as usize];
-        let polyline = edge_geom.polyline(node.geom_idx);
-        if polyline.is_empty() {
-            continue;
-        }
-
-        let dist_end_s = dist_s.saturating_add(weight_s);
-
-        if dist_end_s <= time_s {
-            // Fully reachable — emit every (lon, lat) f64 pair.
-            reached_ends.insert(polyline.at_lat_lon_e7(0));
-            reached_ends.insert(polyline.at_lat_lon_e7(polyline.len() - 1));
-            let coords: Vec<[f64; 2]> = polyline.iter().map(|(lon, lat)| [lon, lat]).collect();
-            if coords.len() >= 2 {
-                network.push(coords);
+    }
+    let is_reached = |v: usize| (reached[v >> 6] >> (v & 63)) & 1 == 1;
+    let rank_to_filtered = &md.cch_topo.rank_to_filtered;
+    let filtered_to_original = &md.filtered_to_original;
+    // original id -> (earliest entry, w(f))
+    let mut best: HashMap<u32, (u32, u32)> = HashMap::new();
+    let mut scan = |offsets: &[u64],
+                    targets: &[u32],
+                    weights: &crate::formats::WeightArray,
+                    r: usize,
+                    d: u32| {
+        let (a, b) = (offsets[r] as usize, offsets[r + 1] as usize);
+        for (i, &target) in (a..b).zip(&targets[a..b]) {
+            let cand = d.saturating_add(weights.get(i));
+            if cand <= threshold {
+                continue; // f itself is reached: whole edge, not frontier
             }
-        } else {
-            frontier.push((ebg_id, dist_s, weight_s));
+            let v = target as usize;
+            if is_reached(v) {
+                continue;
+            }
+            let orig = filtered_to_original[rank_to_filtered[v] as usize];
+            let wf = node_weights[orig as usize];
+            if wf == 0 || wf == u32::MAX {
+                continue;
+            }
+            let entry = cand.saturating_sub(wf);
+            if entry >= threshold {
+                continue;
+            }
+            best.entry(orig)
+                .and_modify(|e| e.0 = e.0.min(entry))
+                .or_insert((entry, wf));
+        }
+    };
+    for &(r, d) in settled_ranks {
+        if d <= threshold {
+            scan(&up.offsets[..], &up.targets[..], &up.weights, r as usize, d);
+            scan(
+                &down.offsets[..],
+                &down.targets[..],
+                &down.weights,
+                r as usize,
+                d,
+            );
         }
     }
-
-    // Pass 2: partially reachable edges, clipped at the threshold FROM THEIR
-    // TRUE START. The stored polyline is shared by both directed twins
-    // (#493); cutting from index 0 for the backward twin drew the fragment at
-    // the far end — the same defect the polygon had (#542).
-    for (ebg_id, dist_s, weight_s) in frontier {
-        let node = &ebg_nodes.nodes[ebg_id as usize];
-        let polyline = edge_geom.polyline(node.geom_idx);
-        let pts_e7: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
-        let reversed = match super::geometry::frontier_orientation(&pts_e7, &reached_ends) {
-            Some(r) => r,
-            None => continue,
-        };
-        let cut_fraction = (time_s - dist_s) as f32 / weight_s as f32;
-        let n_pts = polyline.len();
-        let cut_idx = ((n_pts - 1) as f32 * cut_fraction).ceil() as usize;
-        let cut_idx = cut_idx.min(n_pts - 1).max(1);
-        let idx = |i: usize| if reversed { n_pts - 1 - i } else { i };
-        let coords: Vec<[f64; 2]> = (0..=cut_idx)
-            .map(|i| {
-                let (lon, lat) = polyline.at(idx(i));
-                [lon, lat]
-            })
-            .collect();
-        if coords.len() >= 2 {
-            network.push(coords);
-        }
-    }
-
-    network
+    let mut out: Vec<(u32, f32)> = best
+        .into_iter()
+        .map(|(orig, (entry, wf))| (orig, (threshold - entry) as f32 / wf as f32))
+        .collect();
+    out.sort_unstable_by_key(|&(orig, _)| orig);
+    out
 }
 
 // ============ Bulk Isochrone Handler ============
@@ -1917,13 +1969,21 @@ fn isochrone_bulk_sync(
             let phast_settled =
                 run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, time_s, mode);
 
-            // Convert to original IDs
+            // Convert to original IDs (ranks kept for the depart frontier)
             let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-            for (rank, dist) in phast_settled {
+            for &(rank, dist) in &phast_settled {
                 let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
                 let original_id = mode_data.filtered_to_original[filtered_id as usize];
                 settled.push((original_id, dist));
             }
+            let frontier = depart_frontier(
+                &phast_settled,
+                time_s,
+                up_flat,
+                down_fwd_flat,
+                &mode_data,
+                &mode_data.node_weights,
+            );
 
             // Build polygon using frontier-based concave hull
             let contour = ContourResult::from_polygons(build_isochrone_topology(
@@ -1934,6 +1994,9 @@ fn isochrone_bulk_sync(
                 &state.edge_geom,
                 &req.mode,
                 center_anchor,
+                &ReachModel::Depart {
+                    frontier: &frontier,
+                },
             ));
 
             // Encode WKB
