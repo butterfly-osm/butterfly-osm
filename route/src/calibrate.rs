@@ -1494,18 +1494,26 @@ const EDGE_RATIO_ALIASES: &[&str] = &["speed_ratio", "ratio", "congestion_factor
 /// structure — the #481 transform leaves turns unscaled). Generic contract:
 /// any producer may set it; absent -> 1.0.
 pub fn read_time_scale(path: &Path) -> Result<Option<f64>> {
+    read_time_scale_key(path, "time_scale")
+}
+
+/// Per-profile level (2026-09-03): the bands carry their own anchors —
+/// `time_scale_best` / `time_scale_worst` KV keys, each measured against its
+/// own time-stamped reference set. Absent key → `None` (callers fall back to
+/// the typical `time_scale`).
+pub fn read_time_scale_key(path: &Path, key: &str) -> Result<Option<f64>> {
     use parquet::file::reader::FileReader;
     let f = std::fs::File::open(path)?;
     let r = parquet::file::serialized_reader::SerializedFileReader::new(f)?;
     let md = r.metadata().file_metadata();
     if let Some(kvs) = md.key_value_metadata() {
         for kv in kvs {
-            if kv.key == "time_scale"
+            if kv.key == key
                 && let Some(v) = kv.value.as_ref().and_then(|v| v.parse::<f64>().ok())
             {
                 anyhow::ensure!(
                     (0.5..=2.0).contains(&v),
-                    "time_scale {v} outside sanity range [0.5, 2.0]"
+                    "{key} {v} outside sanity range [0.5, 2.0]"
                 );
                 return Ok(Some(v));
             }
