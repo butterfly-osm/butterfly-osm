@@ -2656,6 +2656,7 @@ impl Cli {
                 let contour = crate::range::ContourResult {
                     outer_ring: sparse_result.outer_ring,
                     holes: sparse_result.holes,
+                    extra: sparse_result.polygons.iter().skip(1).cloned().collect(),
                     stats: crate::range::ContourStats {
                         input_segments: sparse_result.stats.input_segments,
                         grid_cols: 0,

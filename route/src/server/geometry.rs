@@ -3,8 +3,10 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use std::collections::HashSet;
+
 use crate::formats::EbgNodes;
-use crate::range::{ReachableSegment, SparseContourConfig};
+use crate::range::{ContourPolygon, ReachableSegment, SparseContourConfig};
 use crate::server::edge_geom::EdgeGeometry;
 
 /// A point in WGS84 coordinates
@@ -245,6 +247,38 @@ pub fn build_isochrone_geometry(
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat) of the query origin (#497/#506)
 ) -> Vec<Point> {
+    build_isochrone_topology(
+        settled_nodes,
+        max_threshold,
+        node_weights,
+        ebg_nodes,
+        edge_geom,
+        mode_name,
+        origin_anchor,
+    )
+    .into_iter()
+    .next()
+    .map(|p| {
+        p.outer
+            .into_iter()
+            .map(|(lon, lat)| Point { lon, lat })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Full isochrone topology: every reachable component (primary — the one
+/// containing the origin — first) with its holes, WGS84 `(lon, lat)`.
+/// `build_isochrone_geometry` is the single-outer-ring view of this.
+pub fn build_isochrone_topology(
+    settled_nodes: &[(u32, u32)],
+    max_threshold: u32,
+    node_weights: &[u32],
+    ebg_nodes: &EbgNodes,
+    edge_geom: &EdgeGeometry,
+    mode_name: &str,
+    origin_anchor: Option<(f64, f64)>,
+) -> Vec<ContourPolygon> {
     let geo_start = std::time::Instant::now();
     let result = build_isochrone_geometry_sparse(
         settled_nodes,
@@ -259,7 +293,9 @@ pub fn build_isochrone_geometry(
     tracing::debug!(
         threshold = max_threshold,
         settled_input = settled_nodes.len(),
-        polygon_vertices = result.len(),
+        polygon_vertices = result.first().map_or(0, |p| p.outer.len()),
+        components = result.len(),
+        holes = result.iter().map(|p| p.holes.len()).sum::<usize>(),
         geometry_us = geo_us,
         "isochrone geometry pipeline timing"
     );
@@ -286,7 +322,7 @@ pub fn build_isochrone_geometry_sparse(
     edge_geom: &EdgeGeometry,
     mode_name: &str,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-dist edge start
-) -> Vec<Point> {
+) -> Vec<ContourPolygon> {
     let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time_ds);
 
     // Stamp ALL reachable edges. Do NOT use near-frontier filtering — it creates
@@ -302,6 +338,11 @@ pub fn build_isochrone_geometry_sparse(
     let mut anchor: Option<(i32, i32)> = None;
     let mut anchor_dist = u32::MAX;
 
+    // Pass 1: fully reachable edges — stamped whole, orientation irrelevant.
+    // Their polyline endpoints are the NBG nodes the reachable tree passes
+    // through; every frontier edge's TRUE start is one of them.
+    let mut reached_ends: HashSet<(i32, i32)> = HashSet::with_capacity(settled_nodes.len() * 2);
+    let mut frontier: Vec<(u32, u32, u32)> = Vec::new(); // (ebg_id, dist, weight)
     for &(ebg_id, dist_ds) in settled_nodes {
         if dist_ds > max_time_ds {
             continue;
@@ -335,14 +376,34 @@ pub fn build_isochrone_geometry_sparse(
             // Fully reachable edge — stamp it (lat-first ordering for the
             // sparse contour stamper, matching the legacy code).
             let points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
+            reached_ends.insert(points[0]);
+            reached_ends.insert(points[points.len() - 1]);
             segments.push(ReachableSegment { points });
         } else {
-            // Frontier edge - always include (from start to cut point)
-            let cut_fraction = (max_time_ds - dist_ds) as f32 / weight_ds as f32;
-            let points = extract_partial_polyline_view(&polyline, cut_fraction);
-            if !points.is_empty() {
-                segments.push(ReachableSegment { points });
-            }
+            frontier.push((ebg_id, dist_ds, weight_ds));
+        }
+    }
+
+    // Pass 2: frontier edges (partially reachable), cut at the threshold.
+    // A per-edge polyline is stored in ONE orientation shared by both
+    // directed twins (#493), so "from index 0 to the cut" is wrong for the
+    // twin that traverses it backwards: the stamped fragment then sits at the
+    // FAR end, detached from the reachable set — the confetti components
+    // Charlotte reported as islands (#542). Orient by endpoints: the true
+    // start of a frontier edge is an endpoint of an already-reached edge.
+    for (ebg_id, dist_ds, weight_ds) in frontier {
+        let node = &ebg_nodes.nodes[ebg_id as usize];
+        let polyline = edge_geom.polyline(node.geom_idx);
+        let mut points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
+        match frontier_orientation(&points, &reached_ends) {
+            Some(true) => points.reverse(),
+            Some(false) => {}
+            None => continue, // hangs off nothing we stamped: confetti only
+        }
+        let cut_fraction = (max_time_ds - dist_ds) as f32 / weight_ds as f32;
+        let partial = partial_polyline(&points, cut_fraction);
+        if !partial.is_empty() {
+            segments.push(ReachableSegment { points: partial });
         }
     }
 
@@ -359,34 +420,45 @@ pub fn build_isochrone_geometry_sparse(
         .map(|(lon, lat)| ((lat * 1e7) as i32, (lon * 1e7) as i32))
         .or(anchor);
     match crate::range::generate_sparse_contour_anchored(&segments, &config, anchor) {
-        Ok(result) => result
-            .outer_ring
-            .into_iter()
-            .map(|(lon, lat)| Point { lon, lat })
-            .collect(),
+        Ok(result) => result.polygons,
         Err(_) => vec![],
     }
 }
 
-/// Extract partial polyline from start to given fraction (lat-first
-/// `(lat_e7, lon_e7)` output, matching the sparse contour stamper).
-fn extract_partial_polyline_view(
-    polyline: &crate::server::edge_geom::EdgePolyline<'_>,
-    fraction: f32,
-) -> Vec<(i32, i32)> {
-    let n_pts = polyline.len();
+/// Orientation of a frontier edge's stored polyline for this traversal:
+/// `Some(false)` = stored order, `Some(true)` = reversed (only its LAST
+/// point touches the reached set), `None` = neither endpoint touches it.
+/// A frontier edge's true start is an endpoint of an already-reached edge,
+/// so the `None` case cannot be placed and is skipped rather than stamped
+/// at a guessed end (that guess produced floating slivers, #542). Both
+/// ends reached keeps the stored order: either fragment then lies on
+/// reachable roads.
+pub(crate) fn frontier_orientation(
+    points: &[(i32, i32)],
+    reached_ends: &HashSet<(i32, i32)>,
+) -> Option<bool> {
+    match points {
+        [first, .., last] => match (reached_ends.contains(first), reached_ends.contains(last)) {
+            (false, false) => None,
+            (false, true) => Some(true),
+            _ => Some(false),
+        },
+        [only] => reached_ends.contains(only).then_some(false),
+        [] => None,
+    }
+}
+
+/// Partial polyline from its first point to `fraction` of its VERTEX span
+/// (lat-first `(lat_e7, lon_e7)`, matching the sparse contour stamper).
+fn partial_polyline(points: &[(i32, i32)], fraction: f32) -> Vec<(i32, i32)> {
+    let n_pts = points.len();
 
     if n_pts == 0 || fraction <= 0.0 {
         return vec![];
     }
 
-    if n_pts == 1 {
-        let (lon, lat) = polyline.at_e7(0);
-        return vec![(lat, lon)];
-    }
-
-    if fraction >= 1.0 {
-        return polyline.iter_lat_lon_e7().collect();
+    if n_pts == 1 || fraction >= 1.0 {
+        return points.to_vec();
     }
 
     // Find the segment where the cut occurs
@@ -396,24 +468,59 @@ fn extract_partial_polyline_view(
     let local_frac = segment_frac - segment_idx as f32;
 
     // Include all points up to and including the start of the cut segment.
-    let mut points: Vec<(i32, i32)> = (0..=segment_idx)
-        .map(|i| {
-            let (lon, lat) = polyline.at_e7(i);
-            (lat, lon)
-        })
-        .collect();
+    let mut out: Vec<(i32, i32)> = points[..=segment_idx].to_vec();
 
     // Add the interpolated cut point
     if local_frac > 0.0 && segment_idx + 1 < n_pts {
-        let (lon1, lat1) = polyline.at_e7(segment_idx);
-        let (lon2, lat2) = polyline.at_e7(segment_idx + 1);
-
+        let (lat1, lon1) = points[segment_idx];
+        let (lat2, lon2) = points[segment_idx + 1];
         let lat = lat1 + ((lat2 - lat1) as f32 * local_frac) as i32;
         let lon = lon1 + ((lon2 - lon1) as f32 * local_frac) as i32;
-        points.push((lat, lon));
+        out.push((lat, lon));
     }
 
-    points
+    out
+}
+
+#[cfg(test)]
+mod frontier_orientation_tests {
+    use super::*;
+
+    #[test]
+    fn frontier_orientation_from_reached_endpoints() {
+        let mut reached = HashSet::new();
+        reached.insert((10, 10));
+        let fwd = [(10, 10), (20, 20), (30, 30)];
+        let rev = [(30, 30), (20, 20), (10, 10)];
+        let both = [(10, 10), (20, 20), (10, 10)];
+        let none = [(50, 50), (60, 60)];
+        assert_eq!(frontier_orientation(&fwd, &reached), Some(false));
+        assert_eq!(frontier_orientation(&rev, &reached), Some(true));
+        assert_eq!(
+            frontier_orientation(&both, &reached),
+            Some(false),
+            "keep stored order"
+        );
+        assert_eq!(
+            frontier_orientation(&none, &reached),
+            None,
+            "unplaceable: skipped"
+        );
+    }
+
+    #[test]
+    fn partial_polyline_cuts_from_the_first_point() {
+        let pts = [(0, 0), (0, 1000), (0, 2000)];
+        assert_eq!(partial_polyline(&pts, 0.25), vec![(0, 0), (0, 500)]);
+        assert_eq!(partial_polyline(&pts, 0.5), vec![(0, 0), (0, 1000)]);
+        assert_eq!(partial_polyline(&pts, 1.0), pts.to_vec());
+        assert!(partial_polyline(&pts, 0.0).is_empty());
+        // A reversed frontier edge is cut from its TRUE start (the far end of
+        // the stored order) once the caller reverses it.
+        let mut rev = pts.to_vec();
+        rev.reverse();
+        assert_eq!(partial_polyline(&rev, 0.25), vec![(0, 2000), (0, 1500)]);
+    }
 }
 
 /// Decode polyline6 back to coordinates (for testing round-trip)

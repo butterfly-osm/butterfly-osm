@@ -290,7 +290,16 @@ mod tests {
             &state.edge_geom,
             mode_name,
             None,
-        );
+        )
+        .into_iter()
+        .next()
+        .map(|p| {
+            p.outer
+                .into_iter()
+                .map(|(lon, lat)| IsoPoint { lon, lat })
+                .collect::<Vec<IsoPoint>>()
+        })
+        .unwrap_or_default();
 
         assert!(
             !polygon_points.is_empty(),

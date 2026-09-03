@@ -1626,6 +1626,170 @@ def gate_isochrone(base):
     return passed
 
 
+def _wkb_multipolygon(buf):
+    """Parse WKB Polygon (3) or MultiPolygon (6) into
+    [[outer, hole, hole, ...], ...] of (lon, lat) rings. Stdlib-only."""
+    def rd_poly(off, e):
+        nrings = struct.unpack_from(e + "I", buf, off)[0]
+        off += 4
+        rings = []
+        for _ in range(nrings):
+            npts = struct.unpack_from(e + "I", buf, off)[0]
+            off += 4
+            ring = [struct.unpack_from(e + "dd", buf, off + 16 * i) for i in range(npts)]
+            off += 16 * npts
+            rings.append(ring)
+        return rings, off
+    e = "<" if buf[0] == 1 else ">"
+    gtype = struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
+    if gtype == 3:
+        return [rd_poly(5, e)[0]]
+    if gtype == 6:
+        n = struct.unpack_from(e + "I", buf, 5)[0]
+        off = 9
+        polys = []
+        for _ in range(n):
+            e2 = "<" if buf[off] == 1 else ">"
+            t2 = struct.unpack_from(e2 + "I", buf, off + 1)[0] & 0xFF
+            assert t2 == 3, f"MultiPolygon part of type {t2}"
+            rings, off = rd_poly(off + 5, e2)
+            polys.append(rings)
+        return polys
+    return []
+
+
+def _ring_area2(ring):
+    s = 0.0
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return s
+
+
+def gate_isochrone_topology(base):
+    """2026-09-03 (#535/#542 root cause): the contour used to keep ONE ring —
+    every hole and every detached reachable component was silently dropped,
+    and 1-cell corridors traced as zero-width spikes. Invariants, no measured
+    constants:
+      * WKB parses as Polygon/MultiPolygon; every ring is closed, has ≥ 4
+        points, no consecutive duplicates, no immediate backtrack (a,b,a) —
+        the zero-width-spur signature;
+      * outer rings CCW, holes CW (RFC 7946), each hole strictly inside its
+        outer ring and never containing the origin;
+      * the snapped origin lies in the PRIMARY (first) polygon;
+      * self-consistency: the engine's own reachable network (include=network)
+        is represented — at most 1.5% of its vertices lie > 150 m outside every
+        polygon (sub-300 m detached stubs are deliberately not drawn);
+      * `geometries=geojson` carries a `geometry` object whose ring count
+        matches the WKB."""
+    print("== isochrone topology: holes, components, no spurs (2026-09-03) ==")
+    passed = True
+    mode, time_s = "car", 600
+    n_ok = 0
+    n = 0
+    far_total = 0
+    verts_total = 0
+    details = []
+    for name, lon, lat in ISO_POINTS:
+        try:
+            req = urllib.request.Request(
+                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}",
+                headers={"Accept": "application/octet-stream"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as r:
+                wkb = r.read()
+            polys = _wkb_multipolygon(wkb)
+            sp_j = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
+            sp = tuple(sp_j["waypoints"][0]["location"])
+            net = http_json(
+                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}&include=network"
+            ).get("network", [])
+            gj = http_json(
+                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}&geometries=geojson"
+            )
+        except Exception as ex:
+            details.append(f"{name}: {ex}")
+            continue
+        n += 1
+        ok = bool(polys)
+        why = []
+        for pi, rings in enumerate(polys):
+            for ri, ring in enumerate(rings):
+                if len(ring) < 4 or ring[0] != ring[-1]:
+                    ok = False; why.append(f"p{pi}r{ri}: not a closed ring of ≥4 points")
+                body = ring[:-1]
+                if any(body[i] == body[(i + 1) % len(body)] for i in range(len(body))):
+                    ok = False; why.append(f"p{pi}r{ri}: consecutive duplicate vertex")
+                if any(body[i] == body[(i + 2) % len(body)] for i in range(len(body))):
+                    ok = False; why.append(f"p{pi}r{ri}: zero-width spur (a,b,a)")
+                a2 = _ring_area2(body)
+                if ri == 0 and a2 <= 0:
+                    ok = False; why.append(f"p{pi}: outer ring not CCW")
+                if ri > 0:
+                    if a2 >= 0:
+                        ok = False; why.append(f"p{pi}r{ri}: hole not CW")
+                    if not _point_in_ring(body[0], rings[0][:-1]):
+                        ok = False; why.append(f"p{pi}r{ri}: hole outside its outer ring")
+                    if _point_in_ring(sp, body):
+                        ok = False; why.append(f"p{pi}r{ri}: hole contains the origin")
+        if polys and not _point_in_ring(sp, polys[0][0][:-1]):
+            ok = False; why.append("origin not in the primary polygon")
+        # self-consistency vs the engine's own reachable network
+        pts = [tuple(p) for seg in net for p in seg][::3]
+        far = 0
+        for p in pts:
+            inside = any(
+                _point_in_ring(p, rings[0][:-1]) and not any(_point_in_ring(p, h[:-1]) for h in rings[1:])
+                for rings in polys
+            )
+            if inside:
+                continue
+            dmin = min(
+                (_haversine_m(p[0], p[1], v[0], v[1]) for rings in polys for v in rings[0]),
+                default=1e9,
+            )
+            if dmin > 150.0:
+                far += 1
+        far_total += far
+        verts_total += len(pts)
+        # 1.5 %: detached reach smaller than ~300 m across (crumb filter,
+        # COMPONENT_MIN_AREA_CELLS) is deliberately not drawn — measured
+        # 1.07-1.12 % at rural origins, 0.0-0.2 % urban. The pre-fix engine
+        # lost 0.62 % beyond 150 m AND 9.57 % within 150 m of the boundary.
+        if pts and far / len(pts) > 0.015:
+            ok = False; why.append(f"{far}/{len(pts)} reachable vertices > 150 m outside")
+        # every EXTRA component must hold reachable network — a polygon with
+        # no reachable road inside is confetti (a mis-oriented frontier
+        # fragment, #542), not a place you drove to.
+        for pi, rings in enumerate(polys[1:], start=1):
+            if not any(_point_in_ring(p, rings[0][:-1]) for p in pts):
+                ok = False; why.append(f"p{pi}: component without any reachable network")
+                break
+        g = (gj.get("contours") or [{}])[0].get("geometry")
+        if not g:
+            ok = False; why.append("geojson: no `geometry` object")
+        else:
+            gr = sum(len(p) for p in g["coordinates"]) if g["type"] == "MultiPolygon" else len(g["coordinates"])
+            wr = sum(len(rings) for rings in polys)
+            if gr != wr:
+                ok = False; why.append(f"geojson rings {gr} != wkb rings {wr}")
+        if ok:
+            n_ok += 1
+        else:
+            details.append(f"{name}: " + "; ".join(why[:3]))
+    for d in details[:6]:
+        print(f"    {d}")
+    passed &= check(
+        f"{mode} {time_s}s: valid topology at every origin",
+        n > 0 and n_ok == n,
+        f"{n_ok}/{n} origins; network vertices > 150 m outside: "
+        f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)",
+    )
+    return passed
+
+
 def gate_consistency(base, n_pairs=15):
     print(f"== /route vs /table consistency ({n_pairs} pairs) ==")
     rng = random.Random(7)
@@ -1784,6 +1948,7 @@ def main():
     ok &= gate_symmetry(base)
     ok &= gate_consistency(base)
     ok &= gate_isochrone(base)
+    ok &= gate_isochrone_topology(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
     ok &= gate_radius_prune(base)

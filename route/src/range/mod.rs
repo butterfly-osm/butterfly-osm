@@ -28,7 +28,7 @@ pub use frontier::{
 };
 
 pub mod contour;
-pub use contour::{ContourResult, ContourStats, export_contour_geojson};
+pub use contour::{ContourPolygon, ContourResult, ContourStats, export_contour_geojson};
 
 pub mod sparse_contour;
 pub use sparse_contour::{

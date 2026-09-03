@@ -168,6 +168,7 @@ impl BatchedIsochroneEngine {
                     ContourResult {
                         outer_ring: sparse.outer_ring,
                         holes: sparse.holes,
+                        extra: sparse.polygons.iter().skip(1).cloned().collect(),
                         stats: super::contour::ContourStats {
                             input_segments: sparse.stats.input_segments,
                             grid_cols: 0,
@@ -299,6 +300,7 @@ impl AdaptiveIsochroneEngine {
             return Ok(ContourResult {
                 outer_ring: vec![],
                 holes: vec![],
+                extra: vec![],
                 stats: super::contour::ContourStats::default(),
             });
         }
@@ -314,6 +316,7 @@ impl AdaptiveIsochroneEngine {
         Ok(ContourResult {
             outer_ring: sparse_result.outer_ring,
             holes: sparse_result.holes,
+            extra: sparse_result.polygons.iter().skip(1).cloned().collect(),
             stats: super::contour::ContourStats {
                 input_segments: sparse_result.stats.input_segments,
                 grid_cols: 0,
@@ -363,6 +366,7 @@ impl AdaptiveIsochroneEngine {
                             return Some(ContourResult {
                                 outer_ring: vec![],
                                 holes: vec![],
+                                extra: vec![],
                                 stats: super::contour::ContourStats::default(),
                             });
                         }
@@ -376,6 +380,7 @@ impl AdaptiveIsochroneEngine {
                                 ContourResult {
                                     outer_ring: sparse.outer_ring,
                                     holes: sparse.holes,
+                                    extra: sparse.polygons.iter().skip(1).cloned().collect(),
                                     stats: super::contour::ContourStats {
                                         input_segments: sparse.stats.input_segments,
                                         grid_cols: 0,
