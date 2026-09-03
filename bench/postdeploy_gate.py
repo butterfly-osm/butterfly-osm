@@ -65,7 +65,7 @@ DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
 #   distance ratio: p05=0.933 p50=1.004 p90=1.148 p95=1.253 mean=1.039
 #   distance outliers (<0.85 / >1.2): 73
 THRESHOLDS = {
-    "dur_p50": (0.90, 1.15),
+    "dur_p50": (0.98, 1.12),  # Pierre 2026-09-03: never >2 % fast, up to 12 % slow
     "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
@@ -413,7 +413,10 @@ def gate_ground_truth(base, trips_path, checks="all"):
         res = list(ex.map(one, rows))
     ok_res = [x for x in res if x]
     errors = len(rows) - len(ok_res)
-    dur = [x[0] for x in ok_res]
+    # Duration is judged like-for-like (2026-09-03): the reference OD trips are
+    # pinned corridors, so a trip whose engine route length is >10 % off the
+    # measured one compares two different routes, not two levels.
+    dur = [x[0] for x in ok_res if checks != "duration" or abs(x[1] - 1.0) <= 0.10]
     dist = [x[1] for x in ok_res]
     outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
     t = THRESHOLDS
@@ -2070,9 +2073,17 @@ def gate_bands(base, refs_prefix, flight_base=None):
              f"&destination_lat={t['lat_2']}&mode=car&uncertainty=bands")
         try:
             d = http_json(q, timeout=60)
-            return (d["duration_s"] / 60.0, (d.get("duration_best_s") or 0) / 60.0, (d.get("duration_worst_s") or 0) / 60.0)
+            return (d["duration_s"] / 60.0, (d.get("duration_best_s") or 0) / 60.0,
+                    (d.get("duration_worst_s") or 0) / 60.0, d["distance_m"] / 1000.0)
         except Exception:
             return None
+
+    def like_for_like(r, t):
+        # The reference OD trips are PINNED corridors: only compare where the
+        # engine's free route has the same length (±10 %) — elsewhere a faster
+        # engine time is a better route, not a level error (Brussels, 2026-09-03).
+        km = float(t.get("ref_km") or 0)
+        return r is not None and km > 0 and abs(r[3] / km - 1.0) <= 0.10
     levels = {}
     for name, field in (("typical", 0), ("best", 1), ("worst", 2)):
         try:
@@ -2082,27 +2093,136 @@ def gate_bands(base, refs_prefix, flight_base=None):
             continue
         with _cf.ThreadPoolExecutor(8) as ex:
             res = list(ex.map(route_bands, trips))
-        ratios = sorted(r[field] / float(t["ref_min"]) for r, t in zip(res, trips) if r and r[field] > 0 and float(t["ref_min"]) > 0)
+        ratios = sorted(r[field] / float(t["ref_min"]) for r, t in zip(res, trips)
+                        if like_for_like(r, t) and r[field] > 0 and float(t["ref_min"]) > 0)
         if len(ratios) < 100:
-            passed &= check(f"{name} level vs reference", False, f"only {len(ratios)} usable trips")
+            passed &= check(f"{name} level vs reference", False, f"only {len(ratios)} like-for-like trips")
             continue
         med = _st.median(ratios)
         levels[name] = med
-        tol = 0.06
-        passed &= check(f"{name}: median(engine/{name} reference) within ±{int(tol*100)} %", abs(med - 1.0) <= tol,
+        # Pierre 2026-09-03: "mieux vaut trop lent que trop rapide" — never more
+        # than 2 % fast, up to 9 % slow (the anchor lands the median at +3 %).
+        lo, hi = 0.98, 1.09
+        passed &= check(f"{name}: median(engine/{name} reference) in [{lo}, {hi}] (like-for-like routes)", lo <= med <= hi,
                         f"{med:.3f} (p10 {ratios[len(ratios)//10]:.3f}, p90 {ratios[9*len(ratios)//10]:.3f}, n={len(ratios)})")
         if name == "typical":
-            bx = [(r, t) for r, t in zip(res, trips) if r and all(4.25 <= float(t[k]) <= 4.50 for k in ("long_1", "long_2"))
-                  and all(50.76 <= float(t[k]) <= 50.92 for k in ("lat_1", "lat_2"))]
-            if len(bx) >= 10:
-                mb = _st.median(r[0] / float(t["ref_min"]) for r, t in bx)
-                passed &= check("typical: Brussels-internal pairs within ±10 %", abs(mb - 1.0) <= 0.10, f"{mb:.3f} (n={len(bx)})")
-            else:
-                print(f"    (Brussels-internal typical pairs: {len(bx)} — not enough to check)")
-            wb = [r[2] / r[1] for r in res if r and r[1] > 0]
+            # Regional levels (#543: "too optimistic, especially Brussels"): the
+            # national median can hide a region. One end inside the box is
+            # enough for the coast (trips leave it); both for Brussels.
+            regions = [("Brussels-internal", (4.25, 50.76, 4.50, 50.92), True),
+                       ("coast (West Flanders)", (2.50, 51.00, 3.35, 51.40), False)]
+            for rname, (x0, y0, x1, y1), both in regions:
+                inside = lambda t, k1, k2: x0 <= float(t[k1]) <= x1 and y0 <= float(t[k2]) <= y1
+                sel = [(r, t) for r, t in zip(res, trips) if like_for_like(r, t)
+                       and ((inside(t, "long_1", "lat_1") and inside(t, "long_2", "lat_2")) if both
+                            else (inside(t, "long_1", "lat_1") or inside(t, "long_2", "lat_2")))]
+                if len(sel) >= 10:
+                    mr = _st.median(r[0] / float(t["ref_min"]) for r, t in sel)
+                    passed &= check(f"typical: {rname} like-for-like pairs in [0.98, 1.12] (#543)", 0.98 <= mr <= 1.12, f"{mr:.3f} (n={len(sel)})")
+                else:
+                    print(f"    ({rname} typical pairs: {len(sel)} — not enough to check)")
+            wb = [r[2] / r[1] for r, t in zip(res, trips) if like_for_like(r, t) and r[1] > 0]
             if wb:
                 ms = _st.median(wb)
                 passed &= check("spread: median(worst/best) over the typical trips ≥ 1.10", ms >= 1.10, f"{ms:.3f}")
+    return passed
+
+
+def gate_isochrone_clip(base):
+    """#541 (2026-09-03): `clip=country` intersects the contour with the mask
+    shipped under <data>/clip/country.geojson. Invariants on border origins:
+    clipped ⊆ unclipped (every clipped vertex inside or on the unclipped
+    ring), the origin stays inside, the clipped area is strictly smaller
+    where the unclipped contour crossed the border, and the result is still
+    ONE simple polygon. SKIP when the server has no mask."""
+    print("== isochrone clip to mask (#541) ==")
+    passed = True
+    try:
+        http_json(f"{base}/isochrone?lon=3.12&lat=50.80&time_s=300&mode=car&clip=country", timeout=120)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        if e.code == 400 and "not available" in body:
+            print("  [SKIP] clip=country: no mask on this server")
+            return passed
+        passed &= check("clip=country probe", False, f"HTTP {e.code}: {body[:120]}")
+        return passed
+    # The served graph is a Belgium+Luxembourg extract: only the Luxembourg
+    # side carries roads to spill into (FR/NL/DE are just the extract buffer),
+    # so trimming is REQUIRED at LU-border origins and merely allowed elsewhere.
+    origins = [("Arlon (LU border)", 5.81, 49.68, True), ("Martelange (LU border)", 5.74, 49.83, True),
+               ("Menen (FR border, buffer only)", 3.12, 50.80, False), ("Brussels (inland)", 4.3517, 50.8503, False)]
+    n_ok = 0
+    for name, lon, lat, must_trim in origins:
+        try:
+            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=1200&mode=car",
+                                         headers={"Accept": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                raw = _wkb_multipolygon(r.read())
+            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=1200&mode=car&clip=country",
+                                         headers={"Accept": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                wkb = r.read()
+                clipped = _wkb_multipolygon(wkb)
+            ok = (wkb[0] in (0, 1)) and len(clipped) == 1 and len(clipped[0]) == 1
+            ring_u, ring_c = raw[0][0], clipped[0][0]
+            a_u, a_c = _ring_area2(ring_u), _ring_area2(ring_c)
+            ok &= a_c > 0 and a_c <= a_u * 1.001
+            ok &= _point_in_ring((lon, lat), ring_c[:-1]) or _dist_to_ring_m((lon, lat), ring_c) < 150
+            outside = sum(1 for p in ring_c[:-1] if not _point_in_ring(p, ring_u[:-1]) and _dist_to_ring_m(p, ring_u) > 5.0)
+            ok &= outside == 0
+            if "inland" in name:
+                ok &= abs(a_c - a_u) <= a_u * 0.001  # nothing to clip inland
+            elif must_trim:
+                ok &= a_c < a_u * 0.999  # LU-border origins DO lose area
+            n_ok += ok
+            if not ok:
+                print(f"    {name}: parts={len(clipped)} area {a_c/a_u:.3f} of unclipped, vertices outside {outside}")
+        except Exception as ex:
+            print(f"    {name}: {ex}")
+    passed &= check("clip=country (20 min): one polygon, ⊆ unclipped, origin kept, LU-border origins trimmed, inland untouched",
+                    n_ok == len(origins), f"{n_ok}/{len(origins)} origins")
+    return passed
+
+
+def gate_ticket_invariants(base):
+    """One named invariant per user ticket, so none of them can regress
+    silently (2026-09-03). Where an existing gate already IS the invariant it
+    is named here and not duplicated:
+      #535 isochrone off-centre / origin not covered → this gate: from a
+           pedestrian city centre the pin itself lies in (or ≤ 30 m from) the
+           ONE polygon (the pin→snap access leg is stamped), snap ≤ 300 m;
+      #536 square lasso, missing clients        → gate_catchment_containment;
+      #541 clip to the border                   → gate_isochrone_clip;
+      #542 islands / confetti                    → gate_isochrone_topology
+           (one simple polygon) + gate_isochrone_reach_truth + gate_graph_holes;
+      #543 isochrones too big vs a traffic-aware reference → gate_bands
+           (typical/best/worst levels, like-for-like, never > 2 % fast;
+           Brussels and coast regions) + the weekly window-bias report;
+      #495/#497 (closed) size / foot origin     → gate_isochrone_upper_bound,
+           gate_isochrone (snapped-origin containment)."""
+    print("== ticket invariants: #535 pin inside from pedestrian centres (others named above) ==")
+    passed = True
+    centres = [("Namur centre", 4.8667, 50.4632), ("Ghent Korenmarkt", 3.7234, 51.0543),
+               ("Leuven Grote Markt", 4.7009, 50.8792)]
+    n_ok = 0
+    for name, lon, lat in centres:
+        try:
+            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=600&mode=car",
+                                         headers={"Accept": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                polys = _wkb_multipolygon(r.read())
+            snap = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode=car")["waypoints"][0]["location"]
+            ring = polys[0][0]
+            snap_m = _haversine_m(lon, lat, snap[0], snap[1])
+            pin_ok = _point_in_ring((lon, lat), ring[:-1]) or _dist_to_ring_m((lon, lat), ring) <= 30.0
+            ok = len(polys) == 1 and len(polys[0]) == 1 and pin_ok and snap_m <= 300.0  # car-free centres snap 100-200 m
+            n_ok += ok
+            if not ok:
+                print(f"    {name}: parts={len(polys)} pin inside/near={pin_ok} snap {snap_m:.0f} m")
+        except Exception as ex:
+            print(f"    {name}: {ex}")
+    passed &= check("#535: 10-min car isochrone from a pedestrian centre contains the pin (one polygon, snap ≤ 300 m)",
+                    n_ok == len(centres), f"{n_ok}/{len(centres)} centres")
     return passed
 
 
@@ -2269,6 +2389,8 @@ def main():
     ok &= gate_isochrone_topology(base)
     ok &= gate_isochrone_reach_truth(base)
     ok &= gate_bands(base, args.refs_prefix)
+    ok &= gate_isochrone_clip(base)
+    ok &= gate_ticket_invariants(base)
     ok &= gate_close_pairs(base)
     ok &= gate_lopsided(base)
     ok &= gate_radius_prune(base)

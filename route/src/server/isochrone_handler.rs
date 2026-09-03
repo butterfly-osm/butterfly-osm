@@ -65,6 +65,12 @@ pub struct IsochroneRequest {
     /// opt-in (2 extra PHAST passes). car only, JSON only.
     #[serde(default)]
     pub uncertainty: Option<String>,
+    /// Clip the contour to a mask shipped under `<data>/clip/<name>.geojson`
+    /// (#541, e.g. `clip=country` for the national boundary). Geometric mask
+    /// on the final polygon — reachability is untouched; the piece containing
+    /// the origin is kept (one simple polygon).
+    #[serde(default)]
+    pub clip: Option<String>,
 }
 
 /// A single contour polygon in an isochrone response
@@ -1126,6 +1132,16 @@ pub async fn isochrone_handler(
                 .into_response();
         }
     };
+    // #541 clip mask (generic, opt-in): resolved once, cached per process.
+    let clip_mask = match req.clip.as_deref() {
+        None | Some("") => None,
+        Some(name) => match super::clip::load(&state.data_dir, name) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            }
+        },
+    };
 
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
@@ -1355,7 +1371,7 @@ pub async fn isochrone_handler(
     // origin's component. The legacy single-ring fields derive from it.
     let build_contour_topology = |threshold: u32| -> Vec<ContourPolygon> {
         let frontier = frontier_at(threshold);
-        build_isochrone_topology(
+        let topology = build_isochrone_topology(
             &settled,
             threshold,
             node_weights,
@@ -1363,8 +1379,10 @@ pub async fn isochrone_handler(
             &state.edge_geom,
             &req.mode,
             center_anchor,
+            Some((req.lon, req.lat)),
             &ReachModel::for_direction(reverse, &frontier),
-        )
+        );
+        super::clip::apply(clip_mask.as_deref(), topology, center_anchor)
     };
 
     // Helper: encode polygon in requested format
@@ -1621,8 +1639,15 @@ fn band_isochrone_features(
             &state.edge_geom,
             &req.mode,
             anchor,
+            Some((req.lon, req.lat)),
             &model,
         );
+        let clip_mask = req
+            .clip
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .and_then(|n| super::clip::load(&state.data_dir, n).ok());
+        let topology = super::clip::apply(clip_mask.as_deref(), topology, anchor);
         let polygon: Vec<Point> = topology
             .first()
             .map(|p| {
@@ -1994,6 +2019,7 @@ fn isochrone_bulk_sync(
                 &state.edge_geom,
                 &req.mode,
                 center_anchor,
+                Some((lon, lat)),
                 &ReachModel::Depart {
                     frontier: &frontier,
                 },
