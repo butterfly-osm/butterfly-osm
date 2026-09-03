@@ -2063,7 +2063,21 @@ impl ServerState {
         } else {
             // 1. Read the table + build the directed lookup.
             let rows = crate::calibrate::read_edge_speeds(edge_speeds_path)?;
-            let time_scale = crate::calibrate::read_time_scale(edge_speeds_path)?.unwrap_or(1.0);
+            // Per-profile level: a band uses its own anchor when the artefact
+            // carries one, else the typical anchor (bands are ratios of the
+            // typical speeds, so the typical scale is the right fallback).
+            let typical_scale = crate::calibrate::read_time_scale(edge_speeds_path)?;
+            let band_key = match column {
+                EdgeTableColumn::Median => None,
+                EdgeTableColumn::Best => Some("time_scale_best"),
+                EdgeTableColumn::Worst => Some("time_scale_worst"),
+            };
+            let time_scale = match band_key {
+                Some(k) => crate::calibrate::read_time_scale_key(edge_speeds_path, k)?
+                    .or(typical_scale)
+                    .unwrap_or(1.0),
+                None => typical_scale.unwrap_or(1.0),
+            };
             anyhow::ensure!(!rows.is_empty(), "edge recustomize: empty table");
             // Values are either absolute km/h or base-speed ratios —
             // read_edge_speeds enforces exactly one column type per table.
