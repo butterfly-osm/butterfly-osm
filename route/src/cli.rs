@@ -8,10 +8,10 @@ use crate::contraction;
 use crate::customization;
 use crate::ebg::{EbgConfig, build_ebg};
 use crate::ingest::{IngestConfig, run_ingest};
+use crate::model::profiling::{ProfileConfig, run_profiling};
 use crate::nbg::{NbgConfig, build_nbg};
 use crate::ordering;
 use crate::ordering_lifted;
-use crate::profile::{ProfileConfig, run_profiling};
 use crate::profile_abi::Mode;
 use crate::server;
 use crate::validate::{

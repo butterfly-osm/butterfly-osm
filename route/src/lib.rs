@@ -30,7 +30,6 @@ pub mod nbg_ch;
 pub mod ordering;
 pub mod ordering_lifted;
 pub mod pack;
-pub mod profile;
 pub mod profile_abi;
 pub mod range;
 pub mod server;
