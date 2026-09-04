@@ -1840,7 +1840,7 @@ fn run_batched_isochrone_bench(
         let result = phast.query_bounded(origin, threshold_s);
         let segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
         let contour = generate_sparse_contour(&segments, &sparse_config)?;
-        single_vertices += contour.outer_ring.len();
+        single_vertices += contour.ring.len();
 
         if (i + 1) % 10 == 0 || i + 1 == n_origins {
             print!("  Progress: {}/{}\r", i + 1, n_origins);
