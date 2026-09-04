@@ -303,6 +303,47 @@ impl WeightArray {
         Self::U24(ArcCow::from_vec(bytes))
     }
 
+    /// Encode an owned `Vec<u32>` at an explicitly chosen width,
+    /// mapping the `u32::MAX` "no edge" sentinel to that width's own
+    /// sentinel. The caller is responsible for passing a width that
+    /// [`WeightWidth::choose`] would accept for these values — a
+    /// narrower one truncates.
+    pub fn with_width(v: Vec<u32>, width: WeightWidth) -> Self {
+        match width {
+            WeightWidth::U32 => Self::from_vec_u32(v),
+            WeightWidth::U24 => {
+                let n = v.len();
+                let mut bytes: Vec<u8> = Vec::with_capacity(n * 3);
+                for &w in &v {
+                    let x: u32 = if w == u32::MAX { U24_SENTINEL } else { w };
+                    bytes.extend_from_slice(&x.to_le_bytes()[..3]);
+                }
+                Self::from_u24_bytes(bytes, n)
+            }
+            WeightWidth::U16 => {
+                let v16: Vec<u16> = v
+                    .into_iter()
+                    .map(|w| if w == u32::MAX { u16::MAX } else { w as u16 })
+                    .collect();
+                Self::from_vec_u16(v16)
+            }
+        }
+    }
+
+    /// Encode an owned `Vec<u32>` at the NARROWEST width that round-trips
+    /// every value ([`WeightWidth::choose`]).
+    ///
+    /// #552: the in-memory builders (serve-boot recustomization) used to
+    /// keep their results at u32 even though the on-disk step-8 writer
+    /// already narrows — that is ~50 % of the anon RSS of every pinned
+    /// recustomized car-family mode for nothing. `get` / `iter` widen
+    /// back transparently, including the `u32::MAX` sentinel.
+    #[inline]
+    pub fn from_vec_u32_narrowed(v: Vec<u32>) -> Self {
+        let width = WeightWidth::choose(&v);
+        Self::with_width(v, width)
+    }
+
     /// Empty array (U32 width).
     #[inline]
     pub fn empty() -> Self {
@@ -943,6 +984,44 @@ mod tests {
         // Iter widens identically.
         let vals: Vec<u32> = arr.iter().collect();
         assert_eq!(vals, vec![1, 2, u32::MAX, 65_534]);
+    }
+
+    /// #552: the narrowing constructor must be value-transparent — the
+    /// serve-boot recustomization stores its results through it, so
+    /// `get(i)` (and the `*AdjFlat` builders that read through it) must
+    /// see exactly the `Vec<u32>` that went in, `u32::MAX` sentinel
+    /// included, at every width the chooser can pick.
+    #[test]
+    fn narrowed_round_trips_every_width_including_the_sentinel() {
+        let cases: Vec<(Vec<u32>, WeightWidth)> = vec![
+            // u16 range, with the no-edge sentinel.
+            (vec![0, 1, 65_534, u32::MAX, 7], WeightWidth::U16),
+            // needs u24 (65_535 would alias the u16 sentinel), with sentinel.
+            (
+                vec![0, 65_535, 100_000, 0x00FF_FFFE, u32::MAX],
+                WeightWidth::U24,
+            ),
+            // u24 overflow → u32, with sentinel.
+            (
+                vec![0, U24_SENTINEL, 0x0100_0000, u32::MAX],
+                WeightWidth::U32,
+            ),
+            // empty input must not panic.
+            (vec![], WeightWidth::U16),
+        ];
+        for (raw, expected_width) in cases {
+            let arr = WeightArray::from_vec_u32_narrowed(raw.clone());
+            assert_eq!(
+                arr.width(),
+                expected_width,
+                "unexpected storage width for {raw:?}"
+            );
+            assert_eq!(arr.len(), raw.len(), "length must survive narrowing");
+            for (i, &want) in raw.iter().enumerate() {
+                assert_eq!(arr.get(i), want, "value {i} of {raw:?} must round-trip");
+            }
+            assert_eq!(arr.to_vec_u32(), raw, "iter must round-trip {raw:?}");
+        }
     }
 
     #[test]
