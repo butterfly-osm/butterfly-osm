@@ -233,6 +233,7 @@ subsystem.
 
 ## Documentation
 
+- [Engineering guide](docs/ENGINEERING.md) — start here: build, run, workspace map, query surface, calibration seam, testing and repo boundaries.
 - [Quickstart](docs/quickstart.md) — Docker + first `/route` in 60 seconds.
 - [API reference](docs/api.md) — REST + Flight endpoint catalog, query parameters, response shapes.
 - [Deployment](docs/deployment.md) — env vars, `/health`, `/metrics`, Prometheus, multi-region.
@@ -240,8 +241,7 @@ subsystem.
 - [Troubleshooting](docs/troubleshooting.md) — boot failures, snap errors, CRC mismatches, avoid-cache miss rate.
 
 Swagger UI is live at `http://<host>:3001/swagger-ui/` when the server is
-running. `CLAUDE.md` carries the in-tree engineering notes and benchmarking
-playbooks.
+running.
 
 ## Contributing
 
