@@ -60,8 +60,7 @@
 //!
 //! Section names are stored as UTF-8 strings (e.g. `"weights/car"`,
 //! `"cch/topo"`). The `kind` enum is for typed dispatch; the name is
-//! for logging and for ad-hoc / future sections (e.g. per-mode
-//! traffic-customised weights from #84).
+//! for logging and for ad-hoc / future sections.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -162,13 +161,11 @@ pub enum SectionKind {
     /// `CchWeightsDist` for matrix/trip/Flight distance reporting so
     /// the returned distance belongs to the same path as the duration.
     CchWeightsLat = 0x0008_0003,
-    /// `traffic/<variant>.traffic.json` — per-variant speed-factor
-    /// profile (#84/#392). Bundled alongside the variant's recustomized
-    /// `cch.w.<mode>_<variant>.u32` weights at
-    /// `mode/<mode>/_variant/<variant>/traffic.json` so the server can
-    /// emit provenance and reject stray weight files without sidecars.
-    TrafficProfileJson = 0x0008_0004,
-
+    // 0x0008_0004 was `TrafficProfileJson`, the provenance half of a baked
+    // traffic variant (#84/#392), retired in #599. A legacy container
+    // carrying one now reads it as `Unknown` — it still opens and
+    // inspects; the section is simply never loaded. Do not reuse the
+    // discriminant.
     /// Pre-built flat UP adjacency for a (mode, metric). Built at pack
     /// time from cch_topo + cch_weights. Mmapped at server boot — the
     /// substrate that bounds idle RSS to working set rather than dataset
@@ -310,7 +307,6 @@ impl SectionKind {
             0x0008_0001 => Self::CchWeightsTime,
             0x0008_0002 => Self::CchWeightsDist,
             0x0008_0003 => Self::CchWeightsLat,
-            0x0008_0004 => Self::TrafficProfileJson,
 
             0x0009_0001 => Self::UpAdjFlat,
             0x0009_0002 => Self::DownAdjFlat,
@@ -369,7 +365,6 @@ impl SectionKind {
             Self::CchWeightsTime => "step8/cch.w.u32",
             Self::CchWeightsDist => "step8/cch.d.u32",
             Self::CchWeightsLat => "step8/cch.lat.u32",
-            Self::TrafficProfileJson => "step8/traffic.json",
             Self::UpAdjFlat => "flat/up_adj",
             Self::DownAdjFlat => "flat/down_adj",
             Self::DownReverseAdjFlat => "flat/down_reverse_adj",

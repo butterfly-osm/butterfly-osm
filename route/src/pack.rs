@@ -9,10 +9,9 @@
 //!   have to know the file system layout. `step1/nodes.sa`,
 //!   `step5/filtered.<mode>.ebg`, `step8/cch.w.<mode>.u32`, etc.
 //! * The pack walks the source tree by *globbing* per-step
-//!   directories, so newly-added files (e.g. traffic-customised
-//!   weight files from #84) are picked up automatically as long as
-//!   they follow the `cch.w.*.u32` / `cch.d.*.u32` filename pattern
-//!   in `step8/`.
+//!   directories, so a newly-added per-mode weight file is picked up
+//!   automatically as long as it follows the `cch.w.*.u32` /
+//!   `cch.d.*.u32` filename pattern in `step8/`.
 //! * Optional inputs (e.g. `node_signals.bin`, mode-mask bitsets) are
 //!   skipped silently if absent.
 
@@ -761,63 +760,6 @@ pub fn pack_with_options(
             &format!("mode/{}/weights.lat", mode),
             &cch_lat,
         )?;
-
-        // #84/#392: traffic-variant recustomized weights, when present.
-        // Scan step8 for `cch.w.<mode>_<variant>.u32` siblings (and the
-        // pair `cch.w.<mode>_<variant>.traffic.json` for provenance) and
-        // bundle each pair as
-        //   mode/<mode>/_variant/<variant>/weights.time
-        //   mode/<mode>/_variant/<variant>/traffic.json
-        // ServerState container loader enumerates these after building
-        // the base mode and synthesises a `<mode>_<variant>` mode that
-        // shares topology/snap/flats with the base and only overrides
-        // cch_weights. --data-dir already auto-discovers variants from
-        // disk; this brings the container path to parity.
-        if step8.is_dir() {
-            let prefix = format!("cch.w.{}_", mode);
-            let mut variant_pairs: Vec<(String, std::path::PathBuf, std::path::PathBuf)> =
-                Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&step8) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    let Some(stem) = name_str
-                        .strip_prefix(&prefix)
-                        .and_then(|s| s.strip_suffix(".u32"))
-                    else {
-                        continue;
-                    };
-                    if stem.is_empty() || stem.contains('.') {
-                        continue;
-                    }
-                    let weights_path = entry.path();
-                    let json_path = step8.join(format!("cch.w.{}_{}.traffic.json", mode, stem));
-                    if !json_path.exists() {
-                        eprintln!(
-                            "  ! [skip variant] {} missing sibling .traffic.json — pack skipped",
-                            weights_path.display()
-                        );
-                        continue;
-                    }
-                    variant_pairs.push((stem.to_string(), weights_path, json_path));
-                }
-            }
-            variant_pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            for (variant, weights_path, json_path) in variant_pairs {
-                maybe_append(
-                    &mut w,
-                    SectionKind::CchWeightsTime,
-                    &format!("mode/{}/_variant/{}/weights.time", mode, variant),
-                    &weights_path,
-                )?;
-                maybe_append(
-                    &mut w,
-                    SectionKind::TrafficProfileJson,
-                    &format!("mode/{}/_variant/{}/traffic.json", mode, variant),
-                    &json_path,
-                )?;
-            }
-        }
 
         // ---- Pre-built flat adjacencies (#150) -----------------------
         // Flats are built once at pack time from (cch_topo, cch_weights),
@@ -1678,25 +1620,6 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
         let slash = rest.find('/')?;
         let mode = &rest[..slash];
         let leaf = &rest[slash + 1..];
-        // mode/<m>/_variant/<v>/... → the step8 `<mode>_<variant>`
-        // pair (#84/#392). Both halves are packed verbatim.
-        if let Some(variant_leaf) = leaf.strip_prefix("_variant/") {
-            let slash = variant_leaf.find('/')?;
-            let variant = &variant_leaf[..slash];
-            return match &variant_leaf[slash + 1..] {
-                "weights.time" => Some(
-                    out_dir
-                        .join("step8")
-                        .join(format!("cch.w.{}_{}.u32", mode, variant)),
-                ),
-                "traffic.json" => Some(
-                    out_dir
-                        .join("step8")
-                        .join(format!("cch.w.{}_{}.traffic.json", mode, variant)),
-                ),
-                _ => None,
-            };
-        }
         return match leaf {
             "way_attrs" => Some(
                 out_dir
@@ -1794,6 +1717,22 @@ fn legacy_path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
         return None;
     }
     None
+}
+
+/// `mode/<m>/_variant/<v>/...`: the retired #84/#392 baked traffic
+/// variant pair (recustomised weights + their profile provenance).
+/// Nothing has emitted these since #599 and no shipped container was
+/// ever found carrying one, but `unpack` still recognises the name so a
+/// legacy artifact extracts instead of failing on an unmappable
+/// section.
+fn is_retired_traffic_variant(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("mode/") else {
+        return false;
+    };
+    let Some((_mode, leaf)) = rest.split_once('/') else {
+        return false;
+    };
+    leaf.starts_with("_variant/")
 }
 
 /// Sections `pack` SYNTHESISES: bytes that exist nowhere in the
@@ -1919,6 +1858,14 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
         // own.
         if sec.kind == SectionKind::CchMiddles {
             println!("  -- (folded into cch.topo) {}", sec.name);
+            continue;
+        }
+        // #599: baked traffic variants are retired. `pack` no longer
+        // emits them and the server no longer loads them, but a
+        // container old enough to carry a pair must still unpack — the
+        // pair is skipped rather than aborting the extraction.
+        if is_retired_traffic_variant(&sec.name) {
+            println!("  -- (skip retired traffic variant) {}", sec.name);
             continue;
         }
         let out_path = path_for_section(out_dir, &sec.name).ok_or_else(|| {
@@ -3051,8 +2998,11 @@ mod tests {
         write_file(&root.join("step8").join("cch.w.car.u32"), b"wcar-cch")?;
         write_file(&root.join("step8").join("cch.w.bike.u32"), b"wbike-cch")?;
         write_file(&root.join("step8").join("cch.d.car.u32"), b"dcar-cch")?;
-        // Future #84 traffic-customised file: pack must accept it
-        // without knowing what `car_p3` means.
+        // A stray `cch.w.<name>.u32` for something that is not a mode
+        // (no step5/step6/step7 files behind it). #599 retired the
+        // traffic-variant scan that used to adopt such a file, so pack
+        // must now simply ignore it — asserted by
+        // `pack_ignores_a_stray_step8_weight_file`.
         write_file(&root.join("step8").join("cch.w.car_p3.u32"), b"wcarp3")?;
 
         Ok(tmp)
@@ -3633,8 +3583,8 @@ mod tests {
     /// Every file a production step tree has that `synth_dir` fakes.
     /// The container packed from this carries all five synthesised
     /// families (flats, snap index, region tiles, flat edge geometry,
-    /// way-name index), the split CCH topology, the verbatim per-edge
-    /// OSM chains and a traffic variant.
+    /// way-name index), the split CCH topology and the verbatim
+    /// per-edge OSM chains.
     fn realistic_dir() -> Result<TempDir> {
         let tmp = synth_dir()?;
         let root = tmp.path();
@@ -3647,21 +3597,6 @@ mod tests {
             write_real_order_ebg(root, mode_name)?;
             write_real_cch(root, mode_name, mode)?;
         }
-        // #84/#392 variant: recustomised weights + their provenance
-        // sidecar. `pack` skips a variant whose sidecar is missing, so
-        // `synth_dir`'s lone `cch.w.car_p3.u32` never produced one.
-        crate::customization::write_cch_weights(
-            &root.join("step8").join("cch.w.car_p3.u32"),
-            &[90, 200],
-            &[95, 210],
-            &[u32::MAX, 1],
-            &[u32::MAX, 1],
-            Mode(1),
-        )?;
-        write_file(
-            &root.join("step8").join("cch.w.car_p3.traffic.json"),
-            br#"{"name":"p3","factors":{"urban_high":0.6}}"#,
-        )?;
         Ok(tmp)
     }
 
@@ -3697,19 +3632,77 @@ mod tests {
         ("mode/car/down_reverse_adj.topo", None),
         ("mode/car/weights.time", Some("step8/cch.w.car.u32")),
         ("mode/car/weights.dist", Some("step8/cch.d.car.u32")),
-        (
-            "mode/car/_variant/p3/weights.time",
-            Some("step8/cch.w.car_p3.u32"),
-        ),
-        (
-            "mode/car/_variant/p3/traffic.json",
-            Some("step8/cch.w.car_p3.traffic.json"),
-        ),
         // The split topology is a pair: neither half is a step file on
         // its own, so both are checked by `restore_cch_topo`'s test.
         ("mode/car/topo", None),
         ("mode/car/middles", None),
     ];
+
+    /// #599: `pack` used to adopt a stray `cch.w.<base>_<variant>.u32`
+    /// in step8 as a baked traffic variant. Nothing writes such a file
+    /// any more, so a leftover one must be ignored outright rather than
+    /// smuggled into the container as a mode nobody can serve.
+    /// `synth_dir` plants `cch.w.car_p3.u32` for exactly this.
+    #[test]
+    fn pack_ignores_a_stray_step8_weight_file() -> Result<()> {
+        let tmp = synth_dir()?;
+        let out = tmp.path().join("stray.butterfly");
+        pack(tmp.path(), &out, None, None)?;
+        let c = Container::open(&out)?;
+        assert!(
+            c.sections.iter().all(|s| !s.name.contains("car_p3")),
+            "stray step8 weight file leaked into the container: {:?}",
+            c.sections
+                .iter()
+                .map(|s| s.name.as_str())
+                .filter(|n| n.contains("car_p3"))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            c.sections.iter().all(|s| !s.name.contains("_variant")),
+            "pack must not emit traffic-variant sections any more"
+        );
+        Ok(())
+    }
+
+    /// #599: the loader is gone, but a container old enough to carry a
+    /// baked variant pair must still extract. `unpack` skips the pair
+    /// instead of failing on a section it can no longer map to a step
+    /// file — an abort here would make a legacy artifact unreadable,
+    /// which is a strictly worse outcome than losing a mode nothing
+    /// could produce.
+    #[test]
+    fn unpack_skips_a_legacy_traffic_variant_pair() -> Result<()> {
+        use crate::formats::butterfly_dat::ContainerWriter;
+        let tmp = TempDir::new()?;
+        let container_path = tmp.path().join("legacy.butterfly");
+        let mut w = ContainerWriter::create(&container_path)?;
+        w.append_bytes(
+            SectionKind::CchWeightsTime,
+            "mode/car/_variant/p3/weights.time",
+            b"legacy-variant-weights",
+        )?;
+        // 0x0008_0004 is the retired `TrafficProfileJson` discriminant:
+        // a legacy container's provenance half now reads as `Unknown`.
+        w.append_bytes(
+            SectionKind::Unknown,
+            "mode/car/_variant/p3/traffic.json",
+            br#"{"name":"p3"}"#,
+        )?;
+        w.finalize()?;
+
+        let out = tmp.path().join("restored");
+        unpack(&container_path, &out)?;
+        assert!(
+            !out.join("step8").join("cch.w.car_p3.u32").exists(),
+            "the retired variant weights must not be restored"
+        );
+        assert!(
+            !out.join("step8").join("cch.w.car_p3.traffic.json").exists(),
+            "the retired variant provenance must not be restored"
+        );
+        Ok(())
+    }
 
     /// The end-to-end claim in the `unpack` doc comment, on a container
     /// shaped like the ones we ship (#600): every section either goes
