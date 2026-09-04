@@ -1,9 +1,15 @@
-//! Urban density classification for traffic-aware routing.
+//! Urban density classification.
 //!
-//! Each way is assigned a `DensityClass` during step 2 profiling. The class is
-//! stored in `way_attrs.*.bin` (format v2) and consumed at step 8 by the
-//! traffic recustomization pass which multiplies edge weights by per-class
-//! speed factors loaded from a `traffic/*.traffic.json` profile.
+//! Each way is assigned a `DensityClass` during step 2 profiling and the class
+//! is stored in `way_attrs.*.bin` (format v2).
+//!
+//! **Nothing reads it today.** Its only consumer was the per-density traffic
+//! profile: the step-8 bake (retired in #582) and the runtime baked-variant
+//! loader (retired in #599). Speed calibration now comes from the directed
+//! per-edge `edge_speeds.parquet` table applied at serve boot, which needs no
+//! density bucket. The classifier and the byte stay because they are part of
+//! the way_attrs v2 on-disk format that every shipped container carries;
+//! dropping them is a format decision, not a cleanup.
 //!
 //! ## Classifiers
 //!

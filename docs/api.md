@@ -64,7 +64,7 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   q75-/q25-speed weight sets carried by `edge_speeds.parquet`
   (`speed_ratio_q25/q75` columns). The default response is ALWAYS the
   median alone — bands cost 2 extra passes and must be asked for. `car`
-  only; incompatible with `traffic`/`avoid_polygons`/`exclude`/`bearings`;
+  only; incompatible with `avoid_polygons`/`exclude`/`bearings`;
   isochrone bands are JSON-only. On `/route` and `/trip` the band numbers
   are full re-queries (the band's world may reroute); on `/isochrone` the
   response carries extra contour features tagged `band: "optimistic" |
@@ -84,6 +84,7 @@ Point-to-point routing with geometry, optional turn-by-turn steps with road name
 | `src_lon`, `src_lat` | f64 | required | Source coordinate |
 | `dst_lon`, `dst_lat` | f64 | required | Destination coordinate |
 | `mode` | string | required | `car` / `bike` / `foot` (or any loaded mode) |
+| `traffic` | string | — | **Retired (#599).** Selected a baked traffic-variant mode. Nothing has produced one since #582 removed the profile writers, and no shipped container was ever found carrying one. A non-empty value is a 400 — the base mode is deliberately NOT served in its place. There is one public car profile; for spread use `uncertainty=bands`. |
 | `geometries` | string | `polyline6` | `polyline6` / `geojson` / `points` |
 | `alternatives` | u32 | `0` | Up to 5 alternative routes (penalty-based) |
 | `steps` | bool | `false` | Include turn-by-turn instructions with road names |
@@ -114,7 +115,7 @@ Content negotiation:
 
 | Status | Cause |
 |--------|-------|
-| 400 | Invalid coord, unknown mode, bad bearing/exclude/annotation token, bad traffic variant, unsnappable point |
+| 400 | Invalid coord, unknown mode, bad bearing/exclude/annotation token, retired `traffic` parameter (#599), unsnappable point |
 | 404 | No route found after K-best snap fallback (up to 400 combos) |
 
 **Notes**
