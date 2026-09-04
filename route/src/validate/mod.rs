@@ -801,17 +801,17 @@ fn verify_golden_tag_cases() -> Result<()> {
 
 fn verify_enumeration_stability() -> Result<()> {
     // Verify that enumerations match expected values
-    let highway_classes = crate::profile::build_highway_classes();
+    let highway_classes = crate::model::profiling::build_highway_classes();
     if highway_classes.get(&1) != Some(&"motorway".to_string()) {
         anyhow::bail!("Enumeration stability failed: highway_class 1 should be motorway");
     }
 
-    let surface_classes = crate::profile::build_surface_classes();
+    let surface_classes = crate::model::profiling::build_surface_classes();
     if surface_classes.get(&0) != Some(&"unknown".to_string()) {
         anyhow::bail!("Enumeration stability failed: surface_class 0 should be unknown");
     }
 
-    let class_bits = crate::profile::build_class_bits();
+    let class_bits = crate::model::profiling::build_class_bits();
     if class_bits.get("access_fwd") != Some(&0u32) {
         anyhow::bail!("Enumeration stability failed: access_fwd should be bit 0");
     }
