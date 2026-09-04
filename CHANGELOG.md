@@ -10,6 +10,53 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — One query context for the handlers that never cross a region (#577)
+
+`RegionsState` was the axum state of a dozen handlers, but only `/route` and
+`/match` ever *solve* a cross-region query. Every other surface opened with the
+same prologue — start instant, `dispatch_*`, keep `(state, region_id)`, reject
+mixed-region input — and closed by recording the per-region metric with that
+instant. `QueryContext { state, region_id, region_idx, started }` is that
+prologue once, built by `from_point` / `from_pair` / `from_points`, with
+`record(endpoint)` as the epilogue.
+
+Moved to the context: `/nearest`, `/isochrone`, `/isochrone/bulk`, `/table`,
+`/trip`, `/catchment`, `/transit`, `/transit/bulk`, and the Flight actions
+(`matrix`, `route_batch`, `isochrone`, `edges_batch`, both DoExchange entries).
+`/route` and `/match` keep the multi-region state — they hand cross-region
+input to the overlay coordinator instead of rejecting it — and so does
+`/transit/bulk`, which confirms `queries[1..]` against every region's bbox and
+now reads the winning index off the context.
+
+The dispatcher's surface shrinks to its four entry points plus the
+cross-region pair: `dispatch_single_id` / `dispatch_p2p_id` /
+`dispatch_p2p_with_idx` collapse into `dispatch_single` / `dispatch_p2p`, both
+returning `(state, region id, region index)` like `dispatch_many`.
+
+Unchanged on purpose, and why:
+
+- **Not an axum extractor.** Every handler validates something before
+  dispatching, and the dispatch inputs differ per surface. An extractor would
+  snap first and change which error a malformed request gets. The constructors
+  are called exactly where the prologue sat.
+- **Error text, status and evaluation order are byte-identical** on every
+  surface. Two inline renderings became named functions so the wording is
+  testable without a loaded container: `DispatchError::into_code_message_parts`
+  (`/trip` and `/match` each open-coded it) and `/transit/bulk`'s
+  `bulk_out_of_region` / `bulk_query_dispatch_error`.
+- **`/metrics` label set is byte-identical.** `QueryContext::record` forwards
+  verbatim to the same `record_query`, with the dispatcher's own region id and
+  the same endpoint literal at every call site. Pinned by a capturing
+  `metrics::Recorder` installed per-thread, including that endpoint labels
+  outside `ENDPOINTS` (`isochrone_bulk`, `catchment`) still reach the exporter.
+
+**If you read a latency graph:** two histograms shift by roughly a
+microsecond. `/transit` and `/transit/bulk` used to take their start instant
+before computing the access mode / before the batch-size checks; the context
+takes it immediately before the dispatch. Same labels, same series — the
+recorded value simply no longer includes that sliver of validation. Every other
+endpoint's instant is taken at the same point as before.
+
 ### 2026-09-04 — Retire the baked traffic-variant loader (#599)
 
 **Breaking for a legacy container: its baked traffic variants are no longer
