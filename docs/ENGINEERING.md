@@ -154,6 +154,12 @@ loaded speed table carries no band columns. Product rules, non-negotiable:
   built from the *unreached successors* of settled edges; for `direction=arrive`
   the settled edge itself is used and there is no successor frontier. Mixing the
   two yields confetti or over-large polygons.
+- **An arrive field is seeded like a destination.** Reaching the snapped edge
+  pays its full weight but the journey stops at the snap, so the seed refunds
+  that suffix as `shift − part_time` and the pipeline removes the `shift` from
+  every label — the same convention `/route` and the many-to-one matrix field
+  use. Seeding it any other way shifts the WHOLE field by a constant: the
+  polygon then serves a smaller threshold than the one asked for (#544).
 
 ## 4. Calibration seam
 
