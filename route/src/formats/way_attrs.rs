@@ -32,7 +32,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use super::crc::Digest;
-use crate::profile_abi::{Mode, WayOutput};
+use crate::model::types::{Mode, WayOutput};
 
 const MAGIC: u32 = 0x57415941; // "WAYA"
 /// Current on-disk version — emits the `density_class` byte.

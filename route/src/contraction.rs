@@ -46,7 +46,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use crate::formats::{CchTopo, CchTopoFile, FilteredEbgFile, OrderEbgFile, mod_weights};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Edge weight for weighted adjacency - stores (target, weight)
 type WeightedAdj = Vec<FxHashMap<u32, u32>>;

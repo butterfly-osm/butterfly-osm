@@ -30,8 +30,6 @@ pub mod nbg_ch;
 pub mod ordering;
 pub mod ordering_lifted;
 pub mod pack;
-pub mod profile;
-pub mod profile_abi;
 pub mod range;
 pub mod server;
 /// Test-support helpers shared by unit and integration tests (#587).
@@ -43,5 +41,5 @@ pub mod validate;
 pub mod weights;
 
 pub use formats::{RelationsFile, WaysFile};
-pub use profile_abi::{Mode, TurnInput, TurnOutput, TurnRuleKind, WayInput, WayOutput};
+pub use model::types::{Mode, TurnInput, TurnOutput, TurnRuleKind, WayInput, WayOutput};
 pub use validate::{LockFile, Step2LockFile};

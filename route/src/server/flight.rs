@@ -40,7 +40,7 @@ use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::matrix::neighbors::{
     RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
@@ -779,16 +779,7 @@ fn do_matrix(
     // the primary-only legacy (engine-level multi-seed is the follow-up).
     type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
     let snap_endpoint = |lon: f64, lat: f64, role: SnapRole| -> PrimarySnap {
-        let k = state.snap_index.snap_k_with_info_filtered_role(
-            lon,
-            lat,
-            mode.0,
-            8,
-            None,
-            role.role_filter(&mode_data),
-        );
-        if let Some(pe) =
-            super::phantom::phantom_from_candidates(state, &mode_data, &k, lon, lat, role, None)
+        if let Some(pe) = super::phantom::phantom_for(state, &mode_data, mode, lon, lat, role, None)
         {
             let seeds: Vec<(u32, u32, u32, bool)> = pe
                 .seeds
@@ -1600,41 +1591,9 @@ fn compute_route_pair(
     // up to 3 near-equidistant physical edges per endpoint, exact partial
     // costs. Replaces the K=1 single-directed-edge commitment that caused 4x
     // fwd/rev asymmetry on long rural chains.
-    let src_k = state.snap_index.snap_k_with_info_filtered_role(
-        slon,
-        slat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Src.role_filter(mode_data),
-    );
-    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
-        dlon,
-        dlat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Dst.role_filter(mode_data),
-    );
     if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &src_k,
-            slon,
-            slat,
-            SnapRole::Src,
-            None,
-        ),
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &dst_k,
-            dlon,
-            dlat,
-            SnapRole::Dst,
-            None,
-        ),
+        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
+        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
     ) {
         let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
         let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
@@ -1796,41 +1755,9 @@ fn compute_route_distance_bounded(
     // Fast path (#506): phantom-seeded single query — same seeding as the
     // unbounded `compute_route_pair`, so bounded and unbounded route_batch
     // agree on the route (and therefore on the distance the bound prunes).
-    let src_k = state.snap_index.snap_k_with_info_filtered_role(
-        slon,
-        slat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Src.role_filter(mode_data),
-    );
-    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
-        dlon,
-        dlat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Dst.role_filter(mode_data),
-    );
     if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &src_k,
-            slon,
-            slat,
-            SnapRole::Src,
-            None,
-        ),
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &dst_k,
-            dlon,
-            dlat,
-            SnapRole::Dst,
-            None,
-        ),
+        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
+        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
     ) {
         let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
         let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
@@ -2686,41 +2613,9 @@ pub(crate) fn route_for_pair(
     // route_batch, so the emitted per-edge path is the SAME route those
     // endpoints return — no more directional-commit detours feeding flow
     // analytics (fixtures emitted 334s/2880m vs the true 163s/1258m).
-    let src_k = state.snap_index.snap_k_with_info_filtered_role(
-        slon,
-        slat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Src.role_filter(mode_data),
-    );
-    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
-        dlon,
-        dlat,
-        mode.0,
-        8,
-        None,
-        SnapRole::Dst.role_filter(mode_data),
-    );
     if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &src_k,
-            slon,
-            slat,
-            SnapRole::Src,
-            None,
-        ),
-        super::phantom::phantom_from_candidates(
-            state,
-            mode_data,
-            &dst_k,
-            dlon,
-            dlat,
-            SnapRole::Dst,
-            None,
-        ),
+        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
+        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
     ) {
         let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
         let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);

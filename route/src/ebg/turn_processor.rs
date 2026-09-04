@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::{CanonicalTurnRule, TurnRuleKey};
 use crate::formats::*;
-use crate::profile_abi::{MAX_MODES, Mode};
+use crate::model::types::{MAX_MODES, Mode};
 
 /// Build canonical turn rule table from dynamic per-mode turn rules.
 ///
@@ -84,8 +84,8 @@ fn process_rule(
     canonical_rules: &mut HashMap<TurnRuleKey, CanonicalTurnRule>,
     way_nodes_index: &HashMap<i64, Vec<i64>>,
 ) -> Result<()> {
-    // Convert rule kind from profile_abi TurnRuleKind to ebg TurnKind
-    use crate::profile_abi::TurnRuleKind as PRK;
+    // Convert rule kind from model::types TurnRuleKind to ebg TurnKind
+    use crate::model::types::TurnRuleKind as PRK;
     let kind = match rule.kind {
         PRK::None => TurnKind::None,
         PRK::Ban => TurnKind::Ban,

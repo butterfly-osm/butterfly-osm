@@ -508,7 +508,7 @@ async fn cross_region_match_inner(
                 let entry = &regions_clone.regions[region_idx];
                 let state = entry.state();
                 let mode_idx = state.mode_lookup.get(&mode_name).copied().unwrap_or(0);
-                let mode_data = state.get_mode(crate::profile_abi::Mode(mode_idx));
+                let mode_data = state.get_mode(crate::model::types::Mode(mode_idx));
                 let (geometry, distance_m) =
                     build_geometry(&m.ebg_path, &state.ebg_nodes, &state.edge_geom, geom_format);
                 // #297: duration is now seconds-native (m.duration_s)

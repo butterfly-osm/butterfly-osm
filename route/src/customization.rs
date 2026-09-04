@@ -41,7 +41,7 @@ use crate::formats::{
     ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
     HybridStateFile, WeightArray, mod_turns, mod_weights, way_attrs,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Configuration for Step 8
 pub struct Step8Config {
@@ -1864,7 +1864,7 @@ mod traffic_apply_tests {
     use super::*;
     use crate::density::DensityClass;
     use crate::formats::{EbgNode, NbgEdge, NbgGeo};
-    use crate::profile_abi::WayOutput;
+    use crate::model::types::WayOutput;
     use crate::traffic::TrafficProfile;
     use std::collections::BTreeMap;
 

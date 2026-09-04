@@ -8,7 +8,7 @@ use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
 use crate::matrix::lex_better;
 #[cfg(feature = "bench")]
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Local alias for the shared `bucket_ch::INVALID_HANDLE` sentinel
 /// (both `u32::MAX`). The alias is `pub(crate)` so the matrix-side

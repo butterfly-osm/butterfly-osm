@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::formats::*;
-use crate::profile_abi::{MAX_MODES, Mode};
+use crate::model::types::{MAX_MODES, Mode};
 
 pub mod turn_penalty;
 pub mod turn_processor;

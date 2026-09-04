@@ -31,7 +31,7 @@ use butterfly_route::formats::ebg_nodes::{EbgNode, EbgNodes};
 use butterfly_route::formats::mmap::ArcCow;
 use butterfly_route::formats::nbg_geo::{NbgEdge, NbgGeo, PolyLine};
 use butterfly_route::formats::{CchTopo, CchWeights, FilteredEbg};
-use butterfly_route::profile_abi::Mode;
+use butterfly_route::model::types::Mode;
 use butterfly_route::range::{ContourResult, encode_polygon_wkb};
 use butterfly_route::server::edge_geom::EdgeGeometry;
 use butterfly_route::server::geometry::{ReachModel, build_isochrone_geometry_sparse};

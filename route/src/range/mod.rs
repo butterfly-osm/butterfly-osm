@@ -14,7 +14,7 @@ use std::collections::BinaryHeap;
 use std::path::Path;
 
 use crate::formats::{CchTopoFile, CchWeightsFile};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 pub mod phast;
 #[cfg(feature = "bench")]

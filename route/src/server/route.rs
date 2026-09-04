@@ -565,31 +565,18 @@ pub async fn route_handler(
     // PHASE 1: K=1 snap for both endpoints. Bearing-filtered queries
     // were already K=1 in the previous implementation; non-bearing
     // queries now start at K=1 too and only escalate on failure.
-    let mut src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
-        match state.snap_index.snap_with_bearing_filtered_role(
-            req.origin_lon,
-            req.origin_lat,
-            mode.0,
-            angle,
-            range,
-            Some(snap_mask),
-            src_role_filter,
-        ) {
-            Some(t) => vec![t],
-            None => Vec::new(),
-        }
-    } else {
+    let mut src_candidates: Vec<(u32, f64, f64, f64)> =
         match state.snap_index.snap_with_info_filtered_role(
             req.origin_lon,
             req.origin_lat,
             mode.0,
             Some(snap_mask),
             src_role_filter,
+            src_bearing,
         ) {
             Some(t) => vec![t],
             None => Vec::new(),
-        }
-    };
+        };
     if src_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -600,31 +587,18 @@ pub async fn route_handler(
             .into_response();
     }
 
-    let mut dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
-        match state.snap_index.snap_with_bearing_filtered_role(
-            req.destination_lon,
-            req.destination_lat,
-            mode.0,
-            angle,
-            range,
-            Some(snap_mask),
-            dst_role_filter,
-        ) {
-            Some(t) => vec![t],
-            None => Vec::new(),
-        }
-    } else {
+    let mut dst_candidates: Vec<(u32, f64, f64, f64)> =
         match state.snap_index.snap_with_info_filtered_role(
             req.destination_lon,
             req.destination_lat,
             mode.0,
             Some(snap_mask),
             dst_role_filter,
+            dst_bearing,
         ) {
             Some(t) => vec![t],
             None => Vec::new(),
-        }
-    };
+        };
     if dst_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -854,38 +828,19 @@ pub async fn route_handler(
     // explicit direction and avoid/exclude run custom weight vectors the seed
     // costs don't reflect — those paths keep the legacy single-seed flow.
     if src_bearing.is_none() && dst_bearing.is_none() && weight_plan.is_base() {
-        // K=8 candidate fetch so near-equidistant PARALLEL physical edges are
-        // all seeded (Robertville: the correct road was 12 m further than a
-        // track whose both directions detour 15 km).
-        let src_k = state.snap_index.snap_k_with_info_filtered_role(
-            req.origin_lon,
-            req.origin_lat,
-            mode.0,
-            8,
-            Some(snap_mask),
-            src_role_filter,
-        );
-        let dst_k = state.snap_index.snap_k_with_info_filtered_role(
-            req.destination_lon,
-            req.destination_lat,
-            mode.0,
-            8,
-            Some(snap_mask),
-            dst_role_filter,
-        );
-        let src_ph = super::phantom::phantom_from_candidates(
+        let src_ph = super::phantom::phantom_for(
             &state,
             &mode_data,
-            &src_k,
+            mode,
             req.origin_lon,
             req.origin_lat,
             super::types::SnapRole::Src,
             Some(snap_mask),
         );
-        let dst_ph = super::phantom::phantom_from_candidates(
+        let dst_ph = super::phantom::phantom_for(
             &state,
             &mode_data,
-            &dst_k,
+            mode,
             req.destination_lon,
             req.destination_lat,
             super::types::SnapRole::Dst,
@@ -1416,6 +1371,7 @@ fn cross_region_route_inner(
         src_mode.0,
         None,
         src_role_filter,
+        None,
     ) {
         Some(t) => (t.0, t),
         None => {
@@ -1434,6 +1390,7 @@ fn cross_region_route_inner(
         dst_mode.0,
         None,
         dst_role_filter,
+        None,
     ) {
         Some(t) => (t.0, t),
         None => {
@@ -1602,7 +1559,7 @@ fn cross_region_route_inner(
 /// - the bidirectional search finds no path
 pub fn leg_points_and_distance(
     state: &ServerState,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_rank: u32,
     dst_rank: u32,
 ) -> (Vec<Point>, f64) {
@@ -1993,44 +1950,26 @@ fn get_edge_bearing(
 /// too). Plain path only: bearings/avoid/exclude reject bands upstream.
 pub(crate) fn band_p2p_duration(
     state: &ServerState,
-    band: crate::profile_abi::Mode,
+    band: crate::model::types::Mode,
     o_lon: f64,
     o_lat: f64,
     d_lon: f64,
     d_lat: f64,
 ) -> Option<f64> {
     let md = state.get_mode(band);
-    let src_rf = SnapRole::Src.role_filter(&md);
-    let dst_rf = SnapRole::Dst.role_filter(&md);
-    let src_k = state.snap_index.snap_k_with_info_filtered_role(
-        o_lon,
-        o_lat,
-        band.0,
-        8,
-        Some(&md.mask),
-        src_rf,
-    );
-    let dst_k = state.snap_index.snap_k_with_info_filtered_role(
-        d_lon,
-        d_lat,
-        band.0,
-        8,
-        Some(&md.mask),
-        dst_rf,
-    );
-    let sp = super::phantom::phantom_from_candidates(
+    let sp = super::phantom::phantom_for(
         state,
         &md,
-        &src_k,
+        band,
         o_lon,
         o_lat,
         super::types::SnapRole::Src,
         Some(&md.mask),
     )?;
-    let dp = super::phantom::phantom_from_candidates(
+    let dp = super::phantom::phantom_for(
         state,
         &md,
-        &dst_k,
+        band,
         d_lon,
         d_lat,
         super::types::SnapRole::Dst,

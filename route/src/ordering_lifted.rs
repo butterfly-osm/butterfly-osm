@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use crate::formats::{
     EbgCsrFile, EbgNodesFile, FilteredEbgFile, NbgCsrFile, NbgGeoFile, OrderEbg, OrderEbgFile,
 };
+use crate::model::types::Mode;
 use crate::nbg_ch::{compute_nbg_ordering, lift_ordering_to_ebg};
-use crate::profile_abi::Mode;
 
 /// Configuration for Step 6 Lifted
 pub struct Step6LiftedConfig {

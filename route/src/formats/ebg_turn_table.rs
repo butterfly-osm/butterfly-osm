@@ -6,7 +6,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
-use crate::profile_abi::MAX_MODES;
+use crate::model::types::MAX_MODES;
 
 const MAGIC: u32 = 0x45424754; // "EBGT"
 const VERSION: u16 = 3; // v3: penalty array values in seconds (was deciseconds in v2, #297)
