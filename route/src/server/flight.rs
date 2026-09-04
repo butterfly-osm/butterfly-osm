@@ -4150,7 +4150,7 @@ async fn do_exchange_edges_flow(
 async fn do_exchange_catchment(
     state: Arc<ServerState>,
     mode: Mode,
-    params: super::catchment::CatchmentParams,
+    params: super::catchment::CatchmentExchangeParams,
     batches: &[RecordBatch],
 ) -> std::result::Result<
     Response<Pin<Box<dyn futures::Stream<Item = std::result::Result<FlightData, Status>> + Send>>>,
@@ -4232,6 +4232,11 @@ async fn do_exchange_catchment(
     let done = Arc::new(AtomicBool::new(false)); // #533: completion flag
     let done_bg = done.clone();
 
+    // #596: the wire params split the same way they do on REST — a pre-matrix
+    // Euclidean filter and post-matrix hull parameters.
+    let radius_param = params.radius();
+    let hull_params = params.hull_params();
+
     let schema_clone = schema.clone();
     tokio::task::spawn_blocking(move || {
         let start = std::time::Instant::now();
@@ -4257,6 +4262,7 @@ async fn do_exchange_catchment(
             if client_coords.is_empty() {
                 continue;
             }
+            let store_coord = (*slon, *slat);
 
             // Lazy snap (#368 pattern): K=1 primary upfront for store
             // and all clients; K=64 escalation lives in the INF-cell
@@ -4275,9 +4281,20 @@ async fn do_exchange_catchment(
                 None => continue,
             };
 
+            // #596: the same Euclidean pre-filter REST has always applied.
+            // Clients beyond the radius are excluded from this store's matrix
+            // and catchment entirely — including from `clients_total`.
+            // `Auto` is p95 over THIS store's own client list — the Flight
+            // input table carries one list per store.
+            let radius_m =
+                super::catchment::effective_radius_m(store_coord, client_coords, &radius_param);
+
             let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
             let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
             for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
+                if !super::catchment::within_radius(store_coord, (clon, clat), radius_m) {
+                    continue;
+                }
                 if let Some((_, r)) = super::snap_kbest::snap_primary_role(
                     &state,
                     &mode_data,
@@ -4373,13 +4390,12 @@ async fn do_exchange_catchment(
                 }
             }
 
-            let store_coord = (*slon, *slat);
             let mut catch_results = super::catchment::compute_catchment(
                 &state,
                 mode,
                 store_coord,
                 &clients_with_dt,
-                &params,
+                &hull_params,
             );
 
             for r in &mut catch_results {

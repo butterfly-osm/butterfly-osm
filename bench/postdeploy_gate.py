@@ -2354,11 +2354,11 @@ def gate_catchment_containment(base):
                     "store_lon": pa.array([store[0]] * n), "store_lat": pa.array([store[1]] * n),
                     "client_lon": pa.array([c[0] for c in clients]),
                     "client_lat": pa.array([c[1] for c in clients])})
-    # The Flight `catchment` action parses EXACTLY percentiles / hull_shape /
-    # remove_outliers (docs/api.md "Action: catchment"), and since #564 it
-    # rejects anything else instead of ignoring it. `radius_km` is a REST-only
-    # pre-filter — sending it here asked for a parameter this surface never
-    # implemented, and used to pass only because it was silently dropped.
+    # Since #596 the Flight `catchment` action takes the SAME parameter set as
+    # REST /catchment (percentiles / hull_shape / remove_outliers / radius_km),
+    # and since #564 it rejects anything else instead of ignoring it. This
+    # fixture deliberately sends NO radius_km: the assertion below is that every
+    # within-threshold client is covered, which a pre-filter would confound.
     params = {"percentiles": [50, 80], "hull_shape": "road", "remove_outliers": False}
     try:
         rows, _meta = _exchange(base, f"catchment:car:{json.dumps(params)}".encode(), tbl)
