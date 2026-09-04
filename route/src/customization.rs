@@ -1424,7 +1424,10 @@ fn sanity_check_weights_simple(
 // File I/O
 // ===================================================================
 
-fn write_cch_weights(
+/// Write a `cch.{w,d,lat}.<mode>.u32` file. `pub(crate)` so a test
+/// fixture can produce a real step-8 weights file without running a
+/// customization (`pack`'s round-trip test needs one, #600).
+pub(crate) fn write_cch_weights(
     path: &std::path::Path,
     up_weights: &[u32],
     down_weights: &[u32],
