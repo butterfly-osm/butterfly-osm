@@ -1,5 +1,5 @@
-//! Boot phase 2: mode discovery, the per-mode bundles, the container
-//! traffic variants and the hidden `car_freeflow` base (#578).
+//! Boot phase 2: mode discovery, the per-mode bundles and the hidden
+//! `car_freeflow` base (#578).
 //!
 //! Split out of the monolithic `load_from_container_with_options` along
 //! its own phase banners. The `rss::checkpoint` calls travel with the
@@ -9,14 +9,10 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::shared::{Sections, SharedTables};
-use super::{
-    CchWeightsFile, ModeData, ModeSlot, clone_mode_data, load_mode_data_from_bundle,
-    refresh_len_along_time, variant_adjusted_node_weights,
-};
+use super::shared::Sections;
+use super::{ModeData, ModeSlot, clone_mode_data, load_mode_data_from_bundle};
 use crate::formats::butterfly_dat::Container;
 use crate::formats::snap_index::SnapMask;
-use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::model::types::Mode;
 
 /// The per-mode tables the loader builds, kept together because every
@@ -155,210 +151,6 @@ pub(super) fn load_bundles(
     }
 
     Ok(tables)
-}
-
-/// Register the container's baked traffic variants. Each variant becomes
-/// a synthetic mode `<base>_<variant>` sharing topology, snap mask, and
-/// the physical dist flats with its base. The TIME flats AND the
-/// len-along-time flats are rebuilt against the variant's recustomised
-/// cch_weights (len-along-time is path-dependent, not traffic-invariant
-/// — #528).
-///
-/// Must run AFTER the snap index is built: variants share their base's
-/// snap mask, and adding them to the snap builder would corrupt
-/// mode-byte indexing (the builder keys per-mode masks by `mode_byte`,
-/// which a variant copies from its base).
-pub(super) fn register_container_variants(
-    sec: &Sections<'_>,
-    variants: &[(String, String)],
-    shared: &SharedTables,
-    tables: &mut ModeTables,
-    snap_masks: &mut Vec<SnapMask>,
-) -> Result<()> {
-    let container = sec.container;
-    let mmap_for_bytes = sec.mmap;
-    let lazy_arc = sec.lazy;
-    let ebg_nodes = &shared.ebg_nodes;
-    let nbg_geo = &shared.nbg_geo;
-
-    for (base, variant) in variants {
-        let synthetic = format!("{}_{}", base, variant);
-        if tables.lookup.contains_key(&synthetic) {
-            tracing::warn!(
-                mode = synthetic.as_str(),
-                "skipping container traffic variant: a base mode with the same name already exists"
-            );
-            continue;
-        }
-        let base_idx = match tables.lookup.get(base) {
-            Some(i) => *i as usize,
-            None => {
-                tracing::warn!(
-                    base = base.as_str(),
-                    variant = variant.as_str(),
-                    "skipping container traffic variant: base mode not loaded"
-                );
-                continue;
-            }
-        };
-        let weights_section_name = format!("mode/{}/_variant/{}/weights.time", base, variant);
-        let provenance_section_name = format!("mode/{}/_variant/{}/traffic.json", base, variant);
-        let Some(weights_entry) = container.get(&weights_section_name) else {
-            tracing::warn!(
-                section = weights_section_name.as_str(),
-                "skipping container traffic variant: weights section missing"
-            );
-            continue;
-        };
-        if container.get(&provenance_section_name).is_none() {
-            tracing::warn!(
-                section = provenance_section_name.as_str(),
-                "skipping container traffic variant: provenance .traffic.json section missing"
-            );
-            continue;
-        }
-        lazy_arc.verify_now(&weights_section_name)?;
-        lazy_arc.verify_now(&provenance_section_name)?;
-        let off = weights_entry.offset as usize;
-        let len = weights_entry.len as usize;
-        anyhow::ensure!(
-            off + len <= mmap_for_bytes.len(),
-            "section '{}' bytes [{},{}) exceed mmap len {}",
-            weights_section_name,
-            off,
-            off + len,
-            mmap_for_bytes.len()
-        );
-        let variant_cch_weights =
-            CchWeightsFile::read_from_mmap_unverified(mmap_for_bytes.clone(), off, len)?;
-        let base_data = tables.data_at(base_idx);
-
-        // #440: derive traffic-adjusted per-node weights from the
-        // provenance profile (verified above) + the base mode's way_attrs
-        // section, so edges_batch per-edge durations match variant paths.
-        let adjusted_node_weights = {
-            let prov = container.get(&provenance_section_name).and_then(|e| {
-                let o = e.offset as usize;
-                let l = e.len as usize;
-                std::str::from_utf8(&mmap_for_bytes[o..o + l])
-                    .ok()
-                    .map(|j| j.to_string())
-            });
-            let attrs = container
-                .get(&format!("mode/{base}/way_attrs"))
-                .and_then(|e| {
-                    lazy_arc
-                        .verify_now(&format!("mode/{base}/way_attrs"))
-                        .ok()?;
-                    let o = e.offset as usize;
-                    let l = e.len as usize;
-                    crate::formats::way_attrs::read_all_from_bytes(&mmap_for_bytes[o..o + l]).ok()
-                });
-            match (prov, attrs) {
-                (Some(json), Some(attrs)) => {
-                    variant_adjusted_node_weights(base_data, &json, &attrs, nbg_geo, ebg_nodes)
-                }
-                _ => None,
-            }
-        };
-        // Rebuild the TIME flats against the variant weights. The dist
-        // channel stays cloned (physical, traffic-invariant). The
-        // len-along-time channel is NOT traffic-invariant (#528): it is
-        // the physical length along the TIME-optimal path, and the
-        // variant's different time weights move the optimal middles, so
-        // the base bytes describe the WRONG (clean-car) paths. Recompute
-        // it from the variant's own middles, mirroring
-        // `refresh_len_along_time` on the boot-recustomization sites. If
-        // the baked variant section carries no middles we cannot
-        // recompute — fall back to the base clone and warn (the pre-#528
-        // shape, kept only as a non-panicking degradation).
-        let up_adj_flat = UpAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
-        let down_rev_flat =
-            DownReverseAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
-        let down_adj_flat = DownAdjFlat::build(&base_data.cch_topo, &variant_cch_weights);
-        let effective_node_weights: std::borrow::Cow<'static, [u32]> = adjusted_node_weights
-            .map(std::borrow::Cow::Owned)
-            .unwrap_or_else(|| base_data.node_weights.clone());
-        let n_up = base_data.cch_topo.up_targets.len();
-        let (lat_weights, lat_flat_up, lat_flat_down) =
-            if base_data.cch_weights_len_along_time.is_some()
-                && variant_cch_weights.up_middle.len() == n_up
-            {
-                refresh_len_along_time(
-                    base_data,
-                    ebg_nodes,
-                    &variant_cch_weights,
-                    &effective_node_weights,
-                )
-            } else {
-                if base_data.cch_weights_len_along_time.is_some() {
-                    tracing::warn!(
-                        base = base.as_str(),
-                        variant = variant.as_str(),
-                        "container traffic variant: baked weights carry no middles; \
-                     len-along-time distance channel falls back to base and may \
-                     diverge from /route (#528)"
-                    );
-                }
-                (
-                    base_data.cch_weights_len_along_time.clone(),
-                    base_data.up_adj_flat_len_along_time.clone(),
-                    base_data.down_rev_flat_len_along_time.clone(),
-                )
-            };
-        let variant_data = ModeData {
-            mode: base_data.mode,
-            cch_topo: base_data.cch_topo.clone(),
-            cch_weights: variant_cch_weights,
-            cch_weights_dist: base_data.cch_weights_dist.clone(),
-            cch_weights_len_along_time: lat_weights,
-            orig_to_rank: base_data.orig_to_rank.clone(),
-            filtered_to_original: base_data.filtered_to_original.clone(),
-            n_filtered_nodes: base_data.n_filtered_nodes,
-            n_original_nodes: base_data.n_original_nodes,
-            node_weights: effective_node_weights,
-            mask: base_data.mask.clone(),
-            has_outbound: base_data.has_outbound.clone(),
-            has_inbound: base_data.has_inbound.clone(),
-            up_adj_flat,
-            down_rev_flat,
-            down_adj_flat,
-            up_adj_flat_dist: base_data.up_adj_flat_dist.clone(),
-            down_rev_flat_dist: base_data.down_rev_flat_dist.clone(),
-            up_adj_flat_len_along_time: lat_flat_up,
-            down_rev_flat_len_along_time: lat_flat_down,
-            down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
-            exclude_cache: crate::server::exclude::ExcludeWeightCache::default(),
-        };
-        // A variant is NOT evictable: `load_mode_data_from_bundle`
-        // cannot rebuild it (its weights come from a `_variant`
-        // section applied to the base's topology).
-        let new_index = tables.push(synthetic.clone(), variant_data, false);
-        tracing::info!(
-            base = base.as_str(),
-            variant = variant.as_str(),
-            synthetic = synthetic.as_str(),
-            index = new_index,
-            "registered container traffic variant"
-        );
-        // Snap_index masks are indexed by mode_idx; a variant shares
-        // its base's eligible-edges mask, so push an ArcCow clone of
-        // the base's mask at the variant's new mode_idx slot. ArcCow
-        // clone is an Arc bump — no body copy.
-        if let Some(base_mask) = snap_masks.get(base_idx).cloned() {
-            snap_masks.push(base_mask);
-        } else {
-            tracing::warn!(
-                base = base.as_str(),
-                variant = variant.as_str(),
-                base_idx,
-                "container traffic variant: base snap mask missing; snap will reject variant queries"
-            );
-        }
-        crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
-    }
-
-    Ok(())
 }
 
 /// Hint the kernel that the per-mode sections nothing reads after boot
@@ -501,13 +293,13 @@ pub(super) fn register_car_freeflow(
     let freeflow = clone_mode_data(tables.data_at(car_idx as usize));
     // NOT inserted into mode_lookup — resident base only, hidden from
     // ?mode= and /health (single public car = median, #521). Kept in
-    // mode_names so the slot has a name (is_variant → pinned).
+    // mode_names so the slot has a name.
     // Pinned: no container section backs the synthetic name, so the
     // #402 compactor must never drop it.
     let new_index = tables.push_hidden("car_freeflow".to_string(), freeflow, false);
     // Snap masks are indexed by mode_idx — the synthetic mode shares
-    // car's eligible-edges mask (same fix as the traffic variants;
-    // without it every snap for this mode returns None → no routes).
+    // car's eligible-edges mask; without it every snap for this mode
+    // returns None → no routes.
     if let Some(base_mask) = snap_masks.get(car_idx as usize).cloned() {
         snap_masks.push(base_mask);
     } else {
@@ -522,6 +314,7 @@ mod tests {
     use super::*;
     use crate::formats::mmap::ArcCow;
     use crate::formats::{BitsetField, CchTopo, CchWeights, WeightArray};
+    use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
     use std::sync::atomic::Ordering;
 
     /// The smallest `ModeData` the slot plumbing accepts: one node, no

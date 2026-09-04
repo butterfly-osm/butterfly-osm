@@ -829,32 +829,6 @@ impl Container {
         out
     }
 
-    /// Enumerate `(base, variant)` traffic-variant pairs present in the
-    /// container. Scans for `mode/<base>/_variant/<variant>/weights.time`
-    /// section names (#84/#392 packing convention) and returns each
-    /// unique `(base, variant)` it finds. Pre-#392 containers return
-    /// the empty vec.
-    pub fn list_traffic_variants(&self) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = self
-            .sections
-            .iter()
-            .filter_map(|s| {
-                let rest = s.name.strip_prefix("mode/")?;
-                let mut parts = rest.splitn(4, '/');
-                let base = parts.next()?;
-                let kind = parts.next()?;
-                if kind != "_variant" {
-                    return None;
-                }
-                let variant = parts.next()?;
-                Some((base.to_string(), variant.to_string()))
-            })
-            .collect();
-        out.sort();
-        out.dedup();
-        out
-    }
-
     /// Read a section's bytes off disk and verify its CRC. Suitable
     /// for one-shot loaders that copy the bytes into a `Vec`.
     pub fn read_section_verified<P: AsRef<Path>>(
