@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
+use crate::matrix::MatrixPlan;
 use crate::matrix::neighbors::{
     RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
 };
@@ -19,6 +20,14 @@ use crate::profile_abi::Mode;
 use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::{ErrorResponse, SnapRole, Waypoint, parse_mode, validate_coord};
+
+/// #594: response header naming the matrix plan `/table` actually ran —
+/// `bucket`, `phast_fwd` or `phast_rev` (see [`MatrixPlan`]). The value comes
+/// from the engine that produced the served duration grid (a distance-only
+/// request reports its distance run), so a client can assert the SELECTION per
+/// request instead of inferring it from wall clock. Free: one static header on
+/// a response that already exists.
+pub const MATRIX_PLAN_HEADER: &str = "x-butterfly-matrix-plan";
 
 // ============ Types ============
 
@@ -145,7 +154,9 @@ pub struct TableResponse {
         })
     ),
     responses(
-        (status = 200, description = "Matrix computed", body = TableResponse),
+        (status = 200, description = "Matrix computed", body = TableResponse,
+            headers(("x-butterfly-matrix-plan" = String,
+                description = "#594: the matrix plan actually run — bucket | phast_fwd | phast_rev"))),
         (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
@@ -420,6 +431,10 @@ pub async fn table_post_handler(
                         .unwrap_or(serde_json::Value::Null),
                 );
             }
+            // #594: the merged response is a NEW response — carry the typical
+            // pass's plan header across so `uncertainty=bands` reports the
+            // plan too instead of silently dropping it.
+            let plan_header = resp.headers().get(MATRIX_PLAN_HEADER).cloned();
             let bytes = match axum::body::to_bytes(resp.into_body(), 256 * 1024 * 1024).await {
                 Ok(b) => b,
                 Err(e) => {
@@ -440,7 +455,13 @@ pub async fn table_post_handler(
                         obj.insert("durations_best".into(), q25);
                         obj.insert("durations_worst".into(), q75);
                     }
-                    Json(v).into_response()
+                    let mut merged = Json(v).into_response();
+                    if let Some(h) = plan_header {
+                        merged
+                            .headers_mut()
+                            .insert(axum::http::HeaderName::from_static(MATRIX_PLAN_HEADER), h);
+                    }
+                    merged
                 }
                 // Median pass errored (4xx body): pass it through untouched.
                 Err(_) => {
@@ -708,6 +729,10 @@ pub fn compute_table_bucket_m2m(
     // cells. Replaces the #502 API-layer SeedExpansion, which multiplied
     // engine cells by ~(avg seeds)^2 (measured 12-15x slower at every size).
 
+    // #594: the plan the engine ACTUALLY ran, reported verbatim on the
+    // response. Written by the call whose result is served; never re-derived
+    // from the shape here.
+    let mut plan = MatrixPlan::default();
     let (durations, distances) = if use_2channel {
         let t_2ch = std::time::Instant::now();
         let up_lat = mode_data
@@ -735,7 +760,7 @@ pub fn compute_table_bucket_m2m(
         } else {
             None
         };
-        let (time_mat, lat_mat, _stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+        let (time_mat, lat_mat, stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
             n_nodes,
             time_up,
             time_down,
@@ -746,6 +771,7 @@ pub fn compute_table_bucket_m2m(
             &tgt_seedsets,
             threshold,
         );
+        plan = stats.plan;
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
@@ -782,7 +808,7 @@ pub fn compute_table_bucket_m2m(
             } else {
                 None
             };
-            let (matrix, _stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+            let (matrix, stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
                 n_nodes,
                 time_up,
                 time_down,
@@ -791,6 +817,7 @@ pub fn compute_table_bucket_m2m(
                 &tgt_seedsets,
                 threshold,
             );
+            plan = stats.plan;
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
@@ -812,7 +839,7 @@ pub fn compute_table_bucket_m2m(
                     .map(|v| v.iter().map(|&(r, t, l, ok)| (r, l, t, ok)).collect())
                     .collect()
             };
-            let (matrix, _stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+            let (matrix, stats) = crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
                 n_nodes,
                 dist_up,
                 dist_down,
@@ -820,6 +847,12 @@ pub fn compute_table_bucket_m2m(
                 &swap(&tgt_seedsets),
                 u32::MAX,
             );
+            // Only when this is the ONLY engine run (distance-only request) is
+            // it the plan of the served grid; otherwise the duration run above
+            // owns the report.
+            if !need_dur_internal {
+                plan = stats.plan;
+            }
             tracing::debug!(
                 "compute_table_bucket_m2m: distance M2M took {:?}",
                 t_dist.elapsed()
@@ -942,7 +975,7 @@ pub fn compute_table_bucket_m2m(
     );
 
     let t_resp = std::time::Instant::now();
-    let resp = Json(TableResponse {
+    let mut resp = Json(TableResponse {
         code: "Ok".into(),
         durations,
         distances,
@@ -952,6 +985,12 @@ pub fn compute_table_bucket_m2m(
         durations_worst: None,
     })
     .into_response();
+    // #594: report the plan that ran. `as_str` is a &'static str from the
+    // closed MatrixPlan set, so the header value can never fail to parse.
+    resp.headers_mut().insert(
+        axum::http::HeaderName::from_static(MATRIX_PLAN_HEADER),
+        axum::http::HeaderValue::from_static(plan.as_str()),
+    );
     tracing::debug!(
         "compute_table_bucket_m2m: json+into_response took {:?}",
         t_resp.elapsed()
@@ -1376,7 +1415,7 @@ pub fn flat_matrix_to_2d(
 
 #[cfg(test)]
 mod max_minutes_tests {
-    use super::{TablePostRequest, parse_max_minutes};
+    use super::{MATRIX_PLAN_HEADER, MatrixPlan, TablePostRequest, parse_max_minutes};
 
     #[test]
     fn none_passes_through() {
@@ -1418,5 +1457,26 @@ mod max_minutes_tests {
     fn rejects_above_24h_cap() {
         assert!(parse_max_minutes(Some(1441.0)).is_err());
         assert_eq!(parse_max_minutes(Some(1440.0)).unwrap(), Some(86400));
+    }
+
+    /// #594: the handler builds the plan header from `&'static str`s with
+    /// `from_static`, which PANICS on an invalid name/value. Build every one
+    /// of them here so an added plan variant (or a renamed header) fails in
+    /// CI rather than in a live `/table` response.
+    #[test]
+    fn plan_header_name_and_every_value_are_valid() {
+        let name = axum::http::HeaderName::from_static(MATRIX_PLAN_HEADER);
+        assert_eq!(name.as_str(), "x-butterfly-matrix-plan");
+        for plan in [
+            MatrixPlan::Bucket,
+            MatrixPlan::PhastFwd,
+            MatrixPlan::PhastRev,
+            MatrixPlan::Mixed,
+        ] {
+            let v = axum::http::HeaderValue::from_static(plan.as_str());
+            assert_eq!(v.to_str().unwrap(), plan.as_str());
+        }
+        // The default a request reports when no PHAST branch ran.
+        assert_eq!(MatrixPlan::default(), MatrixPlan::Bucket);
     }
 }
