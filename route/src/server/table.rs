@@ -17,6 +17,7 @@ use crate::matrix::neighbors::{
 };
 use crate::model::types::Mode;
 
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::{ErrorResponse, SnapRole, Waypoint, parse_mode, validate_coord};
@@ -179,20 +180,19 @@ pub async fn table_post_handler(
     // snap to the same region. Mixed-region matrices are rejected
     // with 501 (cross-region matrix is part of the overlay design,
     // PR C / Phase 2).
-    let started_dispatch = std::time::Instant::now();
     let coords_iter = req
         .origins
         .iter()
         .chain(req.destinations.iter())
         .map(|&[lon, lat]| (lon, lat));
-    let (state, region_id): (Arc<ServerState>, String) =
-        match regions.dispatch_many(coords_iter, &req.mode) {
-            Ok(pair) => pair,
-            Err(e) => {
-                let (code, body) = e.into_response_parts();
-                return (code, Json(body)).into_response();
-            }
-        };
+    let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            let (code, body) = e.into_response_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    let state: Arc<ServerState> = Arc::clone(&ctx.state);
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -461,11 +461,7 @@ pub async fn table_post_handler(
                 .into_response();
         }
     };
-    super::region_metrics::record_query(
-        &region_id,
-        "table",
-        started_dispatch.elapsed().as_secs_f64(),
-    );
+    ctx.record("table");
     resp
 }
 

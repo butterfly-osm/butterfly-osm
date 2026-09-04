@@ -141,20 +141,13 @@ pub async fn match_trace_handler(
     let coords_iter = req.points.iter().map(|&[lon, lat]| (lon, lat));
     let (state, region_id): (Arc<ServerState>, String) =
         match regions.dispatch_many(coords_iter, &req.mode) {
-            Ok(pair) => pair,
+            Ok((state, region_id, _idx)) => (state, region_id),
             Err(super::regions::DispatchError::CrossRegion { .. }) if regions.overlay.is_some() => {
                 return cross_region_match_inner(regions, req, started_dispatch).await;
             }
             Err(e) => {
-                let (code, body) = e.into_response_parts();
-                return (
-                    code,
-                    Json(serde_json::json!({
-                        "code": "InvalidValue",
-                        "message": body.error
-                    })),
-                )
-                    .into_response();
+                let (code, body) = e.into_code_message_parts();
+                return (code, Json(body)).into_response();
             }
         };
 

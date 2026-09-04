@@ -16,6 +16,7 @@ use super::geometry::{
     GeometryFormat, IsochroneFlats, IsochroneQuery, IsochroneSnapError, Point, ReachModel,
     encode_contour, isochrone_polygons, primary_outer_ring, reachable_polylines,
 };
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
@@ -216,14 +217,14 @@ pub async fn isochrone_handler(
     // Region dispatch (#91): the isochrone origin determines the
     // region. Reachable polygon stays inside that region — cross-
     // region reachability is part of the cross-region overlay (PR C).
-    let started_dispatch = std::time::Instant::now();
-    let (state, region_id) = match regions.dispatch_single_id(req.lon, req.lat, &req.mode) {
-        Ok(pair) => pair,
+    let ctx = match QueryContext::from_point(&regions, req.lon, req.lat, &req.mode) {
+        Ok(ctx) => ctx,
         Err(e) => {
             let (code, body) = e.into_response_parts();
             return (code, Json(body)).into_response();
         }
     };
+    let state = Arc::clone(&ctx.state);
     let _: &Arc<ServerState> = &state;
 
     // Determine isochrone metric: exactly one of {time_s, contours}.
@@ -507,11 +508,7 @@ pub async fn isochrone_handler(
 
         let contour =
             ContourResult::from_topology(field.topologies.into_iter().next().unwrap_or_default());
-        super::region_metrics::record_query(
-            &region_id,
-            "isochrone",
-            started_dispatch.elapsed().as_secs_f64(),
-        );
+        ctx.record("isochrone");
         return match encode_polygon_wkb(&contour) {
             Some(wkb) => (
                 [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -584,11 +581,7 @@ pub async fn isochrone_handler(
         }
     }
 
-    super::region_metrics::record_query(
-        &region_id,
-        "isochrone",
-        started_dispatch.elapsed().as_secs_f64(),
-    );
+    ctx.record("isochrone");
     Json(IsochroneResponse {
         contours: contour_features,
         // `include=network` shares the max-threshold frontier with the
@@ -868,15 +861,15 @@ fn isochrone_bulk_sync(
     // Region dispatch (#91): every origin must snap to the same
     // region. Mixed-region bulk is rejected with 501 — same rule as
     // single /isochrone.
-    let started_dispatch = std::time::Instant::now();
     let coords_iter = req.origins.iter().map(|&[lon, lat]| (lon, lat));
-    let (state, region_id) = match regions.dispatch_many(coords_iter, &req.mode) {
-        Ok(pair) => pair,
+    let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
+        Ok(ctx) => ctx,
         Err(e) => {
             let (code, body) = e.into_response_parts();
             return (code, Json(body)).into_response();
         }
     };
+    let state = Arc::clone(&ctx.state);
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -979,11 +972,7 @@ fn isochrone_bulk_sync(
         response.extend_from_slice(&wkb);
     }
 
-    super::region_metrics::record_query(
-        &region_id,
-        "isochrone_bulk",
-        started_dispatch.elapsed().as_secs_f64(),
-    );
+    ctx.record("isochrone_bulk");
 
     Response::builder()
         .status(StatusCode::OK)

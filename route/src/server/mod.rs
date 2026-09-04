@@ -56,6 +56,7 @@ pub mod matching;
 pub mod metrics;
 pub mod nearest;
 pub mod query;
+pub mod query_context;
 pub mod region_metrics;
 pub mod regions;
 pub mod regions_handler;

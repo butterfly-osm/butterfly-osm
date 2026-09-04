@@ -186,6 +186,185 @@ pub fn record_cross_region_reject(src: &str, dst: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// A [`metrics::Recorder`] that records the *key* of every metric
+    /// registered while it is installed, rendered the way the
+    /// Prometheus exporter renders it: `name{label="value",...}` in
+    /// emission order.
+    ///
+    /// #577: this is how "the `/metrics` label set is byte-identical"
+    /// gets checked without booting a server.
+    /// `QueryContext::record` is a verbatim forwarder to
+    /// [`record_query`], so pinning the keys [`record_query`] emits
+    /// pins what every migrated handler emits.
+    struct KeyCapture(Mutex<Vec<String>>);
+
+    impl KeyCapture {
+        fn new() -> Self {
+            Self(Mutex::new(Vec::new()))
+        }
+
+        fn push(&self, kind: &str, key: &metrics::Key) {
+            let mut rendered = format!("{} {}", kind, key.name());
+            let labels: Vec<String> = key
+                .labels()
+                .map(|l| format!("{}={:?}", l.key(), l.value()))
+                .collect();
+            if !labels.is_empty() {
+                rendered.push('{');
+                rendered.push_str(&labels.join(","));
+                rendered.push('}');
+            }
+            self.0.lock().unwrap().push(rendered);
+        }
+
+        fn keys(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl metrics::Recorder for KeyCapture {
+        fn describe_counter(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_gauge(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_histogram(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            self.push("counter", key);
+            metrics::Counter::noop()
+        }
+        fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            self.push("gauge", key);
+            metrics::Gauge::noop()
+        }
+        fn register_histogram(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            self.push("histogram", key);
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// Run `f` with a capturing recorder installed on this thread and
+    /// return the keys it registered.
+    fn capture(f: impl FnOnce()) -> Vec<String> {
+        let recorder = KeyCapture::new();
+        metrics::with_local_recorder(&recorder, f);
+        recorder.keys()
+    }
+
+    /// #577: the per-query metric keys. Every handler that moved to
+    /// `QueryContext` still lands here with the same region id and the
+    /// same endpoint literal, so this is the byte-level contract the
+    /// `/metrics` scrape depends on.
+    #[test]
+    fn record_query_emits_the_documented_keys_and_labels() {
+        let keys = capture(|| record_query("BE", "table", 0.25));
+        assert_eq!(
+            keys,
+            vec![
+                r#"counter butterfly_route_query_total{region="BE",endpoint="table"}"#.to_string(),
+                r#"histogram butterfly_route_query_duration_seconds{region="BE",endpoint="table"}"#
+                    .to_string(),
+            ]
+        );
+    }
+
+    /// The endpoint label is data, not a closed enum at the emit site:
+    /// `/isochrone/bulk` and `/catchment` label themselves with values
+    /// outside [`ENDPOINTS`] and must keep reaching the exporter.
+    #[test]
+    fn record_query_carries_endpoint_labels_outside_the_endpoints_constant() {
+        for endpoint in ["isochrone_bulk", "catchment"] {
+            assert!(
+                !ENDPOINTS.contains(&endpoint),
+                "{endpoint} is in ENDPOINTS now — update this test",
+            );
+            let keys = capture(|| record_query("BE", endpoint, 0.5));
+            assert_eq!(
+                keys,
+                vec![
+                    format!(
+                        r#"counter butterfly_route_query_total{{region="BE",endpoint="{endpoint}"}}"#
+                    ),
+                    format!(
+                        r#"histogram butterfly_route_query_duration_seconds{{region="BE",endpoint="{endpoint}"}}"#
+                    ),
+                ]
+            );
+        }
+    }
+
+    /// The cross-region rejection counter — bumped by the dispatcher,
+    /// not by the handlers, and therefore untouched by #577.
+    #[test]
+    fn record_cross_region_reject_emits_the_documented_key_and_labels() {
+        let keys = capture(|| record_cross_region_reject("BE", "LU"));
+        assert_eq!(
+            keys,
+            vec![
+                r#"counter butterfly_route_query_cross_region_total{src="BE",dst="LU"}"#
+                    .to_string()
+            ]
+        );
+    }
+
+    /// The pre-created per-region handles must key exactly like the
+    /// macro path in [`record_query`] — otherwise the same query
+    /// counted through one route would land on a different time series
+    /// than through the other.
+    #[test]
+    fn pre_created_handles_key_identically_to_record_query() {
+        for ep in ENDPOINTS {
+            let via_handles = capture(|| {
+                let m = RegionMetrics::new("BE");
+                m.record(ep, 0.25);
+            });
+            let via_macros = capture(|| record_query("BE", ep, 0.25));
+            for expected in &via_macros {
+                assert!(
+                    via_handles.contains(expected),
+                    "endpoint {ep}: handle path never registered {expected}; registered {via_handles:?}",
+                );
+            }
+        }
+    }
+
+    /// The per-region size gauges keep their single `region` label.
+    #[test]
+    fn register_region_size_emits_the_documented_keys_and_labels() {
+        let keys = capture(|| register_region_size("BE", 1, 2));
+        assert_eq!(
+            keys,
+            vec![
+                r#"gauge butterfly_route_region_nodes_total{region="BE"}"#.to_string(),
+                r#"gauge butterfly_route_region_edges_total{region="BE"}"#.to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn region_metrics_pre_creates_handle_per_endpoint() {
