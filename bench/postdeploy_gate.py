@@ -1799,11 +1799,20 @@ def gate_lopsided(base):
     passed &= check("lopsided route==table", mism == 0 and checked >= 15,
                     f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s")
     # #527: 2-channel lopsided — distance channel must equal /route distance_m,
-    # and the 2-channel router must reach the SAME sublinear plan (it costs on
-    # its own cell set, so a 1-channel-only regression would hide here).
-    dd, plan_2ch, _ = timed(dests[:300], annotations="duration,distance")
-    passed &= check_plan("1x300 lopsided, 2-channel", plan_2ch, SUBLINEAR_PLANS)
-    dchecked, dmis, dworst = compare(dd, rng.sample(range(300), 25), "distances", True)
+    # and the 2-channel router must reach the SAME sublinear plan (#562: it
+    # costs on its OWN cell set, so a 1-channel-only regression would hide
+    # here). The shape must therefore be decisive on a COLD 2-channel cell
+    # set, exactly like the reverse probe above: with no 2-channel PHAST scan
+    # ever measured, the router prices a forward field at n_nodes relaxations
+    # against sweeps of n_nodes/400, so it only takes the field past
+    # S + T > 400. A 1x300 probe (301) sits BELOW that and legitimately
+    # planned `bucket` on a freshly booted server, while passing on any server
+    # that had already served one 2-channel field — an order-dependent flake,
+    # not an engine fact. 1x800 clears the structural crossover ~2x, the same
+    # margin the 1-channel probe above has.
+    dd, plan_2ch, _ = timed(dests, annotations="duration,distance")
+    passed &= check_plan("1x800 lopsided, 2-channel", plan_2ch, SUBLINEAR_PLANS)
+    dchecked, dmis, dworst = compare(dd, rng.sample(range(800), 25), "distances", True)
     passed &= check("lopsided 2-channel distance==route", dmis == 0 and dchecked >= 15,
                     f"{dchecked} cells, {dmis} mismatches, worst {dworst * 100:.2f}%")
 
@@ -2345,7 +2354,12 @@ def gate_catchment_containment(base):
                     "store_lon": pa.array([store[0]] * n), "store_lat": pa.array([store[1]] * n),
                     "client_lon": pa.array([c[0] for c in clients]),
                     "client_lat": pa.array([c[1] for c in clients])})
-    params = {"percentiles": [50, 80], "hull_shape": "road", "remove_outliers": False, "radius_km": 0}
+    # The Flight `catchment` action parses EXACTLY percentiles / hull_shape /
+    # remove_outliers (docs/api.md "Action: catchment"), and since #564 it
+    # rejects anything else instead of ignoring it. `radius_km` is a REST-only
+    # pre-filter — sending it here asked for a parameter this surface never
+    # implemented, and used to pass only because it was silently dropped.
+    params = {"percentiles": [50, 80], "hull_shape": "road", "remove_outliers": False}
     try:
         rows, _meta = _exchange(base, f"catchment:car:{json.dumps(params)}".encode(), tbl)
     except Exception as e:
@@ -2519,8 +2533,9 @@ def gate_all_endpoints_smoke(base):
         else:
             passed &= check("Flight transit_bulk", False, f"{msg[:80]}")
     # do_exchange: catchment + edges_flow
+    # percentiles / hull_shape / remove_outliers only — see gate_catchment_containment.
     catchment_params = {"percentiles": [50], "hull_shape": "isochrone",
-                        "remove_outliers": False, "radius_km": "auto"}
+                        "remove_outliers": False}
     for label, command, tbl in (("catchment", f"catchment:car:{json.dumps(catchment_params)}".encode(),
          pa.table({"store_id": pa.array(["s1"]), "store_lon": pa.array([o[0]]),
                    "store_lat": pa.array([o[1]]), "client_lon": pa.array([d[0]]),
