@@ -1,5 +1,13 @@
 # Traffic recustomization smoke test (issue #84)
 
+> **ARCHIVED — not reproducible.** The whole #84 path is retired: #582
+> removed the step-8 `--traffic` bake and every other profile writer, #599
+> removed the runtime variant loader and the `?traffic=` parameter. The
+> commands below name flags and files that no longer exist. Kept as the
+> record of a measurement that was made, not as an instruction. Speed
+> calibration is now the directed per-edge `edge_speeds.parquet` table
+> applied at serve boot.
+
 Belgium, 2026-05-06. Validates the step-8 traffic recustomization end-to-end:
 density-class assigned at step 2 → speed factors applied at step 8 →
 synthetic mode `<base>_<variant>` discovered at server boot → routing query
