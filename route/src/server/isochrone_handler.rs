@@ -393,6 +393,38 @@ pub fn run_phast_bounded_fast_seeded(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+    run_phast_bounded_fast_seeded_with(
+        up_adj_flat,
+        down_adj_flat,
+        seeds,
+        threshold,
+        mode,
+        |rank, d| {
+            result.push((rank, d));
+        },
+    );
+    result
+}
+
+/// Seeded bounded forward PHAST core: upward PQ sweep, block-gated downward
+/// scan, then `collect(rank, dist)` for every settled node within
+/// `threshold`, in increasing rank order.
+///
+/// #568: callers that want only a handful of ranks (the lopsided matrix
+/// path probes the field at the far endpoints' ranks) pass a `collect` that
+/// writes them straight into its own slots — no `Vec` of the whole settled
+/// set, no hash probe per settled node. [`run_phast_bounded_fast_seeded`]
+/// is the materialising form `/isochrone` needs.
+pub fn run_phast_bounded_fast_seeded_with(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat: &crate::matrix::bucket_ch::DownAdjFlat,
+    seeds: &[(u32, u32)],
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+    mut collect: impl FnMut(u32, u32),
+) {
     use std::cmp::Reverse;
 
     let total_start = std::time::Instant::now();
@@ -423,8 +455,9 @@ pub fn run_phast_bounded_fast_seeded(
                 }
             }
 
-            // Track settled nodes during upward phase
-            let mut upward_settled: Vec<u32> = Vec::with_capacity(n_nodes / 100);
+            // Count settled nodes during upward phase (#568: a counter, not
+            // a Vec — the value was only ever read as `.len()` for the log).
+            let mut upward_settled = 0usize;
 
             // Phase 1: Upward search (PQ-based, UP edges only). Reads weights
             // from `up_adj_flat` (pre-filtered for INF), so the hot loop is
@@ -445,7 +478,7 @@ pub fn run_phast_bounded_fast_seeded(
                     continue; // Stale entry
                 }
 
-                upward_settled.push(u);
+                upward_settled += 1;
 
                 let up_start = up_adj_flat.offsets[u as usize] as usize;
                 let up_end = up_adj_flat.offsets[u as usize + 1] as usize;
@@ -504,7 +537,7 @@ pub fn run_phast_bounded_fast_seeded(
             // Collect settled nodes (only those within threshold)
             // Only scan active blocks - much faster than full n_nodes scan
             let collect_start = std::time::Instant::now();
-            let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            let mut settled_nodes = 0usize;
             for block_idx in 0..state.n_blocks {
                 if !state.is_block_active(block_idx) {
                     continue;
@@ -515,7 +548,8 @@ pub fn run_phast_bounded_fast_seeded(
                     if state.version[rank] == state.current_gen {
                         let d = state.dist[rank];
                         if d <= threshold {
-                            result.push((rank as u32, d));
+                            settled_nodes += 1;
+                            collect(rank as u32, d);
                         }
                     }
                 }
@@ -529,14 +563,12 @@ pub fn run_phast_bounded_fast_seeded(
                 downward_us = downward_us,
                 collect_us = collect_us,
                 total_us = total_us,
-                upward_settled = upward_settled.len(),
-                settled_nodes = result.len(),
+                upward_settled = upward_settled,
+                settled_nodes = settled_nodes,
                 blocks_active = blocks_active,
                 blocks_total = state.n_blocks,
                 "PHAST forward timing"
             );
-
-            result
         })
     })
 }
@@ -557,6 +589,34 @@ pub fn run_phast_bounded_fast_seeded_2ch(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32, u32)> {
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
+    run_phast_bounded_fast_seeded_2ch_with(
+        up_adj_flat,
+        down_adj_flat,
+        up_adj_flat_len,
+        down_adj_flat_len,
+        seeds,
+        threshold,
+        mode,
+        |rank, t, l| result.push((rank, t, l)),
+    );
+    result
+}
+
+/// Seeded bounded 2-channel forward PHAST core — see [`run_phast_bounded_fast_seeded_with`].
+/// Calls `collect(rank, time, len)` per settled node within `threshold`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_phast_bounded_fast_seeded_2ch_with(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat: &crate::matrix::bucket_ch::DownAdjFlat,
+    up_adj_flat_len: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_adj_flat_len: &crate::matrix::bucket_ch::DownAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+    mut collect: impl FnMut(u32, u32, u32),
+) {
     use std::cmp::Reverse;
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
@@ -654,7 +714,6 @@ pub fn run_phast_bounded_fast_seeded_2ch(
                 }
             }
             // Collect within-threshold settled nodes with both channels.
-            let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
             for block_idx in 0..state.n_blocks {
                 if !state.is_block_active(block_idx) {
                     continue;
@@ -665,12 +724,11 @@ pub fn run_phast_bounded_fast_seeded_2ch(
                     if state.version[rank] == state.current_gen {
                         let d = state.dist[rank];
                         if d <= threshold {
-                            result.push((rank as u32, d, state.len[rank]));
+                            collect(rank as u32, d, state.len[rank]);
                         }
                     }
                 }
             }
-            result
         })
     })
 }
@@ -712,6 +770,29 @@ pub fn run_phast_bounded_fast_reverse_seeded(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32)> {
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+    run_phast_bounded_fast_reverse_seeded_with(
+        up_adj_flat,
+        down_rev_flat,
+        seeds,
+        threshold,
+        mode,
+        |rank, d| result.push((rank, d)),
+    );
+    result
+}
+
+/// Seeded bounded REVERSE PHAST core — see [`run_phast_bounded_fast_seeded_with`]. Calls
+/// `collect(rank, dist)` per settled node within `threshold`.
+pub fn run_phast_bounded_fast_reverse_seeded_with(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    seeds: &[(u32, u32)],
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+    mut collect: impl FnMut(u32, u32),
+) {
     use std::cmp::Reverse;
 
     let total_start = std::time::Instant::now();
@@ -804,12 +885,13 @@ pub fn run_phast_bounded_fast_reverse_seeded(
 
             // Collect settled nodes (full scan -- no block-gating)
             let collect_start = std::time::Instant::now();
-            let mut result: Vec<(u32, u32)> = Vec::with_capacity(n_nodes / 10);
+            let mut settled_nodes = 0usize;
             for rank in 0..n_nodes {
                 if state.version[rank] == state.current_gen {
                     let d = state.dist[rank];
                     if d <= threshold {
-                        result.push((rank as u32, d));
+                        settled_nodes += 1;
+                        collect(rank as u32, d);
                     }
                 }
             }
@@ -822,11 +904,9 @@ pub fn run_phast_bounded_fast_reverse_seeded(
                 downward_us = downward_us,
                 collect_us = collect_us,
                 total_us = total_us,
-                settled_nodes = result.len(),
+                settled_nodes = settled_nodes,
                 "PHAST reverse timing"
             );
-
-            result
         })
     })
 }
@@ -848,6 +928,34 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
     threshold: u32,
     mode: crate::profile_abi::Mode,
 ) -> Vec<(u32, u32, u32)> {
+    let n_nodes = up_adj_flat.offsets.len() - 1;
+    let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
+    run_phast_bounded_fast_reverse_seeded_2ch_with(
+        up_adj_flat,
+        down_rev_flat,
+        up_adj_flat_len,
+        down_rev_flat_len,
+        seeds,
+        threshold,
+        mode,
+        |rank, t, l| result.push((rank, t, l)),
+    );
+    result
+}
+
+/// Seeded bounded 2-channel REVERSE PHAST core — see [`run_phast_bounded_fast_seeded_with`].
+/// Calls `collect(rank, time, len)` per settled node within `threshold`.
+#[allow(clippy::too_many_arguments)]
+pub fn run_phast_bounded_fast_reverse_seeded_2ch_with(
+    up_adj_flat: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    up_adj_flat_len: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_rev_flat_len: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    threshold: u32,
+    mode: crate::profile_abi::Mode,
+    mut collect: impl FnMut(u32, u32, u32),
+) {
     use std::cmp::Reverse;
     let n_nodes = up_adj_flat.offsets.len() - 1;
     let mode_idx = mode.index();
@@ -931,16 +1039,14 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
                 }
             }
             // Collect settled nodes (full scan — no block-gating in PULL).
-            let mut result: Vec<(u32, u32, u32)> = Vec::with_capacity(n_nodes / 10);
             for rank in 0..n_nodes {
                 if state.version[rank] == state.current_gen {
                     let d = state.dist[rank];
                     if d <= threshold {
-                        result.push((rank as u32, d, state.len[rank]));
+                        collect(rank as u32, d, state.len[rank]);
                     }
                 }
             }
-            result
         })
     })
 }
