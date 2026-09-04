@@ -348,7 +348,7 @@ pub struct RegionsState {
     /// queries are routed through [`Self::dispatch_p2p_with_overlay`]
     /// instead of returning [`DispatchError::CrossRegion`]. When `None`
     /// (default), cross-region queries continue to return 501 via the
-    /// existing [`Self::dispatch_p2p_id`] code path.
+    /// existing [`Self::dispatch_p2p`] code path.
     pub overlay: Option<Arc<super::overlay::OverlayCluster>>,
     /// #292 Phase 3: server-level boot time. Used by /health to
     /// report uptime without forcing a lazy region load. (The
@@ -703,8 +703,8 @@ impl RegionsState {
     }
 
     /// `true` if at least one loaded region carries the given transport
-    /// mode. Handlers call this before [`Self::dispatch_p2p_id`] /
-    /// [`Self::dispatch_single_id`] / [`Self::dispatch_many`] to detect
+    /// mode. Handlers call this before [`Self::dispatch_p2p`] /
+    /// [`Self::dispatch_single`] / [`Self::dispatch_many`] to detect
     /// a typo'd mode early, otherwise the dispatcher returns
     /// `NoRegion` (because no region snaps the point on a mode that
     /// doesn't exist) which the operator reads as "out of coverage"
@@ -880,27 +880,21 @@ impl RegionsState {
     }
 
     /// Pick the region for a single-coordinate request (e.g. `/nearest`,
-    /// `/isochrone`, `/height`). Returns the per-region `Arc<ServerState>`
-    /// or a [`DispatchError::NoRegion`] payload (renders as **400**
+    /// `/isochrone`). Returns `(state, region id, region index)` — the
+    /// id labels the per-region metric, the index lets a bulk preflight
+    /// confirm the rest of its input against the same region — or a
+    /// [`DispatchError::NoRegion`] payload (renders as **400**
     /// caller-side via [`DispatchError::into_response_parts`]).
+    ///
+    /// Handlers reach this through
+    /// [`super::query_context::QueryContext::from_point`], which also
+    /// carries the start instant the metric epilogue needs.
     pub fn dispatch_single(
         &self,
         lon: f64,
         lat: f64,
         mode_name: &str,
-    ) -> Result<Arc<ServerState>, DispatchError> {
-        self.dispatch_single_id(lon, lat, mode_name).map(|(s, _)| s)
-    }
-
-    /// Same as [`Self::dispatch_single`] but also returns the winning
-    /// region id (so the handler can label its per-region metric
-    /// without a second lookup).
-    pub fn dispatch_single_id(
-        &self,
-        lon: f64,
-        lat: f64,
-        mode_name: &str,
-    ) -> Result<(Arc<ServerState>, String), DispatchError> {
+    ) -> Result<(Arc<ServerState>, String, usize), DispatchError> {
         if !self.has_mode(mode_name) {
             return Err(DispatchError::InvalidMode {
                 mode: mode_name.to_string(),
@@ -908,7 +902,9 @@ impl RegionsState {
             });
         }
         match self.snap_winner(lon, lat, mode_name) {
-            Some((idx, _dist)) => Ok((self.regions[idx].state(), self.regions[idx].id.clone())),
+            Some((idx, _dist)) => {
+                Ok((self.regions[idx].state(), self.regions[idx].id.clone(), idx))
+            }
             None => Err(DispatchError::NoRegion {
                 endpoint: Endpoint::Single,
                 lon,
@@ -923,29 +919,18 @@ impl RegionsState {
     /// `/table` with one source + targets, `/match`). Both points must
     /// snap to the same region; otherwise return
     /// [`DispatchError::CrossRegion`] which the caller renders as 501.
+    ///
+    /// Returns `(state, region id, region index)`. The id labels the
+    /// per-region metric; the index is what bulk preflights follow up
+    /// with [`Self::confirm_in_region`] on `queries[1..]` (#343).
+    /// Increments the cross-region rejection counter on
+    /// `Err(CrossRegion)` so operators can monitor 501 traffic without
+    /// parsing log lines.
+    ///
+    /// Handlers reach this through
+    /// [`super::query_context::QueryContext::from_pair`], which also
+    /// carries the start instant the metric epilogue needs.
     pub fn dispatch_p2p(
-        &self,
-        origin_lon: f64,
-        origin_lat: f64,
-        destination_lon: f64,
-        destination_lat: f64,
-        mode_name: &str,
-    ) -> Result<Arc<ServerState>, DispatchError> {
-        self.dispatch_p2p_id(
-            origin_lon,
-            origin_lat,
-            destination_lon,
-            destination_lat,
-            mode_name,
-        )
-        .map(|(s, _)| s)
-    }
-
-    /// #343: same as [`Self::dispatch_p2p_id`] but also returns the
-    /// winning region's index. Used by bulk preflights that follow up
-    /// with [`Self::confirm_in_region`] on queries[1..] against the
-    /// returned index.
-    pub fn dispatch_p2p_with_idx(
         &self,
         origin_lon: f64,
         origin_lat: f64,
@@ -993,71 +978,26 @@ impl RegionsState {
         }
     }
 
-    /// Same as [`Self::dispatch_p2p`] but also returns the winning
-    /// region id. Increments the cross-region rejection counter on
-    /// `Err(CrossRegion)` so operators can monitor 501 traffic
-    /// without parsing log lines.
-    pub fn dispatch_p2p_id(
-        &self,
-        origin_lon: f64,
-        origin_lat: f64,
-        destination_lon: f64,
-        destination_lat: f64,
-        mode_name: &str,
-    ) -> Result<(Arc<ServerState>, String), DispatchError> {
-        if !self.has_mode(mode_name) {
-            return Err(DispatchError::InvalidMode {
-                mode: mode_name.to_string(),
-                available: self.available_modes(),
-            });
-        }
-        let src = self.snap_winner(origin_lon, origin_lat, mode_name);
-        let dst = self.snap_winner(destination_lon, destination_lat, mode_name);
-        match (src, dst) {
-            (Some((s_idx, _)), Some((d_idx, _))) if s_idx == d_idx => {
-                Ok((self.regions[s_idx].state(), self.regions[s_idx].id.clone()))
-            }
-            (Some((s_idx, _)), Some((d_idx, _))) => {
-                let src_region = self.regions[s_idx].id.clone();
-                let dst_region = self.regions[d_idx].id.clone();
-                super::region_metrics::record_cross_region_reject(&src_region, &dst_region);
-                Err(DispatchError::CrossRegion {
-                    src_region,
-                    dst_region,
-                })
-            }
-            (None, _) => Err(DispatchError::NoRegion {
-                endpoint: Endpoint::Source,
-                lon: origin_lon,
-                lat: origin_lat,
-                mode: mode_name.to_string(),
-                tried: self.region_ids().into_iter().collect(),
-            }),
-            (_, None) => Err(DispatchError::NoRegion {
-                endpoint: Endpoint::Destination,
-                lon: destination_lon,
-                lat: destination_lat,
-                mode: mode_name.to_string(),
-                tried: self.region_ids().into_iter().collect(),
-            }),
-        }
-    }
-
     /// Pick the region for a many-coordinate request (e.g. `/match`
     /// trace, `/trip`, `/table` with multiple sources + multiple
     /// targets). All points must snap to the same region; otherwise
-    /// 501. Returns the per-region state plus the winning region id.
+    /// 501. Returns `(state, region id, region index)`, same shape as
+    /// [`Self::dispatch_single`] / [`Self::dispatch_p2p`].
     ///
     /// On `CrossRegion` rejection, the
     /// `butterfly_route_query_cross_region_total` counter is
     /// incremented exactly once via
     /// [`super::region_metrics::record_cross_region_reject`] —
     /// callers don't need to bump it separately.
+    ///
+    /// Handlers reach this through
+    /// [`super::query_context::QueryContext::from_points`], which also
+    /// carries the start instant the metric epilogue needs.
     pub fn dispatch_many<I>(
         &self,
         coords: I,
         mode_name: &str,
-    ) -> Result<(Arc<ServerState>, String), DispatchError>
+    ) -> Result<(Arc<ServerState>, String, usize), DispatchError>
     where
         I: IntoIterator<Item = (f64, f64)>,
     {
@@ -1081,7 +1021,7 @@ impl RegionsState {
             // iterator isn't empty (matches the original Empty error).
             let mut iter = coords.into_iter();
             iter.next().ok_or(DispatchError::Empty)?;
-            return Ok((only.state(), only.id.clone()));
+            return Ok((only.state(), only.id.clone(), 0));
         }
         let mut iter = coords.into_iter();
         let first = iter.next().ok_or(DispatchError::Empty)?;
@@ -1117,7 +1057,11 @@ impl RegionsState {
                 });
             }
         }
-        Ok((self.regions[s_idx].state(), self.regions[s_idx].id.clone()))
+        Ok((
+            self.regions[s_idx].state(),
+            self.regions[s_idx].id.clone(),
+            s_idx,
+        ))
     }
 
     /// Sorted list of all loaded region ids.
@@ -1204,13 +1148,13 @@ impl RegionsState {
 
     /// Cross-region-aware P2P dispatch (#91 Phase 2).
     ///
-    /// Like [`Self::dispatch_p2p_id`] but, when an overlay is wired up
+    /// Like [`Self::dispatch_p2p`] but, when an overlay is wired up
     /// and the source/target snap to *different* regions, returns a
     /// [`P2pPlan::CrossRegion`] handle instead of an error. The
     /// [`super::cross_region::solve_cross_region`] coordinator consumes
     /// this handle.
     ///
-    /// If no overlay is wired, behaviour is identical to `dispatch_p2p_id`
+    /// If no overlay is wired, behaviour is identical to `dispatch_p2p`
     /// (cross-region → 501 via [`DispatchError::CrossRegion`]). This
     /// keeps existing handlers that haven't been migrated correct.
     pub fn dispatch_p2p_with_overlay(
@@ -1274,7 +1218,7 @@ impl RegionsState {
 
 /// Outcome of [`RegionsState::dispatch_p2p_with_overlay`].
 ///
-/// `SameRegion` matches the existing [`RegionsState::dispatch_p2p_id`]
+/// `SameRegion` matches the existing [`RegionsState::dispatch_p2p`]
 /// behaviour: handlers run their existing intra-region path on `state`.
 ///
 /// `CrossRegion` carries enough state for

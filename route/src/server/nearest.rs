@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
 
@@ -118,14 +119,14 @@ pub async fn nearest_handler(
     // Region dispatch (#91): pick the region that snaps the query point
     // closest to a road. Single-region deployments wrap their state as
     // a one-region `RegionsState` so this branch is uniform.
-    let started = std::time::Instant::now();
-    let (state, region_id) = match regions.dispatch_single_id(req.lon, req.lat, &req.mode) {
-        Ok(pair) => pair,
+    let ctx = match QueryContext::from_point(&regions, req.lon, req.lat, &req.mode) {
+        Ok(ctx) => ctx,
         Err(e) => {
             let (code, body) = e.into_response_parts();
             return (code, Json(body)).into_response();
         }
     };
+    let state = Arc::clone(&ctx.state);
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
@@ -175,7 +176,7 @@ pub async fn nearest_handler(
         })
         .collect();
 
-    super::region_metrics::record_query(&region_id, "nearest", started.elapsed().as_secs_f64());
+    ctx.record("nearest");
     Json(NearestResponse {
         code: "Ok".to_string(),
         waypoints,
