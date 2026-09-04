@@ -50,10 +50,10 @@ fn skipped_scopes() -> &'static Mutex<HashSet<String>> {
 /// Candidate roots that may CONTAIN region directories.
 fn data_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Ok(v) = std::env::var(DATA_DIR_ENV) {
-        if !v.is_empty() {
-            roots.push(PathBuf::from(v));
-        }
+    if let Ok(v) = std::env::var(DATA_DIR_ENV)
+        && !v.is_empty()
+    {
+        roots.push(PathBuf::from(v));
     }
     // Integration tests run with CWD at the package root (`route/`);
     // unit tests may run from the workspace root.
@@ -157,7 +157,10 @@ pub fn require_asset(scope: &str, rel: &str) -> Option<PathBuf> {
 pub fn require_container(scope: &str) -> Option<PathBuf> {
     match container() {
         Some(p) => Some(p),
-        None => skip(scope, "Belgium routing artifact (*.butterfly or stepN/ tree)"),
+        None => skip(
+            scope,
+            "Belgium routing artifact (*.butterfly or stepN/ tree)",
+        ),
     }
 }
 
@@ -189,6 +192,9 @@ pub fn belgium_state(scope: &str) -> Option<std::sync::Arc<crate::server::state:
     });
     match loaded {
         Some(s) => Some(s.clone()),
-        None => skip(scope, "Belgium routing artifact (*.butterfly or stepN/ tree)"),
+        None => skip(
+            scope,
+            "Belgium routing artifact (*.butterfly or stepN/ tree)",
+        ),
     }
 }
