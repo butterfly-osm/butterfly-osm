@@ -72,17 +72,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /out/butterfly-dl    /usr/local/bin/butterfly-dl
 COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
 
-# Profile models and traffic profiles — small (< 100 KB total) so we
-# bake them in rather than mount via ConfigMap.
+# Profile models — small (< 100 KB total) so we bake them in rather
+# than mount via ConfigMap.
 COPY models/  /opt/butterfly/models/
-COPY traffic/ /opt/butterfly/traffic/
 
 # Pipeline driver (idempotent — checks step8 outputs against PBF mtime).
 COPY scripts/build-pipeline.sh /usr/local/bin/butterfly-build-pipeline
 RUN chmod +x /usr/local/bin/butterfly-build-pipeline
 
 ENV BUTTERFLY_MODELS_DIR=/opt/butterfly/models
-ENV BUTTERFLY_TRAFFIC_DIR=/opt/butterfly/traffic
 
 WORKDIR /data
 ENTRYPOINT ["/bin/bash"]
