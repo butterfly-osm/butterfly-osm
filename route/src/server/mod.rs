@@ -612,7 +612,13 @@ pub async fn serve(
                 return;
             }
             if let Some(edge_path) = &edge_speeds {
-                match state_owned.recustomize_car_from_edge_speeds(edge_path) {
+                // #552: the typical pass and the two band passes share ONE
+                // preparation of the table (parquet CRC, level anchors,
+                // directed lookup, turn table, filtered EBG) and ONE cache
+                // file. `prep` is local to this closure, so everything it
+                // holds is released as soon as the last pass is done.
+                let mut prep = crate::server::state::EdgeRecustomizePrep::new(edge_path);
+                match state_owned.recustomize_car_from_edge_speeds(&mut prep) {
                     Ok(matched) => {
                         tracing::info!(
                             region = %region_id,
@@ -626,7 +632,7 @@ pub async fn serve(
                         // sets from the optional best/worst columns of the SAME
                         // table. Non-fatal: median car keeps serving without
                         // bands.
-                        if let Err(e) = state_owned.register_car_bands_from_edge_speeds(edge_path) {
+                        if let Err(e) = state_owned.register_car_bands_from_edge_speeds(&mut prep) {
                             tracing::warn!(
                                 region = %region_id,
                                 error = %e,
