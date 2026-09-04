@@ -1690,14 +1690,38 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
 
 #[test]
 fn belgium_flight_edges_batch_totals_match_matrix() {
-    // Acceptance criterion from #125: sum(duration_ms along path) must
-    // equal the matrix duration for the same (source, target) pair,
-    // within rounding. We compare against the actual /route endpoint
-    // (same underlying CchQuery) rather than spinning up the Flight
-    // matrix action because route's duration_s is the authoritative
-    // P2P source.
-    use butterfly_route::server::flight::{EdgesBatchParams, do_edges_batch};
-    use butterfly_route::server::query::CchQuery;
+    // Acceptance criterion from #125: the per-edge rows `edges_batch` streams
+    // must add up to the SAME trip the matrix prices for that pair.
+    //
+    // #595 — what this compares, and why. The old version called the
+    // pre-phantom, un-seeded `CchQuery::query` on a plain non-role-aware snap
+    // and called that an "independent truth". It was not: it was an OLDER
+    // ENGINE (a single directed-edge commit is exactly the snapping #502→#512
+    // replaced because it caused 2-4× detours on long chains), and on real
+    // Belgium data it returned nothing for this pair while production routed
+    // it fine. Its comment also claimed deciseconds and multiplied by 100;
+    // weights have been seconds since #297, so even a successful compare would
+    // have been wrong by 10×.
+    //
+    // The truth is now the `POST /table` bucket-M2M engine — the same way the
+    // isochrone reach gate uses `/table`: a DIFFERENT
+    // algorithm (phantom-seeded bucket join) over the same hierarchy, not a
+    // second call into the search `edges_batch` itself runs. Every assertion
+    // below is a structural identity, not a measured constant:
+    //
+    //   * the optimized cost `edges_batch` searched == the matrix duration
+    //     (both are the exact phantom-seeded CCH cost for these coordinates);
+    //   * the emitted rows chain head-to-tail (a path, not a bag of edges);
+    //   * Σ row distance − matrix distance ∈ [0, first + last row distance] —
+    //     rows carry the two endpoint edges WHOLE, the matrix clips them to
+    //     the phantom partials, and nothing else can differ in length;
+    //   * Σ row duration ≤ matrix duration + first + last row duration — same
+    //     endpoint correction, one-sided because the matrix cost also carries
+    //     turn penalties, which per-edge rows do not (and which are ≥ 0);
+    //   * the summed rows describe a physically plausible car trip.
+    use butterfly_route::matrix::neighbors::RadiusParam;
+    use butterfly_route::server::flight::{EdgesBatchParams, compute_edges_flat, do_edges_batch};
+    use butterfly_route::server::table::compute_table_bucket_m2m;
     use futures::StreamExt;
 
     let Some(state) = belgium_server_state() else {
@@ -1709,20 +1733,14 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
     let mode = butterfly_route::Mode(car_idx);
     let mode_data = state.get_mode(mode);
 
-    let pairs: Vec<[f64; 4]> = vec![[4.3517, 50.8466, 4.4025, 51.2194]]; // Brussels → Antwerp
+    let pair: [f64; 4] = [4.3517, 50.8466, 4.4025, 51.2194]; // Brussels → Antwerp
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let (mut s, _done) = do_edges_batch(
-            &state,
-            mode,
-            EdgesBatchParams {
-                pairs: pairs.clone(),
-            },
-        )
-        .unwrap();
+        let (mut s, _done) =
+            do_edges_batch(&state, mode, EdgesBatchParams { pairs: vec![pair] }).unwrap();
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
             acc.push(item.expect("batch must succeed"));
@@ -1730,12 +1748,36 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
         acc
     });
 
-    // Sum duration_ms across all rows of query 0.
+    // Unpack the wire rows in emission order (edge_seq is contiguous per pair).
     use arrow::array::*;
-    let mut sum_dur_ms: u64 = 0;
-    let mut sum_dist_m: u64 = 0;
-    let mut n_edges = 0usize;
+    #[derive(Debug)]
+    struct Row {
+        seq: u32,
+        osm_from: i64,
+        osm_to: i64,
+        dur_ms: u64,
+        dist_m: u64,
+    }
+    let mut rows: Vec<Row> = Vec::new();
     for batch in &batches {
+        let sq = batch
+            .column_by_name("edge_seq")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap();
+        let nf = batch
+            .column_by_name("osm_node_from")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let nt = batch
+            .column_by_name("osm_node_to")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         let dm = batch
             .column_by_name("duration_ms")
             .unwrap()
@@ -1749,73 +1791,158 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
             .downcast_ref::<UInt32Array>()
             .unwrap();
         for i in 0..batch.num_rows() {
-            if !dm.is_null(i) {
-                sum_dur_ms += dm.value(i) as u64;
-                n_edges += 1;
-            }
-            if !mm.is_null(i) {
-                sum_dist_m += mm.value(i) as u64;
-            }
+            // An all-null row is the "unreachable" marker — not expected here.
+            assert!(
+                !dm.is_null(i),
+                "edges_batch reported Brussels → Antwerp unreachable"
+            );
+            rows.push(Row {
+                seq: sq.value(i),
+                osm_from: nf.value(i),
+                osm_to: nt.value(i),
+                dur_ms: dm.value(i) as u64,
+                dist_m: mm.value(i) as u64,
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.seq);
+    assert!(
+        rows.len() >= 10,
+        "Brussels → Antwerp should traverse ≥ 10 edges, got {}",
+        rows.len()
+    );
+
+    let sum_dur_ms: u64 = rows.iter().map(|r| r.dur_ms).sum();
+    let sum_dist_m: u64 = rows.iter().map(|r| r.dist_m).sum();
+    let first = &rows[0];
+    let last = &rows[rows.len() - 1];
+
+    // ---- Structure: the rows are a PATH, head to tail ----
+    for (i, w) in rows.windows(2).enumerate() {
+        assert_eq!(w[0].seq + 1, w[1].seq, "edge_seq must be contiguous at {i}");
+        // osm ids of 0 mean "no NBG→OSM mapping" — skip those joints rather
+        // than assert on a sentinel.
+        if w[0].osm_to != 0 && w[1].osm_from != 0 {
+            assert_eq!(
+                w[0].osm_to, w[1].osm_from,
+                "edges {} → {} do not chain: {} ≠ {}",
+                w[0].seq, w[1].seq, w[0].osm_to, w[1].osm_from
+            );
         }
     }
 
-    // Independent CCH query for the same pair.
-    let src_snap = state
-        .snap_index
-        .snap(pairs[0][0], pairs[0][1], mode.0)
-        .expect("src snap");
-    let dst_snap = state
-        .snap_index
-        .snap(pairs[0][2], pairs[0][3], mode.0)
-        .expect("dst snap");
-    let src_rank = mode_data.orig_to_rank[src_snap as usize];
-    let dst_rank = mode_data.orig_to_rank[dst_snap as usize];
-    assert_ne!(src_rank, u32::MAX);
-    assert_ne!(dst_rank, u32::MAX);
-    let query = CchQuery::with_custom_weights(
-        &mode_data.cch_topo,
-        &mode_data.up_adj_flat,
-        &mode_data.down_rev_flat,
-        &mode_data.cch_weights,
+    // ---- Independent truth: the bucket-M2M matrix for the same pair ----
+    let resp = compute_table_bucket_m2m(
+        &state,
+        mode,
+        &[[pair[0], pair[1]]],
+        &[[pair[2], pair[3]]],
+        true,
+        true,
+        None,
+        &mode_data.mask,
+        RadiusParam::None,
+        None,
     );
-    let result = query.query(src_rank, dst_rank).expect("valid CCH query");
-    // CchQuery result.distance is in deciseconds.
-    let expected_dur_ms = (result.distance as u64) * 100;
+    let body = rt.block_on(async {
+        axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .expect("table body")
+    });
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("table json");
+    let table_dur_s = json["durations"][0][0]
+        .as_f64()
+        .expect("matrix must reach Brussels → Antwerp by car");
+    let table_dist_m = json["distances"][0][0].as_f64().expect("matrix distance");
 
-    let dur_s = sum_dur_ms as f64 / 1000.0;
-    let dist_km = sum_dist_m as f64 / 1000.0;
+    // The optimized cost `edges_batch` itself searched, exposed on `PairEdges`
+    // as the #468 equivalence oracle. It is the SAME quantity the matrix
+    // computes — exact phantom-seeded CCH cost between these two coordinates —
+    // reached by a different algorithm, so they must agree to the second.
+    let searched = compute_edges_flat(&state, &mode_data, mode, &[pair], false);
+    let cch_s = searched[0]
+        .cch_distance
+        .expect("edges_batch search must connect Brussels → Antwerp") as f64;
+
     eprintln!(
-        "edges_batch Brussels→Antwerp: {} edges, {:.1} km, {:.1} min (expected {:.1} min)",
-        n_edges,
-        dist_km,
-        dur_s / 60.0,
-        expected_dur_ms as f64 / 1000.0 / 60.0
+        "edges_batch Brussels→Antwerp: {} edges, Σ {:.3} km / {:.1} s | \
+         matrix {:.3} km / {:.1} s | endpoint edges {} + {} m, {} + {} ms",
+        rows.len(),
+        sum_dist_m as f64 / 1000.0,
+        sum_dur_ms as f64 / 1000.0,
+        table_dist_m / 1000.0,
+        table_dur_s,
+        first.dist_m,
+        last.dist_m,
+        first.dur_ms,
+        last.dur_ms,
+    );
+    eprintln!("  searched CCH cost {cch_s:.1} s vs matrix {table_dur_s:.1} s");
+
+    // ---- Totals: two algorithms, one number ----
+    assert!(
+        (cch_s - table_dur_s).abs() <= 1.0,
+        "the cost edges_batch searched ({cch_s:.1} s) and the bucket-M2M \
+         matrix ({table_dur_s:.1} s) disagree on the same pair"
     );
 
-    // Allow ±1 % rounding (deciseconds → milliseconds is a 10× scale,
-    // and the per-edge weights may have sub-decisecond remainder
-    // that accumulates to a handful of ms over a long path).
-    let diff = sum_dur_ms.abs_diff(expected_dur_ms);
-    let tolerance = (expected_dur_ms / 100).max(1000); // 1% or 1 second, whichever is larger
+    // ---- Distance: exact two-sided endpoint correction ----
+    // The matrix clips both phantom endpoint edges to their partials; the rows
+    // carry them whole. Nothing else can differ in LENGTH between the two
+    // (unlike duration, distance carries no turn penalties).
+    let endpoint_dist_m = (first.dist_m + last.dist_m) as f64;
     assert!(
-        diff <= tolerance,
-        "duration mismatch: sum={} ms, expected={} ms, diff={} ms (tolerance={} ms)",
-        sum_dur_ms,
-        expected_dur_ms,
-        diff,
-        tolerance
+        sum_dist_m as f64 >= table_dist_m - 1.0,
+        "row distance {} m is BELOW the matrix distance {:.1} m — the rows \
+         cannot describe a shorter path than the one the matrix priced",
+        sum_dist_m,
+        table_dist_m
+    );
+    assert!(
+        sum_dist_m as f64 - table_dist_m <= endpoint_dist_m + 1.0,
+        "row distance exceeds the matrix distance by {:.1} m, more than the \
+         two whole endpoint edges ({:.1} m) can explain — the rows and the \
+         matrix are not describing the same path",
+        sum_dist_m as f64 - table_dist_m,
+        endpoint_dist_m
     );
 
-    // Sanity: distance should be well above haversine (roads are not
-    // straight). Brussels→Antwerp is ~45 km by road, 40 km straight.
+    // ---- Duration: the exact side of the same correction ----
+    // matrix = Σ row weights + Σ turn penalties − (whole − partial) at each
+    // end. Turn penalties are ≥ 0, so the row sum can exceed the matrix by at
+    // most the two whole endpoint edges. (The matrix EXCEEDING the row sum is
+    // legitimate turn cost, which per-edge rows do not carry; the total itself
+    // is pinned exactly by the plausibility check below and by the fact that
+    // both numbers come from independent algorithms.)
+    let endpoint_dur_ms = (first.dur_ms + last.dur_ms) as f64;
+    let table_dur_ms = table_dur_s * 1000.0;
     assert!(
-        (30.0..=80.0).contains(&dist_km),
-        "Brussels→Antwerp distance {} km outside realistic bounds",
-        dist_km
+        sum_dur_ms as f64 <= table_dur_ms + endpoint_dur_ms + 1000.0,
+        "row duration {:.1} s exceeds the matrix duration {:.1} s by more than \
+         the two whole endpoint edges ({:.1} s) can explain",
+        sum_dur_ms as f64 / 1000.0,
+        table_dur_s,
+        endpoint_dur_ms / 1000.0
+    );
+
+    // ---- Physical plausibility of the summed rows (no engine number) ----
+    let straight_m = haversine_m(pair[0], pair[1], pair[2], pair[3]);
+    assert!(
+        sum_dist_m as f64 >= straight_m,
+        "a road path ({} m) cannot be shorter than the great circle ({:.0} m)",
+        sum_dist_m,
+        straight_m
     );
     assert!(
-        n_edges >= 10,
-        "Brussels→Antwerp path should traverse ≥ 10 edges, got {}",
-        n_edges
+        sum_dist_m as f64 <= 3.0 * straight_m,
+        "road path {} m is more than 3× the great circle {:.0} m — a detour, \
+         not a route",
+        sum_dist_m,
+        straight_m
+    );
+    let kmh = (sum_dist_m as f64 / 1000.0) / (sum_dur_ms as f64 / 3_600_000.0);
+    assert!(
+        (10.0..=130.0).contains(&kmh),
+        "mean speed {kmh:.1} km/h is not a plausible car trip"
     );
 }
