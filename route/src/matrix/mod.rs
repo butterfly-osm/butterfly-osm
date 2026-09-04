@@ -29,9 +29,6 @@ pub mod bucket_ch;
 pub mod neighbors;
 pub mod tile_geometry;
 
-#[cfg(feature = "bench")]
-pub use arrow_stream::ArrowMatrixWriter;
-
 /// #529/#557: THE lexicographic "(time, then length) strictly better"
 /// comparator — `true` iff `(t, l)` precedes `(best_t, best_l)`. One
 /// definition shared by P2P meeting-node selection (`server::query`), the
