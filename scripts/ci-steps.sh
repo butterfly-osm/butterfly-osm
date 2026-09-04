@@ -20,10 +20,20 @@ STEPS=(
   "upstream-clean (public repo)|bash scripts/check-upstream-clean.sh"
   "rustfmt --check|cargo fmt --all -- --check"
   "clippy (deny warnings)|cargo clippy --workspace --all-targets --all-features"
-  "build (workspace)|cargo build --workspace"
-  # --workspace, NOT --lib: route/tests/*.rs (24 data-free integration tests)
-  # never ran before #555. The Belgium-container tests self-skip without
-  # BT_*_CONTAINER, so this still needs no 24 GB artifact.
+  # No separate `cargo build --workspace` step (#591). Verified: delete
+  # target/debug/butterfly-{route,dl}, run `cargo test --workspace --no-run`,
+  # and both reappear — cargo builds and uplifts every bin target of a package
+  # it runs integration tests for. `cargo build --workspace` would not have
+  # built `butterfly-bench` either (`required-features = ["bench"]`); the
+  # `test (all features)` step below is what links it. The extra step only
+  # re-linked what the test step already produced.
+  #
+  # --workspace, NOT --lib: route/tests/*.rs never ran before #555. It holds
+  # 56 integration tests; 21 run without any data, the other 35 are #[ignore]
+  # (they need the Belgium/Luxembourg containers, live feeds or a running
+  # server). Those that do probe for a container look for data/ under the repo
+  # and package roots plus the opt-in $BUTTERFLY_TEST_DATA_DIR, and self-skip
+  # when none of them is there — so this step needs no 24 GB artifact.
   "test (workspace, lib + integration)|cargo test --workspace"
   # #556: tests behind `feature = "bench"` (matrix/range internals, the bench
   # weight profiles) compile under clippy --all-features but NEVER executed:
