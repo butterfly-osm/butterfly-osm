@@ -729,15 +729,13 @@ pub async fn route_handler(
             &mut ebg_path,
             &mut pts,
         );
-        if let Some((fs, fd)) = end_clip
-            && let (Some(&e0), Some(&en)) = (ebg_path.first(), ebg_path.last())
-        {
-            let head_cut = fs * state.ebg_nodes.nodes[e0 as usize].length_m as f64;
-            let tail_cut = (1.0 - fd) * state.ebg_nodes.nodes[en as usize].length_m as f64;
-            cut_polyline_start(&mut pts, head_cut);
-            cut_polyline_end(&mut pts, tail_cut);
-            distance_m = (distance_m - head_cut - tail_cut).max(0.0);
-        }
+        distance_m = super::geometry::clip_route_ends(
+            &state.ebg_nodes,
+            &ebg_path,
+            &mut pts,
+            distance_m,
+            end_clip,
+        );
         let geometry = RouteGeometry::from_points(pts, format);
         let duration_s = result.distance as f64;
         let steps = if want_steps {
@@ -2023,67 +2021,6 @@ fn build_edge_geometry(
     let poly = edge_geom.polyline(node.geom_idx);
     let points: Vec<Point> = poly.iter().map(|(lon, lat)| Point { lon, lat }).collect();
     RouteGeometry::from_points(points, format)
-}
-
-/// Equirectangular segment length in meters (fine at street scale).
-fn seg_len_m(a: &Point, b: &Point) -> f64 {
-    let ky = 111_320.0;
-    let kx = 111_320.0 * (a.lat.to_radians().cos());
-    let (dx, dy) = ((a.lon - b.lon) * kx, (a.lat - b.lat) * ky);
-    (dx * dx + dy * dy).sqrt()
-}
-
-/// Remove `cut_m` meters of polyline from the start, inserting an
-/// interpolated boundary point (#522 phantom end clipping).
-fn cut_polyline_start(pts: &mut Vec<Point>, cut_m: f64) {
-    if cut_m <= 0.0 || pts.len() < 2 {
-        return;
-    }
-    let mut acc = 0.0;
-    for i in 0..pts.len() - 1 {
-        let l = seg_len_m(&pts[i], &pts[i + 1]);
-        if acc + l >= cut_m {
-            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
-            let p = Point {
-                lon: pts[i].lon + (pts[i + 1].lon - pts[i].lon) * t,
-                lat: pts[i].lat + (pts[i + 1].lat - pts[i].lat) * t,
-            };
-            pts.drain(0..=i);
-            pts[0] = p;
-            return;
-        }
-        acc += l;
-    }
-    // cut longer than the polyline: keep the final point only
-    let last = *pts.last().unwrap();
-    pts.clear();
-    pts.push(last);
-}
-
-/// Remove `cut_m` meters of polyline from the end (mirror of the above).
-fn cut_polyline_end(pts: &mut Vec<Point>, cut_m: f64) {
-    if cut_m <= 0.0 || pts.len() < 2 {
-        return;
-    }
-    let mut acc = 0.0;
-    for i in (1..pts.len()).rev() {
-        let l = seg_len_m(&pts[i - 1], &pts[i]);
-        if acc + l >= cut_m {
-            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
-            let p = Point {
-                lon: pts[i].lon + (pts[i - 1].lon - pts[i].lon) * t,
-                lat: pts[i].lat + (pts[i - 1].lat - pts[i].lat) * t,
-            };
-            pts.truncate(i + 1);
-            let n = pts.len();
-            pts[n - 1] = p;
-            return;
-        }
-        acc += l;
-    }
-    let first = pts[0];
-    pts.clear();
-    pts.push(first);
 }
 
 /// Build geometry for multiple consecutive edges

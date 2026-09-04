@@ -10,6 +10,106 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — Three surfaces that disagreed, settled on measurements (#601 #602 #604)
+
+Three tickets were left open earlier today because each needed a number only a
+real graph can give. All three are now measured on Belgium and closed. Two
+further defects turned up while measuring — one in the radius filter, one in
+the radius compute bound — and are fixed here too.
+
+**#601 — `edges_batch` capped the K-best escalation at 16 where every other
+surface uses 400.** Raised to the shared value. The trade the ticket asked to
+price turned out not to exist: `build_role_masks` admits a SOURCE candidate
+only if it can reach the largest SCC and a DESTINATION candidate only if it is
+reachable from it, so any combination of two non-empty candidate lists is
+connected and the first one tried succeeds; a pair with an empty list on either
+side returns before the loop. Measured before raising it — 41 400 random pairs
+(inland, across the sea, and outside the extract) and a 241 827-point 500 m
+lattice covering the whole extract: **zero** pairs where `edges_batch` and
+`/route` disagreed, and **zero** points that snap to a road within 5 km yet are
+unreachable (3 interior lattice cells were unreachable; none snapped). Batch
+timings were unchanged either side of the change. The pin test now asserts the
+two caps are EQUAL.
+
+**#602 — `radius_km` on REST `/table` filtered the output, not the work.** The
+bound-and-rescue is ported from the Flight matrix action, and both surfaces now
+share one body for the mask (`build_radius_mask`), the compute bound
+(`radius_compute_cap_s`) and the rescue (`rescue_radius_cut_cells`). Measured
+on Belgium, interleaved min-of-7:
+
+| shape | before | after |
+|---|---|---|
+| car 60×220, r=20 km | 1.00× | **1.31×** |
+| car 200×200, r=15 km | 1.02× | **1.54×** |
+| car 400×400, r=10 km | 1.03× | **2.39×** |
+| foot 400×400, r=10 km | 1.02× | 0.98× |
+
+Exactness proven against the unpruned result on the real graph, not a lattice:
+a new `radius_exactness` gate runs the same pair set with and without a radius,
+car and foot, and asserts every kept cell identical (duration AND distance)
+with nothing inside the radius lost. 0 mismatches, 0 lost, at every shape.
+
+**#604 — Flight `route_batch` clipped duration at the snapped endpoints but
+reported distance and geometry for the whole first and last edges.** `/route`
+clips all four. `clip_route_ends` is now one body called by both. Measured
+disagreement before, `route_batch` minus `/route` distance, median over 120
+pairs per bucket: car short **+101 m**, car medium +119 m, car long +207 m;
+foot +219/+178/+198 m; bike +240/+185 m. After: **0.0 m** median and maximum in
+every bucket except 5 pairs out of 1 080 where the two surfaces pick a
+different route entirely (duration differs with the distance — `/route` has the
+#510 ALT-label tier that `phantom_pair` does not; a separate matter). The
+`max_meters` prune moved with it by construction: it compares against the same
+`build_route_distance`.
+
+**Found while measuring #602: the radius filter's longitude band dropped
+in-radius pairs.** The band is a pre-filter in front of the exact haversine
+check, and it was NARROWER than the check it guards — 111.32 km/deg is the
+equatorial degree while the check uses the mean radius (111.195), and a
+great-circle path spans more longitude than the parallel arc suggests. A pair
+19 988.8 m apart was excluded from a 20 km radius because its 0.285678° of
+longitude just exceeded the 0.285597° band. `lon_half_width_deg` now derives
+the band from the haversine identity itself, off the same earth radius, always
+an over-estimate; a randomised test sweeps latitudes and radii and asserts the
+band and the exact check never disagree.
+
+**Found while measuring #602: the compute bound is car-calibrated, and off-car
+it cost 5×.** 180 s/km is a 1.8× detour at 36 km/h. Ten kilometres on foot is
+over two hours of walking against a 45-minute cap, so the bound cut essentially
+every in-radius cell and the rescue then ran one single-source sweep per
+source. Measured on the Flight matrix, which has carried this since #538:
+foot 400×400 with `radius_km=10` took **7 794 ms against 1 551 ms unpruned
+(0.20×)**; car was 2.45× faster. The answers were right throughout; only the
+cost was wrong. Rather than calibrate a speed per mode — a constant that would
+be wrong again for the next profile — the rescue now notices: once more than a
+quarter of the active sources need a rescue run, one batched re-sweep under the
+caller's own bound replaces the per-source ones. Identical answer either way;
+the bailout bounds cost, never accuracy. Foot is back to 0.95–0.98× on both
+surfaces, car keeps 2.36–2.39×.
+
+**#544's reach tolerance, measured and moved.** #544 fixed the arrive field but
+deliberately left `reach_out_tol` at 0.95 T, because the knob is shared with
+the depart direction and with the crumb filter's separate budget and nobody had
+measured the real-data residual. Measured now, car, T = 600 s, 1 500 sampled
+road points more than 150 m outside the polygon per direction:
+
+- **arrive** — earliest reachable far point **1.0217 T**. Nothing outside the
+  polygon is reachable within T at all: 0/1500 at every tolerance up to 1.00 T.
+- **depart** — earliest **0.8867 T**, a single detached stub at Berloz, exactly
+  the crumb the filter declines to draw; the next is 1.0133 T. So 1/1500 at
+  0.99 T against a budget of 7.
+
+The knob moves to **0.99 T** and stays ONE knob — the measurement says a split
+per direction is not needed. Not raised to 1.00: the depart frontier needs its
+own cell of headroom and the crumb filter keeps its separate 1.5 % budget in
+`gate_isochrone_topology`.
+
+**Gate:** `radius_exactness` added; `reach_out_tol` tightened 0.95 → 0.99;
+`route_batch_max_meters` now floors its bound to whole metres, because the
+engine rounds `max_meters` to whole metres and a fractional bound made the two
+disagree about the single pair whose distance IS the median. Full suite PASS on
+Belgium after the changes.
+
+
 ### 2026-09-04 — Arrive isochrones reach as far as they should (#544)
 
 An arrive (`direction=arrive`) isochrone was seeded at `w(edge) − part_time`
