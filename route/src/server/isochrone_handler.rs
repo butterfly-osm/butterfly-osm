@@ -13,13 +13,13 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::geometry::{
-    GeometryFormat, Point, ReachModel, build_isochrone_topology, encode_polyline6,
-    reachable_polylines,
+    GeometryFormat, IsochroneFlats, IsochroneQuery, IsochroneSnapError, Point, ReachModel,
+    encode_contour, isochrone_polygons, primary_outer_ring, reachable_polylines,
 };
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
+use super::types::{ErrorResponse, parse_mode, validate_coord};
 use crate::range::ContourPolygon;
 
 // ============ Types ============
@@ -100,7 +100,7 @@ pub struct ContourFeature {
 
 /// GeoJSON geometry for a full contour topology: `Polygon` (one component)
 /// or `MultiPolygon`, outer rings CCW, holes CW, rings closed, 5 decimals.
-fn topology_geojson(polys: &[ContourPolygon]) -> serde_json::Value {
+pub(crate) fn topology_geojson(polys: &[ContourPolygon]) -> serde_json::Value {
     use crate::range::wkb_stream::{ensure_ccw, ensure_cw};
     let trunc = |v: f64| (v * 1e5).round() / 1e5;
     let ring_json = |ring: &[(f64, f64)], cw: bool| -> serde_json::Value {
@@ -1178,15 +1178,6 @@ pub async fn isochrone_handler(
         None
     };
 
-    // Determine PHAST threshold (max of all contour values). All isochrone
-    // metrics are time-based after #371 (isodistance was removed because
-    // it ran PHAST on a separate distance-shortest CCH metric — a path
-    // that disagreed with every other endpoint).
-    let phast_threshold = match &metric {
-        IsoMetric::Time(s) => *s,
-        IsoMetric::MultiTime(vals) => *vals.last().unwrap(),
-    };
-
     // Parse include parameter
     let include_network = req
         .include
@@ -1218,25 +1209,61 @@ pub async fn isochrone_handler(
         std::borrow::Cow::Borrowed(&mode_data.mask)
     };
 
-    // Snap center — directional role tracks isochrone direction:
-    //   depart  → center acts as a source     → SnapRole::Src (needs outbound arcs)
-    //   arrive  → center acts as a destination → SnapRole::Dst (needs inbound arcs)
-    let center_role = if reverse {
-        SnapRole::Dst
+    // Recustomized weights (avoid takes priority, then exclude). `Some`
+    // also selects the LEGACY single seed inside the core: phantom partial
+    // costs assume base weights.
+    let exclude_weights = if avoid_entry.is_none() {
+        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
     } else {
-        SnapRole::Src
+        None
     };
-    let center_role_filter = center_role.role_filter(&mode_data);
+    let flats = if let Some(ref entry) = avoid_entry {
+        Some(IsochroneFlats {
+            up: &entry.weights.time_up_flat,
+            down_fwd: &entry.weights.time_down_fwd_flat,
+            down_rev: &entry.weights.time_down_flat,
+        })
+    } else {
+        exclude_weights.as_ref().map(|ew| IsochroneFlats {
+            up: &ew.time_up_flat,
+            down_fwd: &ew.time_down_fwd_flat,
+            down_rev: &ew.time_down_flat,
+        })
+    };
 
-    let center_orig = match state.snap_index.snap_filtered_role(
-        req.lon,
-        req.lat,
-        mode.0,
-        Some(&snap_mask),
-        center_role_filter,
+    // Build list of thresholds with their labels. All time-based after #371.
+    let thresholds: Vec<(u32, Option<u32>)> = match &metric {
+        IsoMetric::Time(s) => vec![(*s, Some(*s))],
+        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s))).collect(),
+    };
+    // WKB serves ONE contour (guarded below) — the others would be computed
+    // only to be discarded.
+    let requested: Vec<u32> = if wants_wkb {
+        thresholds.iter().take(1).map(|&(t, _)| t).collect()
+    } else {
+        thresholds.iter().map(|&(t, _)| t).collect()
+    };
+
+    // THE pipeline (#549): snap -> phantom seeds -> seeded PHAST ->
+    // rank->original -> per-threshold frontier -> topology, shared with
+    // bands, /isochrone/bulk, Flight `isochrone` and the catchment hull.
+    let field = match isochrone_polygons(
+        &state,
+        &mode_data,
+        mode,
+        &IsochroneQuery {
+            lon: req.lon,
+            lat: req.lat,
+            thresholds: &requested,
+            reverse,
+            mode_name: &req.mode,
+            snap_mask: Some(&snap_mask),
+            flats,
+            include_network: include_network && !wants_wkb,
+        },
     ) {
-        Some(id) => id,
-        None => {
+        Ok(f) => f,
+        Err(IsochroneSnapError::NoSnap) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
@@ -1245,160 +1272,15 @@ pub async fn isochrone_handler(
             )
                 .into_response();
         }
-    };
-
-    let center_rank = mode_data.orig_to_rank[center_orig as usize];
-    if center_rank == u32::MAX {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Center not accessible for this mode".to_string(),
-            }),
-        )
-            .into_response();
-    }
-
-    // #506: phantom center — seed both directed twins (and near-equidistant
-    // parallel edges) so the polygon isn't committed to one departure/arrival
-    // direction of the snapped edge. Depart seeds cost the REMAINDER of the
-    // edge (part_time); arrive seeds cost the ENTRY-to-snap part (w - part).
-    // Custom-weight paths (avoid/exclude) keep the legacy single seed.
-    let (center_seeds, center_anchor) = if avoid_entry.is_none() && exclude_mask.is_none() {
-        super::phantom::isochrone_center_seeds(
-            &state,
-            &mode_data,
-            mode,
-            req.lon,
-            req.lat,
-            center_role,
-            Some(&snap_mask),
-            reverse,
-            center_rank,
-        )
-    } else {
-        (vec![(center_rank, 0)], None)
-    };
-
-    // Get custom weights (avoid takes priority, then exclude)
-    let exclude_weights = if avoid_entry.is_none() {
-        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
-    } else {
-        None
-    };
-
-    // Select weights based on custom weights (avoid > exclude > base mode).
-    // - `up_flat` / `down_flat` (target-keyed reverse): used by the
-    //   bounded-search reverse PHAST and as ambient state for snap path.
-    // - `down_fwd_flat`: used by the *forward* isochrone downward scan.
-    // All time-based — isodistance was removed in #371.
-    let (up_flat, down_flat, down_fwd_flat, node_weights) = if let Some(ref entry) = avoid_entry {
-        (
-            &entry.weights.time_up_flat,
-            &entry.weights.time_down_flat,
-            &entry.weights.time_down_fwd_flat,
-            &mode_data.node_weights[..],
-        )
-    } else if let Some(ref ew) = exclude_weights {
-        (
-            &ew.time_up_flat,
-            &ew.time_down_flat,
-            &ew.time_down_fwd_flat,
-            &mode_data.node_weights[..],
-        )
-    } else {
-        (
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &mode_data.down_adj_flat,
-            &mode_data.node_weights[..],
-        )
-    };
-
-    // Run PHAST once with max threshold
-    let phast_settled = if reverse {
-        run_phast_bounded_fast_reverse_seeded(
-            up_flat,
-            down_flat,
-            &center_seeds,
-            phast_threshold,
-            mode,
-        )
-    } else {
-        run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, phast_threshold, mode)
-    };
-
-    // Convert to original IDs (ranks kept: the depart frontier scans arcs)
-    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-    for &(rank, dist) in &phast_settled {
-        let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        let original_id = mode_data.filtered_to_original[filtered_id as usize];
-        settled.push((original_id, dist));
-    }
-    // Reach model per threshold (see `ReachModel`): depart frontiers are the
-    // unreached successors, enumerated once per threshold.
-    let frontier_at = |threshold: u32| -> Vec<(u32, f32)> {
-        if reverse {
-            Vec::new()
-        } else {
-            depart_frontier(
-                &phast_settled,
-                threshold,
-                up_flat,
-                down_fwd_flat,
-                &mode_data,
-                node_weights,
+        Err(IsochroneSnapError::NotAccessible) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Center not accessible for this mode".to_string(),
+                }),
             )
+                .into_response();
         }
-    };
-
-    // Full topology per threshold (2026-09-03): ONE simple polygon — the
-    // origin's component. The legacy single-ring fields derive from it.
-    let build_contour_topology = |threshold: u32| -> Vec<ContourPolygon> {
-        let frontier = frontier_at(threshold);
-        build_isochrone_topology(
-            &settled,
-            threshold,
-            node_weights,
-            &state.ebg_nodes,
-            &state.edge_geom,
-            &req.mode,
-            center_anchor,
-            Some((req.lon, req.lat)),
-            &ReachModel::for_direction(reverse, &frontier),
-        )
-    };
-
-    // Helper: encode polygon in requested format
-    #[allow(clippy::type_complexity)]
-    let encode_polygon = |polygon: &[Point],
-                          format: GeometryFormat|
-     -> (Option<String>, Option<Vec<[f64; 2]>>, Option<Vec<Point>>) {
-        match format {
-            GeometryFormat::Polyline6 => (Some(encode_polyline6(polygon)), None, None),
-            GeometryFormat::GeoJson => {
-                use crate::range::wkb_stream::ensure_ccw;
-                let trunc = |v: f64| (v * 1e5).round() / 1e5;
-                let mut coords: Vec<(f64, f64)> = polygon
-                    .iter()
-                    .map(|p| (trunc(p.lon), trunc(p.lat)))
-                    .collect();
-                ensure_ccw(&mut coords);
-                let mut ring: Vec<[f64; 2]> = coords.into_iter().map(|(x, y)| [x, y]).collect();
-                if let (Some(first), Some(last)) = (ring.first().copied(), ring.last().copied())
-                    && first != last
-                {
-                    ring.push(first);
-                }
-                (None, Some(ring), None)
-            }
-            GeometryFormat::Points => (None, None, Some(polygon.to_vec())),
-        }
-    };
-
-    // Build list of thresholds with their labels. All time-based after #371.
-    let thresholds: Vec<(u32, Option<u32>)> = match &metric {
-        IsoMetric::Time(s) => vec![(*s, Some(*s))],
-        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s))).collect(),
     };
 
     // WKB path (content negotiation)
@@ -1426,7 +1308,8 @@ pub async fn isochrone_handler(
             )
                 .into_response();
         }
-        let contour = ContourResult::from_polygons(build_contour_topology(thresholds[0].0));
+        let contour =
+            ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
         super::region_metrics::record_query(
             &region_id,
             "isochrone",
@@ -1443,34 +1326,29 @@ pub async fn isochrone_handler(
     }
 
     // JSON path -- always returns contours array
-    let contour_features: Vec<ContourFeature> = thresholds
+    let mut contour_features: Vec<ContourFeature> = thresholds
         .iter()
-        .map(|&(threshold, time_s)| {
-            let topology = build_contour_topology(threshold);
-            let polygon: Vec<Point> = topology
-                .first()
-                .map(|p| {
-                    p.outer
-                        .iter()
-                        .map(|&(lon, lat)| Point { lon, lat })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
-            let (poly_enc, poly_geo, poly_pts) = encode_polygon(&polygon, geom_format);
+        .zip(field.topologies.iter())
+        .map(|(&(threshold, time_s), topology)| {
+            let polygon = primary_outer_ring(topology);
+            let reachable = field
+                .settled
+                .iter()
+                .filter(|&&(_, d)| d <= threshold)
+                .count();
+            let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
             ContourFeature {
                 time_s,
                 polygon: poly_enc,
                 polygon_geojson: poly_geo,
                 polygon_points: poly_pts,
                 geometry: matches!(geom_format, GeometryFormat::GeoJson)
-                    .then(|| topology_geojson(&topology)),
+                    .then(|| topology_geojson(topology)),
                 reachable_edges: reachable,
                 band: None,
             }
         })
         .collect();
-    let mut contour_features = contour_features;
 
     // #521 uncertainty bands: two extra seeded PHAST passes on the hidden
     // band weight sets — best (night speeds) reaches farther, worst (weekday
@@ -1492,7 +1370,6 @@ pub async fn isochrone_handler(
                 &req,
                 reverse,
                 &thresholds,
-                phast_threshold,
                 geom_format,
                 tag,
             ) {
@@ -1510,20 +1387,6 @@ pub async fn isochrone_handler(
         }
     }
 
-    // Build network at max threshold if requested
-    let network = if include_network {
-        Some(build_network_geometry(
-            &settled,
-            phast_threshold,
-            node_weights,
-            &state.ebg_nodes,
-            &state.edge_geom,
-            &ReachModel::for_direction(reverse, &frontier_at(phast_threshold)),
-        ))
-    } else {
-        None
-    };
-
     super::region_metrics::record_query(
         &region_id,
         "isochrone",
@@ -1531,140 +1394,73 @@ pub async fn isochrone_handler(
     );
     Json(IsochroneResponse {
         contours: contour_features,
-        network,
+        // `include=network` shares the max-threshold frontier with the
+        // contour at that threshold (#549: it used to be recomputed).
+        network: field.network,
     })
     .into_response()
 }
 
-/// #521: contour features for ONE hidden band weight set — a compact replay
-/// of the plain-path core (snap -> phantom center seeds -> seeded PHAST ->
-/// contour) against the band's ModeData. Plain path only by construction
-/// (bands reject avoid/exclude upstream).
-#[allow(clippy::too_many_arguments)]
+/// #521: contour features for ONE hidden band weight set — the SAME core
+/// (`isochrone_polygons`) against the band's `ModeData`, then the SAME
+/// contour encoder as the median branch. Plain path only by construction
+/// (bands reject avoid/exclude upstream), so no weight override and no snap
+/// mask beyond the band mode's own.
 fn band_isochrone_features(
     state: &ServerState,
     band: crate::profile_abi::Mode,
     req: &IsochroneRequest,
     reverse: bool,
     thresholds: &[(u32, Option<u32>)],
-    phast_threshold: u32,
     geom_format: GeometryFormat,
     tag: &'static str,
 ) -> Option<Vec<ContourFeature>> {
     let md = state.get_mode(band);
-    let role = if reverse {
-        SnapRole::Dst
-    } else {
-        SnapRole::Src
-    };
-    let rf = role.role_filter(&md);
-    let center =
-        state
-            .snap_index
-            .snap_filtered_role(req.lon, req.lat, band.0, Some(&md.mask), rf)?;
-    let center_rank = md.orig_to_rank[center as usize];
-    if center_rank == u32::MAX {
-        return None;
-    }
-    let (seeds, anchor) = super::phantom::isochrone_center_seeds(
+    let requested: Vec<u32> = thresholds.iter().map(|&(t, _)| t).collect();
+    let field = isochrone_polygons(
         state,
         &md,
         band,
-        req.lon,
-        req.lat,
-        role,
-        Some(&md.mask),
-        reverse,
-        center_rank,
-    );
-    let phast_settled = if reverse {
-        run_phast_bounded_fast_reverse_seeded(
-            &md.up_adj_flat,
-            &md.down_rev_flat,
-            &seeds,
-            phast_threshold,
-            band,
-        )
-    } else {
-        run_phast_bounded_fast_seeded(
-            &md.up_adj_flat,
-            &md.down_adj_flat,
-            &seeds,
-            phast_threshold,
-            band,
-        )
-    };
-    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-    for &(rank, dist) in &phast_settled {
-        let filtered_id = md.cch_topo.rank_to_filtered[rank as usize];
-        settled.push((md.filtered_to_original[filtered_id as usize], dist));
-    }
-    let mut out = Vec::with_capacity(thresholds.len());
-    for &(threshold, time_s) in thresholds {
-        let frontier = if reverse {
-            Vec::new()
-        } else {
-            depart_frontier(
-                &phast_settled,
-                threshold,
-                &md.up_adj_flat,
-                &md.down_adj_flat,
-                &md,
-                &md.node_weights,
-            )
-        };
-        let model = ReachModel::for_direction(reverse, &frontier);
-        let topology = build_isochrone_topology(
-            &settled,
-            threshold,
-            &md.node_weights,
-            &state.ebg_nodes,
-            &state.edge_geom,
-            &req.mode,
-            anchor,
-            Some((req.lon, req.lat)),
-            &model,
-        );
-        let polygon: Vec<Point> = topology
-            .first()
-            .map(|p| {
-                p.outer
+        &IsochroneQuery {
+            lon: req.lon,
+            lat: req.lat,
+            thresholds: &requested,
+            reverse,
+            // The contour config keys off the mode name the CLIENT asked
+            // for, not the hidden band mode's internal name.
+            mode_name: &req.mode,
+            snap_mask: Some(&md.mask),
+            flats: None,
+            include_network: false,
+        },
+    )
+    .ok()?;
+
+    Some(
+        thresholds
+            .iter()
+            .zip(field.topologies.iter())
+            .map(|(&(threshold, time_s), topology)| {
+                let polygon = primary_outer_ring(topology);
+                let reachable = field
+                    .settled
                     .iter()
-                    .map(|&(lon, lat)| Point { lon, lat })
-                    .collect()
+                    .filter(|&&(_, d)| d <= threshold)
+                    .count();
+                let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
+                ContourFeature {
+                    time_s,
+                    polygon: poly_enc,
+                    polygon_geojson: poly_geo,
+                    polygon_points: poly_pts,
+                    geometry: matches!(geom_format, GeometryFormat::GeoJson)
+                        .then(|| topology_geojson(topology)),
+                    reachable_edges: reachable,
+                    band: Some(tag),
+                }
             })
-            .unwrap_or_default();
-        let reachable = settled.iter().filter(|&&(_, d)| d <= threshold).count();
-        let (poly_enc, poly_geo, poly_pts) = match geom_format {
-            GeometryFormat::Polyline6 => (Some(encode_polyline6(&polygon)), None, None),
-            GeometryFormat::GeoJson => {
-                use crate::range::wkb_stream::ensure_ccw;
-                let trunc = |v: f64| (v * 1e5).round() / 1e5;
-                let mut coords: Vec<(f64, f64)> = polygon
-                    .iter()
-                    .map(|p| (trunc(p.lon), trunc(p.lat)))
-                    .collect();
-                ensure_ccw(&mut coords);
-                (
-                    None,
-                    Some(coords.into_iter().map(|(lo, la)| [lo, la]).collect()),
-                    None,
-                )
-            }
-            GeometryFormat::Points => (None, None, Some(polygon)),
-        };
-        out.push(ContourFeature {
-            time_s,
-            polygon: poly_enc,
-            polygon_geojson: poly_geo,
-            polygon_points: poly_pts,
-            geometry: matches!(geom_format, GeometryFormat::GeoJson)
-                .then(|| topology_geojson(&topology)),
-            reachable_edges: reachable,
-            band: Some(tag),
-        });
-    }
-    Some(out)
+            .collect(),
+    )
 }
 
 /// `include=network`: the reached road polylines as (lon, lat) f64 — the SAME
@@ -1677,16 +1473,26 @@ pub fn build_network_geometry(
     edge_geom: &crate::server::edge_geom::EdgeGeometry,
     model: &ReachModel<'_>,
 ) -> Vec<Vec<[f64; 2]>> {
-    reachable_polylines(settled, time_s, node_weights, ebg_nodes, edge_geom, model)
-        .0
-        .into_iter()
-        .filter(|p| p.len() >= 2)
-        .map(|p| {
-            p.into_iter()
-                .map(|(lat_e7, lon_e7)| [lon_e7 as f64 / 1e7, lat_e7 as f64 / 1e7])
-                .collect()
-        })
-        .collect()
+    // The caller only wants the polylines; never scan for the legacy
+    // min-label anchor here (#549).
+    reachable_polylines(
+        settled,
+        time_s,
+        node_weights,
+        ebg_nodes,
+        edge_geom,
+        model,
+        false,
+    )
+    .0
+    .into_iter()
+    .filter(|p| p.len() >= 2)
+    .map(|p| {
+        p.into_iter()
+            .map(|(lat_e7, lon_e7)| [lon_e7 as f64 / 1e7, lat_e7 as f64 / 1e7])
+            .collect()
+    })
+    .collect()
 }
 
 /// Depart-field frontier (2026-09-03): PHAST labels are HEAD arrivals, so the
@@ -1706,7 +1512,7 @@ pub fn depart_frontier(
     md: &super::state::ModeData,
     node_weights: &[u32],
 ) -> Vec<(u32, f32)> {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     let n_nodes = up.offsets.len() - 1;
     let mut reached = vec![0u64; n_nodes.div_ceil(64)];
     for &(r, d) in settled_ranks {
@@ -1718,7 +1524,7 @@ pub fn depart_frontier(
     let rank_to_filtered = &md.cch_topo.rank_to_filtered;
     let filtered_to_original = &md.filtered_to_original;
     // original id -> (earliest entry, w(f))
-    let mut best: HashMap<u32, (u32, u32)> = HashMap::new();
+    let mut best: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
     let mut scan = |offsets: &[u64],
                     targets: &[u32],
                     weights: &crate::formats::WeightArray,
@@ -1912,21 +1718,27 @@ fn isochrone_bulk_sync(
         mode_data.mask.clone()
     };
 
-    // Select forward flat adjacencies for PHAST
-    let (up_flat, down_fwd_flat) = if let Some(ref entry) = avoid_entry {
-        (
-            &entry.weights.time_up_flat,
-            &entry.weights.time_down_fwd_flat,
-        )
-    } else if let Some(ref ew) = exclude_weights {
-        (&ew.time_up_flat, &ew.time_down_fwd_flat)
+    // Recustomized flats (avoid > exclude). `Some` also selects the legacy
+    // single seed inside the core — phantom partials assume base weights.
+    // Bulk is depart-only, so `down_rev` is never read; it is carried so the
+    // one query shape serves every surface.
+    let flats = if let Some(ref entry) = avoid_entry {
+        Some(IsochroneFlats {
+            up: &entry.weights.time_up_flat,
+            down_fwd: &entry.weights.time_down_fwd_flat,
+            down_rev: &entry.weights.time_down_flat,
+        })
     } else {
-        (&mode_data.up_adj_flat, &mode_data.down_adj_flat)
+        exclude_weights.as_ref().map(|ew| IsochroneFlats {
+            up: &ew.time_up_flat,
+            down_fwd: &ew.time_down_fwd_flat,
+            down_rev: &ew.time_down_flat,
+        })
     };
 
     // Bulk isochrones are depart-only (no `direction` field), so origins
-    // act as sources. Apply the #197 directional role filter.
-    let origin_role_filter = SnapRole::Src.role_filter(&mode_data);
+    // act as sources.
+    let thresholds = [time_s];
 
     // Process all origins in parallel
     let results: Vec<(u32, Vec<u8>)> = req
@@ -1934,73 +1746,27 @@ fn isochrone_bulk_sync(
         .par_iter()
         .enumerate()
         .filter_map(|(idx, &[lon, lat])| {
-            // Snap origin
-            let center_orig = state.snap_index.snap_filtered_role(
-                lon,
-                lat,
-                mode.0,
-                Some(&snap_mask),
-                origin_role_filter,
-            )?;
-            let center_rank = mode_data.orig_to_rank[center_orig as usize];
-            if center_rank == u32::MAX {
-                return None;
-            }
-
-            // #506: phantom center seeds + exact anchor (custom-weight runs
-            // keep the legacy single seed — phantom partials assume base
-            // weights).
-            let (center_seeds, center_anchor) =
-                if avoid_entry.is_none() && exclude_weights.is_none() {
-                    super::phantom::isochrone_center_seeds(
-                        &state,
-                        &mode_data,
-                        mode,
-                        lon,
-                        lat,
-                        SnapRole::Src,
-                        Some(&snap_mask),
-                        false,
-                        center_rank,
-                    )
-                } else {
-                    (vec![(center_rank, 0)], None)
-                };
-
-            // Run PHAST - Note: thread-local state handles per-thread allocation
-            let phast_settled =
-                run_phast_bounded_fast_seeded(up_flat, down_fwd_flat, &center_seeds, time_s, mode);
-
-            // Convert to original IDs (ranks kept for the depart frontier)
-            let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
-            for &(rank, dist) in &phast_settled {
-                let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                let original_id = mode_data.filtered_to_original[filtered_id as usize];
-                settled.push((original_id, dist));
-            }
-            let frontier = depart_frontier(
-                &phast_settled,
-                time_s,
-                up_flat,
-                down_fwd_flat,
+            // THE pipeline (#549) — same seeds, same frontier, same anchor
+            // and pin as REST /isochrone.
+            let field = isochrone_polygons(
+                &state,
                 &mode_data,
-                &mode_data.node_weights,
-            );
-
-            // Build polygon using frontier-based concave hull
-            let contour = ContourResult::from_polygons(build_isochrone_topology(
-                &settled,
-                time_s,
-                &mode_data.node_weights,
-                &state.ebg_nodes,
-                &state.edge_geom,
-                &req.mode,
-                center_anchor,
-                Some((lon, lat)),
-                &ReachModel::Depart {
-                    frontier: &frontier,
+                mode,
+                &IsochroneQuery {
+                    lon,
+                    lat,
+                    thresholds: &thresholds,
+                    reverse: false,
+                    mode_name: &req.mode,
+                    snap_mask: Some(&snap_mask),
+                    flats,
+                    include_network: false,
                 },
-            ));
+            )
+            .ok()?;
+            let contour = ContourResult::from_polygons(
+                field.topologies.into_iter().next().unwrap_or_default(),
+            );
 
             // Encode WKB
             encode_polygon_wkb(&contour).map(|wkb| (idx as u32, wkb))
