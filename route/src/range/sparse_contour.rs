@@ -865,7 +865,7 @@ pub fn generate_sparse_contour_anchored(
     // rings vs holes by orientation, holes nested into their component,
     // raster crumbs and street-gap pockets filtered, spurs peeled.
     let contour_start = std::time::Instant::now();
-    let cell_polys = extract_topology_sparse(
+    let mut cell_polys = extract_topology_sparse(
         &closed,
         anchor_cell,
         true,
@@ -874,6 +874,15 @@ pub fn generate_sparse_contour_anchored(
     );
     stats.contour_vertices_before_simplify = cell_polys.first().map_or(0, |p| p.outer.len());
     stats.contour_time_us = contour_start.elapsed().as_micros() as u64;
+
+    // An isochrone (or a catchment lasso) is BY DEFINITION one simple
+    // polygon (product rule, 2026-09-03): the traced topology drives the
+    // choice of the origin's component and the crumb/spur cleanup, but only
+    // that component is served — never a MultiPolygon of detached fragments.
+    // Index 0 IS that component (`extract_topology_sparse` contract:
+    // primary first), so drop the rest BEFORE projecting and simplifying
+    // every ring of every discarded component (#549).
+    cell_polys.truncate(1);
 
     if cell_polys.is_empty() {
         return Ok(SparseContourResult {
@@ -898,17 +907,13 @@ pub fn generate_sparse_contour_anchored(
     };
 
     let mut polygons: Vec<ContourPolygon> = Vec::with_capacity(cell_polys.len());
-    for (i, p) in cell_polys.iter().enumerate() {
+    if let Some(p) = cell_polys.first() {
         let raw = to_wgs84(&p.outer);
         let mut outer = douglas_peucker(&raw, tolerance_deg);
         if outer.len() < 3 {
-            if i == 0 {
-                // The primary (origin's) polygon must survive simplification —
-                // a tiny origin component is still the truth (#497).
-                outer = raw;
-            } else {
-                continue;
-            }
+            // The primary (origin's) polygon must survive simplification —
+            // a tiny origin component is still the truth (#497).
+            outer = raw;
         }
         let holes: Vec<Vec<(f64, f64)>> = p
             .holes
@@ -918,11 +923,6 @@ pub fn generate_sparse_contour_anchored(
             .collect();
         polygons.push(ContourPolygon { outer, holes });
     }
-    // An isochrone (or a catchment lasso) is BY DEFINITION one simple polygon
-    // (product rule, 2026-09-03): the traced topology drives the choice of the
-    // origin's component and the crumb/spur cleanup, but only that component
-    // is served — never a MultiPolygon of detached fragments.
-    polygons.truncate(1);
     let wgs84_contour = polygons
         .first()
         .map(|p| p.outer.clone())

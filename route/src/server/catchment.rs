@@ -22,8 +22,7 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::build_isochrone_topology;
-use super::isochrone_handler::run_phast_bounded_fast_seeded;
+use super::geometry::{IsochroneQuery, isochrone_polygons};
 use super::state::ServerState;
 
 // ===========================================================================
@@ -217,81 +216,32 @@ pub fn isochrone_hull(
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
 
-    // Catchment hull is a depart-isochrone: store acts as source.
-    let store_role = super::types::SnapRole::Src.role_filter(&mode_data);
-    let orig_id = match state
-        .snap_index
-        .snap_filtered_role(store_lon, store_lat, mode.0, None, store_role)
-    {
-        Some(id) => id,
-        None => return Vec::new(),
-    };
-
-    let origin_rank = mode_data.orig_to_rank[orig_id as usize];
-    if origin_rank == u32::MAX {
-        return Vec::new();
-    }
-
-    // #506: phantom store seeds + exact anchor — same seeding as /isochrone.
-    let (center_seeds, center_anchor) = super::phantom::isochrone_center_seeds(
-        state,
-        &mode_data,
-        mode,
-        store_lon,
-        store_lat,
-        super::types::SnapRole::Src,
-        None,
-        false,
-        origin_rank,
-    );
-
     // Weights are seconds (post-#297); threshold is already user-input seconds.
     let threshold_s_u32 = threshold_s.round() as u32;
 
-    let settled = run_phast_bounded_fast_seeded(
-        &mode_data.up_adj_flat,
-        &mode_data.down_adj_flat,
-        &center_seeds,
-        threshold_s_u32,
-        mode,
-    );
-
-    // Map settled ranks back to original EBG IDs
-    let settled_original: Vec<(u32, u32)> = settled
-        .iter()
-        .map(|&(rank, dist)| {
-            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            let orig_id = mode_data.filtered_to_original[filt_id as usize];
-            (orig_id, dist)
-        })
-        .collect();
-
-    let node_weights = &mode_data.node_weights;
-
-    // 2026-09-03: ONE simple polygon — the store's component — with the exact
-    // depart frontier (labels are head arrivals), the same shape /isochrone
-    // serves.
-    let frontier = super::isochrone_handler::depart_frontier(
-        &settled,
-        threshold_s_u32,
-        &mode_data.up_adj_flat,
-        &mode_data.down_adj_flat,
+    // Catchment hull is a depart-isochrone: THE pipeline (#549), same snap
+    // role, same phantom seeds (#506), same exact depart frontier and the
+    // same ONE simple polygon /isochrone serves.
+    let field = match isochrone_polygons(
+        state,
         &mode_data,
-        node_weights,
-    );
-    let contour = ContourResult::from_polygons(build_isochrone_topology(
-        &settled_original,
-        threshold_s_u32,
-        node_weights,
-        &state.ebg_nodes,
-        &state.edge_geom,
-        mode_name,
-        center_anchor,
-        Some((store_lon, store_lat)),
-        &super::geometry::ReachModel::Depart {
-            frontier: &frontier,
+        mode,
+        &IsochroneQuery {
+            lon: store_lon,
+            lat: store_lat,
+            thresholds: &[threshold_s_u32],
+            reverse: false,
+            mode_name,
+            snap_mask: None,
+            flats: None,
+            include_network: false,
         },
-    ));
+    ) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let contour =
+        ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
 
     encode_polygon_wkb(&contour).unwrap_or_default()
 }
