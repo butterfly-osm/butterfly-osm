@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
+use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionEntry, SectionKind};
 use crate::formats::edge_geom::{
     EdgeGeomOffsets, EdgeGeomOffsetsFile, EdgeGeomPoints, EdgeGeomPointsFile,
 };
@@ -350,6 +350,10 @@ pub struct PackOptions {
     /// Pass `lean: false` for a full-fidelity container: everything the
     /// `step{N}/` tree held, so `unpack` restores a byte-identical tree
     /// (validators, pack/unpack debugging). Not needed for serving.
+    /// On the command line that is `pack --full` (#600) — the step tree
+    /// is the only other copy of those bytes and `pack` deletes it
+    /// unless `--keep-intermediates` is passed, so the choice has to be
+    /// reachable at the point of no return.
     pub lean: bool,
 }
 
@@ -359,7 +363,9 @@ impl Default for PackOptions {
     }
 }
 
-/// Implementation of the `pack` subcommand.
+/// Pack with the default (lean) policy — see [`PackOptions`]. The
+/// `pack` subcommand calls [`pack_with_options`] so `--full` can pick
+/// the other one.
 pub fn pack(
     data_dir: &Path,
     out: &Path,
@@ -1648,6 +1654,16 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
         if let Some(file) = rest.strip_prefix("step1.") {
             return Some(out_dir.join("step1").join(file));
         }
+        // shared/edge_osm_{offsets,ids} → step3/nbg.edge_osm.{offsets,ids}
+        // (#460). `pack` re-emits the step-3 files verbatim, so these
+        // are ordinary round-tripping sections despite the flatter
+        // section name.
+        if rest == "edge_osm_offsets" {
+            return Some(out_dir.join("step3").join("nbg.edge_osm.offsets"));
+        }
+        if rest == "edge_osm_ids" {
+            return Some(out_dir.join("step3").join("nbg.edge_osm.ids"));
+        }
         // shared/nbg.<x> → step3/nbg.<x>
         if let Some(_n) = rest.strip_prefix("nbg.") {
             return Some(out_dir.join("step3").join(rest));
@@ -1662,6 +1678,25 @@ fn path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
         let slash = rest.find('/')?;
         let mode = &rest[..slash];
         let leaf = &rest[slash + 1..];
+        // mode/<m>/_variant/<v>/... → the step8 `<mode>_<variant>`
+        // pair (#84/#392). Both halves are packed verbatim.
+        if let Some(variant_leaf) = leaf.strip_prefix("_variant/") {
+            let slash = variant_leaf.find('/')?;
+            let variant = &variant_leaf[..slash];
+            return match &variant_leaf[slash + 1..] {
+                "weights.time" => Some(
+                    out_dir
+                        .join("step8")
+                        .join(format!("cch.w.{}_{}.u32", mode, variant)),
+                ),
+                "traffic.json" => Some(
+                    out_dir
+                        .join("step8")
+                        .join(format!("cch.w.{}_{}.traffic.json", mode, variant)),
+                ),
+                _ => None,
+            };
+        }
         return match leaf {
             "way_attrs" => Some(
                 out_dir
@@ -1761,9 +1796,97 @@ fn legacy_path_for_section(out_dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Sections `pack` SYNTHESISES: bytes that exist nowhere in the
+/// `step{N}/` tree, derived at pack time from the sections that do
+/// round-trip. `unpack` skips them; the next `pack` rebuilds them from
+/// the restored inputs.
+///
+/// | synthesised section | built at pack time from |
+/// |---|---|
+/// | `mode/<m>/{up_adj,down_adj,down_reverse_adj}.{topo,weights.time,weights.dist}` (#345, and the pre-#345 monolithic kinds) | `mode/<m>/topo` + `mode/<m>/weights.{time,dist}` |
+/// | `mode/<m>/orig_to_rank`, `mode/<m>/filtered_to_original` (#153) | `step5/filtered.<m>.ebg` + `step6/order.<m>.ebg` |
+/// | `shared/snap_points`, `shared/snap_grid`, `mode/<m>/snap_mask` (#154) | `step4/ebg.nodes` + `step3/nbg.geo` + `step5/filtered.<m>.ebg` |
+/// | `shared/region_tiles` | the snap points |
+/// | `shared/edge_geom_{offsets,points}` (#155) | `step3/nbg.geo`'s polylines |
+/// | `shared/way_names_idx` (#282) | `step1/ways.raw` |
+///
+/// Two neighbours are deliberately NOT here (#600):
+///
+/// * `shared/edge_osm_{offsets,ids}` — `pack` validates and re-emits
+///   the step-3 files byte-for-byte (#460), so they are ordinary
+///   verbatim sections and [`path_for_section`] maps them back.
+/// * `mode/<m>/middles` — one half of the #359 topo split, not a
+///   derivation: [`restore_cch_topo`] folds it back into
+///   `step7/cch.<m>.topo`.
+fn synthesised_at_pack_time(sec: &SectionEntry) -> bool {
+    match sec.kind {
+        SectionKind::UpAdjFlat
+        | SectionKind::DownAdjFlat
+        | SectionKind::DownReverseAdjFlat
+        | SectionKind::FlatTopo
+        | SectionKind::FlatWeights
+        | SectionKind::OrigToRank
+        | SectionKind::FilteredToOriginal
+        | SectionKind::SnapPoints
+        | SectionKind::SnapGrid
+        | SectionKind::SnapModeMask
+        | SectionKind::EdgeGeomOffsets
+        | SectionKind::EdgeGeomPoints
+        | SectionKind::WayNamesIdx => true,
+        // `region_tiles` shares the `Unknown` kind with the manifest
+        // (it has no kind of its own), so it is named explicitly.
+        SectionKind::Unknown => sec.name == "shared/region_tiles",
+        _ => false,
+    }
+}
+
+/// Restore `step7/cch.<mode>.topo` from the container's split
+/// representation (#359): `pack` writes the topology without its
+/// middles (`CchTopoFile::encode_without_middles`) plus a separate
+/// `mode/<mode>/middles` section. The step-7 file is the monolithic
+/// image, so the inverse has to join the two halves back together —
+/// writing the hot half alone would leave a step tree whose shortcuts
+/// cannot be unpacked.
+///
+/// Containers whose topo was packed monolithically (the `pack` fallback
+/// when `cch.topo` failed to parse, and every pre-#359 container) carry
+/// no middles section; those bytes are written out verbatim.
+fn restore_cch_topo(
+    c: &Container,
+    path: &Path,
+    sec: &SectionEntry,
+    out_path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let Some(middles) = sec
+        .name
+        .strip_suffix("/topo")
+        .map(|stem| format!("{}/middles", stem))
+        .and_then(|name| c.get(&name))
+    else {
+        std::fs::write(out_path, bytes)?;
+        return Ok(());
+    };
+    let mut topo =
+        CchTopoFile::read_from_bytes(bytes).with_context(|| format!("parsing {}", sec.name))?;
+    let decoded =
+        crate::formats::cch_middles::decode_section_owned(&c.read_section_verified(path, middles)?)
+            .with_context(|| format!("parsing {}", middles.name))?;
+    topo.up_middle = decoded.up_middle;
+    topo.down_middle = decoded.down_middle;
+    CchTopoFile::write(out_path, &topo).with_context(|| format!("writing {}", out_path.display()))
+}
+
 /// Implementation of the `unpack` subcommand. Inverse of `pack`: writes
 /// every section back to the canonical `step{N}/file` path under
 /// `out_dir`. Validates each section's CRC during the copy.
+///
+/// Sections `pack` synthesises are skipped
+/// ([`synthesised_at_pack_time`]), and the #359 topo split is folded
+/// back into one step-7 file ([`restore_cch_topo`]). What is left is
+/// exactly the set of step files the container carries verbatim, so a
+/// `pack` of the unpacked tree reproduces the container it came from —
+/// minus whatever `PackOptions::lean` dropped on the way in.
 ///
 /// `out_dir` must not exist (so the inverse mapping is unambiguous).
 pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
@@ -1784,22 +1907,18 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
     );
 
     for sec in &c.sections {
-        // Flat adjacency sections (#150) are synthesised at pack time
-        // and don't round-trip through step{N}/ — the next pack will
-        // rebuild them from cch_topo + cch_weights. Skip them here so
-        // unpack stays a faithful inverse of the on-disk inputs.
-        if matches!(
-            sec.kind,
-            SectionKind::UpAdjFlat
-                | SectionKind::DownAdjFlat
-                | SectionKind::DownReverseAdjFlat
-                | SectionKind::OrigToRank
-                | SectionKind::FilteredToOriginal
-                | SectionKind::SnapPoints
-                | SectionKind::SnapGrid
-                | SectionKind::SnapModeMask
-        ) {
+        // Sections built at pack time have no step{N}/ file to go back
+        // to; skipping them keeps unpack a faithful inverse of the
+        // on-disk inputs, and the next pack rebuilds them.
+        if synthesised_at_pack_time(sec) {
             println!("  -- (skip synthesised) {}", sec.name);
+            continue;
+        }
+        // The cold half of the #359 topo split is folded into the
+        // step-7 file by the `CchTopo` arm below, not written on its
+        // own.
+        if sec.kind == SectionKind::CchMiddles {
+            println!("  -- (folded into cch.topo) {}", sec.name);
             continue;
         }
         let out_path = path_for_section(out_dir, &sec.name).ok_or_else(|| {
@@ -1813,7 +1932,11 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = c.read_section_verified(path, sec)?;
-        std::fs::write(&out_path, &bytes)?;
+        if sec.kind == SectionKind::CchTopo {
+            restore_cch_topo(&c, path, sec, &out_path, &bytes)?;
+        } else {
+            std::fs::write(&out_path, &bytes)?;
+        }
         println!(
             "  -> [{:>5} MiB] {:<32} -> {}",
             bytes.len() / (1024 * 1024),
