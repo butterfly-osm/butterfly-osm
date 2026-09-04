@@ -23,9 +23,16 @@ Checks
    co-located-candidate regime where a legacy same-rank shortcut and a reduce
    clamp both emitted bogus 0 s answers and which uniform sampling never
    reaches.
-5. ISOCHRONE CONTAINMENT (#497/#506): every isochrone polygon must contain
-   its own SNAPPED origin (snapped-road-point semantics — the raw query
-   point may legitimately sit outside when it is far off-network).
+5. ISOCHRONE TOPOLOGY + CONTAINMENT (#497/#506/#535/#542): ONE simple
+   polygon, closed CCW polyline6 ring, containing its own SNAPPED origin
+   (snapped-road-point semantics — the raw query point may legitimately sit
+   outside when it is far off-network); from a pedestrian centre the PIN
+   itself is in or ≤ 30 m from the ring (#535). Car 600 s and foot 1800 s.
+6. SURFACE COVERAGE: every REST path the server's own OpenAPI document lists
+   is probed (a documented path with no probe, or a probe for a path the
+   server no longer documents, is DRIFT and fails), and every Flight action
+   answers. Documented-optional surfaces (/height without SRTM, transit
+   without a feed) SKIP with their status and reason.
 
 Fail-loud rules (#550)
 ----------------------
@@ -41,19 +48,33 @@ Fail-loud rules (#550)
 
 Usage
 -----
+    BUTTERFLY_REFS_DIR=/path/to/reference-trips \
     python3 bench/postdeploy_gate.py --base http://localhost:3001 \
         [--trips /path/to/od.csv] [--quick] [--no-flight] \
         [--flight-base grpc://host:port]
     python3 bench/postdeploy_gate.py --list-gates    # names only, exit 0
+    python3 bench/test_postdeploy_gate.py            # offline unit checks
 
 `--quick` skips the 1,000-trip ground truth (runs invariants only, ~30 s).
+`$BUTTERFLY_REFS_DIR` is REQUIRED by the gates that read reference trips
+(#589) — there is no default path. It is resolved when such a gate RUNS, so
+`--help`, `--list-gates` and the unit tests need no environment; unset, those
+gates FAIL by name instead of taking the process down.
+
+Expensive server work is fetched ONCE and shared (#550/#572): `iso_bundle`
+per isochrone query, `ref_trip_routes` per reference set, `streamed_matrix`
+per >1M-cell Flight matrix request. A memoised FAILURE is re-raised to every
+consumer, so a gate that runs second can never turn it into a silent PASS.
 Thresholds live in ONE table (THRESHOLDS below); RATCHET THEM DOWN as tails
-get fixed, never up.
+get fixed, never up. Every threshold is a ratio, a bound derived from ONE
+tolerance, or a structural invariant — never a measured-then-pasted count.
 """
 
 import argparse
+import collections
 import concurrent.futures as cf
 import csv
+import functools
 import json
 import math
 import os
@@ -67,58 +88,87 @@ import urllib.parse
 import urllib.request
 
 # Reference trip sets are generic CSV inputs (route_id,long_1,lat_1,long_2,
-# lat_2,ref_min,ref_km) staged by the private deploy tooling into
-# $BUTTERFLY_REFS_DIR (default /data/reference-trips). 2026-09-03: durations
-# are judged on the TIME-STAMPED typical set (weekday 07-19 h observed
-# historic times); the old od.csv (1 000 long trips, no hour) is free-flow
-# and let a free-flow engine pass at p50 1.0.
-REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR", "/data/reference-trips")
-
-
-def _apply_windows_config():
-    """One source of truth for the level tolerances (2026-09-04): when the
-    deploy tooling stages `windows.json` beside the reference sets, its
-    `never_fast` / `tol` / `match_tol` override the defaults in THRESHOLDS —
-    the same numbers the speed pipeline and the weekly window report use."""
-    path = os.path.join(REFS_DIR, "windows.json")
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            w = json.load(f)
-    except Exception as ex:  # a broken config must not silently loosen the gate
-        raise SystemExit(f"windows.json at {path} is unreadable: {ex}")
-    lo = float(w.get("never_fast", THRESHOLDS["band_level"][0]))
-    tol = float(w.get("tol", THRESHOLDS["band_level"][1] - 1.03))
-    THRESHOLDS["band_level"] = (lo, round(1.0 + tol + 0.03, 3))
-    THRESHOLDS["band_regional"] = (lo, round(1.0 + tol + 0.06, 3))
-    THRESHOLDS["dur_p50"] = (lo, THRESHOLDS["dur_p50"][1])
-    THRESHOLDS["like_for_like_km_tol"] = float(w.get("match_tol", THRESHOLDS["like_for_like_km_tol"]))
-    print(f"[windows] {path}: never_fast {lo}, tol {tol}, match_tol {THRESHOLDS['like_for_like_km_tol']}")
-
-DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
+# lat_2,ref_min,ref_km) staged by the deploy tooling into $BUTTERFLY_REFS_DIR.
+# 2026-09-03: durations are judged on the TIME-STAMPED typical set (weekday
+# 07-19 h observed historic times); the old od.csv (1 000 long trips, no hour)
+# is free-flow and let a free-flow engine pass at p50 1.0.
+# #589: NO default directory — the old hardcoded fallback path was never
+# created by anything, so a mis-staged runner failed deep inside a gate on a
+# missing CSV instead of saying which variable was unset. The
+# directory is resolved LAZILY, by `refs_path()`, when a refs-dependent gate
+# actually runs: `--help`, `--list-gates` and the offline unit tests need no
+# environment at all, and the three gates that do need it FAIL (loudly, naming
+# the variable) instead of taking the process down at import time.
+REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR")
+DEFAULT_TRIPS = "od_typical.csv"  # under $BUTTERFLY_REFS_DIR
 # Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
 # free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
 # a solid route-length truth (motorway-dominated), which the ~40-min regional
 # od_typical pairs are not (the reference router and the engine pick
 # different regional routes on ~17 % of them, identically on a free-flow
 # engine — see #545).
-LEGACY_TRIPS_DISTANCE = os.path.join(REFS_DIR, "od.csv")
+LEGACY_TRIPS_DISTANCE = "od.csv"  # under $BUTTERFLY_REFS_DIR
+REFS_PREFIX = "od"  # <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR
+
+
+class RefsUnavailable(RuntimeError):
+    """#589: `$BUTTERFLY_REFS_DIR` is unset or not a directory. Raised by
+    `refs_path()`, i.e. only from a gate that actually needs the reference
+    trips — main() turns it into that gate's FAIL line, so the operator sees
+    WHICH gates were skipped and WHY, and the rest of the suite still runs."""
+
+
+def require_refs_dir(refs_dir=None):
+    """The resolved reference directory, or RefsUnavailable naming the env
+    variable. Never a default path: nothing creates one."""
+    refs_dir = REFS_DIR if refs_dir is None else refs_dir
+    if not refs_dir:
+        raise RefsUnavailable(
+            "BUTTERFLY_REFS_DIR is not set — export it to the directory holding the reference "
+            f"trip sets ({REFS_PREFIX}_{{typical,best,worst}}.csv, {LEGACY_TRIPS_DISTANCE}, "
+            "optional windows.json).")
+    if not os.path.isdir(refs_dir):
+        raise RefsUnavailable(f"BUTTERFLY_REFS_DIR={refs_dir!r} is not a directory.")
+    return refs_dir
+
+
+def refs_path(name, override=None):
+    """Resolve a reference input. `override` (a --trips / --refs-prefix value)
+    wins as given — an absolute or relative path the operator typed; otherwise
+    `name` is joined onto $BUTTERFLY_REFS_DIR. Called at GATE RUN TIME, never
+    at argparse-default time (that is the #589 crash: `--list-gates` died in
+    `os.path.join(None, "od")` before printing a single name)."""
+    if override:
+        return override
+    return os.path.join(require_refs_dir(), name)
+
 
 # BASELINE 2026-07-16 (engine d97168d, 1000 trips, zero errors):
 #   duration ratio: p05=0.854 p50=1.029 p90=1.246 p95=1.304 mean=1.048
 #   distance ratio: p05=0.933 p50=1.004 p90=1.148 p95=1.253 mean=1.039
-#   distance outliers (<0.85 / >1.2): 73
+#   distance outliers (<0.85 / >1.2): 73 of 1000 = 7.3 %
 #
 # ONE table for every tolerance in this file (#550) — no gate hardcodes a
-# bound of its own.
+# bound of its own. Three kinds of entry, nothing else (#589):
+#   * a RATIO of a sample (trip-set-size independent);
+#   * a bound DERIVED from the level tolerance below (`derive_level_bounds`);
+#   * a structural INVARIANT (a lower bound the engine's design guarantees).
 THRESHOLDS = {
+    # --- level (ground truth + bands): ONE tolerance, every bound derived ---
+    # Pierre 2026-09-03 ("mieux vaut trop lent que trop rapide"): never more
+    # than 2 % fast; up to `tol` + slack slow. windows.json (staged beside the
+    # reference sets by the deploy tooling) may override these four; the
+    # bounds `dur_p50`, `band_level`, `band_regional` are ALWAYS derived from
+    # them by derive_level_bounds() — never stored, never inverted back.
+    "never_fast": 0.98,  # lower bound of every level ratio (engine / reference)
+    "tol": 0.06,  # level tolerance: like-for-like median may be this much slow ...
+    "slack_level": 0.03,  # ... + this slack per profile level (best / typical / worst) → 1.09
+    "slack_regional": 0.06,  # ... + this slack per region and on the ~40-min typical set → 1.12
     # --- ground truth (reference trips) ---
-    "dur_p50": (0.98, 1.12),  # Pierre 2026-09-03: never >2 % fast, up to 12 % slow
     "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
-    "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs richer per-edge speed data
+    "dist_outliers_frac": 0.08,  # share of trips with distance ratio <0.85 or >1.2 (baseline 7.3 %)
     "like_for_like_km_tol": 0.10,  # pinned corridors: compare only same-length routes
     # --- sampling gates ---
     "symmetry_ratio_max": 1.5,
@@ -126,9 +176,7 @@ THRESHOLDS = {
     "consistency_tolerance_s": 3.0,
     "close_pair_mismatch_max": 2,
     "max_errors": 5,  # transport errors / unroutable trips tolerated before failing
-    # --- bands (#543) ---
-    "band_level": (0.98, 1.09),  # median(engine/reference) per profile
-    "band_regional": (0.98, 1.12),  # per-region median, typical profile
+    # --- bands (#543) — `band_level` / `band_regional` are derived (see above) ---
     "band_spread_min": 1.10,  # median(worst/best) over the typical trips
     "band_min_trips": 100,  # like-for-like trips needed to judge a level
     "band_min_regional": 10,
@@ -136,7 +184,11 @@ THRESHOLDS = {
     "iso_reach_slack": 1.20,  # max vertex reach ≤ v_max × T × slack
     "iso_nest_tol": 0.98,  # outer contour reach ≥ inner × tol
     "topology_outside_m": 150.0,  # a network vertex counts "outside" beyond this
-    "topology_outside_frac": 0.015,  # ≤1.5 % of the engine's own reachable network
+    # INVARIANT (ratio, #589): share of the engine's OWN reachable network
+    # vertices left > topology_outside_m outside the polygon. Detached reach
+    # under ~300 m across is deliberately not drawn (crumb filter), which is
+    # ~1.1 % at rural origins, ~0 % urban; anything above 1.5 % is under-draw.
+    "topology_outside_frac": 0.015,
     "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
     "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
     "reach_out_tol": 0.95,  # nothing reachable ≤0.95 T may lie outside
@@ -156,11 +208,77 @@ THRESHOLDS = {
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
     "wkb_len_tol": 0.05,  # route_batch geometry_wkb vs distance_m
     "edges_sum_bounds": (0.9, 1.45),  # Σ per-edge duration vs /route
-    "lopsided_scaling_max": 6.0,  # 1×800 vs 1×50 wall ratio (linear bucket ~×16)
-    "catchment_min_vertices": 50,  # the retired sector lasso capped at 18 extremes
+    # WARN only (#589): the suite's single wall-clock number. 1×800 vs 1×50
+    # wall ratio — a sublinear (seeded PHAST) plan stays ~×1-3, the linear
+    # bucket plan ~×16. A loaded runner flaps it, so it is reported, never
+    # decisive. Asserting on a server-REPORTED plan would be better, but no
+    # such signal exists today: /table sets no response header and the only
+    # /metrics labels are (region, endpoint) — the plan choice (phast_dir in
+    # matrix/bucket_ch.rs) never leaves the process. Expose it and this
+    # becomes a real assertion.
+    "lopsided_scaling_warn": 6.0,
+    # INVARIANT (structural lower bound, #589): a road-following contour at a
+    # 5-decimal Douglas-Peucker tolerance has hundreds of vertices; the
+    # retired sector lasso (#536) could never emit more than 18. Not a
+    # measured level — any value between the two shapes separates them.
+    "catchment_min_vertices": 50,
 }
 
-_apply_windows_config()
+
+def derive_level_bounds():
+    """#589: the three level bounds come from ONE tolerance and named slack
+    constants — `tol` is stored, the bounds are derived, never the reverse
+    (the old code inverted `band_level[1] - 1.03` to recover `tol`, so a
+    change to either literal silently moved the other)."""
+    t = THRESHOLDS
+    lo, tol = t["never_fast"], t["tol"]
+    t["band_level"] = (lo, round(1.0 + tol + t["slack_level"], 3))  # per-profile median (#543)
+    t["band_regional"] = (lo, round(1.0 + tol + t["slack_regional"], 3))  # per-region median, typical
+    # The typical reference set IS regional ~40-min pairs → the same bound.
+    t["dur_p50"] = t["band_regional"]
+    return t
+
+
+def _apply_windows_config(refs_dir=None):
+    """One source of truth for the level tolerances (2026-09-04): when the
+    deploy tooling stages `windows.json` beside the reference sets, its
+    `never_fast` / `tol` / `slack_level` / `slack_regional` / `match_tol`
+    override the defaults in THRESHOLDS — the same numbers the speed
+    pipeline and the weekly window report use. Bounds are then re-derived."""
+    refs_dir = REFS_DIR if refs_dir is None else refs_dir
+    path = os.path.join(refs_dir, "windows.json") if refs_dir else None
+    if not path or not os.path.exists(path):
+        return derive_level_bounds()
+    try:
+        with open(path) as f:
+            w = json.load(f)
+    except Exception as ex:  # a broken config must not silently loosen the gate
+        raise SystemExit(f"windows.json at {path} is unreadable: {ex}")
+    for key in ("never_fast", "tol", "slack_level", "slack_regional"):
+        if key in w:
+            THRESHOLDS[key] = float(w[key])
+    if "match_tol" in w:
+        THRESHOLDS["like_for_like_km_tol"] = float(w["match_tol"])
+    t = derive_level_bounds()
+    print(f"[windows] {path}: never_fast {t['never_fast']}, tol {t['tol']}, slack {t['slack_level']}/"
+          f"{t['slack_regional']}, match_tol {t['like_for_like_km_tol']} → dur_p50 {t['dur_p50']}, "
+          f"band_level {t['band_level']}, band_regional {t['band_regional']}")
+    return t
+
+
+def print_thresholds():
+    """#589 guard: every resolved threshold is printed, so a PASS line can be
+    read against the bound that produced it."""
+    print("thresholds:")
+    for k in sorted(THRESHOLDS):
+        print(f"  {k} = {THRESHOLDS[k]}")
+
+
+# Import-time: derive the level bounds from the stored tolerance so THRESHOLDS
+# is complete for any importer (the offline unit tests included). Reading
+# `windows.json` is a LIVE-RUN step done by main() — it prints, and
+# `--list-gates` must stay a bare list of names for the CI smoke diff.
+derive_level_bounds()
 
 MAX_U32 = 4294967295
 
@@ -190,6 +308,12 @@ ISO_POINTS = [("Brussels", 4.3517, 50.8503), ("Antwerp", 4.4025, 51.2194), ("Rix
     ("Ghent", 3.7174, 51.0543),
     ("Berloz #503", 5.211554, 50.709124) ]
 
+# #535: pedestrian city centres — the pin sits in a car-free core, so the snap
+# lands on the ring road and the polygon used to be drawn off-centre, leaving
+# the pin outside. Checked alongside ISO_POINTS in gate_isochrone_topology.
+PEDESTRIAN_CENTRES = [("Namur centre", 4.8667, 50.4632), ("Ghent Korenmarkt", 3.7234, 51.0543),
+    ("Leuven Grote Markt", 4.7009, 50.8792) ]
+
 # Runtime switches, set once by main().
 CONFIG = {"flight": True, "flight_base": None}
 
@@ -212,6 +336,21 @@ def http_json(url, timeout=30, data=None, headers=None):
 def post_json(url, payload, timeout=120):
     return http_json(url, timeout=timeout, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
+
+
+def http_status(url, method="GET", body=None, timeout=120):
+    """(status, content_type, bytes). An HTTP error status is RETURNED, not
+    raised — the endpoint smoke judges statuses (404 = optional surface,
+    503 = subsystem not loaded). Transport failures still raise."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+        headers={"Content-Type": "application/json"} if data is not None else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", "") or "", r.read()
+    except urllib.error.HTTPError as e:
+        ctype = e.headers.get("Content-Type", "") if e.headers else ""
+        return e.code, ctype or "", e.read()
 
 
 def route_json(base, olon, olat, dlon, dlat, mode="car", timeout=60, **extra):
@@ -249,9 +388,23 @@ def pct(xs, q):
     return xs[min(int(len(xs) * q), len(xs) - 1)]
 
 
+def outlier_frac(ratios, lo=0.85, hi=1.2):
+    """(count, share) of ratios outside [lo, hi] — the share is what the gate
+    judges (#589: trip-set-size independent)."""
+    n = sum(1 for r in ratios if r < lo or r > hi)
+    return n, (n / len(ratios) if ratios else 0.0)
+
+
 def check(name, ok, detail):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     return ok
+
+
+def warn(name, detail):
+    """A measurement worth printing that must NOT decide the gate (#589: a
+    wall-clock ratio flaps on a loaded runner). Never fails."""
+    print(f"  [WARN] {name}: {detail}")
+    return True
 
 
 def check_errors(label, errors, unroutable=None):
@@ -300,8 +453,10 @@ def decode_polyline6(s):
 
 
 def point_in_ring(pt, ring):
-    """Even-odd point-in-polygon. `ring` must be the OPEN ring (no repeated
-    last vertex) — callers pass ring[:-1]."""
+    """Even-odd point-in-polygon. Closure-TOLERANT (#589): a closed ring
+    (first vertex repeated last) gives the same answer as the open one — the
+    duplicate closing edge has yi == yj and is never crossed. Callers pass
+    ring[:-1] by convention; passing the closed ring is not a bug."""
     x, y = pt[0], pt[1]
     inside = False
     j = len(ring) - 1
@@ -956,32 +1111,8 @@ def gate_motorway_speed_floor(base):
 
 
 # ---------------------------------------------------------------------------
-# Gates — isochrone geometry (all five share iso_bundle's fetches, #550)
+# Gates — isochrone geometry (all share iso_bundle's fetches, #550)
 # ---------------------------------------------------------------------------
-def gate_isochrone(base):
-    print("== isochrone snapped-origin containment (#497/#506) ==")
-    passed = True
-    for mode, time_s in (("car", 600), ("foot", 1800)):
-        ok = 0
-        fails = []
-        for name, lon, lat in ISO_POINTS:
-            b = iso_bundle(base, lon, lat, mode, time_s)
-            try:
-                rings, sp = b.rings, b.snap
-            except Exception as e:
-                fails.append(f"{name}: {e}")
-                continue
-            if any(point_in_ring(sp, r) for r in rings):
-                ok += 1
-            else:
-                fails.append(name)
-        for f in fails[:5]:
-            print(f"    not contained: {f}")
-        passed &= check(f"containment {mode}", ok == len(ISO_POINTS),
-            f"{ok}/{len(ISO_POINTS)} ({time_s}s)")
-    return passed
-
-
 def gate_isochrone_topology(base):
     """2026-09-03 (#535/#542 root cause): the contour used to keep ONE ring —
     every hole and every detached reachable component was silently dropped,
@@ -993,101 +1124,146 @@ def gate_isochrone_topology(base):
         immediate backtrack (a,b,a) — the zero-width-spur signature;
       * outer rings CCW, holes CW (RFC 7946), each hole strictly inside its
         outer ring and never containing the origin;
-      * the snapped origin lies in the PRIMARY (first) polygon;
+      * the polyline6 `polygon` string of the JSON surface decodes to the SAME
+        contract — a CLOSED, CCW ring (#589: the 0719f14 contract had no gate);
+      * the snapped origin lies in the PRIMARY (first) polygon — #497/#506
+        containment, folded in from the former `gate_isochrone` (#572);
+      * from a pedestrian city centre the PIN ITSELF is inside the polygon or
+        within `pin_near_ring_m` of it, on a snap no further than
+        `pin_snap_max_m` (#535 — folded in from gate_ticket_invariants, #572);
       * self-consistency: the engine's own reachable network (include=network)
         is represented — at most 1.5% of its vertices lie > 150 m outside every
         polygon (sub-300 m detached stubs are deliberately not drawn);
       * every EXTRA component holds reachable network (confetti guard);
       * `geometries=geojson` carries a `geometry` object whose ring count
-        matches the WKB."""
+        matches the WKB.
+    Both modes (#572): car 600 s and foot 1800 s — the pedestrian surface has
+    its own tracer regime (dense short edges) and used to be checked only for
+    containment."""
     print("== isochrone topology: ONE simple polygon, no spurs, faithful to the network (2026-09-03) ==")
-    mode, time_s = "car", 600
     far_m = THRESHOLDS["topology_outside_m"]
     far_frac = THRESHOLDS["topology_outside_frac"]
-    n_ok = n = far_total = verts_total = 0
-    details = []
-    for name, lon, lat in ISO_POINTS:
-        b = iso_bundle(base, lon, lat, mode, time_s)
-        try:
-            wkb, polys, sp, net, gj = b.wkb, b.polys, b.snap, b.network, b.geojson
-        except Exception as ex:
-            details.append(f"{name}: {ex}")
-            continue
-        n += 1
-        why = []  # non-empty ⇒ this origin FAILS
-        # Product rule (2026-09-03): an isochrone IS one simple polygon —
-        # a MultiPolygon of fragments or a polygon with holes is a defect.
-        if not polys:
-            why.append("no polygon in the WKB")
-        elif wkb_type(wkb) != 3 or len(polys) != 1:
-            why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
-        elif len(polys[0]) != 1:
-            why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
-        for pi, rings in enumerate(polys):
-            for ri, ring in enumerate(rings):
-                if len(ring) < 4 or ring[0] != ring[-1]:
-                    why.append(f"p{pi}r{ri}: not a closed ring of ≥4 points")
-                body = ring[:-1]
-                if any(body[i] == body[(i + 1) % len(body)] for i in range(len(body))):
-                    why.append(f"p{pi}r{ri}: consecutive duplicate vertex")
-                if any(body[i] == body[(i + 2) % len(body)] for i in range(len(body))):
-                    why.append(f"p{pi}r{ri}: zero-width spur (a,b,a)")
-                a2 = ring_area2(body)
-                if ri == 0 and a2 <= 0:
-                    why.append(f"p{pi}: outer ring not CCW")
-                if ri > 0:
-                    if a2 >= 0:
-                        why.append(f"p{pi}r{ri}: hole not CW")
-                    if not point_in_ring(body[0], rings[0][:-1]):
-                        why.append(f"p{pi}r{ri}: hole outside its outer ring")
-                    if point_in_ring(sp, body):
-                        why.append(f"p{pi}r{ri}: hole contains the origin")
-        if polys and not point_in_ring(sp, polys[0][0][:-1]):
-            why.append("origin not in the primary polygon")
-        # self-consistency vs the engine's own reachable network
-        pts = [tuple(p) for seg in net for p in seg][::3]
-        far = 0
-        for p in pts:
-            inside = any(point_in_ring(p, rings[0][:-1])
-                and not any(point_in_ring(p, h[:-1]) for h in rings[1:])
-                for rings in polys)
-            if inside:
+    near_m = THRESHOLDS["pin_near_ring_m"]
+    snap_max = THRESHOLDS["pin_snap_max_m"]
+    passed = True
+    origins = ([(nm, lo, la, False) for nm, lo, la in ISO_POINTS]
+        + [(nm, lo, la, True) for nm, lo, la in PEDESTRIAN_CENTRES])
+    for mode, time_s in (("car", 600), ("foot", 1800)):
+        n_ok = n = far_total = verts_total = 0
+        pin_ok = n_pin = 0
+        details = []
+        for name, lon, lat, is_centre in origins:
+            b = iso_bundle(base, lon, lat, mode, time_s)
+            try:
+                wkb, polys, sp, net, gj = b.wkb, b.polys, b.snap, b.network, b.geojson
+                p6 = b.rings
+            except Exception as ex:
+                details.append(f"{name}: {ex}")
                 continue
-            if min((dist_to_ring_m(p, rings[0]) for rings in polys), default=1e9) > far_m:
-                far += 1
-        far_total += far
-        verts_total += len(pts)
-        # 1.5 %: detached reach smaller than ~300 m across (crumb filter,
-        # COMPONENT_MIN_AREA_CELLS) is deliberately not drawn — measured
-        # 1.07-1.12 % at rural origins, 0.0-0.2 % urban. The pre-fix engine
-        # lost 0.62 % beyond 150 m AND 9.57 % within 150 m of the boundary.
-        if pts and far / len(pts) > far_frac:
-            why.append(f"{far}/{len(pts)} reachable vertices > {far_m:.0f} m outside")
-        # every EXTRA component must hold reachable network — a polygon with
-        # no reachable road inside is confetti (a mis-oriented frontier
-        # fragment, #542), not a place you drove to.
-        for pi, rings in enumerate(polys[1:], start=1):
-            if not any(point_in_ring(p, rings[0][:-1]) for p in pts):
-                why.append(f"p{pi}: component without any reachable network")
-                break
-        g = (gj.get("contours") or [{}])[0].get("geometry")
-        if not g:
-            why.append("geojson: no `geometry` object")
-        else:
-            gr = (sum(len(p) for p in g["coordinates"]) if g["type"] == "MultiPolygon"
-                  else len(g["coordinates"]))
-            wr = sum(len(rings) for rings in polys)
-            if gr != wr:
-                why.append(f"geojson rings {gr} != wkb rings {wr}")
-        if why:
-            details.append(f"{name}: " + "; ".join(why[:3]))
-        else:
-            n_ok += 1
-    for d in details[:6]:
-        print(f"    {d}")
-    return check(f"{mode} {time_s}s: valid topology at every origin", n > 0 and n_ok == n,
-        f"{n_ok}/{n} origins; network vertices > {far_m:.0f} m outside: "
-        f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)")
+            n += 1
+            why = []  # non-empty ⇒ this origin FAILS
+            # Product rule (2026-09-03): an isochrone IS one simple polygon —
+            # a MultiPolygon of fragments or a polygon with holes is a defect.
+            if not polys:
+                why.append("no polygon in the WKB")
+            elif wkb_type(wkb) != 3 or len(polys) != 1:
+                why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
+            elif len(polys[0]) != 1:
+                why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
+            for pi, rings in enumerate(polys):
+                for ri, ring in enumerate(rings):
+                    if len(ring) < 4 or ring[0] != ring[-1]:
+                        why.append(f"p{pi}r{ri}: not a closed ring of ≥4 points")
+                    body = ring[:-1]
+                    if any(body[i] == body[(i + 1) % len(body)] for i in range(len(body))):
+                        why.append(f"p{pi}r{ri}: consecutive duplicate vertex")
+                    if any(body[i] == body[(i + 2) % len(body)] for i in range(len(body))):
+                        why.append(f"p{pi}r{ri}: zero-width spur (a,b,a)")
+                    a2 = ring_area2(body)
+                    if ri == 0 and a2 <= 0:
+                        why.append(f"p{pi}: outer ring not CCW")
+                    if ri > 0:
+                        if a2 >= 0:
+                            why.append(f"p{pi}r{ri}: hole not CW")
+                        if not point_in_ring(body[0], rings[0][:-1]):
+                            why.append(f"p{pi}r{ri}: hole outside its outer ring")
+                        if point_in_ring(sp, body):
+                            why.append(f"p{pi}r{ri}: hole contains the origin")
+            # #589: the JSON polyline6 `polygon` carries the SAME ring contract
+            # as the WKB (closed, CCW) — 0719f14 shipped it, nothing checked it,
+            # and a consumer decoding polyline6 sees only this surface.
+            if len(p6) != 1:
+                why.append(f"polyline6: {len(p6)} contour rings for one time_s (want 1)")
+            for ri, r in enumerate(p6):
+                if len(r) < 4 or r[0] != r[-1]:
+                    why.append(f"polyline6 r{ri}: ring not closed (r[0] != r[-1])")
+                elif ring_area2(r[:-1]) <= 0:
+                    why.append(f"polyline6 r{ri}: ring not CCW")
+            if polys and not point_in_ring(sp, polys[0][0][:-1]):
+                why.append("origin not in the primary polygon")
+            # self-consistency vs the engine's own reachable network
+            pts = [tuple(p) for seg in net for p in seg][::3]
+            far = 0
+            for p in pts:
+                inside = any(point_in_ring(p, rings[0][:-1])
+                    and not any(point_in_ring(p, h[:-1]) for h in rings[1:])
+                    for rings in polys)
+                if inside:
+                    continue
+                if min((dist_to_ring_m(p, rings[0]) for rings in polys), default=1e9) > far_m:
+                    far += 1
+            far_total += far
+            verts_total += len(pts)
+            # 1.5 %: detached reach smaller than ~300 m across (crumb filter,
+            # COMPONENT_MIN_AREA_CELLS) is deliberately not drawn — measured
+            # 1.07-1.12 % at rural origins, 0.0-0.2 % urban. The pre-fix engine
+            # lost 0.62 % beyond 150 m AND 9.57 % within 150 m of the boundary.
+            if pts and far / len(pts) > far_frac:
+                why.append(f"{far}/{len(pts)} reachable vertices > {far_m:.0f} m outside")
+            # every EXTRA component must hold reachable network — a polygon with
+            # no reachable road inside is confetti (a mis-oriented frontier
+            # fragment, #542), not a place you drove to.
+            for pi, rings in enumerate(polys[1:], start=1):
+                if not any(point_in_ring(p, rings[0][:-1]) for p in pts):
+                    why.append(f"p{pi}: component without any reachable network")
+                    break
+            g = (gj.get("contours") or [{}])[0].get("geometry")
+            if not g:
+                why.append("geojson: no `geometry` object")
+            else:
+                gr = (sum(len(p) for p in g["coordinates"]) if g["type"] == "MultiPolygon"
+                      else len(g["coordinates"]))
+                wr = sum(len(rings) for rings in polys)
+                if gr != wr:
+                    why.append(f"geojson rings {gr} != wkb rings {wr}")
+            # #535: at a pedestrian centre the pin is off-network — the polygon
+            # must still cover it (the pin -> snap access leg is stamped).
+            if is_centre and polys:
+                n_pin += 1
+                ring = polys[0][0]
+                snap_m = haversine_m(lon, lat, sp[0], sp[1])
+                covered = (point_in_ring((lon, lat), ring[:-1])
+                    or dist_to_ring_m((lon, lat), ring) <= near_m)
+                if covered and snap_m <= snap_max:
+                    pin_ok += 1
+                else:
+                    why.append(f"#535: pin inside/near={covered} snap {snap_m:.0f} m "
+                               f"(max {snap_max:.0f} m)")
+            if why:
+                details.append(f"{name}: " + "; ".join(why[:3]))
+            else:
+                n_ok += 1
+        for d in details[:6]:
+            print(f"    {d}")
+        passed &= check(f"{mode} {time_s}s: valid topology at every origin", n > 0 and n_ok == n,
+            f"{n_ok}/{n} origins; network vertices > {far_m:.0f} m outside: "
+            f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)")
+        passed &= check(
+            f"#535: {mode} {time_s}s isochrone from a pedestrian centre contains the pin "
+            f"(one polygon, snap ≤ {snap_max:.0f} m)",
+            n_pin == len(PEDESTRIAN_CENTRES) and pin_ok == n_pin,
+            f"{pin_ok}/{len(PEDESTRIAN_CENTRES)} centres")
+    return passed
 
 
 def gate_isochrone_reach_truth(base):
@@ -1223,48 +1399,54 @@ def gate_isochrone_upper_bound(base):
     return passed
 
 
+# One user ticket -> the gate(s) that ARE its invariant (2026-09-03). The map
+# is the documentation AND the check: gate_ticket_invariants fails if a gate
+# named here is not in the registry, so folding or renaming a gate can never
+# silently drop a user-visible guarantee. An EMPTY tuple means "deliberately
+# not an engine invariant" and must carry its reason in TICKET_NOTES.
+TICKET_GATES = {
+    "#535": ("isochrone_topology",),
+    "#536": ("catchment_containment",),
+    "#541": (),
+    "#542": ("isochrone_topology", "isochrone_reach_truth", "graph_holes"),
+    "#543": ("bands",),
+    "#495/#497": ("isochrone_upper_bound", "isochrone_topology"),
+}
+TICKET_NOTES = {
+    "#535": "isochrone off-centre / pin not covered: the pin is in (or within "
+            "pin_near_ring_m of) the ONE polygon from a pedestrian centre",
+    "#536": "square lasso, missing clients: the road hull is the threshold isochrone",
+    "#541": "clip to the border is PRESENTATION — done consumer-side; the engine stays "
+            "generic, so there is deliberately no engine gate",
+    "#542": "islands / confetti: one simple polygon, faithful to the engine's reach, "
+            "no graph holes",
+    "#543": "isochrones too big vs a traffic-aware reference: typical/best/worst levels, "
+            "like-for-like, never more than 2 % fast",
+    "#495/#497": "size / foot origin: max reach <= v_max x time, snapped origin contained",
+}
+
+
 def gate_ticket_invariants(base):
     """One named invariant per user ticket, so none of them can regress
-    silently (2026-09-03). Where an existing gate already IS the invariant it
-    is named here and not duplicated:
-      #535 isochrone off-centre / origin not covered → this gate: from a
-           pedestrian city centre the pin itself lies in (or ≤ 30 m from) the
-           ONE polygon (the pin→snap access leg is stamped), snap ≤ 300 m;
-      #536 square lasso, missing clients        → gate_catchment_containment;
-      #541 clip to the border                   → consumer-side (the map
-           dashboard / the MCP layer); the engine stays generic;
-      #542 islands / confetti                    → gate_isochrone_topology
-           (one simple polygon) + gate_isochrone_reach_truth + gate_graph_holes;
-      #543 isochrones too big vs a traffic-aware reference → gate_bands
-           (typical/best/worst levels, like-for-like, never > 2 % fast;
-           Brussels and coast regions) + the weekly window-bias report;
-      #495/#497 (closed) size / foot origin     → gate_isochrone_upper_bound,
-           gate_isochrone (snapped-origin containment)."""
-    print("== ticket invariants: #535 pin inside from pedestrian centres (others named above) ==")
-    centres = [("Namur centre", 4.8667, 50.4632), ("Ghent Korenmarkt", 3.7234, 51.0543),
-        ("Leuven Grote Markt", 4.7009, 50.8792) ]
-    near_m = THRESHOLDS["pin_near_ring_m"]
-    snap_max = THRESHOLDS["pin_snap_max_m"]
-    n_ok = 0
-    for name, lon, lat in centres:
-        b = iso_bundle(base, lon, lat, "car", 600)
-        try:
-            polys, snap = b.polys, b.snap
-        except Exception as ex:
-            print(f"    {name}: {ex}")
+    silently. This gate does NOT re-measure anything (#572: the #535 pin probe
+    it used to run is now inside gate_isochrone_topology, where the same
+    isochrone is already fetched) — it asserts the MAP itself: every gate a
+    ticket delegates to is registered and will run. Fold a gate away, rename
+    it, or drop it from build_gates and this fails by ticket number."""
+    del base  # structural check: no server call (the delegated gates make them)
+    print("== ticket invariants: every user ticket delegates to a REGISTERED gate ==")
+    registered = set(gate_names())
+    passed = True
+    for ticket in sorted(TICKET_GATES):
+        gates = TICKET_GATES[ticket]
+        note = TICKET_NOTES[ticket]
+        if not gates:
+            print(f"  [SKIP] {ticket}: {note}")
             continue
-        ring = polys[0][0]
-        snap_m = haversine_m(lon, lat, snap[0], snap[1])
-        pin_ok = point_in_ring((lon, lat), ring[:-1]) or dist_to_ring_m((lon, lat), ring) <= near_m
-        # PRODUCT RULE again: exactly one polygon, exactly one ring.
-        ok = len(polys) == 1 and len(polys[0]) == 1 and pin_ok and snap_m <= snap_max
-        n_ok += ok
-        if not ok:
-            print(f"    {name}: parts={len(polys)} pin inside/near={pin_ok} snap {snap_m:.0f} m")
-    return check("#535: 10-min car isochrone from a pedestrian centre contains the pin "
-        f"(one polygon, snap ≤ {snap_max:.0f} m)",
-        n_ok == len(centres),
-        f"{n_ok}/{len(centres)} centres")
+        missing = [g for g in gates if g not in registered]
+        passed &= check(f"{ticket} -> {', '.join(gates)}", not missing,
+            note if not missing else f"NOT REGISTERED: {missing} — {note}")
+    return passed
 
 
 # ---------------------------------------------------------------------------
@@ -1298,7 +1480,7 @@ def gate_ground_truth(base, trips_path, checks="all"):
     lfl = t["like_for_like_km_tol"]
     dur = [x[0] for x in ok_res if checks != "duration" or abs(x[1] - 1.0) <= lfl]
     dist = [x[1] for x in ok_res]
-    outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
+    outliers, out_frac = outlier_frac(dist)
     # #550: errors are checked on EVERY invocation (the distance pass used to
     # skip the count entirely).
     passed = check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
@@ -1312,8 +1494,10 @@ def gate_ground_truth(base, trips_path, checks="all"):
         passed &= check("distance p50", t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
                         f"{p50m:.3f} (bounds {t['dist_p50']})")
         passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
-        passed &= check("distance outliers", outliers <= t["dist_outliers_max"],
-                        f"{outliers} (max {t['dist_outliers_max']})")
+        # #589: a RATIO of the trip set — an absolute count passed vacuously
+        # on a shrunken CSV.
+        passed &= check("distance outliers", out_frac <= t["dist_outliers_frac"],
+                        f"{outliers}/{len(dist)} = {out_frac:.3f} (max {t['dist_outliers_frac']})")
     print(f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
         f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}")
     return passed
@@ -1516,8 +1700,18 @@ def gate_lopsided(base):
     big, tb = timed(dests)
     _small, ts = timed(dests[:50])
     ratio = tb / max(ts, 1e-3)
-    ok_scale = check("lopsided scaling", ratio < THRESHOLDS["lopsided_scaling_max"],
-        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} (linear bucket ~x16, PHAST ~x1)")
+    # #589: the suite's ONLY wall-clock number — informational. A loaded
+    # runner (the validation instance shares its host) flaps it, and the
+    # server reports no chosen plan to assert on instead (no /table response
+    # header; /metrics carries only (region, endpoint) labels). The decisive
+    # checks are the value ones below:
+    # route==table cell-for-cell on BOTH channels — a wrong plan that still
+    # returns the right numbers is a performance ticket, not a gate failure.
+    lim = THRESHOLDS["lopsided_scaling_warn"]
+    ok_scale = warn("lopsided scaling (wall-clock, informational)",
+        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} "
+        f"({'sublinear' if ratio < lim else f'≥ x{lim:.0f}: looks LINEAR — check the plan'}; "
+        "linear bucket ~x16, PHAST ~x1)")
 
     def compare(tab, idxs, channel, relative):
         """Sampled table cells vs /route on the SAME mode → (checked, over-tol
@@ -1650,6 +1844,7 @@ def gate_radius_prune(base):
     return ok_scalar and ok_per
 
 
+@functools.lru_cache(maxsize=1)
 def _streaming_grid():
     """A deterministic ~34×31 grid kept INSIDE Belgium's routable box = 1054
     points; 1054² ≈ 1.11M cells > the 1M bucket-M2M threshold, so do_matrix
@@ -1659,7 +1854,81 @@ def _streaming_grid():
     latter, never the former."""
     lons = [3.6 + 0.0606 * i for i in range(34)]  # ~3.60–5.60
     lats = [50.50 + 0.020 * j for j in range(31)]  # ~50.50–51.10
-    return [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+    return tuple((round(lo, 5), round(la, 5)) for lo in lons for la in lats)
+
+
+def streaming_params(radius_km=6):
+    """The ONE >1M-cell sparse request shape (#572). Three gates used to build
+    it independently and, being byte-identical, paid for the same 1.1M-cell
+    pass three times — the memo below keys on this dict."""
+    grid = [list(p) for p in _streaming_grid()]
+    return {"origins": grid, "destinations": grid, "radius_km": radius_km, "sparse": True}
+
+
+# One decoded >1M-cell matrix stream: everything any consumer needs, in ONE
+# pass. `dist_sample` is the first reachable-but-distance-MAX cell (#534),
+# `cells` a deterministic sample of (src, tgt, duration_ms, distance_m) for the
+# /route cross-check, `trailer` the #533 completeness metadata.
+StreamedMatrix = collections.namedtuple(
+    "StreamedMatrix", "batches empties rows sentinels dist_max dist_sample cells trailer cells_total")
+
+_STREAMED_MATRIX = {}
+
+
+def _stream_matrix_once(base, mode, params):
+    batches = empties = rows = sentinels = dist_max = 0
+    dist_sample, trailer, cells = None, None, []
+    for chunk in flight_reader(base, "matrix", mode, params):
+        am = getattr(chunk, "app_metadata", None)
+        if am:
+            trailer = json.loads(bytes(am))
+        b = getattr(chunk, "data", None)
+        if b is None:
+            # #533 completeness trailer: app_metadata only, no data body.
+            # Chunk-iterating clients MUST skip it (read_all ignores it).
+            continue
+        batches += 1
+        if b.num_rows == 0:
+            empties += 1
+        du = b.column("duration_ms").to_pylist()
+        di = b.column("distance_m").to_pylist()
+        src = b.column("source_idx").to_pylist()
+        tgt = b.column("target_idx").to_pylist()
+        for k in range(b.num_rows):
+            rows += 1
+            if du[k] == MAX_U32:
+                sentinels += 1
+                continue
+            if di[k] == MAX_U32:
+                dist_max += 1  # reachable (duration real) but no distance
+                if dist_sample is None:
+                    dist_sample = (src[k], tgt[k])
+            elif src[k] != tgt[k] and len(cells) < 8 and rows % 137 == 0:
+                cells.append((src[k], tgt[k], du[k], di[k]))
+    n = len(params["origins"]) * len(params["destinations"])
+    return StreamedMatrix(batches, empties, rows, sentinels, dist_max, dist_sample, cells, trailer, n)
+
+
+def streamed_matrix(base, mode, params):
+    """#572: ONE decoded Flight `matrix` stream per (base, mode, params),
+    shared by gate_matrix_distance_consistency (car + foot),
+    gate_matrix_sparse_streaming and gate_flight_completeness — the same
+    1054² ≈ 1.11M-cell request was previously issued four times, minutes of
+    server work for identical bytes.
+
+    A FAILURE is memoised too, and re-raised on every call: each consumer
+    still catches it and prints its own FAIL line, so a broken stream never
+    turns into a silent PASS for the gates that ran second."""
+    key = (base, mode, json.dumps(params, sort_keys=True))
+    if key not in _STREAMED_MATRIX:
+        try:
+            _STREAMED_MATRIX[key] = _stream_matrix_once(base, mode, params)
+        except Exception as ex:  # noqa: BLE001 — re-raised below, per consumer
+            _STREAMED_MATRIX[key] = ex
+    rec = _STREAMED_MATRIX[key]
+    if isinstance(rec, Exception):
+        raise rec
+    return rec
 
 
 def gate_bounded_matrix_exactness(base):
@@ -1710,40 +1979,26 @@ def gate_matrix_distance_consistency(base):
     invariant: on the streamed path, EVERY reachable cell (duration != MAX) also
     carries a real distance (distance != MAX). Sparse output returns only
     reachable rows, so simply: no returned row may have distance_m == MAX while
-    duration_ms is real. Cross-checked against /route on a sample."""
+    duration_ms is real. Cross-checked against /route on a sample.
+
+    #572: the stream itself comes from `streamed_matrix` — the same decoded
+    pass gate_matrix_sparse_streaming and gate_flight_completeness assert on."""
     print("== streamed matrix distance_m computed (not column-wide MAX) (#534) ==")
-    grid = _streaming_grid()
+    params = streaming_params()
+    grid = params["origins"]
     cell_tol = THRESHOLDS["matrix_cell_tol"]
     passed = True
     for mode in ("car", "foot"):
-        params = {"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True}
-        rows = dur_max = dist_max = 0
-        sample = None
-        cells = []  # (src_idx, tgt_idx, dur_ms, dist_m) for /route cross-check
-        for chunk in flight_reader(base, "matrix", mode, params):
-            b = chunk.data
-            if b is None:
-                continue
-            du = b.column("duration_ms").to_pylist()
-            di = b.column("distance_m").to_pylist()
-            s = b.column("source_idx").to_pylist()
-            t = b.column("target_idx").to_pylist()
-            for k in range(b.num_rows):
-                rows += 1
-                if du[k] == MAX_U32:
-                    dur_max += 1
-                    continue
-                if di[k] == MAX_U32:
-                    dist_max += 1  # reachable (duration real) but no distance
-                    if sample is None:
-                        sample = (s[k], t[k])
-                elif s[k] != t[k] and len(cells) < 8 and rows % 137 == 0:
-                    cells.append((s[k], t[k], du[k], di[k]))
-        passed &= check(f"{mode}: streamed path returns rows", rows > 1000,
-                        f"{rows} reachable rows over {len(grid)}² cells")
-        passed &= check(f"{mode}: every reachable cell has a distance", dist_max == 0,
-            f"{dist_max}/{rows} rows have duration but distance_m==MAX (#534 column-wide MAX)"
-            + (f" e.g. {sample}" if sample else ""))
+        try:
+            rec = streamed_matrix(base, mode, params)
+        except Exception as ex:
+            passed &= check(f"{mode}: streamed matrix decoded", False, f"{type(ex).__name__}: {ex}")
+            continue
+        passed &= check(f"{mode}: streamed path returns rows", rec.rows > 1000,
+                        f"{rec.rows} reachable rows over {len(grid)}² cells")
+        passed &= check(f"{mode}: every reachable cell has a distance", rec.dist_max == 0,
+            f"{rec.dist_max}/{rec.rows} rows have duration but distance_m==MAX "
+            "(#534 column-wide MAX)" + (f" e.g. {rec.dist_sample}" if rec.dist_sample else ""))
         # CROSS-PATH: streamed matrix cell values must match /route (the small
         # single-query path) — duration AND distance — within tolerance. Catches
         # any streamed-path value divergence (bucket/PHAST/2-channel), not just
@@ -1751,7 +2006,7 @@ def gate_matrix_distance_consistency(base):
         # /route, so this is the belt to the CI cross-path suspenders.
         bad = 0
         worst = 0.0
-        for si, ti, dur_ms, dist_m in cells:
+        for si, ti, dur_ms, dist_m in rec.cells:
             o, d = grid[si], grid[ti]
             try:
                 r = route(base, o[0], o[1], d[0], d[1], mode)  # (dur_s, dist_m)
@@ -1762,8 +2017,8 @@ def gate_matrix_distance_consistency(base):
             worst = max(worst, abs(dist_m - r[1]) / max(r[1], 1.0))
             if not (dur_ok and dist_ok):
                 bad += 1
-        passed &= check(f"{mode}: streamed cell values == /route", bad == 0 and len(cells) > 0,
-                        f"{len(cells)} cells checked, {bad} mismatch (worst dist {worst * 100:.2f}%)")
+        passed &= check(f"{mode}: streamed cell values == /route", bad == 0 and len(rec.cells) > 0,
+                        f"{len(rec.cells)} cells checked, {bad} mismatch (worst dist {worst * 100:.2f}%)")
     return passed
 
 
@@ -1808,94 +2063,92 @@ def gate_matrix_sparse_streaming(base):
     batch (confirms the tiled path), leak zero sentinels, drop empty tiles, and
     return far fewer rows than cells (the diagonal + near neighbours survive).
     No dense comparison here (1M+ dense rows over the wire is the very cost this
-    ticket removes) — the unit tests carry the full dense/sparse equivalence."""
+    ticket removes) — the unit tests carry the full dense/sparse equivalence.
+
+    #572: the pass is `streamed_matrix`'s, shared with the distance-consistency
+    and completeness gates."""
     print("== Flight matrix sparse STREAMING path (>1M cells, #532) ==")
-    pts = _streaming_grid()
-    n = len(pts)
-    params = {"origins": pts, "destinations": pts, "radius_km": 6, "sparse": True}
-    rows = sentinels = batches = empty = 0
-    for chunk in flight_reader(base, "matrix", "car", params):
-        b = chunk.data
-        if b is None:
-            # #533 completeness trailer: app_metadata-only, no data body.
-            # Chunk-iterating clients MUST skip it (read_all ignores it).
-            continue
-        batches += 1
-        if b.num_rows == 0:
-            empty += 1
-        rows += b.num_rows
-        sentinels += sum(1 for v in b.column("duration_ms").to_pylist() if v == MAX_U32)
-    cells = n * n
-    passed = check("took the streaming path", batches > 1, f"{batches} batches for {cells} cells")
-    passed &= check("no sentinels streamed", sentinels == 0, f"{sentinels} sentinel rows")
-    passed &= check("no empty batches streamed", empty == 0, f"{empty} empty batches")
-    passed &= check("sparse << dense", 0 < rows < cells // 2,
-        f"{rows} rows of {cells} cells ({100 * (1 - rows / cells):.1f}% dropped)")
-    return passed
-
-
-def gate_matrix_completeness(base):
-    """#533/#532: every matrix DoGet must end with a completeness trailer —
-    an app_metadata message {"complete":true,"total_rows":N,"contract":...}
-    whose N equals the rows actually decoded. This is the deterministic signal
-    that lets clients tell a full response from a truncated/empty-OK one (the
-    #533 silent-data-loss failure). Verified on the small path, the streaming
-    path, and a sparse response — the trailer must be present in all three and
-    its count must reconcile with the decoded rows."""
-    print("== Flight matrix completeness trailer (#533/#532) ==")
-    pts = [[p[1], p[2]] for p in ISO_POINTS]
-
-    def probe(params, label, want_contract):
-        rows, meta = flight_rows_meta(base, "matrix", "car", params)
-        p = check(f"{label}: trailer present", meta is not None, f"meta={meta}")
-        p &= check(f"{label}: complete:true", bool(meta and meta.get("complete") is True), f"meta={meta}")
-        p &= check(f"{label}: total_rows=={rows} decoded", bool(meta and meta.get("total_rows") == rows),
-            f"meta={meta}")
-        p &= check(f"{label}: contract={want_contract}",
-            bool(meta and meta.get("contract") == want_contract),
-            f"meta={meta}")
-        return p
-
-    passed = probe({"origins": pts, "destinations": pts}, "small dense", "dense")
-    passed &= probe({"origins": pts, "destinations": pts, "radius_km": 20, "sparse": True}, "small sparse",
-        "sparse")
-    # streaming path (>1M cells) — the #533 repro shape
-    grid = _streaming_grid()
-    passed &= probe({"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True},
-        "streaming sparse",
-        "sparse")
+    params = streaming_params()
+    try:
+        rec = streamed_matrix(base, "car", params)
+    except Exception as ex:
+        return check("streamed matrix decoded", False, f"{type(ex).__name__}: {ex}")
+    cells = rec.cells_total
+    passed = check("took the streaming path", rec.batches > 1,
+        f"{rec.batches} batches for {cells} cells")
+    passed &= check("no sentinels streamed", rec.sentinels == 0, f"{rec.sentinels} sentinel rows")
+    passed &= check("no empty batches streamed", rec.empties == 0, f"{rec.empties} empty batches")
+    passed &= check("sparse << dense", 0 < rec.rows < cells // 2,
+        f"{rec.rows} rows of {cells} cells ({100 * (1 - rec.rows / cells):.1f}% dropped)")
     return passed
 
 
 def gate_flight_completeness(base):
-    """#533: EVERY streamed Flight action — not just matrix — must end with a
-    completeness signal (trailer on success, non-OK error on truncation) so a
-    silent OK-with-missing-rows is impossible. This probes the real producers
-    (route_batch, edges_batch = do_get; edges_flow = do_exchange) live and
-    reconciles the trailer's row/pair count against what was decoded. matrix is
-    covered by gate_matrix_completeness."""
-    print("== Flight completeness trailer: route_batch / edges_batch / edges_flow (#533) ==")
+    """#533/#532: EVERY streamed Flight action must end with a completeness
+    signal — an app_metadata trailer {"complete":true,"total_rows":N,...} whose
+    N equals the rows actually decoded (a non-OK error on truncation). That is
+    the deterministic way a client tells a full response from a truncated or
+    empty-OK one; without it, silent data loss is indistinguishable from "no
+    results".
+
+    #572 merges the former `gate_matrix_completeness` in: ONE gate covers every
+    producer — matrix dense / sparse / streaming (do_get), route_batch,
+    edges_batch, isochrone (do_get) and edges_flow (do_exchange). The streaming
+    probe reuses `streamed_matrix`'s decoded pass instead of issuing a fourth
+    1.1M-cell request."""
+    print("== Flight completeness trailer: matrix (dense/sparse/streaming), route_batch, "
+        "edges_batch, isochrone, edges_flow (#533/#532) ==")
     import pyarrow as pa
 
+    pts = [[p[1], p[2]] for p in ISO_POINTS]
     pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
 
-    def probe_do_get(action, params, label):
-        rows, meta = flight_rows_meta(base, action, "car", params)
-        p = check(f"{label}: trailer present", meta is not None, f"meta={meta}")
-        p &= check(f"{label}: complete:true", bool(meta and meta.get("complete")), f"meta={meta}")
-        p &= check(f"{label}: total_rows=={rows}", bool(meta and meta.get("total_rows") == rows),
-            f"meta={meta}")
+    def judge(label, rows, meta, want_contract=None, note=""):
+        p = check(f"{label}: trailer present", meta is not None, f"meta={meta}{note}")
+        p &= check(f"{label}: complete:true", bool(meta and meta.get("complete") is True),
+            f"meta={meta}{note}")
+        p &= check(f"{label}: total_rows=={rows} decoded",
+            bool(meta and meta.get("total_rows") == rows), f"meta={meta}{note}")
+        if want_contract is not None:
+            p &= check(f"{label}: contract={want_contract}",
+                bool(meta and meta.get("contract") == want_contract), f"meta={meta}{note}")
         return p
 
-    passed = probe_do_get("route_batch", {"pairs": pairs}, "route_batch")
-    passed &= probe_do_get("edges_batch", {"pairs": pairs}, "edges_batch")
+    def probe(label, action, params, mode="car", want_contract=None, note=""):
+        rows, meta = flight_rows_meta(base, action, mode, params)
+        return judge(label, rows, meta, want_contract, note)
 
+    passed = probe("matrix dense", "matrix", {"origins": pts, "destinations": pts},
+        want_contract="dense")
+    passed &= probe("matrix sparse", "matrix",
+        {"origins": pts, "destinations": pts, "radius_km": 20, "sparse": True},
+        want_contract="sparse")
+    # streaming path (>1M cells) — the #533 repro shape, decoded ONCE (#572)
+    try:
+        rec = streamed_matrix(base, "car", streaming_params())
+        passed &= judge("matrix streaming sparse", rec.rows, rec.trailer, "sparse")
+    except Exception as ex:
+        passed &= check("matrix streaming sparse: trailer present", False,
+            f"{type(ex).__name__}: {ex}")
+    passed &= probe("route_batch", "route_batch", {"pairs": pairs})
+    passed &= probe("edges_batch", "edges_batch", {"pairs": pairs})
+    # isochrone: KNOWN GAP. The action streams WKB polygons and ends WITHOUT a
+    # trailer, so a truncated isochrone batch is indistinguishable from a small
+    # one — exactly the #533 failure, on the one producer the merge exposed.
+    # This probe is EXPECTED TO FAIL until the isochrone trailer lands; the fix
+    # is server-side (emit the same app_metadata the matrix actions do), NOT
+    # deleting or relaxing the probe.
+    iso_note = (" — KNOWN GAP: the isochrone action emits no completeness trailer yet; "
+        "land it server-side, do not silence this probe (#533 follow-up)")
+    passed &= probe("isochrone", "isochrone",
+        {"lon": ISO_POINTS[0][1], "lat": ISO_POINTS[0][2], "intervals": [600]}, note=iso_note)
     # edges_flow (do_exchange): the summary carries complete:true and is
     # sent only after every chunk streamed.
     tbl = pa.table({"src_lon": pa.array([p[0] for p in pairs]), "src_lat": pa.array([p[1] for p in pairs]),
                     "dst_lon": pa.array([p[2] for p in pairs]), "dst_lat": pa.array([p[3] for p in pairs])})
     _rows, meta = _exchange(base, b"edges_flow:car", tbl)
-    passed &= check("edges_flow: complete:true summary", bool(meta and meta.get("complete")), f"meta={meta}")
+    passed &= check("edges_flow: complete:true summary", bool(meta and meta.get("complete")),
+        f"meta={meta}")
     return passed
 
 
@@ -2054,35 +2307,109 @@ def gate_catchment_containment(base):
     return ok
 
 
+# #572: ONE probe per documented REST path. The gate iterates
+# `GET /api-docs/openapi.json` — proven identical to the router's MOUNTED_PATHS
+# by the `openapi_parity` unit test in route/src/server/api.rs — so a path
+# added to (or removed from) the server without a probe here is DRIFT and fails
+# the gate. Before this, the smoke pinged 7 of the 14 mounted paths and adding
+# an endpoint silently added an untested surface.
+# Each entry: (method, path-with-query, JSON body or None).
+def rest_probes():
+    o = (4.3517, 50.8503)  # Brussels
+    d = (4.4025, 51.2194)  # Antwerp
+    trace = [[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]]
+    return {
+        "/health": ("GET", "/health", None),
+        "/version": ("GET", "/version", None),
+        "/regions": ("GET", "/regions", None),
+        "/route": ("GET", f"/route?origin_lon={o[0]}&origin_lat={o[1]}"
+                          f"&destination_lon={d[0]}&destination_lat={d[1]}&mode=car", None),
+        "/nearest": ("GET", f"/nearest?lon={o[0]}&lat={o[1]}&mode=car", None),
+        "/isochrone": ("GET", f"/isochrone?lon={o[0]}&lat={o[1]}&time_s=300&mode=car", None),
+        "/height": ("GET", f"/height?coordinates={o[0]},{o[1]}|{d[0]},{d[1]}", None),
+        "/transit": ("GET", f"/transit?origin_lon={o[0]}&origin_lat={o[1]}"
+                            f"&destination_lon={d[0]}&destination_lat={d[1]}", None),
+        "/table": ("POST", "/table", {"origins": [list(o), list(d)],
+                                      "destinations": [list(o), list(d)],
+                                      "mode": "car", "annotations": "duration,distance"}),
+        "/trip": ("POST", "/trip", {"points": [list(o), list(d), [4.35, 50.90]], "mode": "car",
+                                    "round_trip": True}),
+        "/match": ("POST", "/match", {"points": trace, "mode": "car", "geometry": "polyline6"}),
+        "/catchment": ("POST", "/catchment", {
+            "mode": "car", "hull_shape": "road", "percentiles": [50], "remove_outliers": False,
+            "stores": [{"id": "s1", "lon": o[0], "lat": o[1]}],
+            "clients": [{"lon": 4.36, "lat": 50.86}, {"lon": 4.34, "lat": 50.84},
+                        {"lon": 4.40, "lat": 50.88}]}),
+        "/isochrone/bulk": ("POST", "/isochrone/bulk",
+                            {"origins": [list(o), list(d)], "time_s": 300, "mode": "car"}),
+        "/transit/bulk": ("POST", "/transit/bulk", {"queries": [
+            {"origin_lon": o[0], "origin_lat": o[1],
+             "destination_lon": d[0], "destination_lat": d[1]}]}),
+    }
+
+
+# status -> why it is a SKIP rather than a FAIL. ONLY documented-optional
+# surfaces belong here; anything else must answer 2xx.
+REST_PROBE_SKIPS = {
+    "/height": {404: "not mounted — <data>/srtm/ absent; lean containers 404 by design"},
+    "/transit": {503: "transit subsystem not loaded (no transit/ directory)",
+                 404: "no journey for the probe pair — a valid documented answer"},
+    "/transit/bulk": {503: "transit subsystem not loaded (no transit/ directory)"},
+}
+
+
 def gate_all_endpoints_smoke(base):
-    """COVERAGE: ping EVERY REST endpoint and EVERY Flight action so a change
-    that breaks one surface entirely is caught even if you were only touching
-    another. Each must return a valid (non-error) response of the right shape.
-    Optional surfaces (transit, /height) are skipped, not failed, when absent."""
-    print("== all-endpoints smoke: every REST route + Flight action responds ==")
+    """COVERAGE: ping EVERY documented REST endpoint and EVERY Flight action so
+    a change that breaks one surface entirely is caught even if you were only
+    touching another. The REST list is not written here — it is READ from the
+    server's own OpenAPI document (#572), so the gate cannot drift behind the
+    router. Optional surfaces (/height without SRTM, transit without a feed)
+    are SKIPPED with their status and reason, never silently passed."""
+    print("== all-endpoints smoke: every OpenAPI-documented REST path + every Flight action ==")
     passed = True
     o = (4.3517, 50.8503)
     d = (4.4025, 51.2194)
 
-    # ---- REST ----
-    rest = {
-        "/health": f"{base}/health",
-        "/version": f"{base}/version",
-        "/route": f"{base}/route?origin_lon={o[0]}&origin_lat={o[1]}"
-                  f"&destination_lon={d[0]}&destination_lat={d[1]}&mode=car",
-        "/nearest": f"{base}/nearest?lon={o[0]}&lat={o[1]}&mode=car",
-        "/isochrone": f"{base}/isochrone?lon={o[0]}&lat={o[1]}&time_s=300&mode=car"}
-    probes = [(f"REST {n}", (lambda u=u: http_json(u))) for n, u in rest.items()]
-    probes.append(("REST /table", lambda: table(
-        base, [list(o), list(d)], [list(o), list(d)], annotations="duration,distance")))
-    probes.append(("REST /trip", lambda: post_json(
-        f"{base}/trip", {"points": [list(o), list(d), [4.35, 50.9]], "mode": "car"})))
-    for name, fn in probes:
+    # ---- REST, driven by the server's own OpenAPI document ----
+    try:
+        doc = http_json(f"{base}/api-docs/openapi.json", timeout=60)
+        documented = sorted((doc.get("paths") or {}).keys())
+    except Exception as ex:
+        return check("openapi document readable", False, f"{type(ex).__name__}: {ex}")
+    probes = rest_probes()
+    undocumented = [p for p in probes if p not in documented]
+    unprobed = [p for p in documented if p not in probes]
+    passed &= check("openapi paths == probe table (drift alarm)",
+        not undocumented and not unprobed,
+        f"{len(documented)} documented paths"
+        + (f"; DRIFT — documented but NOT probed: {unprobed}" if unprobed else "")
+        + (f"; DRIFT — probed but no longer documented: {undocumented}" if undocumented else ""))
+    for path in documented:
+        spec = probes.get(path)
+        if spec is None:
+            continue  # already reported as drift above
+        method, target, body = spec
         try:
-            fn()
-            passed &= check(name, True, "ok")
-        except Exception as e:
-            passed &= check(name, False, f"{e}")
+            status, ctype, payload = http_status(f"{base}{target}", method=method, body=body,
+                                                 timeout=120)
+        except Exception as ex:
+            passed &= check(f"REST {method} {path}", False, f"{type(ex).__name__}: {ex}")
+            continue
+        skips = REST_PROBE_SKIPS.get(path, {})
+        if status in skips:
+            print(f"  [SKIP] REST {method} {path}: {status} — {skips[status]}")
+            continue
+        ok = 200 <= status < 300 and len(payload) > 0
+        if ok and "json" in ctype.lower():
+            try:
+                json.loads(payload)
+            except Exception as ex:
+                ok = False
+                ctype = f"{ctype} (undecodable: {ex})"
+        detail = f"{status} {ctype.split(';')[0] or '?'} {len(payload)}B"
+        if not ok:
+            detail += f" body={payload[:160]!r}"
+        passed &= check(f"REST {method} {path}", ok, detail)
 
     # ---- Flight ----
     if not flight_enabled():
@@ -2135,6 +2462,21 @@ def gate_all_endpoints_smoke(base):
 # ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
+# Attribute defaults for a gate registry built WITHOUT argparse (gate_names,
+# the offline unit tests). Every path-valued option is None = "resolve under
+# $BUTTERFLY_REFS_DIR when the gate runs" (#589).
+GATE_ARGS_DEFAULTS = {"base": None, "quick": False, "trips": None, "distance_trips": None,
+    "refs_prefix": None, "no_flight": False, "flight_base": None}
+
+
+def gate_names(args=None):
+    """Every registered gate name. Builds the registry with placeholder args —
+    the thunks are never called, so no reference set and no server is touched.
+    `gate_ticket_invariants` asserts its ticket map against this."""
+    return [name for name, _flight, _thunk in
+            build_gates(args or argparse.Namespace(**GATE_ARGS_DEFAULTS))]
+
+
 def build_gates(args):
     """(name, needs_flight, thunk). ONE list — `--list-gates` prints it, main
     runs it, CI smoke-tests it."""
@@ -2143,11 +2485,10 @@ def build_gates(args):
         ("fixtures", False, lambda: gate_fixtures(b)),
         ("symmetry", False, lambda: gate_symmetry(b)),
         ("route_table_agreement", False, lambda: gate_route_table_agreement(b)),
-        ("isochrone_containment", False, lambda: gate_isochrone(b)),
         ("isochrone_topology", False, lambda: gate_isochrone_topology(b)),
         ("isochrone_reach_truth", False, lambda: gate_isochrone_reach_truth(b)),
         ("isochrone_upper_bound", False, lambda: gate_isochrone_upper_bound(b)),
-        ("bands", False, lambda: gate_bands(b, args.refs_prefix)),
+        ("bands", False, lambda: gate_bands(b, refs_path(REFS_PREFIX, args.refs_prefix))),
         ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
         ("lopsided_matrix", False, lambda: gate_lopsided(b)),
         ("radius_prune", False, lambda: gate_radius_prune(b)),
@@ -2159,7 +2500,6 @@ def build_gates(args):
         ("edges_batch", True, lambda: gate_edges_batch(b)),
         ("matrix_sparse", True, lambda: gate_matrix_sparse(b)),
         ("matrix_sparse_streaming", True, lambda: gate_matrix_sparse_streaming(b)),
-        ("matrix_completeness", True, lambda: gate_matrix_completeness(b)),
         ("flight_completeness", True, lambda: gate_flight_completeness(b)),
         ("matrix_distance_consistency", True, lambda: gate_matrix_distance_consistency(b)),
         ("bounded_matrix_exactness", True, lambda: gate_bounded_matrix_exactness(b)),
@@ -2169,19 +2509,28 @@ def build_gates(args):
         ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),
     ]
     if not args.quick:
-        gates.append(("ground_truth_duration", False, lambda: gate_ground_truth(b, args.trips, "duration")))
+        gates.append(("ground_truth_duration", False,
+                      lambda: gate_ground_truth(b, refs_path(DEFAULT_TRIPS, args.trips), "duration")))
         gates.append(("ground_truth_distance", False,
-                      lambda: gate_ground_truth(b, args.distance_trips, "distance")))
+                      lambda: gate_ground_truth(b, refs_path(LEGACY_TRIPS_DISTANCE, args.distance_trips),
+                                                "distance")))
     return gates
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", help="e.g. http://localhost:3001")
-    ap.add_argument("--trips", default=DEFAULT_TRIPS)
-    ap.add_argument("--distance-trips", default=LEGACY_TRIPS_DISTANCE)
-    ap.add_argument("--refs-prefix", default=os.path.join(REFS_DIR, "od"),
-        help="time-stamped reference sets <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR")
+    # #589: NO argparse default may touch $BUTTERFLY_REFS_DIR — an unset
+    # variable used to crash `--list-gates` and `--help` in os.path.join(None,
+    # ...). Unset here means "resolve under $BUTTERFLY_REFS_DIR when the gate
+    # runs" (refs_path); a value given wins as typed.
+    ap.add_argument("--trips", default=None,
+        help=f"duration reference set (default: {DEFAULT_TRIPS} under $BUTTERFLY_REFS_DIR)")
+    ap.add_argument("--distance-trips", default=None,
+        help=f"route-length reference set (default: {LEGACY_TRIPS_DISTANCE} under $BUTTERFLY_REFS_DIR)")
+    ap.add_argument("--refs-prefix", default=None,
+        help="time-stamped reference sets <prefix>_{typical,best,worst}.csv "
+             f"(default prefix: {REFS_PREFIX!r} under $BUTTERFLY_REFS_DIR)")
     ap.add_argument("--quick", action="store_true", help="skip the 1000-trip ground truth")
     ap.add_argument("--no-flight", action="store_true",
         help="skip every Arrow Flight gate (the ONLY way to run without pyarrow/pandas)")
@@ -2215,6 +2564,8 @@ def main():
             sys.exit(1)
 
     print(f"post-deploy gate against {base}" + ("" if CONFIG["flight"] else " (--no-flight)"))
+    _apply_windows_config()  # staged tolerances override the defaults, then re-derive
+    print_thresholds()  # #589 guard: read every PASS line against the bound that produced it
     ok = True
     t0 = time.time()
     for name, needs_flight, fn in build_gates(args):
@@ -2225,6 +2576,10 @@ def main():
         started = time.time()
         try:
             ok &= bool(fn())
+        except RefsUnavailable as e:
+            # #589: a refs-dependent gate cannot run — FAIL it by name (never a
+            # silent skip, never a process-wide SystemExit) and keep going.
+            ok &= check(name, False, str(e))
         except Exception as e:
             ok &= check(name, False, f"raised {type(e).__name__}: {str(e)[:200]}")
         print(f"  ({name}: {time.time() - started:.1f}s)")
