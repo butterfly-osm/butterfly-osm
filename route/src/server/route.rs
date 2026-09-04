@@ -856,25 +856,11 @@ pub async fn route_handler(
     // produces (0,0), (0,1), (1,0), (0,2), (1,1), (2,0), … so the
     // first additional query swaps to the second-best dst, the
     // second swaps to the second-best src, etc.
-    // Build combo enumeration helper — same enumeration both for the
-    // K=1 first pass and the K=64 escalation. (i+j) ascending, i
-    // ascending on ties: (0,0), (0,1), (1,0), (0,2), (1,1), …
-    fn build_combo_order(n_src: usize, n_dst: usize, cap: usize) -> Vec<(usize, usize)> {
-        let mut order = Vec::new();
-        for sum in 0..(n_src + n_dst) {
-            for i in 0..n_src {
-                if let Some(j) = sum.checked_sub(i)
-                    && j < n_dst
-                {
-                    order.push((i, j));
-                }
-            }
-        }
-        if order.len() > cap {
-            order.truncate(cap);
-        }
-        order
-    }
+    // Same enumeration both for the K=1 first pass and the K=64
+    // escalation: (i+j) ascending, i ascending on ties — (0,0), (0,1),
+    // (1,0), (0,2), (1,1), … #567: `snap_kbest::combo_order` is that
+    // enumeration for every surface.
+    use super::snap_kbest::combo_order as build_combo_order;
     // Hard cap on total fallback combinations attempted per query
     // to bound tail latency for genuinely-unreachable pairs. K=64
     // produces up to 4096 combos worst case. Cap at 400 so we
