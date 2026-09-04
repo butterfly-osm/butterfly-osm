@@ -18,6 +18,7 @@
 //! - **Version-stamped distances**: Amortized O(1) per-search initialization
 
 use crate::formats::{ArcCow, CchTopo, CchWeights};
+use crate::matrix::lex_better;
 
 // Thread-local `SearchState` scratch buffers for the parallel bucket M2M path.
 //
@@ -4584,7 +4585,7 @@ fn backward_join_local_columns_len_along_time(
             // smaller lat wins. Keeps /table output deterministic
             // across runs and consistent with the pre-target-owned
             // implementation.
-            if total_time < cur_time || total_lat < lat_col[src] {
+            if lex_better(total_time, total_lat, cur_time, lat_col[src]) {
                 time_col[src] = total_time;
                 lat_col[src] = total_lat;
                 joins += 1;
@@ -6018,6 +6019,87 @@ mod max_minutes_bound_tests {
         assert_eq!(bl, rl, "router length channel must match the engines");
     }
 
+    /// #557: several phantom seeds on one endpoint reaching EQUAL arrival
+    /// time must serve the MINIMUM length over those seeds — the canonical
+    /// (time, then length) tie-break, exactly what the bucket engine does —
+    /// on BOTH 2-channel PHAST evaluators. The seed order puts the LONGER
+    /// candidate first, so a strict time compare keeps it and fails here.
+    /// Ground truth is by hand from the broom weights (wu = 10·(leaf+1),
+    /// wd = leaf+1, length = 2× time).
+    #[test]
+    fn phast_2ch_equal_time_seeds_keep_min_length() {
+        let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, _) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+
+        // FORWARD field. Source = leaf 0, pure. Target = seeds on leaves 3
+        // and 5: F_t(3) − 0 = 14 = F_t(5) − 2; lengths 28 − 0 vs 32 − 6.
+        let srcs: Vec<Vec<EngineSeed>> = vec![vec![(0, 0, 0, true)]];
+        let tgts: Vec<Vec<EngineSeed>> = vec![vec![(3, 0, 0, true), (5, 2, 6, true)]];
+        let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            &srcs,
+            &tgts,
+            u32::MAX,
+        );
+        assert_eq!((bt, bl), (vec![14], vec![26]), "bucket ground truth");
+        let (pt, pl, _) = table_phast_lopsided_2ch(
+            n_nodes,
+            &up,
+            &down,
+            &dfwd_t,
+            &up_lat,
+            &dn_lat,
+            &dfwd_l,
+            mode,
+            &srcs,
+            &tgts,
+            u32::MAX,
+        );
+        assert_eq!(pt, vec![14], "forward 2ch PHAST time");
+        assert_eq!(
+            pl,
+            vec![26],
+            "forward 2ch PHAST kept the first seed's length on an equal-time tie"
+        );
+
+        // REVERSE field. Target = leaf 7, pure. Source = seeds on leaves 0
+        // and 1: G(0) + 10 = 28 = G(1) + 0; lengths 36 + 30 vs 56 + 0.
+        let srcs: Vec<Vec<EngineSeed>> = vec![vec![(0, 10, 30, true), (1, 0, 0, true)]];
+        let tgts: Vec<Vec<EngineSeed>> = vec![vec![(7, 0, 0, true)]];
+        let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            &srcs,
+            &tgts,
+            u32::MAX,
+        );
+        assert_eq!((bt, bl), (vec![28], vec![56]), "bucket ground truth");
+        let (rt, rl, _) = table_phast_lopsided_reverse_2ch(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            mode,
+            &srcs,
+            &tgts,
+            u32::MAX,
+        );
+        assert_eq!(rt, vec![28], "reverse 2ch PHAST time");
+        assert_eq!(
+            rl,
+            vec![56],
+            "reverse 2ch PHAST kept the first seed's length on an equal-time tie"
+        );
+    }
+
     #[test]
     fn unbounded_sentinel_is_byte_identical() {
         // threshold == u32::MAX must reproduce the unbounded matrix exactly.
@@ -6567,9 +6649,12 @@ fn table_phast_lopsided_2ch(
                     && ft != u32::MAX
                 {
                     let at = ft.saturating_sub(part_t);
-                    if at < best_t {
+                    let al = fl.saturating_sub(part_l);
+                    // #557: (time, then length) over the seeds — a strict
+                    // time compare kept the FIRST seed's length on ties.
+                    if lex_better(at, al, best_t, best_l) {
                         best_t = at;
-                        best_l = fl.saturating_sub(part_l);
+                        best_l = al;
                     }
                 }
             }
@@ -7241,9 +7326,12 @@ fn table_phast_lopsided_reverse_2ch(
                     && gt != u32::MAX
                 {
                     let at = gt.saturating_add(part_t).saturating_sub(shift_t);
-                    if at < best_t {
+                    let al = gl.saturating_add(part_l).saturating_sub(shift_l);
+                    // #557: (time, then length) over the seeds — see the
+                    // forward evaluator.
+                    if lex_better(at, al, best_t, best_l) {
                         best_t = at;
-                        best_l = gl.saturating_add(part_l).saturating_sub(shift_l);
+                        best_l = al;
                     }
                 }
             }
@@ -7624,7 +7712,7 @@ fn backward_join_seeded_lat(
                     continue;
                 }
                 let total_lat = entry.lat.saturating_add(l);
-                if total_time < cur_time || total_lat < lat_col[src] {
+                if lex_better(total_time, total_lat, cur_time, lat_col[src]) {
                     time_col[src] = total_time;
                     lat_col[src] = total_lat;
                     joins += 1;
@@ -7643,7 +7731,7 @@ fn backward_join_seeded_lat(
                     continue;
                 }
                 let total_lat = entry.lat.saturating_add(l);
-                if total_time < cur_time || total_lat < lat_col[src] {
+                if lex_better(total_time, total_lat, cur_time, lat_col[src]) {
                     time_col[src] = total_time;
                     lat_col[src] = total_lat;
                     joins += 1;
@@ -7685,7 +7773,7 @@ fn backward_join_seeded_lat(
                     continue;
                 }
                 let total_lat = entry.lat.saturating_add(al);
-                if total_time < cur_time || total_lat < lat_col[src] {
+                if lex_better(total_time, total_lat, cur_time, lat_col[src]) {
                     time_col[src] = total_time;
                     lat_col[src] = total_lat;
                     joins += 1;
