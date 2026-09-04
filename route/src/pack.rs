@@ -26,7 +26,7 @@ use crate::formats::edge_geom::{
 use crate::formats::mode_index::{ModeIndex, ModeIndexFile, ModeIndexKind};
 use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
 use crate::formats::{
-    CchTopoFile, CchWeightsFile, EbgNodesFile, FilteredEbgFile, NbgGeoFile, OrderEbgFile,
+    CchTopoFile, CchWeightsFile, EbgNodesFile, FilteredEbgFile, NbgGeoFile, OrderEbgFile, PolyLine,
 };
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_index};
@@ -294,28 +294,62 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
     Ok(out)
 }
 
+/// Container sections the `lean` default omits: build-time inputs that
+/// no serve-path reader ever asks for.
+///
+/// Every one of them is consumed from the `step{N}/` tree on the
+/// filesystem (pipeline steps, validators, the experimental `nbg_ch`
+/// prototype), never from a container:
+///
+/// | section | who reads it | from where |
+/// |---|---|---|
+/// | `shared/step1.nodes.sa` | step 3 (`nbg::build`), `validate` | `step1/nodes.sa` |
+/// | `shared/step1.nodes.si` | `validate` | `step1/nodes.si` |
+/// | `shared/step1.relations.raw` | step 2 (`model::profiling`), `validate` | `step1/relations.raw` |
+/// | `shared/step1.node_signals.bin` | step 4 (`ebg::build`) | `step1/node_signals.bin` |
+/// | `shared/nbg.csr` | step 4, `validate/step4`, `nbg_ch` | `step3/nbg.csr` |
+/// | `shared/ebg.turn_table` | step 5 (`weights`), `validate` | `step4/ebg.turn_table` |
+///
+/// The two step-1 sections the serve path DOES read stay packed:
+/// `shared/step1.ways.raw` (road names, when `shared/way_names_idx` is
+/// absent — `server/state.rs`) and the per-mode `mode/<m>/turn_rules`.
+/// The recustomizer's turn table is the per-mode
+/// `mode/<m>/node_weights.turn`, not `shared/ebg.turn_table`.
+///
+/// On the Belgium+Luxembourg artifact this is ~1.14 GiB (nodes.sa alone
+/// is 1.17 GB) out of ~25.9 GiB — bytes that are downloaded on every
+/// boot and CRC-verified on first touch, for nothing.
+pub const LEAN_OMITTED_SECTIONS: &[&str] = &[
+    "shared/step1.nodes.sa",
+    "shared/step1.nodes.si",
+    "shared/step1.relations.raw",
+    "shared/step1.node_signals.bin",
+    "shared/nbg.csr",
+    "shared/ebg.turn_table",
+];
+
 /// Operator-tweakable knobs for [`pack_with_options`].
 #[derive(Debug, Clone)]
 pub struct PackOptions {
-    /// Drop `shared/nbg.csr` from the packed container. The serve path
-    /// never reads this section — validators in
-    /// `route/src/validate/step4.rs` and the experimental `nbg_ch`
-    /// pipeline read step3/ directly off the filesystem (not from the
-    /// container), so the bytes are dead weight at serve time.
+    /// Pack only what a server reads.
     ///
-    /// `true` by default — saves ~72 MB per Belgium-scale region (the
-    /// exact `nbg.csr` section size on Belgium; bigger regions save
-    /// proportionally more).
+    /// `true` by default. Two effects, both invisible to the serve path:
     ///
-    /// Pass `lean: false` only when you need a container that
-    /// round-trips through `unpack` to a step3/ tree containing the
-    /// original `nbg.csr` — useful for debugging the pack/unpack
-    /// invariant, not for serving.
+    /// 1. Every section in [`LEAN_OMITTED_SECTIONS`] is dropped.
+    /// 2. `shared/nbg.geo` is packed **edges-only** (#579) whenever the
+    ///    flat `shared/edge_geom_{offsets,points}` sections (#155) made
+    ///    it into the same container. Those sections carry the same
+    ///    vertices, and `server/state.rs` already reads `nbg.geo`
+    ///    edges-only — then `madvise(DONTNEED)`s the polyline body it
+    ///    just streamed — whenever they are present. Dropping the body
+    ///    at pack time saves the download and the boot-time CRC walk of
+    ///    ~96 MiB on Belgium. When the flat sections are absent (the
+    ///    server then rebuilds the geometry from the heap polylines),
+    ///    `nbg.geo` is packed whole.
     ///
-    /// A follow-up will extend this to skip the polyline body of
-    /// `shared/nbg.geo` (also dead post-#155 once the `edge_geom_*`
-    /// sections are present). That trim needs a format-aware writer,
-    /// not just a "skip the file" check, so it's a separate PR.
+    /// Pass `lean: false` for a full-fidelity container: everything the
+    /// `step{N}/` tree held, so `unpack` restores a byte-identical tree
+    /// (validators, pack/unpack debugging). Not needed for serving.
     pub lean: bool,
 }
 
@@ -381,51 +415,78 @@ pub fn pack_with_options(
     let mut w = ContainerWriter::create(out)?;
 
     // ---- Shared global tables (mode-agnostic) -----------------------
-    // Step 1 ingest output.
-    maybe_append(
-        &mut w,
-        SectionKind::NodesSa,
-        "shared/step1.nodes.sa",
-        &step1.join("nodes.sa"),
-    )?;
-    maybe_append(
-        &mut w,
-        SectionKind::NodesSi,
-        "shared/step1.nodes.si",
-        &step1.join("nodes.si"),
-    )?;
+    // Step 1 ingest output. `ways.raw` is the only one the serve path
+    // reads (road names, when `way_names_idx` is absent); the rest are
+    // step-2/3/4 inputs read off the filesystem and dropped under
+    // `opts.lean` — see `LEAN_OMITTED_SECTIONS`.
+    if !opts.lean {
+        maybe_append(
+            &mut w,
+            SectionKind::NodesSa,
+            "shared/step1.nodes.sa",
+            &step1.join("nodes.sa"),
+        )?;
+        maybe_append(
+            &mut w,
+            SectionKind::NodesSi,
+            "shared/step1.nodes.si",
+            &step1.join("nodes.si"),
+        )?;
+    }
     maybe_append(
         &mut w,
         SectionKind::WaysRaw,
         "shared/step1.ways.raw",
         &step1.join("ways.raw"),
     )?;
-    maybe_append(
-        &mut w,
-        SectionKind::RelationsRaw,
-        "shared/step1.relations.raw",
-        &step1.join("relations.raw"),
-    )?;
-    maybe_append(
-        &mut w,
-        SectionKind::NodeSignals,
-        "shared/step1.node_signals.bin",
-        &step1.join("node_signals.bin"),
-    )?;
-    // NBG sections (#346):
+    if !opts.lean {
+        maybe_append(
+            &mut w,
+            SectionKind::RelationsRaw,
+            "shared/step1.relations.raw",
+            &step1.join("relations.raw"),
+        )?;
+        maybe_append(
+            &mut w,
+            SectionKind::NodeSignals,
+            "shared/step1.node_signals.bin",
+            &step1.join("node_signals.bin"),
+        )?;
+    }
+
+    // ---- Flat edge geometry (#155) ---------------------------------
+    // Derive shared/edge_geom_offsets + shared/edge_geom_points from
+    // the heap nbg.geo polylines. This replaces the heap Vec<Vec<_>>
+    // shape on the serve path with mmap-backed flat arrays. If
+    // nbg.geo is missing or malformed we skip the section emission;
+    // the server falls back to building EdgeGeometry from the legacy
+    // heap polylines at boot.
+    //
+    // Packed BEFORE the NBG sections because the outcome decides how
+    // `shared/nbg.geo` itself is packed: edges-only is only correct
+    // when these sections carry the vertices (#579).
+    let flat_edge_geom = match pack_edge_geometry(&mut w, &step3) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "  ! [skip edge_geom] {}; server will build flat geometry from heap polylines at boot",
+                e
+            );
+            false
+        }
+    };
+
+    // NBG sections (#346, #579):
     //
     // - `nbg.csr` is never read by the serve path. Validators and the
     //   experimental `nbg_ch` pipeline read step3/ directly from the
     //   filesystem (not from the container), so it is dropped under
     //   `opts.lean` (default).
-    // - `nbg.geo` has two consumers: full polyline reads (legacy) and
-    //   `read_edges_only_from_bytes` (post-#155 serve path, which gets
-    //   polylines from `edge_geom_*` sections when those sections are
-    //   present). The polyline body is dead weight in that case, but
-    //   the edge metadata (bearing, flags, first_osm_way_id) is still
-    //   consumed by the route handler — so we keep `nbg.geo` whole
-    //   here; trimming just the polyline body needs a format-aware
-    //   writer and is tracked as a follow-up under #346.
+    // - `nbg.geo`'s edge metadata (bearing, flags, first_osm_way_id) IS
+    //   consumed by the route handler, but its polyline body is not
+    //   once the flat `edge_geom_*` sections are present: `state.rs`
+    //   reads the section edges-only and madvises the body away. Under
+    //   `opts.lean` we therefore pack the edges array alone.
     // - `nbg.node_map` IS consumed by the serve path:
     //   `Flight::do_edges_batch` looks up OSM node ids via
     //   `NbgNodeMap::compact_to_osm`. Always pack it.
@@ -437,12 +498,12 @@ pub fn pack_with_options(
             &step3.join("nbg.csr"),
         )?;
     }
-    maybe_append(
-        &mut w,
-        SectionKind::NbgGeo,
-        "shared/nbg.geo",
-        &step3.join("nbg.geo"),
-    )?;
+    let nbg_geo_path = step3.join("nbg.geo");
+    if opts.lean && flat_edge_geom && nbg_geo_path.exists() {
+        pack_nbg_geo_edges_only(&mut w, &nbg_geo_path)?;
+    } else {
+        maybe_append(&mut w, SectionKind::NbgGeo, "shared/nbg.geo", &nbg_geo_path)?;
+    }
     maybe_append(
         &mut w,
         SectionKind::NbgNodeMap,
@@ -462,12 +523,16 @@ pub fn pack_with_options(
         "shared/ebg.csr",
         &step4.join("ebg.csr"),
     )?;
-    maybe_append(
-        &mut w,
-        SectionKind::EbgTurnTable,
-        "shared/ebg.turn_table",
-        &step4.join("ebg.turn_table"),
-    )?;
+    // The turn table is a step-5 / validate input; the serve path's
+    // turn costs live in the per-mode `mode/<m>/node_weights.turn`.
+    if !opts.lean {
+        maybe_append(
+            &mut w,
+            SectionKind::EbgTurnTable,
+            "shared/ebg.turn_table",
+            &step4.join("ebg.turn_table"),
+        )?;
+    }
 
     // ---- Per-mode bundles -------------------------------------------
     // Modes are discovered from `step5/w.<mode>.u32` to match the
@@ -833,20 +898,6 @@ pub fn pack_with_options(
         );
     }
 
-    // ---- Flat edge geometry (#155) ---------------------------------
-    // Derive shared/edge_geom_offsets + shared/edge_geom_points from
-    // the heap nbg.geo polylines. This replaces the heap Vec<Vec<_>>
-    // shape on the serve path with mmap-backed flat arrays. If
-    // nbg.geo is missing or malformed we skip the section emission;
-    // the server falls back to building EdgeGeometry from the legacy
-    // heap polylines at boot.
-    if let Err(e) = pack_edge_geometry(&mut w, &step3) {
-        eprintln!(
-            "  ! [skip edge_geom] {}; server will build flat geometry from heap polylines at boot",
-            e
-        );
-    }
-
     // ---- Per-edge OSM node ID chains (#460) -------------------------
     // Carried from step 3 so the serve path can expand NBG edges to
     // per-OSM-segment rows. Absent in pre-#460 step3 dirs — skip with a
@@ -1089,6 +1140,37 @@ fn pack_snap_index(
 /// Returns Err if the input file is missing or fails to parse — the
 /// caller logs and skips the section emission, leaving the container
 /// compatible with the back-compat fallback in `state.rs`.
+/// #579: pack `shared/nbg.geo` without its polyline blob.
+///
+/// Only called when the flat `shared/edge_geom_*` sections went into the
+/// same container — they carry the identical vertices, and `state.rs`
+/// reads `nbg.geo` edges-only whenever they are present. The edge
+/// records are copied verbatim, so the served `NbgGeo` is unchanged
+/// field for field.
+///
+/// Unlike the other derived-section helpers this one does NOT degrade to
+/// a skip on error: the file was already parsed successfully by
+/// `pack_edge_geometry` a moment earlier, so a failure here means the
+/// input changed under us or the encoder is broken — either way the
+/// operator must see it rather than get a silently fatter container.
+fn pack_nbg_geo_edges_only(w: &mut ContainerWriter, nbg_geo_path: &Path) -> Result<()> {
+    let full_len = std::fs::metadata(nbg_geo_path)?.len();
+    let file = std::fs::File::open(nbg_geo_path)
+        .with_context(|| format!("opening {}", nbg_geo_path.display()))?;
+    let bytes = NbgGeoFile::encode_edges_only(std::io::BufReader::new(file))
+        .with_context(|| format!("re-encoding {} edges-only", nbg_geo_path.display()))?;
+    println!(
+        "  + [{:>5} MiB] {:<28} <- {} (edges-only, {} MiB of polylines dropped — \
+         they live in shared/edge_geom_points)",
+        bytes.len() / (1024 * 1024),
+        "shared/nbg.geo",
+        nbg_geo_path.display(),
+        full_len.saturating_sub(bytes.len() as u64) / (1024 * 1024),
+    );
+    w.append_bytes(SectionKind::NbgGeo, "shared/nbg.geo", &bytes)
+        .with_context(|| "packing shared/nbg.geo (edges-only)".to_string())
+}
+
 fn pack_edge_geometry(w: &mut ContainerWriter, step3: &Path) -> Result<()> {
     let nbg_geo_path = step3.join("nbg.geo");
     if !nbg_geo_path.exists() {
@@ -1938,6 +2020,65 @@ pub struct ModePairDiff {
 ///   "pairs": [<ModePairDiff>...]
 /// }
 /// ```
+/// Per-edge polyline vertices read out of a container, from whichever
+/// section actually carries them.
+///
+/// The flat `shared/edge_geom_{offsets,points}` sections (#155) store the
+/// same vertices `nbg.geo`'s polyline blob used to, in the same order,
+/// and are the only copy in a lean container (#579). Containers packed
+/// before those sections existed still have the blob inside `nbg.geo`.
+enum EdgeVertices {
+    Flat {
+        offsets: EdgeGeomOffsets,
+        points: EdgeGeomPoints,
+    },
+    Heap(Vec<PolyLine>),
+}
+
+impl EdgeVertices {
+    fn open(c: &Container, path: &Path, nbg_geo_bytes: &[u8]) -> Result<Self> {
+        match (
+            c.get("shared/edge_geom_offsets"),
+            c.get("shared/edge_geom_points"),
+        ) {
+            (Some(off_sec), Some(pts_sec)) => Ok(Self::Flat {
+                offsets: EdgeGeomOffsetsFile::read_from_bytes(
+                    &c.read_section_verified(path, off_sec)?,
+                )?,
+                points: EdgeGeomPointsFile::read_from_bytes(
+                    &c.read_section_verified(path, pts_sec)?,
+                )?,
+            }),
+            _ => Ok(Self::Heap(
+                NbgGeoFile::read_from_bytes(nbg_geo_bytes)?.polylines,
+            )),
+        }
+    }
+
+    /// `(lat_e7, lon_e7)` per vertex of edge `ei`.
+    fn edge(&self, ei: usize) -> Vec<(i32, i32)> {
+        match self {
+            Self::Flat { offsets, points } => {
+                let (a, b) = (
+                    offsets.offsets[ei] as usize,
+                    offsets.offsets[ei + 1] as usize,
+                );
+                let pts = points.points.as_slice();
+                // Interleaved (lon, lat) pairs → (lat, lon).
+                (a..b).map(|i| (pts[2 * i + 1], pts[2 * i])).collect()
+            }
+            Self::Heap(polylines) => {
+                let p = &polylines[ei];
+                p.lat_fxp
+                    .iter()
+                    .copied()
+                    .zip(p.lon_fxp.iter().copied())
+                    .collect()
+            }
+        }
+    }
+}
+
 /// #524: dump the engine's undirected NBG edge list as parquet so speed
 /// producers can resolve THEIR graph onto OURS offline and emit
 /// edge_speeds rows keyed by the engine's own node pairs — the #454
@@ -1964,11 +2105,7 @@ pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Res
     let map_sec = find("shared/nbg.node_map")?;
     let geo_bytes = c.read_section_verified(path, geo_sec)?;
     let map_bytes = c.read_section_verified(path, map_sec)?;
-    let geo = if segments_out.is_some() {
-        NbgGeoFile::read_from_bytes(&geo_bytes)?
-    } else {
-        NbgGeoFile::read_edges_only_from_bytes(&geo_bytes)?
-    };
+    let geo = NbgGeoFile::read_edges_only_from_bytes(&geo_bytes)?;
     let node_map = NbgNodeMapFile::read_map_from_bytes(&map_bytes)?;
     let max_compact = node_map
         .mappings
@@ -2044,6 +2181,11 @@ pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Res
     // resolve paths at SEGMENT level and aggregate back to engine edges.
     if let Some(seg_out) = segments_out {
         use crate::formats::edge_osm::{EdgeOsmIdsFile, EdgeOsmOffsetsFile};
+        // Polyline vertices. Prefer the flat sections (#155): they hold
+        // the same blob `nbg.geo` used to carry, and in a lean container
+        // (#579) they are the ONLY copy. Fall back to the heap polylines
+        // for containers packed before the flat sections existed.
+        let vertices = EdgeVertices::open(&c, path, &geo_bytes)?;
         let off_sec = find("shared/edge_osm_offsets")?;
         let ids_sec = find("shared/edge_osm_ids")?;
         let off = EdgeOsmOffsetsFile::read_from_bytes(&c.read_section_verified(path, off_sec)?)?;
@@ -2067,17 +2209,18 @@ pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Res
         for (ei, e) in geo.edges.iter().enumerate() {
             let (a, b) = (off.offsets[ei] as usize, off.offsets[ei + 1] as usize);
             let chain = &ids.ids.as_slice()[a..b];
-            let poly = &geo.polylines[ei];
-            if chain.len() < 2 || poly.lat_fxp.len() != chain.len() {
+            // (lat_e7, lon_e7) per vertex, in nbg.geo source order.
+            let poly = vertices.edge(ei);
+            if chain.len() < 2 || poly.len() != chain.len() {
                 chainless += 1;
                 continue;
             }
             for k in 0..chain.len() - 1 {
                 let l = hav(
-                    poly.lat_fxp[k] as f64 * 1e-7,
-                    poly.lon_fxp[k] as f64 * 1e-7,
-                    poly.lat_fxp[k + 1] as f64 * 1e-7,
-                    poly.lon_fxp[k + 1] as f64 * 1e-7,
+                    poly[k].0 as f64 * 1e-7,
+                    poly[k].1 as f64 * 1e-7,
+                    poly[k + 1].0 as f64 * 1e-7,
+                    poly[k + 1].1 as f64 * 1e-7,
                 );
                 so.push(ei as i64);
                 sq.push(k as i64);
@@ -2770,18 +2913,17 @@ mod tests {
         pack(tmp.path(), &out, None, None)?;
         let c = Container::open(&out)?;
 
-        // shared global tables
-        assert!(c.get("shared/step1.nodes.sa").is_some());
-        assert!(c.get("shared/step1.nodes.si").is_some());
+        // shared global tables. `ways.raw` is the one step-1 section the
+        // serve path reads (road names) — it stays.
         assert!(c.get("shared/step1.ways.raw").is_some());
-        assert!(c.get("shared/step1.relations.raw").is_some());
-        // node_signals optional, missing is OK
-        assert!(c.get("shared/step1.node_signals.bin").is_none());
-        // #346: default `pack` is lean — nbg.csr is dropped. The
-        // opt-out path (`pack_with_options(lean: false)`) is exercised
-        // by `pack_with_options_lean_false_keeps_nbg_csr` below, which
-        // also verifies the byte-identical unpack restore.
-        assert!(c.get("shared/nbg.csr").is_none());
+        // #346 + #579: the default pack is lean — every never-read
+        // section is dropped. The opt-out path
+        // (`pack_with_options(lean: false)`) is exercised by
+        // `pack_with_options_lean_false_keeps_every_section` below,
+        // which also verifies the byte-identical unpack restore.
+        for name in LEAN_OMITTED_SECTIONS {
+            assert!(c.get(name).is_none(), "lean pack must not carry {}", name);
+        }
         assert!(c.get("shared/ebg.nodes").is_some());
 
         // mode bundles (sorted alphabetically by mode)
@@ -2821,8 +2963,8 @@ mod tests {
         c.verify_file_crc(&out)?;
         for sec in &c.sections {
             let bytes = c.read_section_verified(&out, sec)?;
-            if sec.name == "shared/step1.nodes.sa" {
-                assert_eq!(&bytes, b"sa-bytes");
+            if sec.name == "shared/step1.ways.raw" {
+                assert_eq!(&bytes, b"ways-raw");
             }
         }
         Ok(())
@@ -2848,9 +2990,12 @@ mod tests {
         let unpacked = tmp.path().join("rt-out");
         unpack(&container, &unpacked)?;
 
-        // Spot-check a handful of files for byte equality.
+        // Spot-check a handful of files for byte equality. `nodes.sa`
+        // is deliberately absent from this list: the lean default drops
+        // it (#579), exactly as it already dropped `nbg.csr` (#346).
+        // `pack_with_options_lean_false_keeps_every_section` covers the
+        // full-fidelity round-trip of both.
         let pairs: &[(&str, &str)] = &[
-            ("step1/nodes.sa", "step1/nodes.sa"),
             ("step1/ways.raw", "step1/ways.raw"),
             ("step2/way_attrs.car.bin", "step2/way_attrs.car.bin"),
             ("step2/turn_rules.bike.bin", "step2/turn_rules.bike.bin"),
@@ -2871,54 +3016,276 @@ mod tests {
         Ok(())
     }
 
+    /// The file each omitted section came from, so the full-fidelity
+    /// pack can be checked byte-for-byte through `unpack`.
+    const OMITTED_SECTION_SOURCES: &[(&str, &str)] = &[
+        ("shared/step1.nodes.sa", "step1/nodes.sa"),
+        ("shared/step1.nodes.si", "step1/nodes.si"),
+        ("shared/step1.relations.raw", "step1/relations.raw"),
+        ("shared/step1.node_signals.bin", "step1/node_signals.bin"),
+        ("shared/nbg.csr", "step3/nbg.csr"),
+        ("shared/ebg.turn_table", "step4/ebg.turn_table"),
+    ];
+
     #[test]
-    fn pack_with_options_lean_false_keeps_nbg_csr() -> Result<()> {
-        // The opt-out path keeps the legacy `shared/nbg.csr` section so
-        // operators that need a byte-identical pack/unpack round-trip
-        // (debugging, validators) can still get the section.
+    fn omitted_section_sources_cover_the_documented_list() {
+        // The two lists are written by hand in different places; keep
+        // them in lockstep so a new omission cannot skip the
+        // round-trip check below.
+        let listed: Vec<&str> = OMITTED_SECTION_SOURCES.iter().map(|(s, _)| *s).collect();
+        assert_eq!(listed, LEAN_OMITTED_SECTIONS.to_vec());
+    }
+
+    #[test]
+    fn pack_with_options_lean_false_keeps_every_section() -> Result<()> {
+        // The opt-out path keeps every never-read section so operators
+        // that need a byte-identical pack/unpack round-trip (debugging,
+        // validators) can still get one.
         //
         // Beyond just "section present in container", verify the full
-        // round-trip: unpack and check the restored
-        // `step3/nbg.csr` is byte-equal to the original.
+        // round-trip: unpack and check each restored file is byte-equal
+        // to the original.
         let tmp = synth_dir()?;
         let out = tmp.path().join("non-lean.butterfly");
         pack_with_options(tmp.path(), &out, None, None, PackOptions { lean: false })?;
         let c = Container::open(&out)?;
-        assert!(
-            c.get("shared/nbg.csr").is_some(),
-            "non-lean pack should retain nbg.csr"
-        );
 
         let unpacked = tmp.path().join("non-lean-out");
         unpack(&out, &unpacked)?;
-        let original = fs::read(tmp.path().join("step3/nbg.csr"))?;
-        let restored = fs::read(unpacked.join("step3/nbg.csr"))?;
-        assert_eq!(
-            original, restored,
-            "non-lean pack + unpack should round-trip nbg.csr byte-for-byte"
-        );
+        for (section, file) in OMITTED_SECTION_SOURCES {
+            let src = tmp.path().join(file);
+            if !src.exists() {
+                // `node_signals.bin` is optional in the fixture (and in
+                // the pipeline): nothing to restore, nothing to check.
+                assert!(c.get(section).is_none());
+                continue;
+            }
+            assert!(
+                c.get(section).is_some(),
+                "non-lean pack should retain {}",
+                section
+            );
+            assert_eq!(
+                fs::read(&src)?,
+                fs::read(unpacked.join(file))?,
+                "non-lean pack + unpack should round-trip {} byte-for-byte",
+                file
+            );
+        }
         Ok(())
     }
 
     #[test]
-    fn pack_lean_default_omits_nbg_csr_from_unpacked_tree() -> Result<()> {
-        // The lean default drops nbg.csr from the container; an
-        // unpack of the lean container must therefore NOT restore a
-        // step3/nbg.csr file. This is the inverse of the opt-out
-        // test above and documents the operator-visible behaviour:
-        // lean packs cannot round-trip nbg.csr.
+    fn pack_lean_default_omits_the_never_read_sections_from_unpacked_tree() -> Result<()> {
+        // The lean default drops the never-read sections from the
+        // container; an unpack of the lean container must therefore NOT
+        // restore their files. This is the inverse of the opt-out test
+        // above and documents the operator-visible behaviour: lean packs
+        // cannot round-trip them.
         let tmp = synth_dir()?;
         let out = tmp.path().join("lean.butterfly");
         pack(tmp.path(), &out, None, None)?;
         let unpacked = tmp.path().join("lean-out");
         unpack(&out, &unpacked)?;
-        assert!(
-            !unpacked.join("step3/nbg.csr").exists(),
-            "lean unpack should not restore nbg.csr"
-        );
-        // But the other shared sections must still round-trip.
+        for (_, file) in OMITTED_SECTION_SOURCES {
+            assert!(
+                !unpacked.join(file).exists(),
+                "lean unpack should not restore {}",
+                file
+            );
+        }
+        // But the sections the serve path reads must still round-trip.
+        assert!(unpacked.join("step1/ways.raw").exists());
         assert!(unpacked.join("step3/nbg.geo").exists());
         assert!(unpacked.join("step3/nbg.node_map").exists());
+        Ok(())
+    }
+
+    /// The lean container differs from the full one by EXACTLY the
+    /// documented omissions — every other section is byte-identical.
+    /// This is the guard rail: a future edit that trims one more section
+    /// has to come here and say so.
+    #[test]
+    fn lean_and_full_packs_differ_only_by_the_documented_omissions() -> Result<()> {
+        let tmp = synth_dir()?;
+        let lean_out = tmp.path().join("lean.butterfly");
+        let full_out = tmp.path().join("full.butterfly");
+        pack(tmp.path(), &lean_out, None, None)?;
+        pack_with_options(
+            tmp.path(),
+            &full_out,
+            None,
+            None,
+            PackOptions { lean: false },
+        )?;
+        let lean = Container::open(&lean_out)?;
+        let full = Container::open(&full_out)?;
+
+        let mut missing: Vec<&str> = full
+            .sections
+            .iter()
+            .filter(|s| lean.get(&s.name).is_none())
+            .map(|s| s.name.as_str())
+            .collect();
+        missing.sort_unstable();
+        let mut expected: Vec<&str> = LEAN_OMITTED_SECTIONS
+            .iter()
+            .copied()
+            .filter(|n| full.get(n).is_some())
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(missing, expected, "lean dropped an undocumented section");
+
+        // Nothing appears in lean that is absent from full.
+        for s in &lean.sections {
+            assert!(
+                full.get(&s.name).is_some(),
+                "lean pack invented section {}",
+                s.name
+            );
+        }
+
+        // Every kept section is byte-identical. (The fixture's nbg.geo
+        // is not a parseable image, so the flat edge_geom sections are
+        // skipped and nbg.geo is packed whole in both — the edges-only
+        // trim has its own test.)
+        for s in &lean.sections {
+            let f = full.get(&s.name).unwrap();
+            assert_eq!(
+                lean.read_section_verified(&lean_out, s)?,
+                full.read_section_verified(&full_out, f)?,
+                "section {} differs between the lean and full packs",
+                s.name
+            );
+        }
+        Ok(())
+    }
+
+    /// Write a small but REAL `step3/nbg.geo` over the fixture's
+    /// placeholder, so `pack_edge_geometry` succeeds and the edges-only
+    /// trim (#579) actually engages. Returns the source geometry.
+    fn write_real_nbg_geo(root: &Path) -> Result<crate::formats::NbgGeo> {
+        use crate::formats::nbg_geo::{NbgEdge, NbgGeo, PolyLine};
+        let edges = vec![
+            NbgEdge {
+                u_node: 0,
+                v_node: 1,
+                length_mm: 1234,
+                bearing_deci_deg: 900,
+                n_poly_pts: 4,
+                poly_off: 0,
+                first_osm_way_id: 7,
+                flags: 0,
+            },
+            NbgEdge {
+                u_node: 1,
+                v_node: 2,
+                length_mm: 4321,
+                bearing_deci_deg: 1800,
+                n_poly_pts: 2,
+                poly_off: 32,
+                first_osm_way_id: 8,
+                flags: 2,
+            },
+        ];
+        let polylines = vec![
+            PolyLine {
+                lat_fxp: vec![508_503_000, 508_513_000, 508_523_000, 508_533_000],
+                lon_fxp: vec![43_517_000, 43_527_000, 43_537_000, 43_547_000],
+            },
+            PolyLine {
+                lat_fxp: vec![508_533_000, 508_543_000],
+                lon_fxp: vec![43_547_000, 43_557_000],
+            },
+        ];
+        let geo = NbgGeo {
+            n_edges_und: edges.len() as u64,
+            edges,
+            polylines,
+        };
+        NbgGeoFile::write(root.join("step3").join("nbg.geo"), &geo)?;
+        Ok(geo)
+    }
+
+    /// #579: with the flat `edge_geom_*` sections in the container, the
+    /// lean pack carries `nbg.geo`'s edge array alone — same edges, no
+    /// polyline body.
+    #[test]
+    fn lean_pack_writes_nbg_geo_edges_only_when_flat_geometry_is_present() -> Result<()> {
+        let tmp = synth_dir()?;
+        let src = write_real_nbg_geo(tmp.path())?;
+        let file_len = fs::metadata(tmp.path().join("step3/nbg.geo"))?.len();
+
+        let lean_out = tmp.path().join("lean.butterfly");
+        pack(tmp.path(), &lean_out, None, None)?;
+        let lean = Container::open(&lean_out)?;
+
+        // The trim is only legal because these carry the vertices.
+        assert!(lean.get("shared/edge_geom_offsets").is_some());
+        assert!(lean.get("shared/edge_geom_points").is_some());
+
+        let sec = lean.get("shared/nbg.geo").expect("nbg.geo section");
+        // 6 vertices × 8 bytes of polyline body dropped.
+        assert_eq!(
+            file_len - sec.len,
+            48,
+            "edges-only must drop exactly the polyline body"
+        );
+
+        // Same edges, field for field — the serve path sees no change.
+        let bytes = lean.read_section_verified(&lean_out, sec)?;
+        let packed = NbgGeoFile::read_edges_only_from_bytes(&bytes)?;
+        assert_eq!(packed.n_edges_und, src.n_edges_und);
+        for (a, b) in packed.edges.iter().zip(src.edges.iter()) {
+            assert_eq!(a.u_node, b.u_node);
+            assert_eq!(a.v_node, b.v_node);
+            assert_eq!(a.length_mm, b.length_mm);
+            assert_eq!(a.bearing_deci_deg, b.bearing_deci_deg);
+            assert_eq!(a.n_poly_pts, b.n_poly_pts);
+            assert_eq!(a.poly_off, b.poly_off);
+            assert_eq!(a.first_osm_way_id, b.first_osm_way_id);
+            assert_eq!(a.flags, b.flags);
+        }
+        // And a full read refuses rather than reporting no geometry.
+        assert!(NbgGeoFile::read_from_bytes(&bytes).is_err());
+
+        // The escape hatch keeps the file verbatim.
+        let full_out = tmp.path().join("full.butterfly");
+        pack_with_options(
+            tmp.path(),
+            &full_out,
+            None,
+            None,
+            PackOptions { lean: false },
+        )?;
+        let full = Container::open(&full_out)?;
+        let full_sec = full.get("shared/nbg.geo").expect("nbg.geo section");
+        assert_eq!(full_sec.len, file_len, "lean:false must pack nbg.geo whole");
+        assert_eq!(
+            full.read_section_verified(&full_out, full_sec)?,
+            fs::read(tmp.path().join("step3/nbg.geo"))?
+        );
+        Ok(())
+    }
+
+    /// Without the flat sections there is nowhere else to get the
+    /// vertices from, so `nbg.geo` must stay whole even under lean.
+    #[test]
+    fn lean_pack_keeps_nbg_geo_whole_without_flat_geometry() -> Result<()> {
+        // The fixture's `nbg.geo` is a byte-string placeholder:
+        // `pack_edge_geometry` cannot parse it, so no flat sections are
+        // emitted — the same situation as a pre-#155 step3 tree.
+        let tmp = synth_dir()?;
+        let out = tmp.path().join("lean.butterfly");
+        pack(tmp.path(), &out, None, None)?;
+        let c = Container::open(&out)?;
+        assert!(c.get("shared/edge_geom_points").is_none());
+        let sec = c.get("shared/nbg.geo").expect("nbg.geo section");
+        assert_eq!(
+            c.read_section_verified(&out, sec)?,
+            fs::read(tmp.path().join("step3/nbg.geo"))?,
+            "without flat geometry, nbg.geo must be packed whole"
+        );
         Ok(())
     }
 
