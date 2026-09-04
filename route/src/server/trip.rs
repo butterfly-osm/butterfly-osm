@@ -908,22 +908,13 @@ pub async fn trip_handler(
             // check on pathological tours where many legs straddle
             // disconnected fragments.
             const MAX_FALLBACK_COMBOS: usize = super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS;
-            let combo_enum = |k_src: usize, k_dst: usize| -> Vec<(usize, usize)> {
-                let mut order = Vec::new();
-                for sum in 0..(k_src + k_dst) {
-                    for i in 0..k_src {
-                        if let Some(j) = sum.checked_sub(i)
-                            && j < k_dst
-                        {
-                            order.push((i, j));
-                        }
-                    }
-                }
-                if order.len() > MAX_FALLBACK_COMBOS {
-                    order.truncate(MAX_FALLBACK_COMBOS);
-                }
-                order
-            };
+
+            // #567: /trip has no drive-time bound of its own, so it asks the
+            // shared escalation for the unbounded rule. The bounded rule
+            // (recover a cell only when its travel time is ≤ the bound) now
+            // lives in one place with it, so a future /trip bound cannot
+            // silently skip the gate the way this hand-rolled copy did.
+            const FALLBACK_THRESHOLD_S: Option<u32> = None;
 
             // Detect whether any cell needs the fallback.
             let any_dur_inf = duration_matrix.contains(&u32::MAX);
@@ -1049,36 +1040,24 @@ pub async fn trip_handler(
                     .map(|&(i, j, dur_missing, dist_missing)| {
                         let src_cands = &candidates[i];
                         let dst_cands = &candidates[j];
-                        let order = combo_enum(src_cands.len(), dst_cands.len());
-                        let mut dur_done = !dur_missing;
-                        let mut dist_done = !dist_missing;
-                        let mut dur_val = u32::MAX;
-                        let mut dist_val = u32::MAX;
-                        for &(ci, cj) in &order {
-                            let s_rank = src_cands[ci];
-                            let d_rank = dst_cands[cj];
-                            if s_rank == d_rank {
-                                continue;
-                            }
-                            if !dur_done
-                                && let Some(tq) = time_q
-                                && let Some(r) = tq.query(s_rank, d_rank)
-                            {
-                                dur_val = r.distance;
-                                dur_done = true;
-                            }
-                            if !dist_done
-                                && let Some(dq) = dist_q
-                                && let Some(r) = dq.query(s_rank, d_rank)
-                            {
-                                dist_val = r.distance;
-                                dist_done = true;
-                            }
-                            if dur_done && dist_done {
-                                break;
-                            }
-                        }
-                        (i, j, dur_val, dist_val)
+                        // Shared #197 escalation (#567) — the same helper
+                        // /table's fallback runs, bounded rule included.
+                        let cell = super::snap_kbest::cell_with_kbest_fallback(
+                            time_q,
+                            dist_q,
+                            src_cands,
+                            dst_cands,
+                            dur_missing,
+                            dist_missing,
+                            FALLBACK_THRESHOLD_S,
+                            MAX_FALLBACK_COMBOS,
+                        );
+                        (
+                            i,
+                            j,
+                            cell.time.unwrap_or(u32::MAX),
+                            cell.distance.unwrap_or(u32::MAX),
+                        )
                     })
                     .collect();
 
