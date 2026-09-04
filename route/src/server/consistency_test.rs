@@ -1473,10 +1473,10 @@ fn test_197_directional_snap_asymmetry_reproducer() {
 
         let from_snap = state
             .snap_index
-            .snap_with_info_filtered_role(from.0, from.1, mode.0, None, from_role)?;
+            .snap_with_info_filtered_role(from.0, from.1, mode.0, None, from_role, None)?;
         let to_snap = state
             .snap_index
-            .snap_with_info_filtered_role(to.0, to.1, mode.0, None, to_role)?;
+            .snap_with_info_filtered_role(to.0, to.1, mode.0, None, to_role, None)?;
         let from_rank = mode_data.rank_for_original(from_snap.0)?;
         let to_rank = mode_data.rank_for_original(to_snap.0)?;
         let q = CchQuery::new(&mode_data);
@@ -1567,11 +1567,11 @@ fn test_197_unfiltered_snap_still_demonstrates_bug() {
 
     let from_snap = state
         .snap_index
-        .snap_with_info_filtered_role(src.0, src.1, mode.0, None, None)
+        .snap_with_info_filtered_role(src.0, src.1, mode.0, None, None, None)
         .expect("source snap must succeed");
     let to_snap = state
         .snap_index
-        .snap_with_info_filtered_role(dst.0, dst.1, mode.0, None, None)
+        .snap_with_info_filtered_role(dst.0, dst.1, mode.0, None, None, None)
         .expect("destination snap must succeed");
 
     let from_rank = mode_data
@@ -1606,6 +1606,7 @@ fn test_197_unfiltered_snap_still_demonstrates_bug() {
             mode.0,
             None,
             SnapRole::Dst.role_filter(&mode_data),
+            None,
         )
         .expect("dst-role snap must succeed");
     let to_rank_dst = mode_data
