@@ -561,9 +561,9 @@ impl SeedExpansion {
     }
 }
 
-/// #506: seeded PHAST init `(seeds, exact snapped anchor)` for a center.
-/// #506/#544: multi-seed PHAST init `(seeds, shift, exact snapped anchor)`
-/// for an isochrone/catchment center.
+/// #506/#544: seeded PHAST init for a center — `(seeds, shift, exact
+/// snapped anchor)`. The anchor is the #497 contour anchor; the shift is
+/// the arrive field's seed offset (0 for depart).
 pub type CenterSeeds = (Vec<(u32, u32)>, u32, Option<(f64, f64)>);
 
 /// #506: multi-seed PHAST init for an isochrone/catchment center.
@@ -587,6 +587,7 @@ pub type CenterSeeds = (Vec<(u32, u32)>, u32, Option<(f64, f64)>);
 /// `T − w(seed edge)` isochrone. On a rural motorway snap that is tens of
 /// seconds — the under-reach #544 was opened for.
 ///
+/// Returns the seeds, that shift, and the exact snapped point.
 /// Falls back to a single zero-cost seed at `fallback_rank` when no phantom
 /// end can be built (isolated candidates, filtered edges).
 #[allow(clippy::too_many_arguments)]
