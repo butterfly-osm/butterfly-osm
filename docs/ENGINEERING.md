@@ -174,9 +174,7 @@ BUTTERFLY_REFS_DIR=/data/reference-trips python3 bench/postdeploy_gate.py --base
 
 Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` (fmt, clippy with
 warnings as errors, `cargo test --workspace`, the upstream-clean guard, the gate's
-`py_compile` + `--list-gates` smoke); `scripts/hooks/install.sh` installs the hook.
-`cargo fmt --check`, clippy with all targets and features, workspace build, then
-the `butterfly-route` / `butterfly-dl` / `butterfly-common` tests. Skip it with
+`py_compile` + `--list-gates` smoke); `scripts/hooks/install.sh` installs the hook. Skip it with
 `BUTTERFLY_NO_VERIFY=1` in emergencies only. Belgium is the only test dataset —
 do not add fixtures for other regions.
 
