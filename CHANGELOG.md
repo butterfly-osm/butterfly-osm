@@ -10,6 +10,38 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — One atomic file per cached recustomization pass (#571)
+
+The boot recustomization cache was ONE file grown by append, and nearly all
+of its machinery existed only to make a concurrent or interrupted append
+survivable: a frame scan, torn-tail truncation before every write, a
+maximum-section bound, a key-seeded section CRC, and realignment on the
+declared frame boundary after a bad parse.
+
+- **One file per section**, `recustomize.car.edge.<key>.<base>.<id>.bin`,
+  written to a scratch name and `rename`d into place. POSIX rename is atomic,
+  so a reader sees a whole section or no file — a torn section is
+  structurally impossible, and the five mechanisms above go with it (−230
+  lines of framing). Superseded keys, their orphan scratch files and the
+  pre-#571 append file are unlinked once per boot.
+- **Every guard kept.** The payload CRC stays (rename says nothing about
+  bit-rot on a network volume) and now covers the header too; `ensure_fits`
+  stays and is strictly tighter, bounding allocations by the file's REAL size
+  instead of a length the file declares about itself; the #552 storage width
+  still round-trips; and the #563 rule that a section is served only to a
+  pass whose base weights are byte-identical is now enforced by the file NAME
+  *and* the CRC-covered header rather than by seeding the section checksum.
+  Any problem reading a section still means "recompute", never a failure.
+- **Two properties the append design made hard to test** are now unit tests:
+  five writers racing on the same three sections all succeed and all read
+  back (`concurrent_writers_do_not_make_each_other_recompute`), and a killed
+  writer's half-file is never readable as a section and is swept when the key
+  moves on (`an_interrupted_write_leaves_no_half_file`). The cold-boot ==
+  warm-boot pipeline test, its cache-hit counter and the band-ordering test
+  are unchanged.
+- **Cache tag bumped** `recustomize-car-edge-v7` → `v8`: the key derivation
+  changed shape, so the first boot after this change recomputes.
+
 ### 2026-09-04 — One weight plan for the six query surfaces (#566, #561)
 
 `/route`, `/table`, `/trip`, `/isochrone`, `/isochrone/bulk` and `/match` each
