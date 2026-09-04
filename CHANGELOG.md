@@ -10,6 +10,65 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — Build, images and the dependency graph (#565, #573, #574, #586)
+
+Four KISS-audit tickets that all landed on the same surface: what it costs to
+build this repo, and what ships in the images.
+
+- **#565 — a failed dependency layer can no longer look green.** Both
+  Dockerfiles pre-built dependencies with
+  `cargo build --release … 2>/dev/null || true`. The `|| true` swallowed the
+  failure, so a broken cache passed and only blew up later, in the real build,
+  with a confusing error — or, worse, succeeded against stale deps. The
+  dummy-source trick is gone entirely: BuildKit cache mounts over the cargo
+  registry, the vendored checkouts and `target/` do the caching, and nothing
+  swallows an error.
+- **#573 — one multi-target `Dockerfile`.** A shared `builder` stage feeds a
+  `tools` stage and a `runtime` stage; `runtime` is last, so a bare
+  `docker build .` still produces the serving image and
+  `docker build --target tools .` produces the pipeline image. Building both
+  now compiles the workspace ONCE instead of twice. `Dockerfile.tools`
+  survives one more release as a *generated* shim
+  (`scripts/gen-dockerfile-tools.sh`, verified by CI) so external tooling that
+  still passes `-f Dockerfile.tools` keeps working and cannot drift.
+- **#573 — stripped release binary, without losing the backtrace.**
+  `[profile.release] strip = "symbols"` takes `butterfly-route` from 55.6 MB
+  to 48.0 MB and `butterfly-dl` from 12.6 MB to 10.3 MB. Panic location,
+  panic message and anyhow context chains are unaffected — they are static
+  string data, not symbols; only symbol NAMES in a `RUST_BACKTRACE` dump are,
+  so `[profile.release-debug]` (same optimisation, symbols kept) is there when
+  you need them. `--version` now exists on the CLI, because a stripped binary
+  needs a way to say which build it is.
+- **#573 — no `curl` in the serving image, and the healthcheck stays.** curl
+  existed for exactly one reason: the Dockerfile `HEALTHCHECK`. It is replaced
+  by `butterfly-route healthcheck [--url] [--timeout-secs]`, a
+  dependency-free HTTP/1.1 probe over `TcpStream` that exits 0 on 2xx.
+  `docker run`, Compose and Swarm keep the liveness signal they had;
+  Kubernetes keeps ignoring it in favour of its own `httpGet` probe; libcurl
+  and ~10 transitive libraries — and their CVE stream — leave the image.
+- **#574 — the GTFS-RT protobuf toolchain is vendored, not built.**
+  `gtfs-rt 0.5` dragged a whole second protobuf stack — prost 0.11,
+  prost-derive, prost-types, prost-build, prettyplease 0.1, heck 0.4,
+  itertools 0.10, petgraph, multimap, fixedbitset — alongside the prost 0.14
+  already in the graph, and `prost-build` was the ONLY reason `protoc` was a
+  build dependency (a CI step plus `protobuf-compiler` in both images). The
+  bindings are now generated once with prost 0.14 and committed next to the
+  `.proto` (`route/src/transit/gtfs_realtime.rs`, `scripts/gen-gtfs-rt.sh`).
+  11 crates leave `Cargo.lock`, none join, and no protobuf compiler is needed
+  to build anything. `prost` is now single-version in the graph; `syn 1.0`
+  survives, but no longer for a protobuf reason — its one remaining consumer
+  is `gtfs-structures 0.47 -> derivative 2.2`, which upstream dropped in
+  gtfs-structures 0.49 (a separate bump, out of scope here). The guard is a
+  round-trip test over a recorded
+  `FeedMessage` fixture whose bytes were produced by the implementation being
+  replaced — an independent witness of the wire format: it decodes every
+  field and re-encodes byte-for-byte.
+- **#586 — the raw correctness-sweep JSONL is out of the tree.** 8.7 MB of the
+  9.5 MB `bench/` archive was three `results-*.jsonl` files every clone paid
+  for forever. The summaries, the top-disagreement tables and `REPORT.md` are
+  the conclusions and stay; `REPORT.md` now names the commit that holds the
+  raw data, and the command to get it back.
+
 ### 2026-09-04 — Post-deploy gate consolidation + CI runs the integration tests (#550, #555)
 
 The gate (`bench/postdeploy_gate.py`) no longer passes by accident:
