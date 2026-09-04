@@ -1303,7 +1303,7 @@ pub async fn isochrone_handler(
         use crate::range::wkb_stream::encode_polygon_wkb;
 
         let contour =
-            ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
+            ContourResult::from_topology(field.topologies.into_iter().next().unwrap_or_default());
         super::region_metrics::record_query(
             &region_id,
             "isochrone",
@@ -1780,7 +1780,7 @@ fn isochrone_bulk_sync(
                 },
             )
             .ok()?;
-            let contour = ContourResult::from_polygons(
+            let contour = ContourResult::from_topology(
                 field.topologies.into_iter().next().unwrap_or_default(),
             );
 

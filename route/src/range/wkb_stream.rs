@@ -61,60 +61,29 @@ pub fn ensure_cw(ring: &mut [(f64, f64)]) {
 
 /// Encode a contour as WKB (Well-Known Binary).
 ///
-/// A single component encodes as a Polygon (type 3) with its holes; a
-/// disconnected reachable set (`extra` non-empty) encodes as a MultiPolygon
-/// (type 6), primary polygon first. Outer rings are normalized to CCW
-/// (RFC 7946), holes to CW. Returns None if the contour is empty.
+/// Always a Polygon (type 3) with exactly ONE ring, normalized to CCW
+/// (RFC 7946) and closed: the served contour is one simple polygon by type
+/// (#570), so there is no hole ring and no MultiPolygon shape to encode.
+/// Returns None if the contour is empty.
 pub fn encode_polygon_wkb(contour: &ContourResult) -> Option<Vec<u8>> {
-    if contour.outer_ring.is_empty() {
+    if contour.ring.is_empty() {
         return None;
     }
-    if contour.extra.is_empty() {
-        return encode_single_polygon_wkb(&contour.outer_ring, &contour.holes);
-    }
-    let parts: Vec<Vec<u8>> = contour
-        .polygons()
-        .filter(|p| p.outer.len() >= 3)
-        .filter_map(|p| encode_single_polygon_wkb(&p.outer, &p.holes))
-        .collect();
-    let mut buf = Vec::with_capacity(9 + parts.iter().map(|p| p.len()).sum::<usize>());
-    buf.push(1u8); // little-endian
-    buf.write_all(&6u32.to_le_bytes()).ok()?; // MultiPolygon
-    buf.write_all(&(parts.len() as u32).to_le_bytes()).ok()?;
-    for p in parts {
-        buf.extend_from_slice(&p);
-    }
-    Some(buf)
-}
+    let mut ring = contour.ring.clone();
 
-fn encode_single_polygon_wkb(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<Vec<u8>> {
-    if outer.is_empty() {
-        return None;
-    }
-    let contour_holes = holes;
-    let n_rings = 1 + contour_holes.len();
-    let mut outer_ring = outer.to_vec();
-
-    // Normalize outer ring to CCW
-    ensure_ccw(&mut outer_ring);
+    // Normalize to CCW
+    ensure_ccw(&mut ring);
 
     // Ensure ring is closed (first point == last point)
-    if let (Some(first), Some(last)) = (outer_ring.first(), outer_ring.last())
+    if let (Some(first), Some(last)) = (ring.first(), ring.last())
         && first != last
     {
-        outer_ring.push(*first);
-    }
-
-    // Calculate buffer size
-    let mut total_points = outer_ring.len();
-    for hole in contour_holes {
-        total_points += hole.len() + 1; // +1 for closing point
+        ring.push(*first);
     }
 
     // WKB header: 1 (byte order) + 4 (type) + 4 (num_rings)
-    // Each ring: 4 (num_points) + n_points * 16 (x,y as f64)
-    let buf_size = 1 + 4 + 4 + (n_rings * 4) + (total_points * 16);
-    let mut buf = Vec::with_capacity(buf_size);
+    // The ring: 4 (num_points) + n_points * 16 (x,y as f64)
+    let mut buf = Vec::with_capacity(1 + 4 + 4 + 4 + ring.len() * 16);
 
     // Byte order: 1 = little-endian
     buf.push(1u8);
@@ -122,32 +91,13 @@ fn encode_single_polygon_wkb(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) ->
     // Type: 3 = Polygon
     buf.write_all(&3u32.to_le_bytes()).ok()?;
 
-    // Number of rings
-    buf.write_all(&(n_rings as u32).to_le_bytes()).ok()?;
+    // Number of rings: exactly one
+    buf.write_all(&1u32.to_le_bytes()).ok()?;
 
-    // Write outer ring
-    buf.write_all(&(outer_ring.len() as u32).to_le_bytes())
-        .ok()?;
-    for &(lon, lat) in &outer_ring {
+    buf.write_all(&(ring.len() as u32).to_le_bytes()).ok()?;
+    for &(lon, lat) in &ring {
         buf.write_all(&lon.to_le_bytes()).ok()?;
         buf.write_all(&lat.to_le_bytes()).ok()?;
-    }
-
-    // Write holes (CW orientation per convention)
-    for hole in contour_holes {
-        let mut closed_hole = hole.clone();
-        ensure_cw(&mut closed_hole);
-        if let (Some(first), Some(last)) = (closed_hole.first(), closed_hole.last())
-            && first != last
-        {
-            closed_hole.push(*first);
-        }
-        buf.write_all(&(closed_hole.len() as u32).to_le_bytes())
-            .ok()?;
-        for &(lon, lat) in &closed_hole {
-            buf.write_all(&lon.to_le_bytes()).ok()?;
-            buf.write_all(&lat.to_le_bytes()).ok()?;
-        }
     }
 
     Some(buf)
@@ -176,7 +126,7 @@ impl IsochroneRecord {
             origin_id,
             threshold_s,
             wkb,
-            n_vertices: contour.outer_ring.len() as u32,
+            n_vertices: contour.ring.len() as u32,
             elapsed_us: contour.stats.elapsed_ms * 1000,
         })
     }
@@ -310,9 +260,7 @@ mod tests {
     fn test_wkb_triangle() {
         // Create a simple triangle
         let contour = ContourResult {
-            outer_ring: vec![(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)],
-            holes: vec![],
-            extra: vec![],
+            ring: vec![(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)],
             stats: Default::default(),
         };
 
@@ -330,9 +278,7 @@ mod tests {
     #[test]
     fn test_empty_polygon() {
         let contour = ContourResult {
-            outer_ring: vec![],
-            holes: vec![],
-            extra: vec![],
+            ring: vec![],
             stats: Default::default(),
         };
 
@@ -376,14 +322,12 @@ mod tests {
     fn test_wkb_determinism() {
         // Same input twice should produce identical WKB bytes
         let contour = ContourResult {
-            outer_ring: vec![
+            ring: vec![
                 (4.3517, 50.8503),
                 (4.4017, 50.8503),
                 (4.4017, 50.8803),
                 (4.3517, 50.8803),
             ],
-            holes: vec![],
-            extra: vec![],
             stats: Default::default(),
         };
 
@@ -401,9 +345,7 @@ mod tests {
             "input ring must be CW for this test"
         );
         let contour = ContourResult {
-            outer_ring: cw_ring,
-            holes: vec![],
-            extra: vec![],
+            ring: cw_ring,
             stats: Default::default(),
         };
 

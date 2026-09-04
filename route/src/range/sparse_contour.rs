@@ -643,9 +643,7 @@ impl From<SparseContourResult> for ContourResult {
     fn from(sparse: SparseContourResult) -> Self {
         let st = sparse.stats;
         ContourResult {
-            outer_ring: sparse.ring,
-            holes: vec![],
-            extra: vec![], // one simple polygon by definition (#542)
+            ring: sparse.ring,
             stats: ContourStats {
                 input_segments: st.input_segments,
                 grid_cols: 0,
@@ -1830,9 +1828,7 @@ mod tests {
     /// WKB geometry type and ring count of the SERVED contour.
     fn wkb_shape(ring: &[(f64, f64)]) -> (u32, u32) {
         let wkb = super::super::wkb_stream::encode_polygon_wkb(&ContourResult {
-            outer_ring: ring.to_vec(),
-            holes: vec![],
-            extra: vec![],
+            ring: ring.to_vec(),
             stats: Default::default(),
         })
         .expect("the served contour must encode to WKB");

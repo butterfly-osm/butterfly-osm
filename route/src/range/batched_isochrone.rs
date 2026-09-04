@@ -165,7 +165,7 @@ impl BatchedIsochroneEngine {
 
         // Compute average vertices
         if !contours.is_empty() {
-            let total_verts: usize = contours.iter().map(|c| c.outer_ring.len()).sum();
+            let total_verts: usize = contours.iter().map(|c| c.ring.len()).sum();
             stats.avg_vertices = total_verts / contours.len();
         }
 
@@ -355,13 +355,13 @@ pub fn export_batch_geojson_collection(
     let mut features = Vec::new();
 
     for (i, contour) in contours.iter().enumerate() {
-        if contour.outer_ring.is_empty() {
+        if contour.ring.is_empty() {
             continue;
         }
 
         // Build coordinates array
         let coords: Vec<String> = contour
-            .outer_ring
+            .ring
             .iter()
             .map(|(lon, lat)| format!("[{:.6}, {:.6}]", lon, lat))
             .collect();
@@ -381,7 +381,7 @@ pub fn export_batch_geojson_collection(
       }}
     }}"#,
             origin_id,
-            contour.outer_ring.len(),
+            contour.ring.len(),
             coords.join(", ")
         ));
     }

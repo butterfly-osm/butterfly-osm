@@ -259,7 +259,7 @@ pub fn isochrone_hull(
         Err(_) => return Vec::new(),
     };
     let contour =
-        ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
+        ContourResult::from_topology(field.topologies.into_iter().next().unwrap_or_default());
 
     encode_polygon_wkb(&contour).unwrap_or_default()
 }
