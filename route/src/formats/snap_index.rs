@@ -167,22 +167,6 @@ impl SnapPointsFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures that
-    /// leak a `Box<[u8]>`). Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct so the
-    /// mapping can actually be reclaimed (#296).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapPoints> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee the bytes are
-    /// already verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapPoints> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases. Once all clones drop, the
@@ -233,31 +217,6 @@ impl SnapPointsFile {
             bbox_max_lat,
             cell_log2,
             points,
-        })
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapPoints> {
-        let parsed = parse_snap_points_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            parsed.body.as_ptr() as usize % std::mem::align_of::<PackedPoint>(),
-            0,
-            "snap_points body must be aligned for PackedPoint"
-        );
-        let pts: &'static [PackedPoint] = bytemuck::cast_slice(parsed.body);
-        // Test fixtures use this path — wrap the Vec'd copy in
-        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
-        // means the caller leaked the buffer (typically `Box::leak` in
-        // a `#[cfg(test)]` block); we don't carry that leak into
-        // production storage. Production goes through
-        // [`Self::read_from_mmap_unverified`].
-        Ok(SnapPoints {
-            n_points: parsed.n_points,
-            bbox_min_lon: parsed.bbox_min_lon,
-            bbox_min_lat: parsed.bbox_min_lat,
-            bbox_max_lon: parsed.bbox_max_lon,
-            bbox_max_lat: parsed.bbox_max_lat,
-            cell_log2: parsed.cell_log2,
-            points: ArcCow::from_vec(pts.to_vec()),
         })
     }
 }
@@ -493,21 +452,6 @@ impl SnapGridFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures).
-    /// Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapGrid> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee the bytes are
-    /// already verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapGrid> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases.
@@ -568,27 +512,6 @@ impl SnapGridFile {
             origin_y,
             cell_log2,
             offsets,
-        })
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapGrid> {
-        let parsed = parse_snap_grid_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            parsed.body.as_ptr() as usize % 4,
-            0,
-            "snap_grid body must be 4-byte aligned"
-        );
-        let off_slice: &'static [u32] = bytemuck::cast_slice(parsed.body);
-        // Test fixtures use this path — copy through `ArcCow::Owned`.
-        // The `'static` lifetime means the caller leaked the buffer;
-        // we don't carry that leak into production storage.
-        Ok(SnapGrid {
-            n_cells_x: parsed.n_cells_x,
-            n_cells_y: parsed.n_cells_y,
-            origin_x: parsed.origin_x,
-            origin_y: parsed.origin_y,
-            cell_log2: parsed.cell_log2,
-            offsets: ArcCow::from_vec(off_slice.to_vec()),
         })
     }
 }
@@ -747,21 +670,6 @@ impl SnapMaskFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures).
-    /// Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<SnapMask> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee bytes are already
-    /// verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<SnapMask> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases.
@@ -796,23 +704,6 @@ impl SnapMaskFile {
             n_points,
             inputs_sha,
             bits,
-        })
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<SnapMask> {
-        let parsed = parse_snap_mask_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            parsed.body.as_ptr() as usize % 8,
-            0,
-            "snap_mask body must be 8-byte aligned"
-        );
-        let bits: &'static [u64] = bytemuck::cast_slice(parsed.body);
-        // Test fixtures use this path — copy through `ArcCow::Owned`.
-        Ok(SnapMask {
-            mode: parsed.mode,
-            n_points: parsed.n_points,
-            inputs_sha: parsed.inputs_sha,
-            bits: ArcCow::from_vec(bits.to_vec()),
         })
     }
 }
@@ -995,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn snap_points_zero_copy_matches_owned() {
+    fn snap_points_mmap_matches_owned() -> Result<()> {
         let pts = sample_points();
         let original = SnapPoints {
             n_points: pts.len() as u32,
@@ -1007,14 +898,21 @@ mod tests {
             points: ArcCow::from_vec(pts.clone()),
         };
         let bytes = SnapPointsFile::encode(&original);
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let owned = SnapPointsFile::read_from_bytes(leaked).expect("owned");
-        let zc = SnapPointsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.points.as_slice(), zc.points.as_slice());
-        // Legacy zero-copy path now copies into `ArcCow::Owned`. The
-        // true zero-copy production path is
-        // `read_from_mmap_unverified`, exercised in a separate test.
-        assert!(matches!(zc.points, ArcCow::Owned(_)));
+        let owned = SnapPointsFile::read_from_bytes(&bytes).expect("owned");
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let mapped = SnapPointsFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        assert_eq!(owned.points.as_slice(), mapped.points.as_slice());
+        // The production reader is genuinely zero-copy: the points
+        // borrow the mapping and keep it alive.
+        assert!(matches!(mapped.points, ArcCow::Mmap { .. }));
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        drop(mapped);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
     }
 
     #[test]
@@ -1079,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn snap_grid_zero_copy() {
+    fn snap_grid_mmap_zero_copy() -> Result<()> {
         let n_cells_x = 4u32;
         let n_cells_y = 3u32;
         let offsets: Vec<u32> = (0..=(n_cells_x * n_cells_y)).collect();
@@ -1092,12 +990,22 @@ mod tests {
             offsets: ArcCow::from_vec(offsets.clone()),
         };
         let bytes = SnapGridFile::encode(&original);
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let zc = SnapGridFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(zc.offsets.as_slice(), offsets.as_slice());
-        // Legacy zero-copy path copies into `ArcCow::Owned`; true
-        // zero-copy goes through `read_from_mmap_unverified`.
-        assert!(matches!(zc.offsets, ArcCow::Owned(_)));
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let mapped = SnapGridFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        assert_eq!(mapped.offsets.as_slice(), offsets.as_slice());
+        assert_eq!(mapped.n_cells_x, n_cells_x);
+        assert_eq!(mapped.n_cells_y, n_cells_y);
+        assert_eq!(mapped.cell_log2, 17);
+        // Uncompressed sections stay borrowed from the mapping.
+        assert!(matches!(mapped.offsets, ArcCow::Mmap { .. }));
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        drop(mapped);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
     }
 
     #[test]
@@ -1132,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn snap_mask_zero_copy() {
+    fn snap_mask_mmap_zero_copy() -> Result<()> {
         let n_points = 256u32;
         let n_words = (n_points as usize).div_ceil(64);
         let bits: Vec<u64> = (0..n_words as u64)
@@ -1145,12 +1053,20 @@ mod tests {
             bits: ArcCow::from_vec(bits.clone()),
         };
         let bytes = SnapMaskFile::encode(&original);
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let zc = SnapMaskFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(zc.bits.as_slice(), bits.as_slice());
-        // Legacy zero-copy path copies into `ArcCow::Owned`; true
-        // zero-copy goes through `read_from_mmap_unverified`.
-        assert!(matches!(zc.bits, ArcCow::Owned(_)));
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let mapped = SnapMaskFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        assert_eq!(mapped.bits.as_slice(), bits.as_slice());
+        assert_eq!(mapped.mode, 3);
+        assert_eq!(mapped.n_points, n_points);
+        assert!(matches!(mapped.bits, ArcCow::Mmap { .. }));
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        drop(mapped);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
     }
 
     #[test]

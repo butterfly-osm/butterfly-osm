@@ -200,31 +200,6 @@ impl EbgCsrFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures that
-    /// leak a `Box<[u8]>`). Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct.
-    ///
-    /// Layout (#152):
-    ///   header(64) | offsets((n_nodes+1) × u64)
-    ///             | heads(n_arcs × u32)
-    ///             | turn_idx(n_arcs × u32)
-    ///             | footer(16)
-    ///
-    /// The 64-byte header keeps the offsets u64 array aligned. The
-    /// heads/turn_idx u32 arrays only need 4-byte alignment which
-    /// any cursor reaches naturally.
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EbgCsr> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
-    /// internal CRC walk over the body. Caller MUST guarantee the
-    /// bytes have been verified upstream (e.g. via `LazyContainer`).
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EbgCsr> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases. Once all clones drop, the
@@ -302,87 +277,10 @@ impl EbgCsrFile {
             turn_idx,
         })
     }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgCsr> {
-        anyhow::ensure!(
-            bytes.len() >= HEADER_LEN + FOOTER_LEN,
-            "ebg.csr too short for header+footer: {} bytes",
-            bytes.len()
-        );
-        debug_assert_eq!(
-            bytes.as_ptr() as usize % 8,
-            0,
-            "ebg.csr section start must be 8-byte aligned"
-        );
-
-        let (n_nodes, n_arcs, created_unix, inputs_sha) = parse_header(bytes)?;
-        let header = &bytes[..HEADER_LEN];
-
-        let n_offsets = (n_nodes as usize)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("ebg.csr offsets count overflow"))?;
-        let n_arcs_us =
-            usize::try_from(n_arcs).map_err(|_| anyhow::anyhow!("ebg.csr n_arcs > usize::MAX"))?;
-
-        let offsets_len = n_offsets
-            .checked_mul(8)
-            .ok_or_else(|| anyhow::anyhow!("ebg.csr offsets size overflow"))?;
-        let heads_len = n_arcs_us
-            .checked_mul(4)
-            .ok_or_else(|| anyhow::anyhow!("ebg.csr heads size overflow"))?;
-        let turn_len = heads_len;
-
-        let off_start = HEADER_LEN;
-        let off_end = off_start + offsets_len;
-        let heads_end = off_end + heads_len;
-        let turn_end = heads_end + turn_len;
-        anyhow::ensure!(
-            bytes.len() == turn_end + FOOTER_LEN,
-            "ebg.csr length mismatch: declared {}, expected body+footer {}",
-            bytes.len(),
-            turn_end + FOOTER_LEN
-        );
-
-        let offsets_slice: &[u64] = bytemuck::cast_slice(&bytes[off_start..off_end]);
-        let heads_slice: &[u32] = bytemuck::cast_slice(&bytes[off_end..heads_end]);
-        let turn_slice: &[u32] = bytemuck::cast_slice(&bytes[heads_end..turn_end]);
-
-        // CRC over header + body
-        if verify {
-            let mut crc_digest = crc::Digest::new();
-            crc_digest.update(header);
-            crc_digest.update(&bytes[off_start..turn_end]);
-            let computed = crc_digest.finalize();
-            let footer = &bytes[turn_end..turn_end + FOOTER_LEN];
-            let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-            anyhow::ensure!(
-                computed == stored,
-                "CRC64 mismatch in ebg.csr: computed 0x{:016X}, stored 0x{:016X}",
-                computed,
-                stored
-            );
-        }
-
-        // Test fixtures use this path — wrap the Vec'd copies in
-        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
-        // means the caller leaked the buffer (typically `Box::leak`
-        // in a #[cfg(test)] block); we don't carry that leak into
-        // production storage. Production goes through
-        // [`Self::read_from_mmap_unverified`].
-        Ok(EbgCsr {
-            n_nodes,
-            n_arcs,
-            created_unix,
-            inputs_sha,
-            offsets: ArcCow::from_vec(offsets_slice.to_vec()),
-            heads: ArcCow::from_vec(heads_slice.to_vec()),
-            turn_idx: ArcCow::from_vec(turn_slice.to_vec()),
-        })
-    }
 }
 
 /// Parse the 64-byte EBG CSR header and return the fixed fields.
-/// Shared by the owned, zero-copy, and mmap-backed readers.
+/// Shared by the owning and mmap-backed readers.
 fn parse_header(bytes: &[u8]) -> Result<(u32, u64, u64, [u8; 32])> {
     anyhow::ensure!(
         bytes.len() >= HEADER_LEN + FOOTER_LEN,
