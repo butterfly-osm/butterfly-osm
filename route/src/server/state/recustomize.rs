@@ -40,8 +40,10 @@ use crate::model::types::Mode;
 /// stale lat while the fresh miss-path was correct — that is exactly this
 /// class of miss). v6: #552 (one file / one key / three sections, parquet
 /// CRC instead of the raw bytes, narrowed weight storage). v7: #563 (the
-/// key derivation gained the base-weights CRC — see [`SectionKey`]).
-const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v7";
+/// key derivation gained the base-weights CRC — see [`SectionKey`]). v8:
+/// #571 (one atomic file per section — the base moved from the section CRC
+/// seed into the file name and header).
+const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v8";
 
 /// Test-only: how many times the heavy shared inputs were actually built
 /// (parquet body parsed, turn table read, filtered EBG mapped). A WARM boot
@@ -51,8 +53,12 @@ const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v7";
 #[cfg(test)]
 static EDGE_INPUTS_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Single cache file for the three per-edge passes.
-const EDGE_CACHE_FILE: &str = "recustomize_cache.car.bin";
+/// Filename prefix every per-edge section file carries — the sweep uses it
+/// to tell our files from everything else sharing the directory.
+const EDGE_CACHE_PREFIX: &str = "recustomize.car.edge";
+/// The pre-#571 single append file. Nothing reads that format any more, so
+/// the sweep unlinks it rather than strand its half-gigabyte on the volume.
+const EDGE_LEGACY_CACHE_FILE: &str = "recustomize_cache.car.bin";
 
 /// Which value column of the edge_speeds table to recustomize from (#521):
 /// the median (contract base) or one of the optional SPEED-domain band
@@ -121,7 +127,8 @@ struct EdgeInputs {
 /// touches the turn table.
 pub struct EdgeRecustomizePrep {
     path: PathBuf,
-    cache_path: PathBuf,
+    /// Directory the section files live in.
+    cache_dir: PathBuf,
     /// crc64 of the parquet bytes — one streaming pass, shared by every key.
     file_crc: Option<Option<u64>>,
     /// Effective per-column #524 level anchors, lane-indexed. `Err` carries
@@ -137,13 +144,16 @@ impl EdgeRecustomizePrep {
     /// location (honouring `BUTTERFLY_RECUSTOMIZE_CACHE_DIR` for deployments
     /// whose data volume is mounted read-only) but reads nothing.
     pub fn new(edge_speeds_path: &Path) -> Self {
-        let cache_path = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
-            Some(dir) => PathBuf::from(dir).join(EDGE_CACHE_FILE),
-            None => edge_speeds_path.with_file_name(EDGE_CACHE_FILE),
+        let cache_dir = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
+            Some(dir) => PathBuf::from(dir),
+            None => edge_speeds_path
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf(),
         };
         Self {
             path: edge_speeds_path.to_path_buf(),
-            cache_path,
+            cache_dir,
             file_crc: None,
             time_scales: None,
             key: None,
@@ -232,6 +242,11 @@ impl EdgeRecustomizePrep {
             Some(d.finalize())
         })();
         self.key = Some(key);
+        // Memoized above, so the sweep runs exactly ONCE per boot — and
+        // before this process has written a section of its own (#571).
+        if let Some(k) = key {
+            sweep_stale_sections(&self.cache_dir, k);
+        }
         key
     }
 }
@@ -449,8 +464,8 @@ impl ServerState {
     /// #454/#467 core: read a per-edge speeds/ratios table, map it onto a
     /// BASE car-family mode's per-EBG-node time weights (chain-aware per-
     /// segment matching with junction fallback), and run in-memory CCH
-    /// customization — with the #444 on-disk cache (one file, one key, one
-    /// CRC-guarded section per column since #552). Returns `(matched,
+    /// customization — with the #444 on-disk cache (since #571 one atomic
+    /// file per column and base, see [`section_path`]). Returns `(matched,
     /// cch_weights, adjusted_node_weights)`; the caller decides what to do
     /// with them (hot-swap `car`, register a variant, ...).
     fn recustomized_weights_from_edge_table(
@@ -468,12 +483,12 @@ impl ServerState {
                 // else entirely if a per-way pass swapped the slot first.
                 base: base_weights_crc(&base.node_weights),
             });
-        let cache_path = prep.cache_path.clone();
+        let cache_dir = prep.cache_dir.clone();
         if let Some(hit) =
-            cache_key.and_then(|k| cache_load_section(&cache_path, k, column.section_id()))
+            cache_key.and_then(|k| cache_load_section(&cache_dir, k, column.section_id()))
         {
             tracing::info!(
-                path = %cache_path.display(),
+                dir = %cache_dir.display(),
                 section = ?column,
                 "edge recustomize: cache HIT — skipping mapping + customization (#444)"
             );
@@ -611,7 +626,7 @@ impl ServerState {
                 weights: &new_weights,
                 node_weights: &adjusted,
             };
-            if let Err(e) = cache_store_section(&cache_path, k, column.section_id(), &pass) {
+            if let Err(e) = cache_store_section(&cache_dir, k, column.section_id(), &pass) {
                 tracing::warn!(error = %e, "edge recustomize: cache write failed (non-fatal)");
             }
         }
@@ -783,56 +798,63 @@ fn rebuild_car_family_mode(
 }
 
 // =====================================================================
-// #444/#552: serve-boot recustomization cache (PVC-resident)
+// #444/#552/#571: serve-boot recustomization cache (PVC-resident)
 // =====================================================================
 //
-// One file, one key, N CRC-guarded sections:
+// ONE ATOMIC FILE PER SECTION, named after everything it is keyed by:
 //
-//   header  : magic(4) "RCW2" | format version(4) | key(8) | crc64(8)
-//   section*: id(1) pad(7) | payload_len(8) | payload | crc64(8)
+//   <prefix>.<file key:016x>.<base key:016x>.<id>.bin
 //
-// Sections are APPENDED as their pass completes (the typical pass runs
-// before the bands are even known to exist), so a pass never rewrites the
-// megabytes another pass already stored. The reader takes the first section
-// whose id matches AND whose CRC verifies, so a section corrupted by a torn
-// write is simply recomputed and appended again; a torn trailing section
-// (power cut mid-append) just ends the scan. Any structural problem ⇒ the
-// whole file is treated as absent — never fatal.
+//   header : magic(4) "RCW3" | format version(4) | file key(8)
+//            | base key(8) | id(1) | pad(7)
+//   payload: matched(8) | up | down | up_middle | down_middle | node weights
+//   trailer: crc64(8) over header ++ payload
+//
+// A section is written to a scratch name in the same directory and
+// `rename`d into place. Rename is atomic, so a reader sees either the whole
+// section or no file at all: a torn section is structurally IMPOSSIBLE, and
+// with it go the frame scan, the torn-tail truncation, the section-count
+// bound and the post-parse realignment the append format needed to survive
+// one (#571).
+//
+// Each pass (typical/best/worst) and each base (`car` for the typical pass,
+// `car_freeflow` for the bands) owns its own file, so two boots sharing the
+// volume write the same bytes under the same name and can never invalidate
+// each other's work.
+//
+// Stale keys are unlinked once per boot ([`sweep_stale_sections`]). Any
+// problem opening or parsing a file ⇒ `None` ⇒ recompute; never fatal.
 
-const CACHE_MAGIC: &[u8; 4] = b"RCW2";
-/// v2 (#582): the per-pass payload lost its leading provenance string, which
-/// only the retired per-way path ever filled. The framing is part of the
-/// header key, so a v1 file is rejected wholesale and recomputed rather than
-/// misparsed under the new layout.
-const CACHE_FORMAT_VERSION: u32 = 2;
-const CACHE_HEADER_LEN: usize = 24;
-/// Sanity bound on a section payload (Belgium's is ~0.5 GB).
-const MAX_SECTION_BYTES: u64 = 64 << 30;
-/// Hard bound on how many section frames one cache file may hold. Normal
-/// operation writes exactly three (typical/best/worst) under a given key; a
-/// section that failed its CRC and got recomputed appends a fourth. Past
-/// this bound the file is started over from its header, so a persistently
-/// failing writer (torn appends, two boots sharing the volume) can never
-/// grow the cache without limit — it just recomputes.
-const MAX_SECTIONS: usize = 6;
+/// Magic and format version move together: a layout change changes both, so
+/// a file of an older layout can never be parsed under a newer one. "RCW3"
+/// is the #571 one-file-per-section layout ("RCW2" was the #552/#582 append
+/// file, which lived under a different name entirely).
+const CACHE_MAGIC: &[u8; 4] = b"RCW3";
+const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_HEADER_LEN: usize = 32;
+/// Trailing crc64 over header ++ payload.
+const CACHE_TRAILER_LEN: u64 = 8;
 
-/// What one cached section is keyed by.
+/// What one cached section is keyed by. BOTH halves are in the file name and
+/// in the CRC-covered header, so neither the name nor the bytes alone can
+/// pass a section off as another's.
 ///
-/// `file` is the whole-file key (algo tag ⊕ the runtime table's CRC ⊕ the
-/// container-section provenance ⊕ the level anchors) — it stamps the header,
-/// so a change to any of it invalidates every section at once.
+/// `file` is the derivation key (algo tag ⊕ the runtime table's CRC ⊕ the
+/// container-section provenance ⊕ the level anchors) — a change to any of it
+/// invalidates every section at once, and [`sweep_stale_sections`] unlinks
+/// the superseded files.
 ///
 /// `base` (#563) is a CRC of the BASE per-EBG-node weights the pass actually
-/// ran against. It CANNOT live in the file key: the three per-edge passes
-/// share ONE file and do NOT share one base (the typical pass recustomizes
-/// the `car` slot, the bands recustomize `car_freeflow`), so a base-dependent
-/// header key would make each pass wipe the others' sections. It seeds the
-/// PER-SECTION CRC instead, which is strictly stronger: a section is served
-/// only to a pass whose base is byte-identical to the one it was customized
-/// on. Without it, a pass that ran on an already-calibrated base (per-way
-/// fallback first, per-edge second) stored a compounded weight set under a
-/// key indistinguishable from the clean one — permanent, prod-only poison.
-/// A base mismatch reads exactly like a corrupt section: recompute + append.
+/// ran against. It stays a SEPARATE component rather than folding into
+/// `file`: the three per-edge passes share one derivation key but do NOT
+/// share one base (the typical pass recustomizes the `car` slot, the bands
+/// recustomize `car_freeflow`), so a base-dependent `file` would make each
+/// pass sweep the others' sections. As its own name component the bases sit
+/// side by side and each pass reads back only what its own base produced.
+/// Without it, a pass that ran on an already-calibrated base stored a
+/// compounded weight set under a key indistinguishable from the clean one —
+/// permanent, prod-only poison. A base mismatch reads exactly like an absent
+/// section: recompute and store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SectionKey {
     file: u64,
@@ -845,6 +867,65 @@ fn base_weights_crc(node_weights: &[u32]) -> u64 {
     d.update(&(node_weights.len() as u64).to_le_bytes());
     d.update(bytemuck::cast_slice(node_weights));
     d.finalize()
+}
+
+/// Where section `id` under `key` lives. Every component of the key is in
+/// the name, so sections of different keys, bases and passes coexist in one
+/// directory and never collide.
+fn section_path(dir: &Path, key: SectionKey, id: u8) -> PathBuf {
+    dir.join(format!(
+        "{EDGE_CACHE_PREFIX}.{:016x}.{:016x}.{id}.bin",
+        key.file, key.base
+    ))
+}
+
+/// Unlink everything of ours that is not under `file_key`: the sections of a
+/// superseded table or artifact, the scratch files their writers left
+/// behind, and the pre-#571 append file. Called ONCE per boot, before this
+/// process writes anything of its own.
+///
+/// Files under the CURRENT key are kept whatever their base, id or shape:
+/// the three passes and the two bases are all live entries, and a scratch
+/// file under the live key may belong to a boot that is still computing —
+/// unlinking it would cost that boot its cache write for nothing. Such an
+/// orphan is invisible to the reader (it never carries a section name) and
+/// is swept the moment the key moves on.
+///
+/// The sweep is scoped to ONE directory, which therefore holds ONE
+/// derivation family. Regions keep their own `<data>/<region>/` by default;
+/// pointing several of them at one `BUTTERFLY_RECUSTOMIZE_CACHE_DIR` makes
+/// each sweep the others' sections — exactly as the pre-#571 single file
+/// made each rewrite the others' header. Give each region its own directory.
+fn sweep_stale_sections(dir: &Path, file_key: u64) {
+    let _ = std::fs::remove_file(dir.join(EDGE_LEGACY_CACHE_FILE));
+    let mine = format!("{EDGE_CACHE_PREFIX}.");
+    let live = format!("{EDGE_CACHE_PREFIX}.{file_key:016x}.");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&mine)
+            && !name.starts_with(&live)
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            tracing::info!(file = name, "recustomize cache: unlinked stale section");
+        }
+    }
+}
+
+/// A distinct scratch name per section, per process and per call: two boots
+/// sharing the volume, or two passes running at once, must never write the
+/// same scratch file. It is removed on any failure, so only an outright kill
+/// can leave one behind — and then it carries a scratch name, never a
+/// section's, so no reader can mistake it for one.
+fn scratch_path(section: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = section.as_os_str().to_os_string();
+    name.push(format!(".tmp.{}.{seq}", std::process::id()));
+    PathBuf::from(name)
 }
 
 /// One cached weight set, borrowed for writing.
@@ -879,24 +960,6 @@ fn width_from_code(c: u8) -> Option<WeightWidth> {
     }
 }
 
-/// Serialized size of one weight array: width(1) + n(8) + body.
-fn weight_array_bytes(w: &WeightArray) -> u64 {
-    9 + (w.len() * w.width().bytes_per_entry()) as u64
-}
-
-/// Serialized size of a length-prefixed u32 array.
-fn u32_array_bytes(n: usize) -> u64 {
-    8 + 4 * n as u64
-}
-
-fn payload_len(p: &CachedPass<'_>) -> u64 {
-    8 + weight_array_bytes(&p.weights.up)
-        + weight_array_bytes(&p.weights.down)
-        + u32_array_bytes(p.weights.up_middle.len())
-        + u32_array_bytes(p.weights.down_middle.len())
-        + u32_array_bytes(p.node_weights.len())
-}
-
 fn write_all(
     w: &mut impl std::io::Write,
     d: &mut crate::formats::crc::Digest,
@@ -916,16 +979,16 @@ fn write_u32s(
     write_all(w, d, bytemuck::cast_slice(v))
 }
 
-/// The payload reader: a `Take` limited to the frame's declared payload
-/// length. Every count read from the (not-yet-verified) payload is checked
-/// against the bytes that are still declared to belong to this section
-/// BEFORE anything is allocated — a flipped length byte can otherwise ask
-/// for a multi-GB allocation and take the process down before the trailing
-/// CRC ever gets a chance to reject it.
+/// The payload reader: a `Take` limited to what the file's REAL size leaves
+/// for the payload — never to a length the file itself declares. Every count
+/// read from the (not-yet-verified) payload is checked against the bytes
+/// still left BEFORE anything is allocated: a flipped length byte can
+/// otherwise ask for a multi-GB allocation and take the process down before
+/// the trailing CRC ever gets a chance to reject it.
 type PayloadReader<'a> = std::io::Take<&'a mut std::io::BufReader<std::fs::File>>;
 
 /// Allocation guard: `n` items of `item_bytes` must fit in what is left of
-/// the declared payload.
+/// the payload.
 fn ensure_fits(r: &PayloadReader<'_>, n: u64, item_bytes: u64) -> Result<usize> {
     let need = n
         .checked_mul(item_bytes)
@@ -1006,184 +1069,104 @@ fn read_weight_array(
     })
 }
 
-fn cache_header_bytes(key: u64) -> [u8; CACHE_HEADER_LEN] {
+fn cache_header_bytes(key: SectionKey, id: u8) -> [u8; CACHE_HEADER_LEN] {
     let mut hdr = [0u8; CACHE_HEADER_LEN];
     hdr[0..4].copy_from_slice(CACHE_MAGIC);
     hdr[4..8].copy_from_slice(&CACHE_FORMAT_VERSION.to_le_bytes());
-    hdr[8..16].copy_from_slice(&key.to_le_bytes());
-    let mut d = crate::formats::crc::Digest::new();
-    d.update(&hdr[0..16]);
-    hdr[16..24].copy_from_slice(&d.finalize().to_le_bytes());
+    hdr[8..16].copy_from_slice(&key.file.to_le_bytes());
+    hdr[16..24].copy_from_slice(&key.base.to_le_bytes());
+    hdr[24] = id;
     hdr
 }
 
-/// Does `path` already hold a valid header for `key`?
-fn cache_header_matches(path: &Path, key: u64) -> bool {
-    use std::io::Read;
-    let mut hdr = [0u8; CACHE_HEADER_LEN];
-    match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut hdr)) {
-        Ok(()) => hdr == cache_header_bytes(key),
-        Err(_) => false,
+/// Store one section: the whole file under a scratch name, then `rename` —
+/// the only visible mutation, and it is atomic.
+fn cache_store_section(dir: &Path, key: SectionKey, id: u8, pass: &CachedPass<'_>) -> Result<()> {
+    let path = section_path(dir, key, id);
+    let tmp = scratch_path(&path);
+    let stored = (|| -> Result<()> {
+        write_section_file(&tmp, key, id, pass)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    })();
+    if stored.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
+    stored
 }
 
-/// Walk the section frames, reading frame headers only (no payload), and
-/// return `(frame count, offset just past the last well-formed frame)`.
-/// Any structural problem ends the walk: the bytes after `intact_end` are
-/// a torn tail the writer cuts off before appending.
-fn cache_scan_frames(path: &Path) -> (usize, u64) {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(f) = std::fs::File::open(path) else {
-        return (0, 0);
-    };
-    let file_len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut r = std::io::BufReader::new(f);
-    let mut hdr = [0u8; CACHE_HEADER_LEN];
-    if r.read_exact(&mut hdr).is_err() {
-        return (0, 0);
-    }
-    let mut n = 0usize;
-    let mut end = CACHE_HEADER_LEN as u64;
-    loop {
-        let mut frame = [0u8; 16];
-        if r.read_exact(&mut frame).is_err() {
-            return (n, end);
-        }
-        let len = u64::from_le_bytes(match <[u8; 8]>::try_from(&frame[8..16]) {
-            Ok(b) => b,
-            Err(_) => return (n, end),
-        });
-        let Some(next) = end.checked_add(16 + len + 8) else {
-            return (n, end);
-        };
-        if len > MAX_SECTION_BYTES || next > file_len || r.seek(SeekFrom::Start(next)).is_err() {
-            return (n, end);
-        }
-        end = next;
-        n += 1;
-    }
-}
-
-/// Append one section, creating the file (header only, atomically) when it
-/// does not yet exist or belongs to a different key.
-fn cache_store_section(path: &Path, key: SectionKey, id: u8, pass: &CachedPass<'_>) -> Result<()> {
+fn write_section_file(tmp: &Path, key: SectionKey, id: u8, pass: &CachedPass<'_>) -> Result<()> {
     use std::io::Write;
-    let (frames, intact_end) = cache_scan_frames(path);
-    if !cache_header_matches(path, key.file) || frames >= MAX_SECTIONS {
-        // A distinct temp name per process: two boots sharing the volume
-        // must never write the same scratch file.
-        let tmp = path.with_extension(format!("bin.tmp.{}", std::process::id()));
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&cache_header_bytes(key.file))?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-    } else if intact_end < std::fs::metadata(path)?.len() {
-        // A torn trailing frame (power cut mid-append) would otherwise sit
-        // between our append and the reader's scan. Cut back to the last
-        // well-formed boundary first.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)?
-            .set_len(intact_end)?;
-    }
-
-    let f = std::fs::OpenOptions::new().append(true).open(path)?;
-    let mut w = std::io::BufWriter::new(f);
+    let mut w = std::io::BufWriter::new(std::fs::File::create(tmp)?);
     let mut d = crate::formats::crc::Digest::new();
-    // Domain-separate the section CRC with the file key AND the base-weights
-    // CRC (#563) — see the reader.
-    d.update(&key.file.to_le_bytes());
-    d.update(&key.base.to_le_bytes());
-
-    let mut frame = [0u8; 16];
-    frame[0] = id;
-    frame[8..16].copy_from_slice(&payload_len(pass).to_le_bytes());
-    write_all(&mut w, &mut d, &frame)?;
-
+    // The header — magic, version, BOTH key halves and the section id — is
+    // under the same CRC as the payload, so neither can be swapped for
+    // another section's without failing to verify.
+    write_all(&mut w, &mut d, &cache_header_bytes(key, id))?;
     write_all(&mut w, &mut d, &pass.matched.to_le_bytes())?;
     write_weight_array(&mut w, &mut d, &pass.weights.up)?;
     write_weight_array(&mut w, &mut d, &pass.weights.down)?;
     write_u32s(&mut w, &mut d, pass.weights.up_middle.as_slice())?;
     write_u32s(&mut w, &mut d, pass.weights.down_middle.as_slice())?;
     write_u32s(&mut w, &mut d, pass.node_weights)?;
-
     w.write_all(&d.finalize().to_le_bytes())?;
     w.into_inner()?.sync_all()?;
     Ok(())
 }
 
-/// Load section `id` from the cache, or `None` (recompute path) on ANY
-/// problem — key mismatch, magic, per-section CRC, truncation.
-fn cache_load_section(path: &Path, key: SectionKey, id: u8) -> Option<LoadedPass> {
-    use std::io::{Read, Seek, SeekFrom};
-    let inner = || -> Result<Option<LoadedPass>> {
-        let f = std::fs::File::open(path)?;
+/// Load section `id`, or `None` (the recompute path) on ANY problem —
+/// absent, wrong key / base / id, bit-rot, truncation, trailing bytes.
+fn cache_load_section(dir: &Path, key: SectionKey, id: u8) -> Option<LoadedPass> {
+    let path = section_path(dir, key, id);
+    let read = || -> Result<LoadedPass> {
+        use std::io::Read;
+        let f = std::fs::File::open(&path)?;
+        // The payload bound comes from the file's REAL size on disk, never
+        // from a length the file itself declares.
+        let payload_len = f
+            .metadata()?
+            .len()
+            .checked_sub(CACHE_HEADER_LEN as u64 + CACHE_TRAILER_LEN)
+            .ok_or_else(|| anyhow::anyhow!("cache section shorter than its own frame"))?;
         let mut r = std::io::BufReader::new(f);
         let mut hdr = [0u8; CACHE_HEADER_LEN];
         r.read_exact(&mut hdr)?;
-        anyhow::ensure!(&hdr[0..4] == CACHE_MAGIC, "bad magic");
-        anyhow::ensure!(hdr == cache_header_bytes(key.file), "key/version mismatch");
-
-        loop {
-            let mut frame = [0u8; 16];
-            match r.read_exact(&mut frame) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-                Err(e) => return Err(e.into()),
-            }
-            let len = u64::from_le_bytes(frame[8..16].try_into()?);
-            anyhow::ensure!(len <= MAX_SECTION_BYTES, "section len implausible: {len}");
-            let payload_start = r.stream_position()?;
-            if frame[0] != id {
-                // Skip the payload AND its trailing CRC.
-                r.seek(SeekFrom::Start(payload_start + len + 8))?;
-                continue;
-            }
-            // The section CRC is seeded with the file key AND the base
-            // weights the pass ran against, so a section written under
-            // another key (a concurrent boot that replaced the header between
-            // our check and our append) or against a DIFFERENT base (#563)
-            // can never verify here.
-            let mut d = crate::formats::crc::Digest::new();
-            d.update(&key.file.to_le_bytes());
-            d.update(&key.base.to_le_bytes());
-            d.update(&frame);
-            let section = {
-                let mut payload = (&mut r).take(len);
-                let parsed = read_section_payload(&mut payload, &mut d);
-                // A short/long parse must not desynchronise the scan: realign
-                // on the declared frame boundary whatever happened.
-                let leftover = payload.limit();
-                match parsed {
-                    Ok(p) if leftover == 0 => Ok(p),
-                    Ok(_) => Err(anyhow::anyhow!("section shorter than declared")),
-                    Err(e) => Err(e),
-                }
-            };
-            r.seek(SeekFrom::Start(payload_start + len))?;
-            let mut fb = [0u8; 8];
-            let tail = r.read_exact(&mut fb);
-            let want_crc = d.finalize();
-            match (section, tail) {
-                (Ok(p), Ok(())) if u64::from_le_bytes(fb) == want_crc => return Ok(Some(p)),
-                // Corrupt section: the stream is realigned on the next frame,
-                // so a later append of the same id (the recompute) is still
-                // found. Never fatal, never a wrong-derivation hit.
-                (_, Ok(())) => {
-                    tracing::info!(section = id, "recustomize cache: section rejected");
-                    continue;
-                }
-                _ => return Ok(None),
-            }
-        }
+        anyhow::ensure!(hdr == cache_header_bytes(key, id), "cache header mismatch");
+        let mut d = crate::formats::crc::Digest::new();
+        d.update(&hdr);
+        let pass = {
+            let mut payload = (&mut r).take(payload_len);
+            let pass = read_section_payload(&mut payload, &mut d)?;
+            anyhow::ensure!(payload.limit() == 0, "cache section has trailing bytes");
+            pass
+        };
+        let mut trailer = [0u8; 8];
+        r.read_exact(&mut trailer)?;
+        anyhow::ensure!(
+            u64::from_le_bytes(trailer) == d.finalize(),
+            "cache section CRC mismatch"
+        );
+        Ok(pass)
     };
-    match inner() {
-        Ok(x) => x,
+    match read() {
+        Ok(pass) => Some(pass),
+        // A section that was never written is the ordinary cold path, not a
+        // problem worth a line in the log.
+        Err(e) if is_not_found(&e) => None,
         Err(e) => {
-            tracing::info!(error = %e, path = %path.display(), "recustomize cache unusable — recomputing");
+            tracing::info!(
+                error = %e,
+                path = %path.display(),
+                "recustomize cache: section unusable — recomputing"
+            );
             None
         }
     }
+}
+
+fn is_not_found(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn read_section_payload(
@@ -1218,10 +1201,23 @@ fn read_section_payload(
 mod tests {
     use super::*;
 
-    /// A file key with no base-weights component — the pure round-trip
-    /// tests below do not model a base (#563 adds a dedicated test).
+    /// A key with no base component — the plain round-trip tests do not
+    /// model a base (the base guard has its own test below).
     fn k(file: u64) -> SectionKey {
         SectionKey { file, base: 0 }
+    }
+
+    /// Our files in `dir`, sorted — the whole cache is its directory listing
+    /// now, so the tests can assert on it directly.
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(EDGE_CACHE_PREFIX))
+            .collect();
+        names.sort();
+        names
     }
 
     fn tiny_weights() -> CchWeights {
@@ -1245,7 +1241,7 @@ mod tests {
     #[test]
     fn cache_sections_round_trip_independently() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recustomize_cache.car.bin");
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![9u32, 8, 7];
 
@@ -1255,25 +1251,33 @@ mod tests {
                 weights: &w,
                 node_weights: &nw,
             };
-            cache_store_section(&path, k(77), id, &pass).unwrap();
+            cache_store_section(d, k(77), id, &pass).unwrap();
         }
 
         for id in [0u8, 2] {
-            let got = cache_load_section(&path, k(77), id).expect("section present");
+            let got = cache_load_section(d, k(77), id).expect("section present");
             assert_eq!(got.matched, 40 + id as u64);
             assert_eq!(got.node_weights, nw);
             assert_same(&got.weights, &w);
         }
         // A section that was never written is simply absent...
-        assert!(cache_load_section(&path, k(77), 1).is_none());
-        // ...and a different key invalidates the whole file.
-        assert!(cache_load_section(&path, k(78), 0).is_none());
+        assert!(cache_load_section(d, k(77), 1).is_none());
+        // ...and a different key never reads another key's section.
+        assert!(cache_load_section(d, k(78), 0).is_none());
+        // One file per section, and no scratch left behind.
+        assert_eq!(
+            names_in(d),
+            vec![
+                format!("{EDGE_CACHE_PREFIX}.{:016x}.{:016x}.0.bin", 77, 0),
+                format!("{EDGE_CACHE_PREFIX}.{:016x}.{:016x}.2.bin", 77, 0),
+            ]
+        );
     }
 
     #[test]
-    fn appending_a_section_keeps_the_others() {
+    fn writing_a_section_leaves_the_others_byte_identical() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![1u32];
         let pass = |m: u64| CachedPass {
@@ -1281,21 +1285,25 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, k(1), 0, &pass(1)).unwrap();
-        let after_first = std::fs::metadata(&path).unwrap().len();
-        cache_store_section(&path, k(1), 1, &pass(2)).unwrap();
-        assert!(
-            std::fs::metadata(&path).unwrap().len() > after_first,
-            "second section must be appended, not rewrite the file"
+        cache_store_section(d, k(1), 0, &pass(1)).unwrap();
+        let first = std::fs::read(section_path(d, k(1), 0)).unwrap();
+        cache_store_section(d, k(1), 1, &pass(2)).unwrap();
+        assert_eq!(
+            std::fs::read(section_path(d, k(1), 0)).unwrap(),
+            first,
+            "storing a section must not touch a byte of another"
         );
-        assert_eq!(cache_load_section(&path, k(1), 0).unwrap().matched, 1);
-        assert_eq!(cache_load_section(&path, k(1), 1).unwrap().matched, 2);
+        assert_eq!(cache_load_section(d, k(1), 0).unwrap().matched, 1);
+        assert_eq!(cache_load_section(d, k(1), 1).unwrap().matched, 2);
     }
 
+    /// Bit-rot on the volume is the reason the payload CRC survives the
+    /// #571 simplification: rename makes a TORN section impossible, it does
+    /// nothing about a flipped bit years later.
     #[test]
     fn a_corrupt_section_does_not_poison_its_neighbours() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![3u32, 4];
         let pass = |m: u64| CachedPass {
@@ -1303,35 +1311,34 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, k(5), 0, &pass(11)).unwrap();
-        let end_of_first = std::fs::metadata(&path).unwrap().len() as usize;
-        cache_store_section(&path, k(5), 1, &pass(22)).unwrap();
+        cache_store_section(d, k(5), 0, &pass(11)).unwrap();
+        cache_store_section(d, k(5), 1, &pass(22)).unwrap();
 
         // Flip one byte inside the FIRST section's payload.
+        let path = section_path(d, k(5), 0);
         let mut bytes = std::fs::read(&path).unwrap();
-        bytes[CACHE_HEADER_LEN + 20] ^= 0xFF;
-        assert!(end_of_first < bytes.len());
+        bytes[CACHE_HEADER_LEN + 6] ^= 0xFF;
         std::fs::write(&path, &bytes).unwrap();
 
         assert!(
-            cache_load_section(&path, k(5), 0).is_none(),
+            cache_load_section(d, k(5), 0).is_none(),
             "the corrupted section must be recomputed"
         );
         assert_eq!(
-            cache_load_section(&path, k(5), 1).unwrap().matched,
+            cache_load_section(d, k(5), 1).unwrap().matched,
             22,
             "the intact section must still load"
         );
     }
 
     #[test]
-    fn a_truncated_trailing_section_is_ignored() {
+    fn a_section_of_the_wrong_length_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![3u32, 4];
         cache_store_section(
-            &path,
+            d,
             k(9),
             0,
             &CachedPass {
@@ -1341,41 +1348,30 @@ mod tests {
             },
         )
         .unwrap();
+        let path = section_path(d, k(9), 0);
         let full = std::fs::read(&path).unwrap();
-        std::fs::write(&path, &full[..full.len() - 9]).unwrap();
-        assert!(cache_load_section(&path, k(9), 0).is_none());
-    }
-
-    #[test]
-    fn the_file_never_grows_past_the_section_bound() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
-        let w = tiny_weights();
-        let nw = vec![3u32];
-        let pass = |m: u64| CachedPass {
-            matched: m,
-            weights: &w,
-            node_weights: &nw,
-        };
-        // Same key, far more appends than the three real passes ever make.
-        for i in 0..(MAX_SECTIONS as u64 + 4) {
-            cache_store_section(&path, k(42), 0, &pass(i)).unwrap();
-            assert!(cache_scan_frames(&path).0 <= MAX_SECTIONS);
+        // Short of the trailer, short of the payload, short of the header.
+        for cut in [1usize, 9, 40] {
+            std::fs::write(&path, &full[..full.len() - cut]).unwrap();
+            assert!(
+                cache_load_section(d, k(9), 0).is_none(),
+                "a file {cut} B short must never be served"
+            );
         }
-        // Compaction never leaves the file unreadable: a section still
-        // loads, and every section under one key holds the same derivation
-        // anyway (the key pins it), so which copy wins does not matter.
-        assert!(cache_load_section(&path, k(42), 0).is_some());
+        // ...and so must a file with bytes BEYOND the section.
+        let mut long = full.clone();
+        long.extend_from_slice(&[0u8; 4]);
+        std::fs::write(&path, &long).unwrap();
+        assert!(cache_load_section(d, k(9), 0).is_none());
     }
 
-    /// #552 hardening: a section body is CRC'd together with the file key,
-    /// so a section written under key A can never be adopted under a header
-    /// carrying key B (two boots racing on the same volume).
+    /// #552 hardening, carried over: the section's own bytes carry its key,
+    /// so a file renamed (or a name forged) under another key is never
+    /// adopted — the name alone is not the guard.
     #[test]
     fn a_section_cannot_be_adopted_under_another_key() {
         let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.bin");
-        let b = dir.path().join("b.bin");
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![3u32, 4];
         let pass = CachedPass {
@@ -1383,26 +1379,141 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&a, k(111), 0, &pass).unwrap();
-        cache_store_section(&b, k(222), 0, &pass).unwrap();
-
-        // Graft B's header (key 222) onto A's body — what a racing writer
-        // would leave behind if the section CRC did not bind the key.
-        let mut bytes = std::fs::read(&a).unwrap();
-        let bhdr = std::fs::read(&b).unwrap();
-        bytes[..CACHE_HEADER_LEN].copy_from_slice(&bhdr[..CACHE_HEADER_LEN]);
-        std::fs::write(&a, &bytes).unwrap();
-
+        cache_store_section(d, k(111), 0, &pass).unwrap();
+        std::fs::rename(section_path(d, k(111), 0), section_path(d, k(222), 0)).unwrap();
         assert!(
-            cache_load_section(&a, k(222), 0).is_none(),
+            cache_load_section(d, k(222), 0).is_none(),
             "a section derived under another key must never be served"
         );
     }
 
+    /// #563: a pass reads back only what ITS OWN base produced, and the two
+    /// bases coexist under one derivation key (the typical pass runs on
+    /// `car`, the bands on `car_freeflow`).
     #[test]
-    fn a_fresh_key_truncates_the_previous_file() {
+    fn a_section_is_never_served_to_a_different_base() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
+        let d = dir.path();
+        let w = tiny_weights();
+        let nw = vec![3u32, 4];
+        let a = SectionKey { file: 7, base: 1 };
+        let b = SectionKey { file: 7, base: 2 };
+        let pass = |m: u64| CachedPass {
+            matched: m,
+            weights: &w,
+            node_weights: &nw,
+        };
+        cache_store_section(d, a, 0, &pass(1)).unwrap();
+        assert!(
+            cache_load_section(d, b, 0).is_none(),
+            "a section customized on another base must never be served"
+        );
+        cache_store_section(d, b, 0, &pass(2)).unwrap();
+        assert_eq!(cache_load_section(d, a, 0).unwrap().matched, 1);
+        assert_eq!(cache_load_section(d, b, 0).unwrap().matched, 2);
+
+        // The section id is bound too: id 0 is never served as id 1.
+        assert!(cache_load_section(d, a, 1).is_none());
+
+        // Forging the NAME does not forge the section: the base and the id
+        // are in the CRC-covered header as well.
+        std::fs::copy(section_path(d, a, 0), section_path(d, b, 1)).unwrap();
+        assert!(cache_load_section(d, b, 1).is_none());
+    }
+
+    /// #571: two writers working at once — the shape a rolling restart on a
+    /// shared volume has — must not invalidate each other's sections, so
+    /// neither is pushed into recomputing on the next boot. Under the append
+    /// format a second writer could rewrite the header and drop everything
+    /// the first had stored.
+    #[test]
+    fn concurrent_writers_do_not_make_each_other_recompute() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let w = tiny_weights();
+        let nw = vec![5u32, 6, 7];
+        let key = |base: u64| SectionKey { file: 4242, base };
+        // The production shape: three passes (ids 0/1/2) over two bases,
+        // plus a second writer racing on the very same section.
+        let jobs: Vec<(SectionKey, u8)> = vec![
+            (key(1), 0),
+            (key(2), 1),
+            (key(2), 2),
+            (key(1), 0),
+            (key(2), 1),
+        ];
+        let start = std::sync::Barrier::new(jobs.len());
+        std::thread::scope(|s| {
+            for (sk, id) in &jobs {
+                let (w, nw, start) = (&w, &nw, &start);
+                s.spawn(move || {
+                    start.wait();
+                    cache_store_section(
+                        d,
+                        *sk,
+                        *id,
+                        &CachedPass {
+                            matched: 100 + *id as u64,
+                            weights: w,
+                            node_weights: nw,
+                        },
+                    )
+                    .expect("a concurrent store must still succeed");
+                });
+            }
+        });
+
+        for (sk, id) in &jobs {
+            let got = cache_load_section(d, *sk, *id)
+                .expect("every section written concurrently must load");
+            assert_eq!(got.matched, 100 + *id as u64);
+            assert_eq!(got.node_weights, nw);
+            assert_same(&got.weights, &w);
+        }
+        // Exactly one file per distinct (base, id) — no scratch survivors.
+        assert_eq!(names_in(d).len(), 3);
+    }
+
+    /// #571: a write that never completes leaves nothing a later boot can
+    /// read as a section — a section's name only ever appears via `rename`.
+    #[test]
+    fn an_interrupted_write_leaves_no_half_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let w = tiny_weights();
+        let nw = vec![3u32, 4];
+        let key = k(31);
+        let pass = CachedPass {
+            matched: 5,
+            weights: &w,
+            node_weights: &nw,
+        };
+        cache_store_section(d, key, 0, &pass).unwrap();
+        let full = std::fs::read(section_path(d, key, 0)).unwrap();
+
+        // A killed writer: a partial file under a scratch name, and no
+        // section file at all (the rename never happened).
+        std::fs::remove_file(section_path(d, key, 0)).unwrap();
+        let scratch = scratch_path(&section_path(d, key, 0));
+        std::fs::write(&scratch, &full[..full.len() / 2]).unwrap();
+        assert!(
+            cache_load_section(d, key, 0).is_none(),
+            "a half-written scratch file must never be read as a section"
+        );
+
+        // The recompute stores cleanly on top of it...
+        cache_store_section(d, key, 0, &pass).unwrap();
+        assert_eq!(cache_load_section(d, key, 0).unwrap().matched, 5);
+        // ...and the orphan is swept the moment the key moves on.
+        sweep_stale_sections(d, 32);
+        assert!(!scratch.exists(), "the orphan scratch must be swept");
+        assert!(names_in(d).is_empty());
+    }
+
+    #[test]
+    fn the_sweep_drops_stale_keys_and_keeps_the_live_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
         let w = tiny_weights();
         let nw = vec![3u32];
         let pass = |m: u64| CachedPass {
@@ -1410,10 +1521,40 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, k(1), 0, &pass(1)).unwrap();
-        cache_store_section(&path, k(2), 0, &pass(2)).unwrap();
-        assert!(cache_load_section(&path, k(1), 0).is_none());
-        assert_eq!(cache_load_section(&path, k(2), 0).unwrap().matched, 2);
+        let old = SectionKey { file: 1, base: 9 };
+        let live_a = SectionKey { file: 2, base: 9 };
+        let live_b = SectionKey { file: 2, base: 10 };
+        cache_store_section(d, old, 0, &pass(1)).unwrap();
+        cache_store_section(d, live_a, 0, &pass(2)).unwrap();
+        cache_store_section(d, live_b, 1, &pass(3)).unwrap();
+        // A scratch orphan under the STALE key must go with it...
+        let stale_scratch = scratch_path(&section_path(d, old, 1));
+        std::fs::write(&stale_scratch, b"half").unwrap();
+        // ...while one under the LIVE key must be left alone: it may belong
+        // to a boot that is still computing, and taking it would cost that
+        // boot its cache write for nothing.
+        let live_scratch = scratch_path(&section_path(d, live_a, 2));
+        std::fs::write(&live_scratch, b"in flight").unwrap();
+        // Somebody else's file in the same directory must survive...
+        let other = d.join("edge_speeds.parquet");
+        std::fs::write(&other, b"not ours").unwrap();
+        // ...and the pre-#571 append file must not.
+        let legacy = d.join(EDGE_LEGACY_CACHE_FILE);
+        std::fs::write(&legacy, b"legacy").unwrap();
+
+        sweep_stale_sections(d, 2);
+
+        assert!(cache_load_section(d, old, 0).is_none());
+        assert!(!section_path(d, old, 0).exists(), "stale key unlinked");
+        assert!(!stale_scratch.exists(), "stale scratch unlinked");
+        assert!(
+            live_scratch.exists(),
+            "a concurrent writer's scratch must survive our sweep"
+        );
+        assert_eq!(cache_load_section(d, live_a, 0).unwrap().matched, 2);
+        assert_eq!(cache_load_section(d, live_b, 1).unwrap().matched, 3);
+        assert!(other.exists(), "a file that is not ours must be left alone");
+        assert!(!legacy.exists(), "the pre-#571 append file must be dropped");
     }
 }
 

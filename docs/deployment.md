@@ -147,7 +147,8 @@ A `transit/` subdirectory (next to the step tree or container files) triggers tr
 /data/
 ├── belgium.butterfly
 ├── edge_speeds.parquet             # directed per-edge observed/freeflow ratios (#454)
-└── recustomize_cache.car-edge.v3.bin   # written by the server (customized-weight cache, #444)
+└── recustomize.car.edge.<key>.<base>.<id>.bin   # written by the server, one per
+                                     # cached pass (customized-weight cache, #444/#571)
 ```
 
 - `edge_speeds.parquet` schema: `osm_node_from INT64, osm_node_to INT64,
@@ -161,9 +162,17 @@ A `transit/` subdirectory (next to the step tree or container files) triggers tr
   level anchor exactly in one step — multiplying it into the ratios instead
   only propagates ~55 % per pass (turn costs are not scaled by ratios) and
   erodes rank correlation.
-- The cache file is keyed by the parquet bytes + base weights CRC, so
-  refreshing the table (or its metadata) invalidates it automatically;
-  the `.v3` tag bumps whenever the interpretation changes.
+- The cache is ONE FILE PER CACHED PASS (#571), written to a scratch name
+  and `rename`d into place — a reader sees a whole section or no file, never
+  a torn one. Each name carries the derivation key (algo tag ⊕ parquet bytes
+  ⊕ the container sections the derivation reads ⊕ the level anchors) and the
+  CRC of the base weights the pass ran against, so refreshing the table (or
+  its metadata, or the container) invalidates it automatically; the server
+  unlinks the superseded files at boot. The algo tag inside the key bumps
+  whenever the interpretation changes.
+- `BUTTERFLY_RECUSTOMIZE_CACHE_DIR` moves the cache off a read-only data
+  volume. One directory holds one region's cache: pointing several regions
+  at the same override makes each boot unlink the others' sections.
 
 ## Health and metrics
 
