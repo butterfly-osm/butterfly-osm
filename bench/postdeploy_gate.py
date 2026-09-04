@@ -1933,6 +1933,89 @@ def gate_radius_prune(base):
     return ok_scalar and ok_per
 
 
+def gate_radius_exactness(base):
+    """#602: `radius_km` on REST /table prunes the COMPUTE (an effective time
+    bound derived from the radius, plus an exact rescue), where it used to run
+    the full N×M and null the pruned pairs at emit. The port is only correct if
+    the rescue recovers everything the bound cut: the SAME pair set with and
+    without a radius must agree cell for cell on everything inside the radius,
+    duration AND distance. The unpruned run is the ground truth — no stored
+    constant. Also reports the wall-clock the pruning buys."""
+    print("== /table radius_km: pruned == unpruned inside the radius (#602) ==")
+    rng = random.Random(602)
+    # A spread of origins with clustered destinations, so a radius prunes a
+    # large majority of the product but keeps a substantial in-radius set.
+    origins = [[round(rng.uniform(3.4, 5.4), 6), round(rng.uniform(50.5, 51.2), 6)]
+               for _ in range(60)]
+    dests = [[round(rng.uniform(3.4, 5.4), 6), round(rng.uniform(50.5, 51.2), 6)]
+             for _ in range(220)]
+    R = 20.0
+    passed = True
+    for mode in ("car", "foot"):
+        def run(extra):
+            t0 = time.time()
+            r = table(base, origins, dests, mode=mode, annotations="duration,distance",
+                      timeout=900, **extra)
+            return r, time.time() - t0
+
+        full, t_full = run({})
+        pruned, t_pruned = run({"radius_km": R})
+        fd, pd = full["durations"], pruned["durations"]
+        fm, pm = full.get("distances"), pruned.get("distances")
+        kept = mism = dropped = 0
+        for i in range(len(origins)):
+            for j in range(len(dests)):
+                if pd[i][j] is None:
+                    continue
+                kept += 1
+                if fd[i][j] is None:
+                    dropped += 1
+                elif fd[i][j] != pd[i][j]:
+                    mism += 1
+                elif fm and pm and fm[i][j] != pm[i][j]:
+                    mism += 1
+        # Everything the unpruned run reports inside the radius must survive.
+        # The radius is measured on the SNAPPED endpoints — the same
+        # coordinates the engine builds its neighbour mask from — so a pair
+        # whose raw coordinates sit just inside 20 km but whose snapped ones
+        # sit just outside is not a lost cell, it is correctly out of radius.
+        so = [w["location"] for w in pruned["origins"]]
+        sd = [w["location"] for w in pruned["destinations"]]
+        lost = 0
+        for i in range(len(origins)):
+            for j in range(len(dests)):
+                if fd[i][j] is not None and pd[i][j] is None and _within_km(
+                        so[i], sd[j], R):
+                    lost += 1
+        passed &= check(f"{mode}: radius actually prunes",
+                        0 < kept < len(origins) * len(dests),
+                        f"{kept}/{len(origins) * len(dests)} cells kept, "
+                        f"{t_pruned:.2f}s vs {t_full:.2f}s unpruned "
+                        f"({t_full / t_pruned:.2f}x)" if t_pruned > 0 else "")
+        passed &= check(f"{mode}: every kept cell identical to the unpruned run",
+                        mism == 0 and dropped == 0,
+                        f"{mism} value mismatches, {dropped} cells the unpruned run "
+                        "did not have")
+        passed &= check(f"{mode}: no in-radius cell lost to the compute bound",
+                        lost == 0,
+                        f"{lost} cells inside {R} km present unpruned, missing pruned "
+                        "(the #602 rescue failed)")
+    return passed
+
+
+def _within_km(a, b, km):
+    """In-radius exactly as the engine decides it: same haversine, same earth
+    radius (`nbg::EARTH_RADIUS_M`). The generic `haversine_m` above uses a
+    round 6 371 000 m, which differs by 1.4e-6 — 28 mm at 20 km — and that is
+    enough to disagree about a pair sitting on the boundary and report a
+    correctly-pruned cell as a lost one."""
+    r = 6371008.8
+    p1, p2 = math.radians(a[1]), math.radians(b[1])
+    h = (math.sin((p2 - p1) / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(math.radians(b[0] - a[0]) / 2) ** 2)
+    return 2 * r * math.asin(math.sqrt(h)) <= km * 1000.0
+
+
 @functools.lru_cache(maxsize=1)
 def _streaming_grid():
     """A deterministic ~34×31 grid kept INSIDE Belgium's routable box = 1054
@@ -2584,6 +2667,7 @@ def build_gates(args):
         ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
         ("lopsided_matrix", False, lambda: gate_lopsided(b)),
         ("radius_prune", False, lambda: gate_radius_prune(b)),
+        ("radius_exactness", False, lambda: gate_radius_exactness(b)),
         ("recustomized_distance", False, lambda: gate_recustomized_distance(b)),
         ("mode_coherence", False, lambda: gate_mode_coherence(b)),
         ("one_way_routable", False, lambda: gate_one_way_routable(b)),
