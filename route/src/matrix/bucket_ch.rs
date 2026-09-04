@@ -6100,6 +6100,69 @@ mod max_minutes_bound_tests {
         );
     }
 
+    /// #562 wiring: the 2-channel engines feed the 2-channel cell set and
+    /// leave the 1-channel forward-scan cell alone. `COST_1CH.scan` is the
+    /// one cell no other test in this crate feeds (only the 1-channel forward
+    /// lopsided path writes it, and it is reached solely through the routed
+    /// entry with a PHAST context from the server), so the snapshot is stable
+    /// under a parallel test run; the sweep / reverse cells are covered by
+    /// the hermetic `router_cost_cells_tests`.
+    #[test]
+    fn two_channel_engines_feed_two_channel_cells() {
+        let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+        let one_scan_before = COST_1CH.scan.load(std::sync::atomic::Ordering::Relaxed);
+        let _ = table_phast_lopsided_2ch(
+            n_nodes,
+            &up,
+            &down,
+            &dfwd_t,
+            &up_lat,
+            &dn_lat,
+            &dfwd_l,
+            mode,
+            &seeds,
+            &seeds,
+            u32::MAX,
+        );
+        let _ = table_phast_lopsided_reverse_2ch(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            mode,
+            &seeds,
+            &seeds,
+            u32::MAX,
+        );
+        let _ = table_bucket_parallel_seeded_len_along_time_bounded(
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            &seeds,
+            &seeds,
+            u32::MAX,
+        );
+        assert_eq!(
+            COST_1CH.scan.load(std::sync::atomic::Ordering::Relaxed),
+            one_scan_before,
+            "2-channel engines must not feed the 1-channel scan cell"
+        );
+        for (name, cell) in [
+            ("scan", &COST_2CH.scan),
+            ("scan_rev", &COST_2CH.scan_rev),
+            ("sweep", &COST_2CH.sweep),
+        ] {
+            assert!(
+                cell.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                "2-channel {name} cell not fed"
+            );
+        }
+    }
+
     #[test]
     fn unbounded_sentinel_is_byte_identical() {
         // threshold == u32::MAX must reproduce the unbounded matrix exactly.
@@ -6507,7 +6570,7 @@ pub fn table_seeded_bounded_routed_2ch(
         return (empty.clone(), empty, BucketM2MStats::default());
     }
     if let Some((down_fwd_time, down_fwd_len, mode)) = phast_ctx {
-        match phast_dir(mode, n_sources, n_targets, n_nodes) {
+        match phast_dir(mode, n_sources, n_targets, n_nodes, true) {
             Some(FieldDir::Fwd) => {
                 return table_phast_lopsided_2ch(
                     n_nodes,
@@ -6618,8 +6681,9 @@ fn table_phast_lopsided_2ch(
             field_bound(seeds),
             mode,
         );
-        // #546: the 2-channel scan (the /table default) never fed the router.
-        update_cost_ewma(&SCAN_NS, t0.elapsed().as_nanos() as u64);
+        // #546: the 2-channel scan (the /table default) never fed the router;
+        // #562: it feeds its OWN cell set.
+        update_cost_ewma(&COST_2CH.scan, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, (u32, u32)> =
             std::collections::HashMap::with_capacity(tgt_ranks.len());
         for (rank, t, l) in settled {
@@ -6736,7 +6800,7 @@ pub fn table_seeded_bounded_routed(
         );
     }
     if let Some((down_fwd_flat, mode)) = phast_ctx {
-        match phast_dir(mode, n_sources, n_targets, n_nodes) {
+        match phast_dir(mode, n_sources, n_targets, n_nodes, false) {
             Some(FieldDir::Fwd) => {
                 return table_phast_lopsided(
                     n_nodes,
@@ -6796,7 +6860,7 @@ fn table_bucket_inner(
     // Feed the router's measured per-sweep cost (EWMA, ns).
     let sweeps = (n_sources + n_targets) as u64;
     if let Some(per_sweep) = (t0.elapsed().as_nanos() as u64).checked_div(sweeps) {
-        update_cost_ewma(&SWEEP_NS, per_sweep);
+        update_cost_ewma(&COST_1CH.sweep, per_sweep);
     }
     out
 }
@@ -6858,20 +6922,101 @@ fn table_bucket_inner_untimed(
 /// Nothing hardcoded: before the first PHAST measurement a conservative
 /// structural bound applies (scan == n_nodes relaxations vs sweep ==
 /// n_nodes/400), which can only UNDER-select PHAST.
-static SWEEP_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SCAN_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// #527: reverse fields use a PULL downward scan (no block-gating), which is
-/// structurally slower than the forward push scan — measured separately.
-static SCAN_REV_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+///
+/// #562: one set of cells PER CHANNEL COUNT. A 2-channel scan or sweep costs
+/// ~2× its 1-channel twin; sharing cells let a burst of distance-annotated
+/// calls inflate what the plain path plans with (and vice versa), so the
+/// router under-selected PHAST for the next ~4 decisions.
+struct CostCells {
+    /// Bucket engine, per sweep (forward + backward sweeps).
+    sweep: std::sync::atomic::AtomicU64,
+    /// Forward push scan (one field per source).
+    scan: std::sync::atomic::AtomicU64,
+    /// #527: reverse PULL scan (no block-gating) — structurally slower than
+    /// the forward push scan, measured separately.
+    scan_rev: std::sync::atomic::AtomicU64,
+}
 
-fn update_cost_ewma(cell: &std::sync::atomic::AtomicU64, sample_ns: u64) {
-    let prev = cell.load(std::sync::atomic::Ordering::Relaxed);
+impl CostCells {
+    const fn new() -> Self {
+        Self {
+            sweep: std::sync::atomic::AtomicU64::new(0),
+            scan: std::sync::atomic::AtomicU64::new(0),
+            scan_rev: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn scan_cell(&self, dir: FieldDir) -> &std::sync::atomic::AtomicU64 {
+        match dir {
+            FieldDir::Fwd => &self.scan,
+            FieldDir::Rev => &self.scan_rev,
+        }
+    }
+
+    /// #526/#527 measured plan: do `min(S,T)` full scans in direction `dir`
+    /// beat `(S+T)` sweeps? Pure over THIS cell set — no env, no override —
+    /// so the decision is unit-testable with synthetic cell values.
+    fn plan(&self, dir: FieldDir, n_sources: usize, n_targets: usize, n_nodes: usize) -> bool {
+        let sweep = self.sweep.load(std::sync::atomic::Ordering::Relaxed);
+        let scan = self
+            .scan_cell(dir)
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let (scan_cost, sweep_cost) = if sweep > 0 && scan > 0 {
+            (scan as u128, sweep as u128)
+        } else {
+            // Structural fallback: equal per-relaxation cost. avg sweep visits
+            // ~n_nodes/400 (the engine's own working-set proxy), a scan relaxes
+            // ~n_nodes (×2 for the reverse pull: no block-gating, every rank
+            // pulled). Conservative: real sweeps are cache-hostile (80-87%
+            // miss) while the scan streams, so this only delays field adoption
+            // until the first measurement.
+            let scan_relax = match dir {
+                FieldDir::Fwd => n_nodes as u128,
+                FieldDir::Rev => 2 * n_nodes as u128,
+            };
+            (scan_relax, (n_nodes / 400).clamp(500, 20_000) as u128)
+        };
+        let n_fields = n_sources.min(n_targets);
+        let phast_cost = n_fields as u128 * scan_cost;
+        let bucket_cost = (n_sources + n_targets) as u128 * sweep_cost;
+        phast_cost < bucket_cost
+    }
+}
+
+/// Cells fed by the 1-channel (duration-only) engines.
+static COST_1CH: CostCells = CostCells::new();
+/// Cells fed by the 2-channel (duration + length-along-time) engines.
+static COST_2CH: CostCells = CostCells::new();
+
+/// #562: the cell set matching the channel count of the request. Writers
+/// (the engines) and the reader (`phast_dir`) go through this one dispatch.
+#[inline]
+fn cost_cells(two_channel: bool) -> &'static CostCells {
+    if two_channel { &COST_2CH } else { &COST_1CH }
+}
+
+/// One EWMA step (alpha = 1/4); the first sample seeds the cell.
+#[inline]
+fn ewma_step(prev: u64, sample_ns: u64) -> u64 {
     let next = if prev == 0 {
         sample_ns
     } else {
         prev - prev / 4 + sample_ns / 4
     };
-    cell.store(next.max(1), std::sync::atomic::Ordering::Relaxed);
+    next.max(1)
+}
+
+/// #562: CAS update — concurrent per-source workers feed the same cell and a
+/// relaxed load/store pair dropped samples. Returns the value the sample was
+/// applied to, so a test can prove the update chain has no gap.
+fn update_cost_ewma(cell: &std::sync::atomic::AtomicU64, sample_ns: u64) -> u64 {
+    match cell.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |prev| Some(ewma_step(prev, sample_ns)),
+    ) {
+        Ok(prev) | Err(prev) => prev,
+    }
 }
 
 /// #526/#527 field direction for the shape-aware router.
@@ -6887,12 +7032,14 @@ enum FieldDir {
 /// and in which direction? Forward fields cover S ≤ T (one push scan per
 /// source), reverse fields cover S > T (one pull scan per target). The two
 /// scan flavours are costed with SEPARATE measured EWMAs — the reverse pull
-/// scan cannot block-gate and is structurally slower.
+/// scan cannot block-gate and is structurally slower. `two_channel` selects
+/// the cell set fed by the engines of the same channel count (#562).
 fn phast_dir(
     _mode: crate::profile_abi::Mode,
     n_sources: usize,
     n_targets: usize,
     n_nodes: usize,
+    two_channel: bool,
 ) -> Option<FieldDir> {
     let dir = if n_sources <= n_targets {
         FieldDir::Fwd
@@ -6913,33 +7060,155 @@ fn phast_dir(
         Some(true) => return Some(dir),
         None => {}
     }
-    let sweep = SWEEP_NS.load(std::sync::atomic::Ordering::Relaxed);
-    let scan = match dir {
-        FieldDir::Fwd => SCAN_NS.load(std::sync::atomic::Ordering::Relaxed),
-        FieldDir::Rev => SCAN_REV_NS.load(std::sync::atomic::Ordering::Relaxed),
-    };
-    let (scan_cost, sweep_cost) = if sweep > 0 && scan > 0 {
-        (scan as u128, sweep as u128)
-    } else {
-        // Structural fallback: equal per-relaxation cost. avg sweep visits
-        // ~n_nodes/400 (the engine's own working-set proxy), a scan relaxes
-        // ~n_nodes (×2 for the reverse pull: no block-gating, every rank
-        // pulled). Conservative: real sweeps are cache-hostile (80-87%
-        // miss) while the scan streams, so this only delays field adoption
-        // until the first measurement.
-        let scan_relax = match dir {
-            FieldDir::Fwd => n_nodes as u128,
-            FieldDir::Rev => 2 * n_nodes as u128,
-        };
-        (scan_relax, (n_nodes / 400).clamp(500, 20_000) as u128)
-    };
-    let n_fields = n_sources.min(n_targets);
-    let phast_cost = n_fields as u128 * scan_cost;
-    let bucket_cost = (n_sources + n_targets) as u128 * sweep_cost;
-    if phast_cost < bucket_cost {
+    if cost_cells(two_channel).plan(dir, n_sources, n_targets, n_nodes) {
         Some(dir)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod router_cost_cells_tests {
+    //! #562 — the shape-aware router's measured cost cells: one set per
+    //! channel count, CAS-updated. Hermetic: fresh `CostCells` instances, so
+    //! the concurrent engine tests that feed the process-wide statics cannot
+    //! perturb these assertions.
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    const N_NODES: usize = 5_000_000;
+
+    fn fold(samples: &[u64]) -> u64 {
+        samples.iter().fold(0u64, |acc, &s| ewma_step(acc, s))
+    }
+
+    #[test]
+    fn two_channel_samples_leave_one_channel_cells_untouched() {
+        let one = CostCells::new();
+        let two = CostCells::new();
+        let cells = |two_channel: bool| if two_channel { &two } else { &one };
+        let samples: Vec<u64> = (1..=16u64).map(|i| 1_000_000 * i).collect();
+        for &s in &samples {
+            update_cost_ewma(&cells(true).scan, s);
+            update_cost_ewma(&cells(true).scan_rev, 2 * s);
+            update_cost_ewma(&cells(true).sweep, s / 2);
+        }
+        assert_eq!(one.scan.load(Relaxed), 0);
+        assert_eq!(one.scan_rev.load(Relaxed), 0);
+        assert_eq!(one.sweep.load(Relaxed), 0);
+        assert_eq!(two.scan.load(Relaxed), fold(&samples));
+        let doubled: Vec<u64> = samples.iter().map(|s| 2 * s).collect();
+        assert_eq!(two.scan_rev.load(Relaxed), fold(&doubled));
+        let halved: Vec<u64> = samples.iter().map(|s| s / 2).collect();
+        assert_eq!(two.sweep.load(Relaxed), fold(&halved));
+        // The process-wide dispatch the engines and `phast_dir` share.
+        assert!(std::ptr::eq(cost_cells(true), &COST_2CH));
+        assert!(std::ptr::eq(cost_cells(false), &COST_1CH));
+        assert!(!std::ptr::eq(cost_cells(true), cost_cells(false)));
+    }
+
+    #[test]
+    fn one_channel_plan_unchanged_by_two_channel_traffic() {
+        let one = CostCells::new();
+        let two = CostCells::new();
+        // 1-channel measurements: 2 ms per sweep, 200 ms per scan.
+        update_cost_ewma(&one.sweep, 2_000_000);
+        update_cost_ewma(&one.scan, 200_000_000);
+        update_cost_ewma(&one.scan_rev, 400_000_000);
+        let shapes: [(usize, usize); 6] = [
+            (1, 120),
+            (1, 2719),
+            (50, 60),
+            (2719, 1),
+            (240, 1),
+            (100, 100),
+        ];
+        let dir_of = |(s, t): (usize, usize)| if s <= t { FieldDir::Fwd } else { FieldDir::Rev };
+        let before: Vec<bool> = shapes
+            .iter()
+            .map(|&sh| one.plan(dir_of(sh), sh.0, sh.1, N_NODES))
+            .collect();
+        // Sanity on the synthetic values: 1×200 ms < 121×2 ms → PHAST at
+        // 1×120; 50×200 ms > 110×2 ms → bucket at 50×60.
+        assert!(before[0], "1×120 must plan PHAST on the 1-channel cells");
+        assert!(!before[2], "50×60 must plan bucket");
+
+        // A burst of 2-channel traffic at ~2× the cost — the #562 defect
+        // scenario: with shared cells this flips 1×120 to bucket.
+        for _ in 0..64 {
+            update_cost_ewma(&two.scan, 400_000_000);
+            update_cost_ewma(&two.scan_rev, 800_000_000);
+            update_cost_ewma(&two.sweep, 2_000_000);
+        }
+        let after: Vec<bool> = shapes
+            .iter()
+            .map(|&sh| one.plan(dir_of(sh), sh.0, sh.1, N_NODES))
+            .collect();
+        assert_eq!(
+            before, after,
+            "1-channel plan changed after 2-channel traffic"
+        );
+        // The 2-channel set plans on ITS OWN measurements: 400 ms > 242 ms.
+        assert!(
+            !two.plan(FieldDir::Fwd, 1, 120, N_NODES),
+            "2-channel 1×120 must plan bucket on its own cells"
+        );
+
+        // Structural fallback (no measurement yet) is untouched by traffic on
+        // the other set.
+        let fresh = CostCells::new();
+        assert!(fresh.plan(FieldDir::Fwd, 1, 2719, N_NODES));
+        assert!(fresh.plan(FieldDir::Rev, 2719, 1, N_NODES));
+        assert!(!fresh.plan(FieldDir::Fwd, 50, 60, N_NODES));
+    }
+
+    /// The CAS update applies EVERY sample: the observed `prev` of each
+    /// update must be exactly the `next` some other update produced (or the
+    /// initial 0), with multiplicity — a lost sample (two updates reading
+    /// the same `prev`, one store overwriting the other) breaks the chain.
+    #[test]
+    fn ewma_cas_update_never_loses_a_sample() {
+        use std::collections::BTreeMap;
+        const THREADS: u64 = 8;
+        const PER_THREAD: u64 = 500;
+        let cell = std::sync::atomic::AtomicU64::new(0);
+        let pairs: Vec<(u64, u64)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|tid| {
+                    let cell = &cell;
+                    scope.spawn(move || {
+                        (0..PER_THREAD)
+                            .map(|i| {
+                                let sample = 1_000_000 + (tid * PER_THREAD + i) * 8;
+                                let prev = update_cost_ewma(cell, sample);
+                                (prev, ewma_step(prev, sample))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
+        });
+        assert_eq!(pairs.len() as u64, THREADS * PER_THREAD);
+        let final_value = cell.load(Relaxed);
+        let mut prevs: BTreeMap<u64, u64> = BTreeMap::new();
+        let mut nexts: BTreeMap<u64, u64> = BTreeMap::new();
+        *nexts.entry(0).or_default() += 1;
+        for &(p, n) in &pairs {
+            *prevs.entry(p).or_default() += 1;
+            *nexts.entry(n).or_default() += 1;
+        }
+        let f = nexts
+            .get_mut(&final_value)
+            .expect("final value must be some update's next");
+        *f -= 1;
+        if *f == 0 {
+            nexts.remove(&final_value);
+        }
+        assert_eq!(prevs, nexts, "update chain has a gap: a sample was lost");
     }
 }
 
@@ -7010,7 +7279,7 @@ fn table_phast_lopsided(
             field_bound(seeds),
             mode,
         );
-        update_cost_ewma(&SCAN_NS, t0.elapsed().as_nanos() as u64);
+        update_cost_ewma(&COST_1CH.scan, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::with_capacity(tgt_ranks.len());
         for (rank, dist) in settled {
@@ -7154,7 +7423,7 @@ fn table_phast_lopsided_reverse(
             field_bound,
             mode,
         );
-        update_cost_ewma(&SCAN_REV_NS, t0.elapsed().as_nanos() as u64);
+        update_cost_ewma(&COST_1CH.scan_rev, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::with_capacity(src_ranks.len());
         for (rank, dist) in settled {
@@ -7296,7 +7565,7 @@ fn table_phast_lopsided_reverse_2ch(
             field_bound,
             mode,
         );
-        update_cost_ewma(&SCAN_REV_NS, t0.elapsed().as_nanos() as u64);
+        update_cost_ewma(&COST_2CH.scan_rev, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, (u32, u32)> =
             std::collections::HashMap::with_capacity(src_ranks.len());
         for (rank, t, l) in settled {
@@ -7997,7 +8266,7 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
     if let Some(per_sweep) =
         (t_all.elapsed().as_nanos() as u64).checked_div((n_sources + n_targets) as u64)
     {
-        update_cost_ewma(&SWEEP_NS, per_sweep);
+        update_cost_ewma(&COST_2CH.sweep, per_sweep);
     }
     (time_out, lat_out, stats)
 }
