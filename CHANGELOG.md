@@ -10,6 +10,66 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — Retire the baked traffic-variant loader (#599)
+
+**Breaking for a legacy container: its baked traffic variants are no longer
+served.** They were never part of the public profile set — Belgium ships ONE
+public car profile — and no artifact that could carry one was found.
+
+#582 removed everything that could WRITE a traffic profile (the step-8
+`--traffic` bake, the offline fit subcommand, the sample profile). What
+survived was the read half: a loader that discovered `<base>_<variant>` weight
+sets in a container or a step8 tree, parsed the profile out of the sibling
+provenance section, synthesised a `<base>_<variant>` mode, and served it under
+`?traffic=<name>`. No build could produce that input, so the open question was
+artifact compatibility, not dead code.
+
+**The evidence.** Every `*.butterfly` container on the build host — six of
+them, 2026-06-11 through 2026-08-31, spanning the oldest kept precompute and
+the newest multi-region artifact — carries exactly 115 sections, four base
+modes (`bike`, `car`, `car_nodir`, `foot`), and ZERO
+`mode/<m>/_variant/<v>/...` or traffic-profile-provenance sections. The
+variant shape is already absent from artifacts that predate the
+one-public-car-profile decision. The loader has never had an input and, with
+every producer gone, could not acquire one.
+
+Removed:
+
+- `crate::traffic` — the profile schema, parser and validation (535 lines).
+- `customization::apply_traffic_to_node_weights_in_memory`, whose only caller
+  was this loader.
+- Container variant registration (`server/state/modes.rs`) and step8-tree
+  variant discovery (`server/state.rs`).
+- `Container::list_traffic_variants` and its use in the multi-region mode
+  catalogue.
+- `pack`'s scan for `cch.w.<mode>_<variant>.u32` + sibling `.traffic.json`,
+  and both section emissions.
+- `SectionKind::TrafficProfileJson` (`0x0008_0004`). The discriminant is left
+  documented and unused so nobody reuses it.
+
+Kept, deliberately:
+
+- **`?traffic=<v>` still answers 400** rather than degrading into an ignored
+  unknown query parameter. A caller who asked for variant weights must not be
+  handed the base mode's silently. The message now says the parameter is
+  retired.
+- **`unpack` skips `mode/<m>/_variant/<v>/...`** instead of aborting on a
+  section it can no longer map to a step file, so a legacy artifact stays
+  extractable. Covered by `unpack_skips_a_legacy_traffic_variant_pair`.
+- **A legacy container still opens.** The retired section kind now reads as
+  `Unknown`, exactly like `shared/region_tiles` and `shared/manifest.json`
+  already do; `inspect` lists it and the loader ignores it.
+- **The `density_class` byte in `way_attrs` v2**, now with no consumer at all.
+  Its module docs say so. Removing it is an on-disk format decision, not a
+  cleanup.
+
+**Unchanged:** the live speed recalibration path — the directed per-edge
+`edge_speeds.parquet` contract, its `time_scale*` level anchors, the
+best/typical/worst bands and the serve-boot recustomization that consumes
+them. None of it went through the profile schema: `car_freeflow` and the band
+weight sets are built in `server/state/recustomize.rs` from the edge table,
+never from a variant section.
+
 ### 2026-09-04 — One matrix batch builder, one seed split, one pair driver (#580)
 
 Three consolidations in `route/src/server/flight.rs`. No behaviour change on

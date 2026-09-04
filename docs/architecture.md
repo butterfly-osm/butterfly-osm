@@ -82,9 +82,9 @@ flowchart LR
 - **step1-ingest** — Parse PBF into raw sorted arrays. No semantics, just OSM
   bytes laid out for streaming.
 - **step2-profile** — Apply the declarative JSON profile (`*.model.json`) to
-  every way and turn restriction. Produces per-mode attribute arrays. This is
-  where density classes (urban_high…rural) get baked in for traffic
-  recustomization (#84).
+  every way and turn restriction. Produces per-mode attribute arrays,
+  including the density class (urban_high…rural) carried per way in
+  `way_attrs.<mode>.bin`.
 - **step3-nbg** — Build a Node-Based Graph. **Build-time intermediate only**:
   the NBG geometry is preserved (for polyline reconstruction) but the NBG
   topology is discarded after step 4.
