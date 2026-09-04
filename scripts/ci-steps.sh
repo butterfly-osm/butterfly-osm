@@ -25,6 +25,14 @@ STEPS=(
   # never ran before #555. The Belgium-container tests self-skip without
   # BT_*_CONTAINER, so this still needs no 24 GB artifact.
   "test (workspace, lib + integration)|cargo test --workspace"
+  # #556: tests behind `feature = "bench"` (matrix/range internals, the bench
+  # weight profiles) compile under clippy --all-features but NEVER executed:
+  # the default-feature run above skips them. Run them, then PROVE the
+  # all-features run is a strict superset of the default one — if a refactor
+  # re-gates tests behind the feature or the feature stops pulling any in,
+  # the count collapses and this step fails instead of silently shrinking CI.
+  "test (all features)|cargo test --workspace --all-features"
+  "test count (all-features > default)|a=\$(cargo test --workspace --all-features -- --list 2>/dev/null | grep -c ': test\$'); d=\$(cargo test --workspace -- --list 2>/dev/null | grep -c ': test\$'); echo \"tests: all-features=\$a default=\$d\"; [ \"\$a\" -gt \"\$d\" ]"
   # The post-deploy gate is Python: at minimum it must compile and be able to
   # enumerate its gates (catches an import-time or registry break in CI, where
   # no server is running).

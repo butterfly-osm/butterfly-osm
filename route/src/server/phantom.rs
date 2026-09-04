@@ -375,13 +375,20 @@ fn phantom_from_primary_inner(
 }
 
 // =============================================================================
-// #502: matrix seed expansion — shared by /table (REST) and Flight `matrix`.
-// Each endpoint's directional seeds become extra rows/columns for the bucket
-// engine (which stays untouched); `reduce_*` collapses the expanded result
-// back to S×T with exact partial-edge adjustments.
+// #502: matrix seed expansion — the ORIGINAL API-layer form of the shift
+// trick. Each endpoint's directional seeds became extra rows/columns for the
+// bucket engine; `reduce_*` collapsed the expanded result back to S×T with
+// exact partial-edge adjustments.
+//
+// RETIRED from every serve path by #504/#511: the engine seeds its buckets
+// directly (`matrix/bucket_ch.rs`, `table_bucket_parallel_seeded*`); the
+// API-layer expansion cost 12-15× (see CLAUDE.md). It stays here ONLY as the
+// executable spec of the seed arithmetic — the `reduce_*` unit tests below
+// are the invariants the served lopsided field replicates verbatim (#556).
+// Compiled for tests and the bench binary; NEVER call it from a handler.
 // =============================================================================
 
-#[cfg(feature = "bench")]
+#[cfg(any(test, feature = "bench"))]
 /// Expanded seed lists for one matrix axis.
 pub struct SeedExpansion {
     /// Rank per expanded row/column (engine input).
@@ -392,7 +399,7 @@ pub struct SeedExpansion {
     pub parts: Vec<(u32, u32, bool)>,
 }
 
-#[cfg(feature = "bench")]
+#[cfg(any(test, feature = "bench"))]
 impl SeedExpansion {
     /// Build from per-endpoint seed sets `(rank, time_part, len_part,
     /// direct_ok)`. Empty sets (invalid endpoints) get one placeholder so
@@ -822,8 +829,11 @@ mod tests {
     }
 
     // --- SeedExpansion ------------------------------------------------------
+    // #556: these run under DEFAULT features. They were `feature = "bench"`
+    // gated after #553 and silently stopped executing in CI (clippy compiled
+    // them, `cargo test --workspace` never ran them). They are the executable
+    // spec of the #510/#511 shift-trick seed arithmetic.
 
-    #[cfg(feature = "bench")]
     #[test]
     fn seed_expansion_build_spans_and_placeholder_for_empty_sets() {
         // endpoint 0: two seeds; endpoint 1: none (invalid) -> one placeholder.
@@ -839,7 +849,6 @@ mod tests {
         assert_eq!(exp.slack(), 5);
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_applies_source_plus_minus_target_partial() {
         // 1 source seed (rank 10, +5 s) x 1 target seed (rank 20, -7 s).
@@ -854,7 +863,6 @@ mod tests {
         assert_eq!(out_c.unwrap(), vec![49]);
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn reduce_len_uses_the_length_partials() {
         // reduce_len picks the LENGTH partials (index .1): 200 + 3 - 4 = 199.
@@ -864,7 +872,6 @@ mod tests {
         assert_eq!(src.reduce_len(&tgt, &m), vec![199]);
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_rejects_clamped_secondary_same_rank_meet() {
         // Same rank on both sides is the engine's zero-cost identity cell. It
@@ -879,7 +886,6 @@ mod tests {
         assert_eq!(out, vec![u32::MAX], "clamped same-rank meet is not a path");
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_rejects_negative_same_edge_meet_but_keeps_positive() {
         // Both seeds direct_ok and same rank (same physical edge). The
@@ -904,7 +910,6 @@ mod tests {
         assert_eq!(pos, vec![6], "behind-on-edge meet = 16 - 10 = 6 s");
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_takes_the_minimum_over_the_seed_cross_product() {
         // One source with two directional seeds x one target with two seeds:
