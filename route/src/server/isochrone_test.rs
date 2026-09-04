@@ -621,6 +621,64 @@ mod tests {
     }
 }
 
+/// #559: the WKB guards must be decidable from parsed input alone so the
+/// handler can reject before any PHAST work. This pins the pure guard the
+/// handler calls ABOVE `isochrone_polygons`.
+mod wkb_guard_tests {
+    use crate::server::isochrone_handler::wkb_request_rejection;
+
+    #[test]
+    fn wkb_request_rejection_is_decided_from_parsed_input_alone() {
+        // JSON never rejects here, whatever the contours / bands.
+        assert_eq!(wkb_request_rejection(false, 1, false), None);
+        assert_eq!(wkb_request_rejection(false, 3, true), None);
+        // WKB: one contour, no bands → serveable.
+        assert_eq!(wkb_request_rejection(true, 1, false), None);
+        // WKB + several contours → 400, message unchanged.
+        assert_eq!(
+            wkb_request_rejection(true, 2, false),
+            Some("WKB only supports single contour. Use JSON for multiple.")
+        );
+        // WKB + bands → 400 (bands win over the contour count, as before).
+        assert_eq!(
+            wkb_request_rejection(true, 1, true),
+            Some("uncertainty=bands requires the JSON response (Accept: application/json)")
+        );
+        assert_eq!(
+            wkb_request_rejection(true, 2, true),
+            Some("uncertainty=bands requires the JSON response (Accept: application/json)")
+        );
+    }
+
+    /// #559 is an ORDER defect, not a logic one: before the hoist the two
+    /// guards sat inside the `if wants_wkb` block AFTER `isochrone_polygons`,
+    /// so an unauthenticated 400 still paid a full seeded PHAST + contour
+    /// topology. Only the handler's own source can witness that order without
+    /// a loaded `ServerState` (which needs a built Belgium container, i.e. not
+    /// a unit test): assert the guard call precedes the pipeline call. Move
+    /// the guard back down and this fails.
+    #[test]
+    fn wkb_guard_runs_before_the_phast_pipeline() {
+        const HANDLER: &str = include_str!("isochrone_handler.rs");
+        let guard = HANDLER
+            .find("if let Some(err) = wkb_request_rejection(")
+            .expect("isochrone_handler calls wkb_request_rejection");
+        let pipeline = HANDLER
+            .find("let field = match isochrone_polygons(")
+            .expect("isochrone_handler runs the isochrone_polygons pipeline");
+        assert!(
+            guard < pipeline,
+            "#559: the WKB guard (byte {guard}) must run BEFORE the seeded \
+             PHAST + topology pipeline (byte {pipeline})"
+        );
+        assert_eq!(
+            HANDLER.matches("wkb_request_rejection(").count(),
+            2,
+            "exactly one definition and one call site — no second copy"
+        );
+    }
+}
+
 /// #558: `depart_frontier` is the ONE definition of "which unreached edge is
 /// entered before T, and how far" for the polygon stamp, `include=network`,
 /// `/isochrone/bulk`, Flight `isochrone` and the catchment hull. A synthetic
