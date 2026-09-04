@@ -683,7 +683,7 @@ impl ServerState {
                 rebuild_car_family_mode(&base, &self.ebg_nodes, new_weights, adjusted_node_weights);
 
             let new_index = self.modes.len();
-            let slot = ModeSlot::new_loaded_variant(slot_name.to_string(), band);
+            let slot = ModeSlot::new_loaded(slot_name.to_string(), band, false);
             slot.evictable
                 .store(false, std::sync::atomic::Ordering::Relaxed);
             self.modes.push(slot);
