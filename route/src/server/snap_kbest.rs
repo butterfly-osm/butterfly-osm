@@ -48,6 +48,13 @@ pub const DEFAULT_MAX_FALLBACK_COMBOS: usize = 400;
 /// Build the `(i+j)`-ordered combo list for K-best fallback. Caps at
 /// `max_combos` so callers don't have to repeat that truncation.
 pub fn combo_order(k_src: usize, k_dst: usize, max_combos: usize) -> Vec<(usize, usize)> {
+    // A zero cap means zero combos. The cap is checked AFTER the push
+    // below, so without this guard the first pair would escape it — the
+    // one input on which this helper disagreed with the push-then-truncate
+    // loops it replaced (#567). No caller passes 0 today; pin it anyway.
+    if max_combos == 0 {
+        return Vec::new();
+    }
     let mut order = Vec::with_capacity((k_src * k_dst).min(max_combos));
     for sum in 0..(k_src + k_dst) {
         for i in 0..k_src {
@@ -194,4 +201,171 @@ pub fn p2p_with_kbest_fallback(
         }
     }
     None
+}
+
+/// What [`cell_with_kbest_fallback`] recovered for one cell: the time
+/// and/or the distance channel, `None` where no combo in the bounded
+/// enumeration produced a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CellFallback {
+    /// Travel time in the time query's units (seconds post-#297).
+    pub time: Option<u32>,
+    /// Travel distance in the distance query's units (metres post-#297).
+    pub distance: Option<u32>,
+}
+
+/// Recover ONE cell — a `/table` matrix cell, a `/trip` leg — with the
+/// `(i+j)` K-best combo escalation, filling the time and/or the distance
+/// channel.
+///
+/// The dual-metric sibling of [`p2p_with_kbest_fallback`]: callers that
+/// recover a cell rather than a route need a time AND a distance value,
+/// and those live on two `CchQuery` weight vectors over the same
+/// topology. `need_time` / `need_distance` say which channels are still
+/// missing; each is filled by the first combo that connects it.
+///
+/// `threshold`:
+/// * `None` — unbounded. Each requested channel is filled independently.
+/// * `Some(t)` — bounded (#415). A cell is recovered ONLY when the pair's
+///   travel time is ≤ `t`. Under a caller-supplied bound a missing cell
+///   may be missing because the pair is genuinely beyond the bound, and
+///   the fallback must not resurrect those. The time query gates the
+///   DISTANCE channel too, so a distance-only request still respects the
+///   bound; without a `time_query` nothing is recovered.
+#[allow(clippy::too_many_arguments)]
+pub fn cell_with_kbest_fallback(
+    time_query: Option<&CchQuery>,
+    dist_query: Option<&CchQuery>,
+    src_ranks: &[u32],
+    dst_ranks: &[u32],
+    need_time: bool,
+    need_distance: bool,
+    threshold: Option<u32>,
+    max_combos: usize,
+) -> CellFallback {
+    let mut out = CellFallback::default();
+    let mut time_done = !need_time;
+    let mut dist_done = !need_distance;
+    if time_done && dist_done {
+        return out;
+    }
+    for (i, j) in combo_order(src_ranks.len(), dst_ranks.len(), max_combos) {
+        let s = src_ranks[i];
+        let d = dst_ranks[j];
+        if s == d {
+            continue;
+        }
+        match threshold {
+            // Bounded: `distance_bounded` returns None for > threshold or
+            // unreachable, so an out-of-bound cell stays missing — and the
+            // distance channel only opens once the time gate has passed.
+            Some(thr) => {
+                if let Some(tq) = time_query
+                    && let Some(t) = tq.distance_bounded(s, d, thr)
+                {
+                    if !time_done {
+                        out.time = Some(t);
+                        time_done = true;
+                    }
+                    if !dist_done
+                        && let Some(dq) = dist_query
+                        && let Some(r) = dq.query(s, d)
+                    {
+                        out.distance = Some(r.distance);
+                        dist_done = true;
+                    }
+                    if time_done && dist_done {
+                        break;
+                    }
+                }
+            }
+            None => {
+                if !time_done
+                    && let Some(tq) = time_query
+                    && let Some(r) = tq.query(s, d)
+                {
+                    out.time = Some(r.distance);
+                    time_done = true;
+                }
+                if !dist_done
+                    && let Some(dq) = dist_query
+                    && let Some(r) = dq.query(s, d)
+                {
+                    out.distance = Some(r.distance);
+                    dist_done = true;
+                }
+                if time_done && dist_done {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::combo_order;
+
+    /// The enumeration the three deleted copies produced (#567): push
+    /// every `(i, j)` in `(i+j)` order, THEN truncate to the cap.
+    /// `combo_order` instead stops as soon as it has `max_combos`, which
+    /// must be the same list — this is the only place the consolidation
+    /// changed how the cap is applied, so it is pinned here rather than
+    /// argued.
+    fn reference_push_then_truncate(
+        k_src: usize,
+        k_dst: usize,
+        max_combos: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut order = Vec::new();
+        for sum in 0..(k_src + k_dst) {
+            for i in 0..k_src {
+                if let Some(j) = sum.checked_sub(i)
+                    && j < k_dst
+                {
+                    order.push((i, j));
+                }
+            }
+        }
+        if order.len() > max_combos {
+            order.truncate(max_combos);
+        }
+        order
+    }
+
+    #[test]
+    fn combo_order_matches_the_push_then_truncate_reference() {
+        for k_src in 0..12 {
+            for k_dst in 0..12 {
+                for &cap in &[0usize, 1, 3, 7, 400] {
+                    assert_eq!(
+                        combo_order(k_src, k_dst, cap),
+                        reference_push_then_truncate(k_src, k_dst, cap),
+                        "combo_order({k_src}, {k_dst}, {cap}) must equal the pre-#567 enumeration"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combo_order_visits_every_pair_once_when_uncapped() {
+        let (k_src, k_dst) = (8, 5);
+        let order = combo_order(k_src, k_dst, usize::MAX);
+        assert_eq!(order.len(), k_src * k_dst, "every pair must be enumerated");
+        let mut seen = order.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), order.len(), "no pair may repeat");
+        // (i+j) ascending, i ascending on ties — the #197 escalation order.
+        assert_eq!(&order[..5], &[(0, 0), (0, 1), (1, 0), (0, 2), (1, 1)]);
+        assert!(
+            order.windows(2).all(|w| {
+                let (a, b) = (w[0], w[1]);
+                (a.0 + a.1, a.0) <= (b.0 + b.1, b.0)
+            }),
+            "the enumeration must be sorted by (i+j, i)"
+        );
+    }
 }
