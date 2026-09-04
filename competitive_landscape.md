@@ -561,7 +561,7 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 
 ## VRP & Optimization Engines
 
-These consume distance matrices from routing engines. Potential consumers of Butterfly's `/table/stream`.
+These consume distance matrices from routing engines. Potential consumers of Butterfly's Flight `matrix` action (Arrow IPC, 50k×50k proven).
 
 | Engine | Language | Stars | Algorithm | Key Capability |
 |--------|----------|-------|-----------|----------------|
@@ -736,7 +736,7 @@ Key insight: **CCH queries are as fast as CH** and **10x faster than CRP**, whil
 | **Expansion visualization** | Debugging | Valhalla | Low-medium |
 | **Centroid API** | Niche | Valhalla | Low |
 | **Planet-scale validation** | Credibility | All | Medium — need hardware for planet preprocessing |
-| **VRP integration** | Ecosystem | GraphHopper/VROOM | Medium — integrate VROOM as consumer of `/table/stream` or the Flight `edges_batch` action |
+| **VRP integration** | Ecosystem | GraphHopper/VROOM | Medium — integrate VROOM as consumer of the Flight `matrix` or `edges_batch` action |
 
 Transit/multimodal is no longer a gap: full RAPTOR + CCH multimodal with GTFS + NeTEx-EPIP merging shipped in 2026-04. See the **Where Butterfly Already Wins** list item 11 and `/src/transit/` for the implementation.
 
@@ -761,7 +761,7 @@ These cannot be replicated with OSM data alone:
 
 **Phase 2 — Ecosystem (weeks):**
 - Statistical transit reliability (#122 GTFS-RT archive pipeline → #123 p50/p90 synthesis). Replaces the "real-time" framing with the correct "reproducible p90" model. No competitor ships this correctly.
-- Document VROOM integration as VRP consumer of `/table/stream` or the Flight `edges_batch` action
+- Document VROOM integration as VRP consumer of the Flight `matrix` or `edges_batch` action
 - Consolidate HTTP download logic into butterfly-dl (#100)
 - Expansion API endpoint (GeoJSON visualization of CCH search)
 - Centroid API endpoint

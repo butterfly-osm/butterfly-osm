@@ -200,9 +200,9 @@ Unreachable cells are `null`. `distances` are shortest-distance routes (separate
 
 ---
 
-### `POST /table/stream` *(not mounted in current build)*
+### `POST /table/stream` *(removed in #547 — not mounted)*
 
-The HTTP Arrow streaming endpoint exists in source (`table.rs::table_stream_handler`) but is not wired into the router (`api.rs:104`). Its replacement is the Flight `matrix` action on port 3002, which has the same semantics with proper Arrow Flight framing.
+The pre-Flight HTTP Arrow streaming endpoint. Handler and route are gone from source; its replacement is the Flight `matrix` action on port 3002, which has the same semantics with proper Arrow Flight framing.
 
 Historical performance (when mounted): 10k×10k in 24 s, 50k×50k (2.5 B distances) in 9.5 min with 2.4 GB RAM overhead via tile-by-tile streaming.
 
