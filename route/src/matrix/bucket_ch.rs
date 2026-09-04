@@ -5976,6 +5976,57 @@ mod max_minutes_bound_tests {
         }
     }
 
+    /// #540/#527: a many-to-one at scale must plan the reverse field on a
+    /// COLD process too. The EWMA cells start empty, so the FIRST request
+    /// after boot is decided entirely by the fallback cost model — and
+    /// many-to-one at scale is exactly the shape that was reported as
+    /// tens of times slower per cell than a square matrix of the same
+    /// size. `reported_plan_is_the_dispatched_engine` forces the cells;
+    /// this pins what happens when nobody has measured anything yet.
+    #[test]
+    fn a_cold_process_plans_a_large_many_to_one_sublinearly() {
+        // Belgium-scale edge-based graph, no samples recorded.
+        let n_nodes = 5_000_000usize;
+        let cold = CostCells::new();
+
+        assert!(
+            cold.plan(FieldDir::Rev, 2_000, 1, n_nodes),
+            "2000x1 on a cold process must take the reverse field, not 2001 sweeps"
+        );
+        assert!(
+            cold.plan(FieldDir::Fwd, 1, 2_000, n_nodes),
+            "1x2000 on a cold process must take the forward field"
+        );
+
+        // The model is a cost comparison, not a shape rule: a square
+        // matrix of comparable cell count still runs the bucket, and so
+        // does a many-to-one small enough that one whole field costs more
+        // than the sweeps it would replace.
+        assert!(
+            !cold.plan(FieldDir::Fwd, 45, 45, n_nodes),
+            "a square matrix must stay on the bucket"
+        );
+        assert!(
+            !cold.plan(FieldDir::Rev, 100, 1, n_nodes),
+            "100x1 is not worth a whole reverse field"
+        );
+
+        // A reverse field costs twice a forward one in the fallback, so
+        // the crossover for Nx1 sits above the one for 1xN — the model
+        // must not treat the two directions as interchangeable.
+        let crossover = |dir: FieldDir| {
+            (1..).find(|&n| match dir {
+                FieldDir::Rev => cold.plan(dir, n, 1, n_nodes),
+                FieldDir::Fwd => cold.plan(dir, 1, n, n_nodes),
+            })
+        };
+        let (fwd, rev) = (crossover(FieldDir::Fwd), crossover(FieldDir::Rev));
+        assert!(
+            fwd < rev,
+            "forward crossover {fwd:?} must be below the reverse one {rev:?}"
+        );
+    }
+
     /// #594: the plan a routed matrix call REPORTS is the branch it took.
     ///
     /// The selection is driven by cost cells this test OWNS — `CostCells::plan`

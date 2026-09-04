@@ -173,7 +173,15 @@ Many-to-many distance/duration matrix using Bucket M2M CH. Source: `route/src/se
 | `avoid_polygons` | string | none | Same shape as `/route` |
 | `radius_km` | number / `"auto"` / `[num,...]` / null | none | Euclidean pre-filter; pairs beyond are emitted as `null`. **#531**: an ARRAY sets a radius PER ORIGIN (`len == origins`; a `0`/`null` entry = no filter for that origin). A length mismatch is a 400. |
 
-Hard cap: `origins × destinations ≤ 10_000_000` cells. Larger workloads must use the Flight `matrix` action (port 3002).
+Hard caps (both surfaces refuse with the limit in the message, before any snapping):
+
+| Limit | Value | Applies to |
+|---|---|---|
+| coordinates per side | 1 000 000 | `/table` and Flight `matrix` |
+| cells (`origins × destinations`) | 10 000 000 | `/table` only — it materialises the whole grid as JSON; Flight streams |
+| in-radius `(source, target)` pairs | 100 000 000 | `radius_km` on both surfaces — the neighbour mask is the one structure that still scales with `S × T` |
+
+Larger matrices must use the Flight `matrix` action. A `radius_km` refusal means the radius is not pruning: reduce it or split the request.
 
 **Response (OSRM-compatible)**
 
@@ -590,6 +598,9 @@ The action parses exactly `origins`, `destinations`, `radius_km`, `max_minutes`,
 `sparse` — it REJECTS `sources`/`targets` (`InvalidArgument: unknown field \`sources\``).
 `radius_km` also accepts a PER-ORIGIN array (#531, `len == origins`; length
 mismatch → `InvalidArgument`).
+
+Size limits are the same as `/table`'s coordinate and neighbour-mask caps
+(see above); the Flight action has no cell cap because it streams.
 
 `sparse` (#532): when `true`, cells that are radius-pruned OR unreachable are
 **omitted entirely** rather than streamed as `duration_ms = distance_m =

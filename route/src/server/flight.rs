@@ -429,6 +429,32 @@ struct MatrixParams {
     sparse: bool,
 }
 
+/// Everything a `matrix` ticket must satisfy before the producer touches
+/// it. Kept as one function so the checks are testable without a running
+/// service, and so the endpoint ceiling cannot be added to one surface
+/// and forgotten on the other — `POST /table` applies the same
+/// [`validate_matrix_endpoints`](super::types::validate_matrix_endpoints).
+///
+/// Order matters: size is refused before per-coordinate validation, so an
+/// over-large request costs one comparison rather than a scan of a
+/// million coordinates.
+fn validate_matrix_params(params: &MatrixParams) -> std::result::Result<(), Status> {
+    if params.origins.is_empty() || params.destinations.is_empty() {
+        return Err(Status::invalid_argument(
+            "sources and destinations must not be empty",
+        ));
+    }
+    super::types::validate_matrix_endpoints(params.origins.len(), params.destinations.len())
+        .map_err(Status::invalid_argument)?;
+    for (i, [lon, lat]) in params.origins.iter().enumerate() {
+        validate_coord(*lon, *lat, &format!("source[{}]", i))?;
+    }
+    for (i, [lon, lat]) in params.destinations.iter().enumerate() {
+        validate_coord(*lon, *lat, &format!("dest[{}]", i))?;
+    }
+    Ok(())
+}
+
 /// Build ONE matrix `RecordBatch` from a flat row-major slice
 /// (`matrix[row * dst_orig.len() + col]`, CCH seconds).
 ///
@@ -892,21 +918,19 @@ fn do_matrix(
         RadiusParam::None => None,
         RadiusParam::Km(r) => {
             radius_max_km = Some(r);
-            Some(Arc::new(build_neighbors(
-                &origins_snapped,
-                &targets_snapped,
-                r,
-            )))
+            Some(Arc::new(
+                build_neighbors(&origins_snapped, &targets_snapped, r)
+                    .map_err(Status::invalid_argument)?,
+            ))
         }
         RadiusParam::Auto => {
             let r = auto_radius_km(&origins_snapped, &targets_snapped);
             if r > 0.0 {
                 radius_max_km = Some(r);
-                Some(Arc::new(build_neighbors(
-                    &origins_snapped,
-                    &targets_snapped,
-                    r,
-                )))
+                Some(Arc::new(
+                    build_neighbors(&origins_snapped, &targets_snapped, r)
+                        .map_err(Status::invalid_argument)?,
+                ))
             } else {
                 None
             }
@@ -915,11 +939,10 @@ fn do_matrix(
             radius_max_km = radii.iter().copied().fold(None, |acc: Option<f64>, r| {
                 Some(acc.map_or(r, |a| a.max(r)))
             });
-            Some(Arc::new(build_neighbors_per_origin(
-                &origins_snapped,
-                &targets_snapped,
-                &radii,
-            )))
+            Some(Arc::new(
+                build_neighbors_per_origin(&origins_snapped, &targets_snapped, &radii)
+                    .map_err(Status::invalid_argument)?,
+            ))
         }
     };
 
@@ -4374,17 +4397,7 @@ impl FlightService for ButterflyFlight {
                         Status::invalid_argument(format!("Invalid matrix params: {}", e))
                     })?;
 
-                if params.origins.is_empty() || params.destinations.is_empty() {
-                    return Err(Status::invalid_argument(
-                        "sources and destinations must not be empty",
-                    ));
-                }
-                for (i, [lon, lat]) in params.origins.iter().enumerate() {
-                    validate_coord(*lon, *lat, &format!("source[{}]", i))?;
-                }
-                for (i, [lon, lat]) in params.destinations.iter().enumerate() {
-                    validate_coord(*lon, *lat, &format!("dest[{}]", i))?;
-                }
+                validate_matrix_params(&params)?;
 
                 // Snap the first (source, destination) pair. If both
                 // sides snap to the same region we proceed; otherwise
@@ -5220,7 +5233,7 @@ mod pair_driver_tests {
 
 #[cfg(test)]
 mod route_batch_prune_tests {
-    use super::{RouteBatchParams, route_batch_schema};
+    use super::{MatrixParams, RouteBatchParams, route_batch_schema, validate_matrix_params};
     use arrow::datatypes::DataType;
 
     /// #482: the route_batch schema gained a leading `pair_idx` column and
@@ -5291,6 +5304,51 @@ mod route_batch_prune_tests {
         let json = r#"{"pairs":[[4.35,50.85,4.40,51.22]],"max_meters":3000}"#;
         let p: RouteBatchParams = serde_json::from_str(json).expect("parse with max_meters");
         assert_eq!(p.max_meters, Some(3000.0));
+    }
+
+    /// #540: the Flight `matrix` action had no size ceiling at all — a
+    /// request with millions of coordinates was accepted and started
+    /// snapping. It is now refused before the first snap, and the refusal
+    /// states the limit.
+    #[test]
+    fn matrix_params_over_the_endpoint_ceiling_are_refused() {
+        use crate::server::types::MAX_MATRIX_ENDPOINTS;
+        let coords = |n: usize| vec![[4.35f64, 50.85f64]; n];
+        let params = |o: usize, d: usize| MatrixParams {
+            origins: coords(o),
+            destinations: coords(d),
+            uncertainty: None,
+            radius_km: None,
+            max_minutes: None,
+            sparse: false,
+        };
+
+        validate_matrix_params(&params(4, 4)).expect("an ordinary matrix is accepted");
+
+        for (o, d) in [(MAX_MATRIX_ENDPOINTS + 1, 1), (1, MAX_MATRIX_ENDPOINTS + 1)] {
+            let err = validate_matrix_params(&params(o, d))
+                .expect_err("over the endpoint ceiling must be refused");
+            assert_eq!(err.code(), tonic::Code::InvalidArgument);
+            assert!(
+                err.message().contains(&MAX_MATRIX_ENDPOINTS.to_string()),
+                "the refusal must state the limit, got: {}",
+                err.message()
+            );
+        }
+
+        // Still empty-checked, and still coordinate-checked.
+        assert_eq!(
+            validate_matrix_params(&params(0, 1)).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        let mut bad = params(2, 2);
+        bad.destinations[1] = [4.35, 950.0];
+        let err = validate_matrix_params(&bad).expect_err("an off-globe latitude is refused");
+        assert!(
+            err.message().contains("dest[1]"),
+            "the refusal must name the offending coordinate, got: {}",
+            err.message()
+        );
     }
 
     /// #482: `deny_unknown_fields` — the ticket's core complaint is that
