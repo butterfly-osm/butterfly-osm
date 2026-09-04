@@ -2078,4 +2078,112 @@ mod pipeline_tests {
         assert_eq!(nw_again, nw_cold);
         assert_eq!(weights_u32(&w_again), weights_u32(&w_cold));
     }
+
+    // ---------------------------------------------------------------
+    // #590: best <= typical <= worst, per link weight AND per turn
+    // ---------------------------------------------------------------
+
+    /// The turn charge each CCH original edge carries: `weight - w(head)`.
+    /// The customization builds an original edge's weight as
+    /// `node_weight(head) + turn(arc)`, so subtracting the head's link
+    /// weight recovers the scaled turn penalty element by element.
+    fn turn_charges(w: &CchWeights, node_weights: &[u32]) -> Vec<u32> {
+        let topo = cch_topo();
+        let head_weight = |rank: usize| -> u32 {
+            let filtered = RANK_TO_FILTERED[rank] as usize;
+            node_weights[filtered] // identity filtered -> original
+        };
+        let mut out = Vec::new();
+        for (i, &target) in topo.up_targets.iter().enumerate() {
+            out.push(w.up.get(i) - head_weight(target as usize));
+        }
+        for (i, &target) in topo.down_targets.iter().enumerate() {
+            out.push(w.down.get(i) - head_weight(target as usize));
+        }
+        out
+    }
+
+    #[test]
+    fn bands_are_ordered_best_le_typical_le_worst() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let fx = fixture();
+        let base = base_mode(&fx.state, BASE_TIMES.to_vec());
+        // ONE prep for the three passes — the shape production uses.
+        let mut prep = EdgeRecustomizePrep::new(&fx.parquet);
+        let run = |prep: &mut EdgeRecustomizePrep, column| {
+            fx.state
+                .recustomized_weights_from_edge_table(&base, prep, column)
+                .unwrap_or_else(|e| panic!("{column:?} pass: {e}"))
+        };
+        let (_, w_typ, nw_typ) = run(&mut prep, EdgeTableColumn::Median);
+        let (_, w_best, nw_best) = run(&mut prep, EdgeTableColumn::Best);
+        let (_, w_worst, nw_worst) = run(&mut prep, EdgeTableColumn::Worst);
+
+        // 1. Link weights, per EBG state.
+        assert_eq!(nw_typ.len(), BASE_TIMES.len());
+        for i in 0..nw_typ.len() {
+            assert!(
+                nw_best[i] <= nw_typ[i] && nw_typ[i] <= nw_worst[i],
+                "state {i}: link weights out of band order: \
+                 best {} / typical {} / worst {}",
+                nw_best[i],
+                nw_typ[i],
+                nw_worst[i]
+            );
+        }
+        assert!(
+            (0..nw_typ.len()).any(|i| nw_best[i] < nw_worst[i]),
+            "the fixture must produce a non-degenerate band spread"
+        );
+
+        // 2. Customized CCH weights, per edge and per channel.
+        for (label, best, typ, worst) in [
+            (
+                "up",
+                w_best.up.to_vec_u32(),
+                w_typ.up.to_vec_u32(),
+                w_worst.up.to_vec_u32(),
+            ),
+            (
+                "down",
+                w_best.down.to_vec_u32(),
+                w_typ.down.to_vec_u32(),
+                w_worst.down.to_vec_u32(),
+            ),
+        ] {
+            assert_eq!(best.len(), typ.len());
+            assert_eq!(typ.len(), worst.len());
+            for i in 0..typ.len() {
+                assert!(
+                    best[i] <= typ[i] && typ[i] <= worst[i],
+                    "{label}[{i}]: CCH weights out of band order: \
+                     best {} / typical {} / worst {}",
+                    best[i],
+                    typ[i],
+                    worst[i]
+                );
+            }
+        }
+
+        // 3. Turn penalties: the #524 level anchor scales them alongside the
+        //    link weights, so they must respect the same order.
+        let t_best = turn_charges(&w_best, &nw_best);
+        let t_typ = turn_charges(&w_typ, &nw_typ);
+        let t_worst = turn_charges(&w_worst, &nw_worst);
+        assert_eq!(t_typ.len(), 2, "one up edge + one down edge");
+        for i in 0..t_typ.len() {
+            assert!(
+                t_best[i] <= t_typ[i] && t_typ[i] <= t_worst[i],
+                "turn charge {i} out of band order: \
+                 best {} / typical {} / worst {}",
+                t_best[i],
+                t_typ[i],
+                t_worst[i]
+            );
+        }
+        assert!(
+            t_typ.iter().any(|&t| t > 0),
+            "the fixture must actually charge turns"
+        );
+    }
 }
