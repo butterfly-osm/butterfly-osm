@@ -435,7 +435,7 @@ impl PackedSnapIndex {
         mode_idx: u8,
         edge_filter: Option<&[u64]>,
     ) -> Option<(u32, f64, f64, f64)> {
-        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, None)
+        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, None, None)
     }
 
     /// Snap with full info, constrained by an `edge_filter`
@@ -448,6 +448,13 @@ impl PackedSnapIndex {
     ///
     /// When `role_filter` is None, this is identical to
     /// [`snap_with_info_filtered`].
+    ///
+    /// `bearing` is the optional `(angle, range)` hint in degrees (P7):
+    /// a candidate whose sample bearing falls outside `angle ± range` is
+    /// rejected before the distance test. `None` disables the filter.
+    /// This used to be a second copy of the whole ring scan
+    /// (`snap_with_bearing_filtered_role`) differing by exactly that one
+    /// condition.
     pub fn snap_with_info_filtered_role(
         &self,
         lon: f64,
@@ -455,6 +462,7 @@ impl PackedSnapIndex {
         mode_idx: u8,
         edge_filter: Option<&[u64]>,
         role_filter: Option<&[u64]>,
+        bearing: Option<(u16, u16)>,
     ) -> Option<(u32, f64, f64, f64)> {
         let mask = self.masks.get(mode_idx as usize)?;
         let mut best: Option<(u32, f64, f64, f64)> = None;
@@ -474,6 +482,11 @@ impl PackedSnapIndex {
             {
                 return None;
             }
+            if let Some((angle, range)) = bearing
+                && !bearing_matches(p.bearing, angle, range)
+            {
+                return None;
+            }
             let (d2, plon, plat) = sample_distance2(lon, lat, p);
             if d2 > max2 {
                 return None;
@@ -488,20 +501,6 @@ impl PackedSnapIndex {
             Some(d2)
         });
         best
-    }
-
-    #[cfg(feature = "bench")]
-    /// Convenience: like [`snap`] but also constrained by a dynamic
-    /// EBG-id-indexed `edge_filter` (exclude/avoid path).
-    pub fn snap_filtered(
-        &self,
-        lon: f64,
-        lat: f64,
-        mode_idx: u8,
-        edge_filter: Option<&[u64]>,
-    ) -> Option<u32> {
-        self.snap_with_info_filtered(lon, lat, mode_idx, edge_filter)
-            .map(|(id, _, _, _)| id)
     }
 
     /// Convenience: like [`snap_filtered`] but also constrained by an
@@ -517,86 +516,8 @@ impl PackedSnapIndex {
         edge_filter: Option<&[u64]>,
         role_filter: Option<&[u64]>,
     ) -> Option<u32> {
-        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, role_filter)
+        self.snap_with_info_filtered_role(lon, lat, mode_idx, edge_filter, role_filter, None)
             .map(|(id, _, _, _)| id)
-    }
-
-    #[cfg(feature = "bench")]
-    /// Snap with bearing filter. `bearing` and `range` are degrees.
-    pub fn snap_with_bearing(
-        &self,
-        lon: f64,
-        lat: f64,
-        mode_idx: u8,
-        bearing: u16,
-        range: u16,
-    ) -> Option<(u32, f64, f64, f64)> {
-        self.snap_with_bearing_filtered(lon, lat, mode_idx, bearing, range, None)
-    }
-
-    #[cfg(feature = "bench")]
-    /// Snap with bearing filter + optional EBG-id-indexed edge filter.
-    pub fn snap_with_bearing_filtered(
-        &self,
-        lon: f64,
-        lat: f64,
-        mode_idx: u8,
-        bearing: u16,
-        range: u16,
-        edge_filter: Option<&[u64]>,
-    ) -> Option<(u32, f64, f64, f64)> {
-        self.snap_with_bearing_filtered_role(lon, lat, mode_idx, bearing, range, edge_filter, None)
-    }
-
-    /// Snap with bearing filter, edge filter (exclude/avoid), AND
-    /// `role_filter` (#197 directional snap). See
-    /// [`snap_with_info_filtered_role`] for role-filter semantics.
-    #[allow(clippy::too_many_arguments)]
-    pub fn snap_with_bearing_filtered_role(
-        &self,
-        lon: f64,
-        lat: f64,
-        mode_idx: u8,
-        bearing: u16,
-        range: u16,
-        edge_filter: Option<&[u64]>,
-        role_filter: Option<&[u64]>,
-    ) -> Option<(u32, f64, f64, f64)> {
-        let mask = self.masks.get(mode_idx as usize)?;
-        let mut best: Option<(u32, f64, f64, f64)> = None;
-        let max2 = MAX_SNAP_DISTANCE_M * MAX_SNAP_DISTANCE_M;
-
-        self.iterate_rings(lon, lat, |sample_idx, p| -> Option<f64> {
-            if !mask_bit_set(&mask.bits, sample_idx) {
-                return None;
-            }
-            if let Some(ef) = edge_filter
-                && !mask_bit_set(ef, p.ebg_id as usize)
-            {
-                return None;
-            }
-            if let Some(rf) = role_filter
-                && !mask_bit_set(rf, p.ebg_id as usize)
-            {
-                return None;
-            }
-            if !bearing_matches(p.bearing, bearing, range) {
-                return None;
-            }
-            let (d2, plon, plat) = sample_distance2(lon, lat, p);
-            if d2 > max2 {
-                return None;
-            }
-            let beat = match best {
-                Some(b) => d2 < b.3 * b.3,
-                None => true,
-            };
-            if beat {
-                best = Some((p.ebg_id, plon, plat, d2.sqrt()));
-            }
-            Some(d2)
-        });
-        best
     }
 
     /// K-nearest with full info; results sorted by metric distance,
@@ -753,14 +674,6 @@ impl PackedSnapIndex {
         best.truncate(k);
         best.into_iter()
             .map(|(id, plon, plat, d, _)| (id, plon, plat, d))
-            .collect()
-    }
-
-    /// K-nearest, ebg_ids only.
-    pub fn snap_k(&self, lon: f64, lat: f64, mode_idx: u8, k: usize) -> Vec<u32> {
-        self.snap_k_with_info(lon, lat, mode_idx, k)
-            .into_iter()
-            .map(|(id, _, _, _)| id)
             .collect()
     }
 
@@ -1119,7 +1032,6 @@ mod tests {
         assert_eq!(id, Some(0));
     }
 
-    #[cfg(feature = "bench")]
     #[test]
     fn bearing_filter_rejects_outside_range() {
         // Synthetic two-vertex polylines with known endpoint bearings.
@@ -1178,8 +1090,12 @@ mod tests {
         // Query at the shared start point (lon=4.0, lat=50.0).
         // Bearing filter for North (0±20°) should match node 0.
         // Bearing for East (90±20°) should match node 1.
-        let id_n = idx.snap_with_bearing(4.0, 50.0, 0, 0, 20).map(|x| x.0);
-        let id_e = idx.snap_with_bearing(4.0, 50.0, 0, 90, 20).map(|x| x.0);
+        let id_n = idx
+            .snap_with_info_filtered_role(4.0, 50.0, 0, None, None, Some((0, 20)))
+            .map(|x| x.0);
+        let id_e = idx
+            .snap_with_info_filtered_role(4.0, 50.0, 0, None, None, Some((90, 20)))
+            .map(|x| x.0);
         assert_eq!(id_n, Some(0));
         assert_eq!(id_e, Some(1));
     }

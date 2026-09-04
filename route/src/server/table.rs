@@ -562,6 +562,7 @@ pub fn compute_table_bucket_m2m(
             mode.0,
             Some(snap_mask),
             role.role_filter(&mode_data),
+            None,
         ) {
             let rank = mode_data.orig_to_rank[orig_id as usize];
             if rank != u32::MAX {

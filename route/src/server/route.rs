@@ -565,31 +565,18 @@ pub async fn route_handler(
     // PHASE 1: K=1 snap for both endpoints. Bearing-filtered queries
     // were already K=1 in the previous implementation; non-bearing
     // queries now start at K=1 too and only escalate on failure.
-    let mut src_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = src_bearing {
-        match state.snap_index.snap_with_bearing_filtered_role(
-            req.origin_lon,
-            req.origin_lat,
-            mode.0,
-            angle,
-            range,
-            Some(snap_mask),
-            src_role_filter,
-        ) {
-            Some(t) => vec![t],
-            None => Vec::new(),
-        }
-    } else {
+    let mut src_candidates: Vec<(u32, f64, f64, f64)> =
         match state.snap_index.snap_with_info_filtered_role(
             req.origin_lon,
             req.origin_lat,
             mode.0,
             Some(snap_mask),
             src_role_filter,
+            src_bearing,
         ) {
             Some(t) => vec![t],
             None => Vec::new(),
-        }
-    };
+        };
     if src_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -600,31 +587,18 @@ pub async fn route_handler(
             .into_response();
     }
 
-    let mut dst_candidates: Vec<(u32, f64, f64, f64)> = if let Some((angle, range)) = dst_bearing {
-        match state.snap_index.snap_with_bearing_filtered_role(
-            req.destination_lon,
-            req.destination_lat,
-            mode.0,
-            angle,
-            range,
-            Some(snap_mask),
-            dst_role_filter,
-        ) {
-            Some(t) => vec![t],
-            None => Vec::new(),
-        }
-    } else {
+    let mut dst_candidates: Vec<(u32, f64, f64, f64)> =
         match state.snap_index.snap_with_info_filtered_role(
             req.destination_lon,
             req.destination_lat,
             mode.0,
             Some(snap_mask),
             dst_role_filter,
+            dst_bearing,
         ) {
             Some(t) => vec![t],
             None => Vec::new(),
-        }
-    };
+        };
     if dst_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1430,6 +1404,7 @@ fn cross_region_route_inner(
         src_mode.0,
         None,
         src_role_filter,
+        None,
     ) {
         Some(t) => (t.0, t),
         None => {
@@ -1448,6 +1423,7 @@ fn cross_region_route_inner(
         dst_mode.0,
         None,
         dst_role_filter,
+        None,
     ) {
         Some(t) => (t.0, t),
         None => {

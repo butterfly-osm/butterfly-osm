@@ -229,6 +229,7 @@ pub fn build_phantom_end(
         mode.0,
         edge_filter,
         role_filter,
+        None,
     )?;
     phantom_from_primary(state, mode_data, primary_tuple, lon, lat, role, edge_filter)
 }
