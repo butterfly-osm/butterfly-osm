@@ -1421,6 +1421,95 @@ mod tests {
         assert!(cache_load_section(d, b, 1).is_none());
     }
 
+    /// #571: two writers working at once — the shape a rolling restart on a
+    /// shared volume has — must not invalidate each other's sections, so
+    /// neither is pushed into recomputing on the next boot. Under the append
+    /// format a second writer could rewrite the header and drop everything
+    /// the first had stored.
+    #[test]
+    fn concurrent_writers_do_not_make_each_other_recompute() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let w = tiny_weights();
+        let nw = vec![5u32, 6, 7];
+        let key = |base: u64| SectionKey { file: 4242, base };
+        // The production shape: three passes (ids 0/1/2) over two bases,
+        // plus a second writer racing on the very same section.
+        let jobs: Vec<(SectionKey, u8)> = vec![
+            (key(1), 0),
+            (key(2), 1),
+            (key(2), 2),
+            (key(1), 0),
+            (key(2), 1),
+        ];
+        let start = std::sync::Barrier::new(jobs.len());
+        std::thread::scope(|s| {
+            for (sk, id) in &jobs {
+                let (w, nw, start) = (&w, &nw, &start);
+                s.spawn(move || {
+                    start.wait();
+                    cache_store_section(
+                        d,
+                        *sk,
+                        *id,
+                        &CachedPass {
+                            matched: 100 + *id as u64,
+                            weights: w,
+                            node_weights: nw,
+                        },
+                    )
+                    .expect("a concurrent store must still succeed");
+                });
+            }
+        });
+
+        for (sk, id) in &jobs {
+            let got = cache_load_section(d, *sk, *id)
+                .expect("every section written concurrently must load");
+            assert_eq!(got.matched, 100 + *id as u64);
+            assert_eq!(got.node_weights, nw);
+            assert_same(&got.weights, &w);
+        }
+        // Exactly one file per distinct (base, id) — no scratch survivors.
+        assert_eq!(names_in(d).len(), 3);
+    }
+
+    /// #571: a write that never completes leaves nothing a later boot can
+    /// read as a section — a section's name only ever appears via `rename`.
+    #[test]
+    fn an_interrupted_write_leaves_no_half_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let w = tiny_weights();
+        let nw = vec![3u32, 4];
+        let key = k(31);
+        let pass = CachedPass {
+            matched: 5,
+            weights: &w,
+            node_weights: &nw,
+        };
+        cache_store_section(d, key, 0, &pass).unwrap();
+        let full = std::fs::read(section_path(d, key, 0)).unwrap();
+
+        // A killed writer: a partial file under a scratch name, and no
+        // section file at all (the rename never happened).
+        std::fs::remove_file(section_path(d, key, 0)).unwrap();
+        let scratch = scratch_path(&section_path(d, key, 0));
+        std::fs::write(&scratch, &full[..full.len() / 2]).unwrap();
+        assert!(
+            cache_load_section(d, key, 0).is_none(),
+            "a half-written scratch file must never be read as a section"
+        );
+
+        // The recompute stores cleanly on top of it...
+        cache_store_section(d, key, 0, &pass).unwrap();
+        assert_eq!(cache_load_section(d, key, 0).unwrap().matched, 5);
+        // ...and the orphan is swept the moment the key moves on.
+        sweep_stale_sections(d, 32);
+        assert!(!scratch.exists(), "the orphan scratch must be swept");
+        assert!(names_in(d).is_empty());
+    }
+
     #[test]
     fn the_sweep_drops_stale_keys_and_keeps_the_live_ones() {
         let dir = tempfile::tempdir().unwrap();
