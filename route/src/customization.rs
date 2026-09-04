@@ -80,15 +80,6 @@ pub struct TrafficCustomization {
     pub way_attrs_path: PathBuf,
     /// `nbg.geo` from step 3 — required to map EBG node → first OSM way id.
     pub nbg_geo_path: PathBuf,
-    /// DEVELOPMENT-ONLY: skip triangle relaxation. THIS PRODUCES INCORRECT
-    /// (over-estimated) shortest-path durations because CCH search relies
-    /// on shortcut weights equalling true shortest distances between their
-    /// endpoints. Default false. Empirical Belgium check: skipping relax
-    /// turned a 1947 s / 45 km Brussels–Antwerp route into a 5583 s / 77 km
-    /// route — the algorithm picked a clearly suboptimal corridor because
-    /// the shortcut weights were loose. Only flip this on for bench
-    /// experiments, never for serving traffic to users.
-    pub skip_triangle_relax: bool,
 }
 
 /// Result of Step 8 customization
@@ -246,7 +237,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // (per-EBG-node travel-time in seconds, post-#297). The bottom-up customization
     // passes that follow then propagate the scaled originals through the
     // shortcut hierarchy.
-    let traffic_skip_relax = if let Some(t) = traffic {
+    if let Some(t) = traffic {
         let scale_start = std::time::Instant::now();
         // #294: weights.weights is Cow<[u32]>. Customization is a
         // build-time path that always owns the data; `to_mut()` is a
@@ -258,10 +249,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
             weights.weights.len(),
             scale_start.elapsed().as_secs_f64()
         );
-        t.skip_triangle_relax
-    } else {
-        false
-    };
+    }
 
     // Build shared structures
     println!("\nBuilding sorted filtered EBG adjacency (parallel)...");
@@ -349,53 +337,49 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // Triangle relaxation (parallel internally via atomics)
     //
     // INVARIANT: relaxation only DECREASES weights (fetch_min).
-    // For traffic recustomization with `skip_triangle_relax`, we keep the
-    // original contraction middles — the resulting weights are valid upper
-    // bounds (potentially loose by a few %), the trade-off being a ~30x
-    // wall-time reduction for sub-second recustomization.
+    // ALWAYS run: CCH search relies on shortcut weights equalling true
+    // shortest distances between their endpoints, so unrelaxed weights are
+    // loose upper bounds that make the search pick suboptimal corridors
+    // (#584 deleted the dev-only skip flag over exactly that).
     // ===================================================================
-    let (time_up, time_down, time_up_mid, time_down_mid) = if traffic_skip_relax {
-        println!("\n🔺 Triangle relaxation for TIME: SKIPPED (traffic fast-path)");
-        // Materialize the middles so they live as owned Vec<u32> matching
-        // the relaxed branch's type.
-        let up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
-        let down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
-        (time_up, time_down, up_mid, down_mid)
-    } else if let Some((ref dist_up, ref dist_down)) = dist_pair_opt {
-        // #529: non-traffic build — elect middles by (time, then
-        // length-along-time). Seeds the length channel with the pre-relax
-        // bottom-up DISTANCE weights (length along the contraction
-        // decomposition), which are still owned by `dist_pair_opt` and
-        // consumed unchanged by the DISTANCE relaxation below. TIME
-        // weights are byte-identical to the time-only relaxation; only the
-        // elected middles change (shortest length among equal-time apexes).
-        println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
-        let tr_start = std::time::Instant::now();
-        let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
-            triangle_relax_lex_parallel(&topo, time_up, time_down, dist_up, dist_down, &rev_down);
-        println!(
-            "  ✓ {:.2}s, {} updates in {} passes",
-            tr_start.elapsed().as_secs_f64(),
-            time_relax_count,
-            time_relax_passes
-        );
-        (tu, td, tu_mid, td_mid)
-    } else {
-        // Traffic recustomization (no DISTANCE channel available): keep the
-        // time-only middle election. Traffic modes seldom tie on duration,
-        // so the length tie-break is not needed here.
-        println!("\n🔺 Triangle relaxation for TIME (parallel)...");
-        let tr_start = std::time::Instant::now();
-        let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
-            triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
-        println!(
-            "  ✓ {:.2}s, {} updates in {} passes",
-            tr_start.elapsed().as_secs_f64(),
-            time_relax_count,
-            time_relax_passes
-        );
-        (tu, td, tu_mid, td_mid)
-    };
+    let (time_up, time_down, time_up_mid, time_down_mid) =
+        if let Some((ref dist_up, ref dist_down)) = dist_pair_opt {
+            // #529: non-traffic build — elect middles by (time, then
+            // length-along-time). Seeds the length channel with the pre-relax
+            // bottom-up DISTANCE weights (length along the contraction
+            // decomposition), which are still owned by `dist_pair_opt` and
+            // consumed unchanged by the DISTANCE relaxation below. TIME
+            // weights are byte-identical to the time-only relaxation; only the
+            // elected middles change (shortest length among equal-time apexes).
+            println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
+            let tr_start = std::time::Instant::now();
+            let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
+                triangle_relax_lex_parallel(
+                    &topo, time_up, time_down, dist_up, dist_down, &rev_down,
+                );
+            println!(
+                "  ✓ {:.2}s, {} updates in {} passes",
+                tr_start.elapsed().as_secs_f64(),
+                time_relax_count,
+                time_relax_passes
+            );
+            (tu, td, tu_mid, td_mid)
+        } else {
+            // Traffic recustomization (no DISTANCE channel available): keep the
+            // time-only middle election. Traffic modes seldom tie on duration,
+            // so the length tie-break is not needed here.
+            println!("\n🔺 Triangle relaxation for TIME (parallel)...");
+            let tr_start = std::time::Instant::now();
+            let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
+                triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
+            println!(
+                "  ✓ {:.2}s, {} updates in {} passes",
+                tr_start.elapsed().as_secs_f64(),
+                time_relax_count,
+                time_relax_passes
+            );
+            (tu, td, tu_mid, td_mid)
+        };
 
     let dist_relaxed = match dist_pair_opt {
         Some((dist_up, dist_down)) => {
@@ -558,8 +542,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 /// `traffic` = `(profile, way_attrs, nbg_geo)`: when `Some`, per-density-class
 /// speed factors are applied to a PRIVATE clone of the node time-weights before
 /// contraction (`node_weights_time` is borrowed read-only and left untouched).
-/// Triangle relaxation is ALWAYS run — serving requires exact shortcut weights,
-/// so the `skip_triangle_relax` dev fast-path is deliberately unavailable here.
+/// Triangle relaxation is ALWAYS run — serving requires exact shortcut weights.
 ///
 /// Determinism: for identical inputs the returned `(up, down, up_middle,
 /// down_middle)` values are element-for-element equal to what the CLI

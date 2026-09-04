@@ -510,12 +510,6 @@ pub enum Commands {
         #[arg(long)]
         nbg_geo: Option<PathBuf>,
 
-        /// DEVELOPMENT-ONLY: skip triangle relaxation. Produces INCORRECT
-        /// (over-estimated) routing durations — only use for benchmark
-        /// experiments. Without `--traffic` this flag has no effect.
-        #[arg(long, hide = true)]
-        skip_triangle_relax: bool,
-
         /// When set together with `--traffic`, write the customised
         /// weights to the BASE path `cch.w.<mode>.u32` instead of the
         /// `_<variant>` suffix. Use this to make a friction profile the
@@ -1934,7 +1928,6 @@ impl Cli {
                 traffic,
                 way_attrs,
                 nbg_geo,
-                skip_triangle_relax,
                 bake_as_base,
             } => {
                 // Parse mode — discover from filtered_ebg's parent (step5 dir)
@@ -1982,18 +1975,10 @@ impl Cli {
                                 profile.base_model, mode_name_str
                             );
                         }
-                        if skip_triangle_relax {
-                            eprintln!(
-                                "WARNING: --skip-triangle-relax enabled. The resulting weights \
-                                 produce INCORRECT (over-estimated) routing durations and must \
-                                 NOT be served to users. This flag is for bench experiments only."
-                            );
-                        }
                         Some(customization::TrafficCustomization {
                             profile,
                             way_attrs_path,
                             nbg_geo_path,
-                            skip_triangle_relax,
                         })
                     }
                     None => None,
