@@ -510,7 +510,7 @@ fn serve_contour_pinned(
     // Assert on what is actually SERVED, not on the intermediate struct:
     // the WKB encoder is what /isochrone, /isochrone/bulk, the Flight
     // `isochrone` action and the catchment hulls all go through.
-    let wkb = encode_polygon_wkb(&ContourResult::from_polygons(polys))
+    let wkb = encode_polygon_wkb(&ContourResult::from_topology(polys))
         .expect("the served contour must encode to WKB");
     let rings = wkb_polygon_rings(&wkb);
     assert_eq!(

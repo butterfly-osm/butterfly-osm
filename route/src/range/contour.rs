@@ -1,7 +1,8 @@
 //! Isochrone Contour Types and Export
 //!
 //! Shared types used across isochrone geometry pipeline:
-//! - `ContourResult`: outer ring + holes polygon
+//! - `ContourPolygon`: the tracer/topology view of one polygon
+//! - `ContourResult`: the SERVED contour — one simple ring
 //! - `ContourStats`: generation statistics
 //! - `export_contour_geojson`: write polygon to GeoJSON file
 
@@ -16,49 +17,35 @@ pub struct ContourPolygon {
     pub holes: Vec<Vec<(f64, f64)>>,
 }
 
-/// Contour polygon result.
+/// The contour as it is SERVED: ONE simple ring.
 ///
-/// `outer_ring` + `holes` describe the PRIMARY polygon — the component that
-/// contains the query origin (#497), or the largest one. Any further
-/// reachable components (a village reached over a fast road whose
-/// surroundings do not raster-connect to the main blob) live in `extra`;
-/// together they form a MultiPolygon. Before 2026-09-03 both `holes` and the
-/// extra components were silently dropped, so unreachable pockets were
-/// filled in and detached reach vanished from the drawn shape.
+/// An isochrone (or a catchment lasso) is one simple polygon by definition
+/// (#535/#542, product rule 2026-09-03) — never holed, never a MultiPolygon.
+/// Since #570 that rule is this type: there is no second component to drop
+/// and no hole to fill downstream, so `/isochrone`, `/isochrone/bulk`, the
+/// Flight `isochrone` action and the catchment hulls cannot disagree about
+/// what "the polygon" is.
 #[derive(Debug, Default)]
 pub struct ContourResult {
-    /// Outer ring coordinates (lon, lat pairs)
-    pub outer_ring: Vec<(f64, f64)>,
-    /// Hole rings (if any)
-    pub holes: Vec<Vec<(f64, f64)>>,
-    /// Additional disconnected components (MultiPolygon parts after the primary).
-    pub extra: Vec<ContourPolygon>,
+    /// Outer ring coordinates (lon, lat pairs), open — the encoders close it.
+    pub ring: Vec<(f64, f64)>,
     /// Statistics
     pub stats: ContourStats,
 }
 
 impl ContourResult {
-    /// Build from an ordered polygon list (primary first), no stats.
-    pub fn from_polygons(mut polygons: Vec<ContourPolygon>) -> Self {
-        if polygons.is_empty() {
-            return Self::default();
-        }
-        let first = polygons.remove(0);
+    /// The served contour of a traced topology: its primary polygon's outer
+    /// ring. The tracer emits at most one polygon and never a hole (#570),
+    /// so this is a projection onto the served surface, not a filter.
+    pub fn from_topology(topology: impl IntoIterator<Item = ContourPolygon>) -> Self {
         Self {
-            outer_ring: first.outer,
-            holes: first.holes,
-            extra: polygons,
+            ring: topology
+                .into_iter()
+                .next()
+                .map(|p| p.outer)
+                .unwrap_or_default(),
             stats: ContourStats::default(),
         }
-    }
-
-    /// Every polygon of the result, primary first.
-    pub fn polygons(&self) -> impl Iterator<Item = ContourPolygon> + '_ {
-        std::iter::once(ContourPolygon {
-            outer: self.outer_ring.clone(),
-            holes: self.holes.clone(),
-        })
-        .chain(self.extra.iter().cloned())
     }
 }
 
@@ -73,54 +60,32 @@ pub struct ContourStats {
     pub elapsed_ms: u64,
 }
 
-/// Export contour to GeoJSON
+/// Export contour to GeoJSON (a Polygon, always — #570)
 pub fn export_contour_geojson(result: &ContourResult, output_path: &std::path::Path) -> Result<()> {
     use std::fs::File;
     use std::io::Write;
 
     let mut file = File::create(output_path)?;
 
-    // Closed rings, every polygon (primary + extra), holes included.
-    let ring_json = |ring: &[(f64, f64)]| -> String {
-        let mut s = String::with_capacity(ring.len() * 24 + 24);
-        s.push('[');
-        for (i, &(lon, lat)) in ring.iter().enumerate() {
-            if i > 0 {
-                s.push(',');
-            }
-            s.push_str(&format!("[{:.7}, {:.7}]", lon, lat));
+    // One closed ring: a Polygon, always (#570).
+    let mut ring = String::with_capacity(result.ring.len() * 24 + 24);
+    ring.push('[');
+    for (i, &(lon, lat)) in result.ring.iter().enumerate() {
+        if i > 0 {
+            ring.push(',');
         }
-        if let Some(&(lon, lat)) = ring.first() {
-            s.push_str(&format!(",[{:.7}, {:.7}]", lon, lat));
-        }
-        s.push(']');
-        s
-    };
-    let poly_json = |p: &ContourPolygon| -> String {
-        let mut s = String::from("[");
-        s.push_str(&ring_json(&p.outer));
-        for h in &p.holes {
-            s.push(',');
-            s.push_str(&ring_json(h));
-        }
-        s.push(']');
-        s
-    };
-    let polys: Vec<ContourPolygon> = result.polygons().collect();
-    if polys.len() == 1 {
-        write!(
-            file,
-            r#"{{"type": "Feature", "geometry": {{"type": "Polygon", "coordinates": {}}}"#,
-            poly_json(&polys[0])
-        )?;
-    } else {
-        let parts: Vec<String> = polys.iter().map(poly_json).collect();
-        write!(
-            file,
-            r#"{{"type": "Feature", "geometry": {{"type": "MultiPolygon", "coordinates": [{}]}}"#,
-            parts.join(",")
-        )?;
+        ring.push_str(&format!("[{:.7}, {:.7}]", lon, lat));
     }
+    if let Some(&(lon, lat)) = result.ring.first() {
+        ring.push_str(&format!(",[{:.7}, {:.7}]", lon, lat));
+    }
+    ring.push(']');
+
+    write!(
+        file,
+        r#"{{"type": "Feature", "geometry": {{"type": "Polygon", "coordinates": [{}]}}"#,
+        ring
+    )?;
 
     writeln!(
         file,
@@ -131,4 +96,68 @@ pub fn export_contour_geojson(result: &ContourResult, output_path: &std::path::P
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::range::wkb_stream::encode_polygon_wkb;
+
+    /// The server-side topology type still *permits* several polygons with
+    /// holes; the SERVED contour is the primary polygon's outer ring alone,
+    /// and nothing else can reach the encoder (#570).
+    #[test]
+    fn from_topology_serves_only_the_primary_ring() {
+        let primary = ContourPolygon {
+            outer: vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+            holes: vec![vec![(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5)]],
+        };
+        let detached = ContourPolygon {
+            outer: vec![(10.0, 10.0), (11.0, 10.0), (11.0, 11.0)],
+            holes: vec![],
+        };
+        let served = ContourResult::from_topology(vec![primary.clone(), detached]);
+        assert_eq!(served.ring, primary.outer, "the primary component's ring");
+
+        let wkb = encode_polygon_wkb(&served).expect("non-empty contour encodes");
+        assert_eq!(
+            u32::from_le_bytes([wkb[1], wkb[2], wkb[3], wkb[4]]),
+            3,
+            "Polygon (3), never MultiPolygon (6)"
+        );
+        assert_eq!(
+            u32::from_le_bytes([wkb[5], wkb[6], wkb[7], wkb[8]]),
+            1,
+            "exactly one ring: no hole may reach the encoder"
+        );
+
+        assert!(ContourResult::from_topology(vec![]).ring.is_empty());
+    }
+
+    #[test]
+    fn export_contour_geojson_writes_one_closed_polygon() {
+        let served = ContourResult::from_topology(vec![ContourPolygon {
+            outer: vec![(4.0, 50.0), (4.1, 50.0), (4.1, 50.1), (4.0, 50.1)],
+            holes: vec![vec![(4.02, 50.02), (4.08, 50.02), (4.08, 50.08)]],
+        }]);
+        let path = std::env::temp_dir().join(format!(
+            "butterfly_contour_{}_{}.geojson",
+            std::process::id(),
+            line!()
+        ));
+        export_contour_geojson(&served, &path).expect("write");
+        let json = std::fs::read_to_string(&path).expect("read back");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(json.contains(r#""type": "Polygon""#), "{json}");
+        assert!(!json.contains("MultiPolygon"), "{json}");
+        // One ring only, and it is closed (first vertex repeated last).
+        assert_eq!(json.matches("[[").count(), 1, "a single ring: {json}");
+        assert_eq!(json.matches("]]").count(), 1, "a single ring: {json}");
+        assert_eq!(
+            json.matches("[4.0000000, 50.0000000]").count(),
+            2,
+            "ring must be closed: {json}"
+        );
+    }
 }
