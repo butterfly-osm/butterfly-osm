@@ -210,22 +210,17 @@ pub async fn table_post_handler(
         )
             .into_response();
     }
-    // Guard against memory explosion: max 10,000 sources × destinations for /table
-    // (use the Flight `matrix` action for larger matrices)
-    const MAX_TABLE_CELLS: usize = 10_000_000;
-    if req.origins.len() * req.destinations.len() > MAX_TABLE_CELLS {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "matrix too large: {}×{} = {} cells exceeds limit of {}. Use the Flight `matrix` action (port 3002) for large matrices",
-                    req.origins.len(), req.destinations.len(),
-                    req.origins.len() * req.destinations.len(),
-                    MAX_TABLE_CELLS
-                ),
-            }),
-        )
-            .into_response();
+    // Refuse an over-large request loudly and early, before any snapping:
+    // endpoints first (that is what bounds per-endpoint state, and it makes
+    // the cell multiplication below safe), then the JSON grid this endpoint
+    // has to materialise.
+    for check in [
+        crate::server::types::validate_matrix_endpoints(req.origins.len(), req.destinations.len()),
+        crate::server::types::validate_table_cells(req.origins.len(), req.destinations.len()),
+    ] {
+        if let Err(error) = check {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
     }
     if req.destinations.is_empty() {
         return (
@@ -613,24 +608,29 @@ pub fn compute_table_bucket_m2m(
     // to accept per-source target slices without losing its amortised forward
     // phase; that's a follow-up optimisation and is unnecessary for
     // correctness.
-    let neighbor_mask: Option<Vec<Vec<u32>>> = match radius_param {
-        RadiusParam::None => None,
-        RadiusParam::Km(r) => Some(build_neighbors(&sources_snapped, &targets_snapped, r)),
+    let neighbor_mask: Option<Vec<Vec<u32>>> = match match radius_param {
+        RadiusParam::None => Ok(None),
+        RadiusParam::Km(r) => build_neighbors(&sources_snapped, &targets_snapped, r).map(Some),
         RadiusParam::Auto => {
             let r = auto_radius_km(&sources_snapped, &targets_snapped);
             if r > 0.0 {
-                Some(build_neighbors(&sources_snapped, &targets_snapped, r))
+                build_neighbors(&sources_snapped, &targets_snapped, r).map(Some)
             } else {
-                None
+                Ok(None)
             }
         }
         // #531 per-origin radii: validated len==origins upstream; a wrong
         // length degrades to no-filter for the missing tail (get→inf).
-        RadiusParam::PerOrigin(radii) => Some(build_neighbors_per_origin(
-            &sources_snapped,
-            &targets_snapped,
-            &radii,
-        )),
+        RadiusParam::PerOrigin(radii) => {
+            build_neighbors_per_origin(&sources_snapped, &targets_snapped, &radii).map(Some)
+        }
+    } {
+        Ok(mask) => mask,
+        // Over the neighbour budget: refuse, rather than allocate a mask
+        // that would take the process down.
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        }
     };
 
     let n_sources = sources.len();

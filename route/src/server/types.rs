@@ -92,6 +92,70 @@ pub fn validate_coord(lon: f64, lat: f64, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Largest number of coordinates a matrix request may carry on EITHER
+/// side.
+///
+/// This is the ceiling that actually bounds a matrix request's memory.
+/// Cells are not: the engine's dense `S x T` allocation only happens
+/// below the bucket/PHAST branch threshold, above it the Flight producer
+/// tiles the source dimension and streams, and `/table` caps cells
+/// separately because it must materialise a whole JSON grid. What scales
+/// with NEITHER of those is the per-endpoint state — one snap through
+/// the spatial index, up to six phantom seeds, a snapped coordinate, a
+/// rank, a neighbour row — which is `O(S + T)` and, until this guard,
+/// had no bound at all on the Flight `matrix` action. A ticket-sized
+/// batch (tens of thousands of origins) is far under it; a request with
+/// tens of millions of coordinates is refused before the first snap
+/// instead of spending minutes building state for a matrix nobody can
+/// consume.
+///
+/// A million per side sits an order of magnitude above the largest
+/// documented shape (hundreds of thousands of origins against thousands
+/// of destinations, streamed sparse) and below what the 64 MiB gRPC
+/// ticket can carry anyway — it is a rail against a request that could
+/// only be a mistake, not a throttle on real ones.
+pub const MAX_MATRIX_ENDPOINTS: usize = 1_000_000;
+
+/// Largest number of cells `POST /table` will answer. `/table` builds the
+/// full grid in memory as JSON before it can reply, so it needs a cell
+/// ceiling on top of [`MAX_MATRIX_ENDPOINTS`]; the Flight `matrix` action
+/// streams and does not.
+pub const MAX_TABLE_CELLS: usize = 10_000_000;
+
+/// Refuse a matrix request whose endpoint counts exceed
+/// [`MAX_MATRIX_ENDPOINTS`], naming the count that busted the limit and
+/// the limit itself. Shared by `POST /table` and the Flight `matrix`
+/// action so the two surfaces cannot drift apart on what they accept.
+///
+/// Applied before any snapping, so an over-large request costs a string
+/// comparison rather than a spatial-index sweep per coordinate. It also
+/// makes `n_origins * n_destinations` safe to compute afterwards.
+pub fn validate_matrix_endpoints(n_origins: usize, n_destinations: usize) -> Result<(), String> {
+    for (n, side) in [(n_origins, "sources"), (n_destinations, "destinations")] {
+        if n > MAX_MATRIX_ENDPOINTS {
+            return Err(format!(
+                "too many {side}: {n} exceeds the limit of {MAX_MATRIX_ENDPOINTS} per side. \
+                 Split the request into batches of at most {MAX_MATRIX_ENDPOINTS}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a `/table` request whose grid exceeds [`MAX_TABLE_CELLS`].
+/// Call [`validate_matrix_endpoints`] first — it is what keeps the
+/// multiplication below from overflowing.
+pub fn validate_table_cells(n_origins: usize, n_destinations: usize) -> Result<(), String> {
+    let cells = n_origins * n_destinations;
+    if cells > MAX_TABLE_CELLS {
+        return Err(format!(
+            "matrix too large: {n_origins}x{n_destinations} = {cells} cells exceeds the limit \
+             of {MAX_TABLE_CELLS}. Use the Flight `matrix` action for large matrices"
+        ));
+    }
+    Ok(())
+}
+
 /// Parse mode string to Mode using dynamic lookup in state's mode_lookup table
 pub fn parse_mode(
     s: &str,

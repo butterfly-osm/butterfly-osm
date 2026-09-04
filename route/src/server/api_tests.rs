@@ -381,13 +381,57 @@ fn test_parse_mode_rejects_whitespace() {
 
 // --- Request guard constant sanity tests ---
 
+/// The guard `POST /table` and the Flight `matrix` action actually run —
+/// not a copy of its constant. An over-large request must be REFUSED,
+/// and the refusal must say what the limit is, so a caller can split the
+/// batch without guessing.
 #[test]
-fn test_max_table_cells_is_sensible() {
-    let max_table_cells: usize = 10_000_000;
-    assert!(max_table_cells <= 10_000_000_000);
-    assert!(max_table_cells >= 1);
-    assert!(3162 * 3162 <= max_table_cells);
-    assert!(3163 * 3163 > max_table_cells);
+fn an_oversized_matrix_request_is_refused_with_its_limit() {
+    use crate::server::types::{
+        MAX_MATRIX_ENDPOINTS, MAX_TABLE_CELLS, validate_matrix_endpoints, validate_table_cells,
+    };
+
+    assert!(validate_matrix_endpoints(MAX_MATRIX_ENDPOINTS, MAX_MATRIX_ENDPOINTS).is_ok());
+    for (o, d, side) in [
+        (MAX_MATRIX_ENDPOINTS + 1, 1, "sources"),
+        (1, MAX_MATRIX_ENDPOINTS + 1, "destinations"),
+    ] {
+        let err = validate_matrix_endpoints(o, d)
+            .expect_err("one side over the endpoint ceiling must be refused");
+        assert!(err.contains(side), "{err} must name the side that busted");
+        assert!(
+            err.contains(&MAX_MATRIX_ENDPOINTS.to_string()),
+            "{err} must state the limit"
+        );
+    }
+
+    // Cells are `/table`'s own ceiling on top of that: it materialises the
+    // whole grid as JSON. The endpoint ceiling is what makes this product
+    // safe to compute at all.
+    assert!(validate_table_cells(1_000, 1_000).is_ok());
+    let err = validate_table_cells(MAX_MATRIX_ENDPOINTS, MAX_MATRIX_ENDPOINTS)
+        .expect_err("a 100k x 100k grid is far over the /table cell ceiling");
+    assert!(
+        err.contains(&MAX_TABLE_CELLS.to_string()),
+        "{err} must state the limit"
+    );
+    assert!(
+        MAX_MATRIX_ENDPOINTS
+            .checked_mul(MAX_MATRIX_ENDPOINTS)
+            .is_some(),
+        "the endpoint ceiling must keep the cell product from overflowing"
+    );
+
+    // The ceiling has to leave the documented shapes alone.
+    assert!(
+        validate_matrix_endpoints(50_000, 50_000).is_ok()
+            && validate_matrix_endpoints(500_000, 5_000).is_ok(),
+        "the documented streamed shapes must still be accepted"
+    );
+    assert!(
+        validate_table_cells(3_162, 3_162).is_ok() && validate_table_cells(3_163, 3_163).is_err(),
+        "the /table cell ceiling moved"
+    );
 }
 
 #[test]
