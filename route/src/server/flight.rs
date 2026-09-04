@@ -38,7 +38,8 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::matrix::MatrixPlan;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::matrix::neighbors::{
-    RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
+    RadiusParam, RadiusRescue, build_radius_mask, parse_radius, radius_compute_cap_s,
+    rescue_radius_cut_cells,
 };
 use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
@@ -896,40 +897,12 @@ fn do_matrix(
             params.origins.len()
         )));
     }
-    // #538: the largest radius in play, kept so the compute bound below can
-    // be derived from it (the mask alone doesn't retain the km value).
-    let mut radius_max_km: Option<f64> = None;
-    let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = match radius_param {
-        RadiusParam::None => None,
-        RadiusParam::Km(r) => {
-            radius_max_km = Some(r);
-            Some(Arc::new(
-                build_neighbors(&origins_snapped, &targets_snapped, r)
-                    .map_err(Status::invalid_argument)?,
-            ))
-        }
-        RadiusParam::Auto => {
-            let r = auto_radius_km(&origins_snapped, &targets_snapped);
-            if r > 0.0 {
-                radius_max_km = Some(r);
-                Some(Arc::new(
-                    build_neighbors(&origins_snapped, &targets_snapped, r)
-                        .map_err(Status::invalid_argument)?,
-                ))
-            } else {
-                None
-            }
-        }
-        RadiusParam::PerOrigin(radii) => {
-            radius_max_km = radii.iter().copied().fold(None, |acc: Option<f64>, r| {
-                Some(acc.map_or(r, |a| a.max(r)))
-            });
-            Some(Arc::new(
-                build_neighbors_per_origin(&origins_snapped, &targets_snapped, &radii)
-                    .map_err(Status::invalid_argument)?,
-            ))
-        }
-    };
+    // #538/#602: the mask AND the largest radius behind it, from one shared
+    // builder — the compute bound below must come from the same number.
+    let (neighbor_mask, radius_max_km) =
+        build_radius_mask(radius_param, &origins_snapped, &targets_snapped)
+            .map_err(Status::invalid_argument)?;
+    let neighbor_mask: Option<Arc<Vec<Vec<u32>>>> = neighbor_mask.map(Arc::new);
 
     let n_origin = params.origins.len();
     let n_dst = params.destinations.len();
@@ -966,19 +939,10 @@ fn do_matrix(
         //     seedset is a no-op and the row/column stays MAX (masked at
         //     emit anyway);
         //  2. the engine runs under an effective bound derived from the
-        //     radius: crow-fly can't bound road TIME exactly, so the cap is
-        //     deliberately conservative (RADIUS_SEC_PER_KM × r + base) and
-        //     every in-radius cell it still cuts is recomputed EXACTLY by
-        //     the rescue pass below. The constants trade rescue frequency
-        //     against sweep pruning — never correctness.
-        const RADIUS_SEC_PER_KM: f64 = 180.0; // ≥ detour 1.8 at 36 km/h
-        const RADIUS_BASE_S: f64 = 900.0;
-        let radius_cap_s: Option<u32> = radius_max_km.map(|r| {
-            (r * RADIUS_SEC_PER_KM + RADIUS_BASE_S)
-                .ceil()
-                .min(u32::MAX as f64) as u32
-        });
-        let eff_threshold = radius_cap_s.map_or(threshold, |c| threshold.min(c));
+        //     radius ([`radius_compute_cap_s`]), and every in-radius cell it
+        //     still cuts is recomputed EXACTLY by the rescue pass below.
+        let eff_threshold =
+            radius_max_km.map_or(threshold, |r| threshold.min(radius_compute_cap_s(r)));
 
         let mut src_seedsets = src_seedsets;
         let mut tgt_seedsets = tgt_seedsets;
@@ -1043,79 +1007,28 @@ fn do_matrix(
         // cannot relabel a PHAST-served matrix as `mixed`.
         plan_cell.record(stats.plan);
 
-        // #538 rescue: the radius cap is a heuristic COMPUTE bound, not an
-        // output contract — any in-radius cell it cut (MAX under
-        // eff_threshold < user threshold) is recomputed exactly here, per
-        // affected source via the bucket engine (1 × its cut targets), under
-        // the USER bound only. Sources/targets emptied above can't appear
-        // (their cells are out-of-radius by construction).
-        if let Some(nm) = &neighbor_mask
-            && eff_threshold < threshold
-        {
-            use rayon::prelude::*;
-            let in_radius = |i: usize, j: usize| -> bool {
-                nm[valid_origin[i]]
-                    .binary_search(&(valid_dst[j] as u32))
-                    .is_ok()
-            };
-            let rescue_work: Vec<(usize, Vec<usize>)> = (0..n_valid_origin)
-                .filter_map(|i| {
-                    if src_seedsets[i].is_empty() {
-                        return None;
-                    }
-                    // A cell > eff_threshold is EITHER cut (MAX) or a
-                    // non-minimal bounded-join artifact (#415) — both need
-                    // the exact recompute; only values ≤ eff_threshold are
-                    // trustworthy under the cap.
-                    let cut: Vec<usize> = (0..n_valid_dst)
-                        .filter(|&j| {
-                            !tgt_seedsets[j].is_empty()
-                                && matrix[i * n_valid_dst + j] > eff_threshold
-                                && in_radius(i, j)
-                        })
-                        .collect();
-                    if cut.is_empty() { None } else { Some((i, cut)) }
-                })
-                .collect();
-            if !rescue_work.is_empty() {
-                let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
-                tracing::debug!(
-                    sources = rescue_work.len(),
-                    cells = n_cells,
+        // #538/#602 rescue: the radius cap is a heuristic COMPUTE bound, not
+        // an output contract — every in-radius cell it cut is recomputed
+        // exactly. ONE body with REST /table, so a caller who sets a radius
+        // gets the same cells whichever transport it used.
+        if let Some(nm) = &neighbor_mask {
+            rescue_radius_cut_cells(
+                &RadiusRescue {
+                    n_nodes,
+                    up,
+                    down,
+                    lat_flats,
+                    src_seedsets: &src_seedsets,
+                    tgt_seedsets: &tgt_seedsets,
+                    neighbor_mask: nm,
+                    src_ix: &valid_origin,
+                    dst_ix: &valid_dst,
                     eff_threshold,
-                    "radius cap rescue (#538): exact recompute of cut in-radius cells"
-                );
-                type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
-                let patches: Vec<RescuePatch> = rescue_work
-                    .par_iter()
-                    .map(|(i, cut)| {
-                        let one_src = vec![src_seedsets[*i].clone()];
-                        let sel_tgts: Vec<Vec<(u32, u32, u32, bool)>> =
-                            cut.iter().map(|&j| tgt_seedsets[j].clone()).collect();
-                        if let Some((up_lat, dn_lat)) = lat_flats {
-                            let (t, l, _) =
-                                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
-                                    n_nodes, up, down, up_lat, dn_lat, None, &one_src, &sel_tgts,
-                                    threshold,
-                                );
-                            (*i, cut.clone(), t, Some(l))
-                        } else {
-                            let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
-                                n_nodes, up, down, None, &one_src, &sel_tgts, threshold,
-                            );
-                            (*i, cut.clone(), t, None)
-                        }
-                    })
-                    .collect();
-                for (i, cut, t, l) in patches {
-                    for (k, &j) in cut.iter().enumerate() {
-                        matrix[i * n_valid_dst + j] = t[k];
-                        if let (Some(lm), Some(lv)) = (lat_matrix_opt.as_mut(), l.as_ref()) {
-                            lm[i * n_valid_dst + j] = lv[k];
-                        }
-                    }
-                }
-            }
+                    threshold,
+                },
+                &mut matrix,
+                lat_matrix_opt.as_mut(),
+            );
         }
 
         // Per-cell K-best fallback for INF cells (mirrors /table POST).
@@ -1560,6 +1473,20 @@ struct RoutePairRow {
     wkb: Option<Vec<u8>>,
 }
 
+/// #580/#604: one pair's resolved route — the CCH result plus everything a
+/// caller needs to bill it exactly like `/route` does.
+///
+/// `end_clip` is `Some((src_frac, dst_frac))` only on the phantom-seeded fast
+/// path, which is the one tier that charges partial first/last edges into the
+/// duration. The escalation tiers commit to a whole directed edge per
+/// endpoint, so they clip nothing — the same rule `/route` follows.
+struct PairRoute {
+    src_rank: u32,
+    dst_rank: u32,
+    result: super::query::QueryResult,
+    end_clip: Option<(f64, f64)>,
+}
+
 /// #580: how one surface drives a single (src,dst) pair through the CCH.
 ///
 /// `route_batch` (bounded and unbounded) and `edges_batch` all snap both
@@ -1577,30 +1504,37 @@ struct PairPlan<'a> {
     /// which of several equal-cost geometries a phantom-miss pair returns.
     k1_shortcut: bool,
     /// Cap on (source × destination) candidate combinations in the K=64
-    /// escalation. NOT the same on both surfaces — see
-    /// [`EDGES_BATCH_MAX_COMBOS`].
+    /// escalation. #601: [`super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS`]
+    /// on EVERY surface — the knob is kept on the plan because the plan is
+    /// where a future surface would have to argue for a different value, in
+    /// the open, rather than in its own escalation loop.
     max_combos: usize,
 }
 
-/// `edges_batch`'s escalation cap. Bounds the worst-case cost of a pair whose
-/// K=64 candidates don't connect: reachable pairs connect on the
-/// closest-sum-first combos almost immediately (the #197 connectivity masks
-/// keep candidates on the main component), and the Belgium benchmark's
-/// reachable count is identical at 8 / 16 / 200.
+/// `edges_batch`'s plan: K=1 shortcut, the shared escalation cap, no
+/// instrumentation.
 ///
-/// It is NOT [`super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS`], which #548
-/// set to 400 everywhere else precisely so two surfaces could not disagree on
-/// whether a pair is routable at all. `edges_batch` is the one surface still
-/// outside that: a pair it calls unreachable can be routable on `/route`.
-/// Raising it is a measurable change (25× the combos on disconnected pairs),
-/// so it stays named and deliberate rather than quietly unified here.
-const EDGES_BATCH_MAX_COMBOS: usize = 16;
-
-/// `edges_batch`'s plan: K=1 shortcut, bounded escalation, no instrumentation.
+/// #601: this surface used to cap the escalation at 16 combinations while
+/// every other surface used 400, so a pair `edges_batch` reported unreachable
+/// could be routed by `/route` on the same graph in the same process. It now
+/// uses the shared value.
+///
+/// Measured on Belgium before raising it (2026-09-04): the cap is
+/// unreachable by construction. `build_role_masks` (state.rs) admits a
+/// SOURCE candidate only if it can reach the largest SCC and a DESTINATION
+/// candidate only if it is reachable from it, so any combo of a non-empty
+/// source list with a non-empty destination list is connected and the very
+/// first one succeeds; a pair with an empty list on either side returns
+/// `None` before the loop starts. Empirically: 41 400 random pairs (inland,
+/// across the sea, and outside the extract) produced zero verdict difference
+/// between the two caps, and a 241 827-point 500 m lattice over the whole
+/// extract contained no point that snaps to a road within 5 km yet is
+/// unreachable. Raising the cap therefore costs nothing measurable, and
+/// closing the disagreement is free.
 const EDGES_PAIR_PLAN: PairPlan<'static> = PairPlan {
     fallback_count: None,
     k1_shortcut: true,
-    max_combos: EDGES_BATCH_MAX_COMBOS,
+    max_combos: super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
 };
 
 /// `route_batch`'s plan (bounded and unbounded alike): no K=1 shortcut, the
@@ -1621,13 +1555,18 @@ fn route_pair_plan(fallback_count: &std::sync::atomic::AtomicU64) -> PairPlan<'_
 ///
 /// `None` ⇒ an endpoint had no phantom, or the seeded query did not connect;
 /// the caller escalates.
+///
+/// #604: also returns the `(src_frac, dst_frac)` end clip, the same pair of
+/// fractions `/route` derives, so the caller can bill the partial first and
+/// last edges in distance and geometry too — not just in the duration the
+/// seeded query already charged exactly.
 fn phantom_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     mode: Mode,
     query: &CchQuery<'_>,
     pair: &[f64; 4],
-) -> Option<(u32, u32, super::query::QueryResult)> {
+) -> Option<PairRoute> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
     // #585: one `phantom_for` per endpoint — snap candidates + build, once.
@@ -1636,16 +1575,24 @@ fn phantom_pair(
     let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
     let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
     let r = query.query_seeded(&src_seeds, &dst_seeds, false)?;
-    Some((
-        r.src_root,
-        r.dst_root,
-        super::query::QueryResult {
+    let to_ebg = |rank: u32| -> u32 {
+        let f = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        mode_data.filtered_to_original[f as usize]
+    };
+    Some(PairRoute {
+        src_rank: r.src_root,
+        dst_rank: r.dst_root,
+        result: super::query::QueryResult {
             distance: r.distance.saturating_sub(dst_shift),
             meeting_node: r.meeting_node,
             forward_parent: r.forward_parent,
             backward_parent: r.backward_parent,
         },
-    ))
+        end_clip: Some((
+            sp.frac_of(to_ebg(r.src_root)).unwrap_or(0.0),
+            dp.frac_of(to_ebg(r.dst_root)).unwrap_or(1.0),
+        )),
+    })
 }
 
 /// #580: ONE per-pair routing core. Phantom-seeded fast path
@@ -1662,7 +1609,7 @@ fn route_pair(
     query: &CchQuery<'_>,
     pair: &[f64; 4],
     plan: &PairPlan<'_>,
-) -> Option<(u32, u32, super::query::QueryResult)> {
+) -> Option<PairRoute> {
     if let Some(hit) = phantom_pair(state, mode_data, mode, query, pair) {
         return Some(hit);
     }
@@ -1689,7 +1636,12 @@ fn route_pair(
             && d != u32::MAX
             && let Some(r) = query.query(s, d)
         {
-            return Some((s, d, r));
+            return Some(PairRoute {
+                src_rank: s,
+                dst_rank: d,
+                result: r,
+                end_clip: None,
+            });
         }
     }
     escalate_route(state, mode_data, mode, query, pair, plan.max_combos)
@@ -1706,10 +1658,9 @@ fn drive_pair<R>(
     query: &CchQuery<'_>,
     pair: &[f64; 4],
     plan: &PairPlan<'_>,
-    emit: impl FnOnce(u32, u32, &super::query::QueryResult) -> R,
+    emit: impl FnOnce(&PairRoute) -> R,
 ) -> Option<R> {
-    route_pair(state, mode_data, mode, query, pair, plan)
-        .map(|(src_rank, dst_rank, result)| emit(src_rank, dst_rank, &result))
+    route_pair(state, mode_data, mode, query, pair, plan).map(|r| emit(&r))
 }
 
 /// Compute a single pair's `(duration, distance, WKB linestring)`.
@@ -1738,9 +1689,7 @@ fn compute_route_pair(
         query,
         &[slon, slat, dlon, dlat],
         &route_pair_plan(fallback_count),
-        |src_rank, dst_rank, result| {
-            build_route_output(state, mode_data, result, src_rank, dst_rank, scratch)
-        },
+        |pr| build_route_output(state, mode_data, pr, scratch),
     )
 }
 
@@ -1756,42 +1705,51 @@ fn compute_route_pair(
 /// so the `max_meters` prune is a true drop-in on the unbounded
 /// `route_batch` distance — no metric shift, unlike the dropped
 /// distance-optimal approach.
+/// #604: clips the partial first/last edges out of BOTH the distance and the
+/// geometry points, via the same [`super::geometry::clip_route_ends`] body
+/// `/route` uses — the duration was already exact. Before, this surface
+/// reported whole first and last edges, so the same pair got a longer
+/// distance on Flight than on `/route`.
 fn build_route_distance(
     state: &ServerState,
     mode_data: &super::state::ModeData,
-    result: &super::query::QueryResult,
-    src_rank: u32,
+    pr: &PairRoute,
     scratch: &mut RouteScratch,
 ) -> f32 {
-    super::geometry::build_route_points_into(
+    let raw = super::geometry::build_route_points_into(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
         &mode_data.filtered_to_original,
         &state.ebg_nodes,
         &state.edge_geom,
-        &result.forward_parent,
-        &result.backward_parent,
-        src_rank,
+        &pr.result.forward_parent,
+        &pr.result.backward_parent,
+        pr.src_rank,
         &mut scratch.rank_path,
         &mut scratch.ebg_path,
         &mut scratch.points,
+    );
+    super::geometry::clip_route_ends(
+        &state.ebg_nodes,
+        &scratch.ebg_path,
+        &mut scratch.points,
+        raw,
+        pr.end_clip,
     ) as f32
 }
 
 fn build_route_output(
     state: &ServerState,
     mode_data: &super::state::ModeData,
-    result: &super::query::QueryResult,
-    src_rank: u32,
-    dst_rank: u32,
+    pr: &PairRoute,
     scratch: &mut RouteScratch,
 ) -> (f32, f32, Vec<u8>) {
     // #297: result.distance is now seconds (v2 CCH weights).
-    let duration_s = result.distance as f64;
-    let _ = dst_rank; // unpack derives the path from forward+backward parents
+    let duration_s = pr.result.distance as f64;
+    let _ = pr.dst_rank; // unpack derives the path from forward+backward parents
 
-    // distance + geometry points (scratch.points filled).
-    let distance_m = build_route_distance(state, mode_data, result, src_rank, scratch);
+    // distance + geometry points (scratch.points filled, ends clipped).
+    let distance_m = build_route_distance(state, mode_data, pr, scratch);
 
     encode_linestring_wkb_into(&scratch.points, &mut scratch.wkb);
     // #301: `mem::take` leaves `Vec::new()` behind (zero capacity),
@@ -1843,8 +1801,8 @@ fn compute_route_distance_bounded(
         query,
         &[slon, slat, dlon, dlat],
         &route_pair_plan(fallback_count),
-        |src_rank, _dst_rank, result| {
-            let dist = build_route_distance(state, mode_data, result, src_rank, scratch);
+        |pr| {
+            let dist = build_route_distance(state, mode_data, pr, scratch);
             (dist <= bound).then_some(dist)
         },
     )
@@ -2622,8 +2580,15 @@ pub(crate) fn edges_for_pair(
         query,
         pair,
         &EDGES_PAIR_PLAN,
-        |src_rank, dst_rank, result| {
-            emit_pair_rows(state, mode_data, src_rank, dst_rank, result, query_idx)
+        |pr| {
+            emit_pair_rows(
+                state,
+                mode_data,
+                pr.src_rank,
+                pr.dst_rank,
+                &pr.result,
+                query_idx,
+            )
         },
     )
     .unwrap_or(PairEdges {
@@ -2644,6 +2609,7 @@ pub(crate) fn route_for_pair(
     pair: &[f64; 4],
 ) -> Option<(u32, u32, super::query::QueryResult)> {
     route_pair(state, mode_data, mode, query, pair, &EDGES_PAIR_PLAN)
+        .map(|pr| (pr.src_rank, pr.dst_rank, pr.result))
 }
 
 /// #438: K=64 + combo escalation for a pair the cheaper tiers could not
@@ -2663,7 +2629,7 @@ fn escalate_route(
     query: &super::query::CchQuery<'_>,
     pair: &[f64; 4],
     max_combos: usize,
-) -> Option<(u32, u32, super::query::QueryResult)> {
+) -> Option<PairRoute> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
     use super::snap_kbest::SNAP_K;
@@ -2693,7 +2659,15 @@ fn escalate_route(
     if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
         return None;
     }
+    // Whole-edge endpoints: the K-best tiers commit to one directed edge per
+    // end, so there is no partial to clip (`/route` does the same).
     super::snap_kbest::p2p_with_kbest_fallback(query, &src_snap.ranks, &dst_snap.ranks, max_combos)
+        .map(|(src_rank, dst_rank, result)| PairRoute {
+            src_rank,
+            dst_rank,
+            result,
+            end_clip: None,
+        })
 }
 
 /// #438: shared unpack + per-edge row emit. Used by BOTH the per-pair
@@ -5184,7 +5158,7 @@ mod edges_batch_grouping_tests {
 /// single body and the two plans, so a re-divergence fails here.
 #[cfg(test)]
 mod pair_driver_tests {
-    use super::{EDGES_BATCH_MAX_COMBOS, EDGES_PAIR_PLAN, route_pair_plan};
+    use super::{EDGES_PAIR_PLAN, route_pair_plan};
 
     /// The ENGINE half of this file — everything before the first test
     /// module. The scans below look for call sites in shipped code, and the
@@ -5258,25 +5232,22 @@ mod pair_driver_tests {
     }
 
     /// #548 set the escalation cap to 400 on every surface so two of them
-    /// could not disagree on whether a pair is routable at all.
-    /// `edges_batch` is the one surface still outside that: it caps at 16 to
-    /// bound the worst case on disconnected pairs. Pinned so the
-    /// disagreement stays a deliberate, visible number rather than an
-    /// accident — and so closing it is a decision someone makes here.
+    /// could not disagree on whether a pair is routable at all. #601 brought
+    /// `edges_batch` — the last surface outside that — in line. Pinned: a
+    /// surface that reintroduces a private cap can report a pair unreachable
+    /// that `/route` routes, on the same graph in the same process.
     #[test]
-    fn edges_batch_caps_escalation_below_the_org_wide_value() {
+    fn every_surface_shares_one_escalation_cap() {
         let counter = std::sync::atomic::AtomicU64::new(0);
         assert_eq!(
             route_pair_plan(&counter).max_combos,
             super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS
         );
-        assert_eq!(EDGES_PAIR_PLAN.max_combos, EDGES_BATCH_MAX_COMBOS);
-        const {
-            assert!(
-                EDGES_BATCH_MAX_COMBOS < super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                "edges_batch is the narrower cap; if that changed, say so on #580"
-            )
-        };
+        assert_eq!(
+            EDGES_PAIR_PLAN.max_combos,
+            super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+            "edges_batch must not carry a narrower cap than /route (#601)"
+        );
     }
 }
 

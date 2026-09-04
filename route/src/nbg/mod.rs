@@ -27,6 +27,15 @@ pub struct NbgResult {
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
+/// The mean earth radius [`haversine_distance`] measures with, in metres.
+/// Exposed so a caller that pre-filters candidates before the exact haversine
+/// check can size its guard from the SAME constant — a guard built on a
+/// different radius is narrower than the check it guards and silently drops
+/// in-range pairs (see `matrix::neighbors::lon_half_width_deg`).
+pub const fn earth_radius_m() -> f64 {
+    EARTH_RADIUS_M
+}
+
 /// Compute haversine distance between two points in meters
 pub fn haversine_distance(lat1_deg: f64, lon1_deg: f64, lat2_deg: f64, lon2_deg: f64) -> f64 {
     let lat1 = lat1_deg.to_radians();

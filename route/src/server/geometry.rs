@@ -268,6 +268,101 @@ fn dist_sq(a: &Point, b: (f64, f64)) -> f64 {
 }
 
 /// Build route geometry from EBG node sequence
+/// Equirectangular segment length in meters (fine at street scale).
+pub fn seg_len_m(a: &Point, b: &Point) -> f64 {
+    let ky = 111_320.0;
+    let kx = 111_320.0 * (a.lat.to_radians().cos());
+    let (dx, dy) = ((a.lon - b.lon) * kx, (a.lat - b.lat) * ky);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Remove `cut_m` meters of polyline from the start, inserting an
+/// interpolated boundary point (#522 phantom end clipping).
+fn cut_polyline_start(pts: &mut Vec<Point>, cut_m: f64) {
+    if cut_m <= 0.0 || pts.len() < 2 {
+        return;
+    }
+    let mut acc = 0.0;
+    for i in 0..pts.len() - 1 {
+        let l = seg_len_m(&pts[i], &pts[i + 1]);
+        if acc + l >= cut_m {
+            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
+            let p = Point {
+                lon: pts[i].lon + (pts[i + 1].lon - pts[i].lon) * t,
+                lat: pts[i].lat + (pts[i + 1].lat - pts[i].lat) * t,
+            };
+            pts.drain(0..=i);
+            pts[0] = p;
+            return;
+        }
+        acc += l;
+    }
+    // cut longer than the polyline: keep the final point only
+    let last = *pts.last().unwrap();
+    pts.clear();
+    pts.push(last);
+}
+
+/// Remove `cut_m` meters of polyline from the end (mirror of the above).
+fn cut_polyline_end(pts: &mut Vec<Point>, cut_m: f64) {
+    if cut_m <= 0.0 || pts.len() < 2 {
+        return;
+    }
+    let mut acc = 0.0;
+    for i in (1..pts.len()).rev() {
+        let l = seg_len_m(&pts[i - 1], &pts[i]);
+        if acc + l >= cut_m {
+            let t = if l > 0.0 { (cut_m - acc) / l } else { 0.0 };
+            let p = Point {
+                lon: pts[i].lon + (pts[i - 1].lon - pts[i].lon) * t,
+                lat: pts[i].lat + (pts[i - 1].lat - pts[i].lat) * t,
+            };
+            pts.truncate(i + 1);
+            let n = pts.len();
+            pts[n - 1] = p;
+            return;
+        }
+        acc += l;
+    }
+    let first = pts[0];
+    pts.clear();
+    pts.push(first);
+}
+
+/// Bill only the PARTIAL first and last edges of a phantom-seeded route
+/// (#522, #604).
+///
+/// `end_clip` is `(src_frac, dst_frac)`: the fraction of the first edge
+/// already behind the origin snap, and the fraction of the last edge already
+/// travelled at the destination snap — exactly the partials the seeded query
+/// charged into `duration_s`. Cuts `pts` in place and returns the corrected
+/// distance, so geometry, distance and duration bill the same road.
+///
+/// ONE body for `/route` and Flight `route_batch` (#604). They used to
+/// disagree: duration was clipped on both, distance and geometry only on
+/// `/route`, so the same pair returned a slightly longer distance depending
+/// on which transport the caller used. A shared helper is the only shape in
+/// which they cannot drift apart again.
+pub fn clip_route_ends(
+    ebg_nodes: &EbgNodes,
+    ebg_path: &[u32],
+    pts: &mut Vec<Point>,
+    distance_m: f64,
+    end_clip: Option<(f64, f64)>,
+) -> f64 {
+    let Some((fs, fd)) = end_clip else {
+        return distance_m;
+    };
+    let (Some(&e0), Some(&en)) = (ebg_path.first(), ebg_path.last()) else {
+        return distance_m;
+    };
+    let head_cut = fs * ebg_nodes.nodes[e0 as usize].length_m as f64;
+    let tail_cut = (1.0 - fd) * ebg_nodes.nodes[en as usize].length_m as f64;
+    cut_polyline_start(pts, head_cut);
+    cut_polyline_end(pts, tail_cut);
+    (distance_m - head_cut - tail_cut).max(0.0)
+}
+
 pub fn build_geometry(
     ebg_path: &[u32],
     ebg_nodes: &EbgNodes,
