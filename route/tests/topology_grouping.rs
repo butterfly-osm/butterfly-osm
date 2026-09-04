@@ -18,6 +18,7 @@
 //!        --release --test topology_grouping
 //!    ```
 
+use butterfly_route::formats::butterfly_dat::Container;
 use butterfly_route::pack::{manifest_bundles, topology_diff};
 use butterfly_route::testutil;
 use std::path::PathBuf;
@@ -103,8 +104,27 @@ fn topology_diff_belgium_explicit_pair() {
     // The car+truck pair is the candidate this PR specifically calls
     // out as "predicted to pass". The tool must accept the explicit
     // mode list and produce a single comparison.
+    //
+    // #587: `truck` is a DEFERRED profile (P5) — no shipped container has
+    // a `mode/truck/topo` section, so this test could not have passed on
+    // any current artifact. Running it at all is new; the missing mode is
+    // a data-content precondition, so it skips rather than failing, and
+    // the pair is worth repointing at two modes that actually ship.
     let Some(path) = locate_belgium_container() else {
         return;
     };
+    if path.is_file() {
+        let container = Container::open(&path).expect("open container");
+        let modes = container.list_modes();
+        for want in ["car", "truck"] {
+            if !modes.iter().any(|m| m == want) {
+                let _: Option<()> = testutil::skip(
+                    "topology_grouping::explicit_pair",
+                    &format!("a container carrying the '{want}' mode (has {modes:?})"),
+                );
+                return;
+            }
+        }
+    }
     topology_diff(&path, Some("car,truck")).expect("topology-diff car,truck");
 }
