@@ -491,43 +491,24 @@ pub async fn route_handler(
         }
     };
 
-    // Compute avoid weights — time-only for P2P route (skip distance + flat adj).
-    // Uses sparse triangle relaxation; #238 fix made pass 1 of sparse mark every
-    // node that is either incident to a changed edge OR a potential middle of a
-    // triangle relaxing one, so it now matches the full path's output. /route
-    // stays on the fast time-only path.
-    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights_time_only(
-            &state,
-            &mode_data,
-            avoid_str,
-            exclude_mask,
-        ) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-            }
+    // #566: one resolution of exclude + avoid_polygons — cached avoid
+    // weights (the recustomization /route only reads the time field of),
+    // the snap mask, and the avoid-over-exclude priority. The mask is
+    // borrowed when neither option is present. Placed AFTER the
+    // `uncertainty` validation above so the cheap 400s still win.
+    let weight_plan = match super::avoid::resolve_weights(
+        &state,
+        &mode_data,
+        mode,
+        exclude_mask,
+        avoid_json.as_deref(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
-    } else {
-        None
     };
-
-    // Build snap mask (with optional avoid/exclude filtering)
-    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
-        std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
-            &mode_data.mask,
-            &entry.flags,
-            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
-        ))
-    } else if let Some(exc) = exclude_mask {
-        std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
-            &mode_data.mask,
-            &state.edge_exclude_flags,
-            exc,
-        ))
-    } else {
-        std::borrow::Cow::Borrowed(&mode_data.mask)
-    };
+    let snap_mask: &[u64] = &weight_plan.snap_mask;
 
     // #197: role-aware snap with multi-candidate fallback. Source
     // point must snap to an EBG node with at least one mode-valid
@@ -591,7 +572,7 @@ pub async fn route_handler(
             mode.0,
             angle,
             range,
-            Some(&snap_mask),
+            Some(snap_mask),
             src_role_filter,
         ) {
             Some(t) => vec![t],
@@ -602,7 +583,7 @@ pub async fn route_handler(
             req.origin_lon,
             req.origin_lat,
             mode.0,
-            Some(&snap_mask),
+            Some(snap_mask),
             src_role_filter,
         ) {
             Some(t) => vec![t],
@@ -626,7 +607,7 @@ pub async fn route_handler(
             mode.0,
             angle,
             range,
-            Some(&snap_mask),
+            Some(snap_mask),
             dst_role_filter,
         ) {
             Some(t) => vec![t],
@@ -637,7 +618,7 @@ pub async fn route_handler(
             req.destination_lon,
             req.destination_lat,
             mode.0,
-            Some(&snap_mask),
+            Some(snap_mask),
             dst_role_filter,
         ) {
             Some(t) => vec![t],
@@ -711,10 +692,7 @@ pub async fn route_handler(
     // directed edge ((f_d-f_s)*w), where this shortcut wrongly returned 0 s
     // for points up to a whole edge apart (found live: 0 s vs a true 30-70 s
     // drive on 17/500 close pairs).
-    let phantom_will_run = src_bearing.is_none()
-        && dst_bearing.is_none()
-        && avoid_entry.is_none()
-        && exclude_mask.is_none();
+    let phantom_will_run = src_bearing.is_none() && dst_bearing.is_none() && weight_plan.is_base();
     if src_rank == dst_rank && !phantom_will_run {
         let snap_point = Point {
             lon: src_snap_info.lon,
@@ -819,28 +797,17 @@ pub async fn route_handler(
         (geometry, duration_s, distance_m, steps, ebg_path)
     };
 
-    // Run primary query (with optional avoid/exclude weights)
-    let exclude_weights = if avoid_entry.is_none() {
-        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
-    } else {
-        None // avoid_entry already incorporates exclude
-    };
-    let query = if let Some(ref entry) = avoid_entry {
-        CchQuery::with_custom_weights(
+    // Run primary query (with optional avoid/exclude weights). Resolving
+    // the plan's weights here — not at plan time — keeps the exclude
+    // recustomization off the early-return paths above.
+    let query = match weight_plan.time_weights() {
+        Some(w) => CchQuery::with_custom_weights(
             &mode_data.cch_topo,
             &mode_data.up_adj_flat,
             &mode_data.down_rev_flat,
-            &entry.weights.time_weights,
-        )
-    } else if let Some(ref ew) = exclude_weights {
-        CchQuery::with_custom_weights(
-            &mode_data.cch_topo,
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &ew.time_weights,
-        )
-    } else {
-        CchQuery::new(&mode_data)
+            w,
+        ),
+        None => CchQuery::new(&mode_data),
     };
     // #197: multi-candidate fallback. Try the best (src, dst)
     // combination first; if it fails, retry with the next candidates
@@ -900,11 +867,7 @@ pub async fn route_handler(
     // (4x fwd/rev asymmetry on long rural edges). Bearing hints imply an
     // explicit direction and avoid/exclude run custom weight vectors the seed
     // costs don't reflect — those paths keep the legacy single-seed flow.
-    if src_bearing.is_none()
-        && dst_bearing.is_none()
-        && avoid_entry.is_none()
-        && exclude_weights.is_none()
-    {
+    if src_bearing.is_none() && dst_bearing.is_none() && weight_plan.is_base() {
         // K=8 candidate fetch so near-equidistant PARALLEL physical edges are
         // all seeded (Robertville: the correct road was 12 m further than a
         // track whose both directions detour 15 km).
@@ -913,7 +876,7 @@ pub async fn route_handler(
             req.origin_lat,
             mode.0,
             8,
-            Some(&snap_mask),
+            Some(snap_mask),
             src_role_filter,
         );
         let dst_k = state.snap_index.snap_k_with_info_filtered_role(
@@ -921,7 +884,7 @@ pub async fn route_handler(
             req.destination_lat,
             mode.0,
             8,
-            Some(&snap_mask),
+            Some(snap_mask),
             dst_role_filter,
         );
         let src_ph = super::phantom::phantom_from_candidates(
@@ -931,7 +894,7 @@ pub async fn route_handler(
             req.origin_lon,
             req.origin_lat,
             super::types::SnapRole::Src,
-            Some(&snap_mask),
+            Some(snap_mask),
         );
         let dst_ph = super::phantom::phantom_from_candidates(
             &state,
@@ -940,7 +903,7 @@ pub async fn route_handler(
             req.destination_lon,
             req.destination_lat,
             super::types::SnapRole::Dst,
-            Some(&snap_mask),
+            Some(snap_mask),
         );
         if let (Some(sp), Some(dp)) = (src_ph, dst_ph) {
             // Same-physical-edge direct move. The seeded query's guard skips
@@ -1086,7 +1049,7 @@ pub async fn route_handler(
             req.origin_lat,
             mode.0,
             SNAP_K,
-            Some(&snap_mask),
+            Some(snap_mask),
             src_role_filter,
         );
         let mut new_dst = state.snap_index.snap_k_with_info_filtered_role(
@@ -1094,7 +1057,7 @@ pub async fn route_handler(
             req.destination_lat,
             mode.0,
             SNAP_K,
-            Some(&snap_mask),
+            Some(snap_mask),
             dst_role_filter,
         );
         if !new_src.is_empty() && !new_dst.is_empty() {
@@ -1169,13 +1132,7 @@ pub async fn route_handler(
         }
     };
 
-    let active_weights = if let Some(ref entry) = avoid_entry {
-        &entry.weights.time_weights
-    } else if let Some(ref ew) = exclude_weights {
-        &ew.time_weights
-    } else {
-        &mode_data.cch_weights
-    };
+    let active_weights = weight_plan.time_weights().unwrap_or(&mode_data.cch_weights);
 
     let (geometry, duration_s, distance_m, mut steps, ebg_path) = build_route(
         &result,
@@ -1306,13 +1263,10 @@ pub async fn route_handler(
         // This clones ~200MB (up + down weight arrays). Acceptable for alternatives
         // since they're requested rarely (only when alternatives > 0).
         // A proper fix (penalty views) would require changing the CchQuery API.
-        let mut penalized_weights = if let Some(ref entry) = avoid_entry {
-            entry.weights.time_weights.clone()
-        } else if let Some(ref ew) = exclude_weights {
-            ew.time_weights.clone()
-        } else {
-            mode_data.cch_weights.clone()
-        };
+        let mut penalized_weights = weight_plan
+            .time_weights()
+            .unwrap_or(&mode_data.cch_weights)
+            .clone();
 
         // Penalize edges of the primary route
         for &(_node, edge_idx) in &result.forward_parent {
