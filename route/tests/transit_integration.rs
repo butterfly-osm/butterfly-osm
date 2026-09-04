@@ -20,10 +20,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use butterfly_route::server::state::ServerState;
-use butterfly_route::testutil;
 use butterfly_route::server::transit_handler::{
     TransitBulkResult, TransitRequest, compute_transit_journey, run_bulk,
 };
+use butterfly_route::testutil;
 use butterfly_route::transit::gtfs::{FeedSource, ServiceFilter, load_many, load_zip};
 use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;

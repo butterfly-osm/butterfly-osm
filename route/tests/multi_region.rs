@@ -32,10 +32,8 @@ use butterfly_route::testutil;
 struct Skip;
 impl Skip {
     fn with_be_lu(&self) {
-        let _: Option<()> = testutil::skip(
-            "multi_region",
-            "Belgium + Luxembourg .butterfly containers",
-        );
+        let _: Option<()> =
+            testutil::skip("multi_region", "Belgium + Luxembourg .butterfly containers");
     }
 }
 const SKIP: Skip = Skip;
