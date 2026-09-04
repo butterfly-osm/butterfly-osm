@@ -524,37 +524,29 @@ pub fn compute_table_bucket_m2m(
     // legacy (their custom weight vectors aren't reflected in seed costs).
     let phantom_ok = custom_weights.is_none();
     let snap_endpoint = |lon: f64, lat: f64, role: super::types::SnapRole| -> SnapResult {
-        if phantom_ok {
-            let k = state.snap_index.snap_k_with_info_filtered_role(
-                lon,
-                lat,
-                mode.0,
-                8,
-                Some(snap_mask),
-                role.role_filter(&mode_data),
-            );
-            if let Some(pe) = super::phantom::phantom_from_candidates(
+        if phantom_ok
+            && let Some(pe) = super::phantom::phantom_for(
                 state,
                 &mode_data,
-                &k,
+                mode,
                 lon,
                 lat,
                 role,
                 Some(snap_mask),
-            ) {
-                let seeds: Vec<(u32, u32, u32, bool)> = pe
-                    .seeds
-                    .iter()
-                    .map(|x| (x.rank, x.part_time, x.part_len, x.direct_ok))
-                    .collect();
-                let primary_rank = mode_data.orig_to_rank[pe.primary_ebg as usize];
-                let rank = if primary_rank != u32::MAX {
-                    primary_rank
-                } else {
-                    seeds[0].0
-                };
-                return (rank, (pe.snapped_lon, pe.snapped_lat), true, seeds);
-            }
+            )
+        {
+            let seeds: Vec<(u32, u32, u32, bool)> = pe
+                .seeds
+                .iter()
+                .map(|x| (x.rank, x.part_time, x.part_len, x.direct_ok))
+                .collect();
+            let primary_rank = mode_data.orig_to_rank[pe.primary_ebg as usize];
+            let rank = if primary_rank != u32::MAX {
+                primary_rank
+            } else {
+                seeds[0].0
+            };
+            return (rank, (pe.snapped_lon, pe.snapped_lat), true, seeds);
         }
         if let Some((orig_id, plon, plat, _)) = state.snap_index.snap_with_info_filtered_role(
             lon,
