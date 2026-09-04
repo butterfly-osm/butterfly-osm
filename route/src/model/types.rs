@@ -37,9 +37,10 @@ pub struct WayOutput {
     pub per_km_penalty_ds: u16,
     /// Constant penalty per edge entry in deciseconds
     pub const_penalty_ds: u32,
-    /// Urban density class — used by step 8 traffic recustomization to apply
-    /// per-class speed factors. See `crate::density`. Defaults to `Suburban`
-    /// (encoded as 3) so v1 way_attrs files round-trip cleanly through v2.
+    /// Urban density class. See `crate::density` — no consumer reads it since
+    /// #582/#599 retired the per-density traffic profiles; it stays as part of
+    /// the way_attrs v2 on-disk format. Defaults to `Suburban` (encoded as 3)
+    /// so v1 way_attrs files round-trip cleanly through v2.
     pub density_class: u8,
 }
 
@@ -55,9 +56,7 @@ impl Default for WayOutput {
             class_bits: 0,
             per_km_penalty_ds: 0,
             const_penalty_ds: 0,
-            // Suburban (3) is the neutral default — corresponds to a 1.0
-            // factor in the freeflow profile and a sensible mid-bucket for
-            // traffic profiles that don't explicitly call out the class.
+            // Suburban (3) is the neutral mid-bucket default.
             density_class: 3,
         }
     }
