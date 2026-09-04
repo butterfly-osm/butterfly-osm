@@ -61,10 +61,15 @@ jobs:
       # scripts/hooks/pre-push runs — one definition, so the local hook and this
       # workflow cannot drift. It runs, in order:
       #   upstream-clean · rustfmt --check · clippy (all targets, all features)
-      #   · build (workspace) · test --workspace (lib AND route/tests/*.rs; the
-      #   Belgium-container tests are env-gated on BT_*_CONTAINER and self-skip,
-      #   so no 24 GB artifact is needed) · py_compile of the post-deploy gate
-      #   · the gate's --list-gates registry smoke.
+      #   · test --workspace (lib AND route/tests/*.rs; it also links
+      #   butterfly-route and butterfly-dl, so there is no separate build step
+      #   — #591. The container-backed tests are #[ignore] or probe for data/
+      #   plus the opt-in $BUTTERFLY_TEST_DATA_DIR and self-skip, so no 24 GB
+      #   artifact is needed) · test --workspace --all-features (#556: the
+      #   `feature = "bench"`-gated tests; this is also what links the
+      #   bench-only butterfly-bench) · a count guard proving the all-features
+      #   test list is a strict superset of the default one · py_compile of the
+      #   post-deploy gate · the gate's --list-gates registry smoke.
       # Each step is wrapped in a ::group:: so the log stays readable.
-      - name: ci steps (fmt, clippy, build, tests, post-deploy gate)
+      - name: ci steps (fmt, clippy, tests, post-deploy gate)
         run: bash scripts/ci-steps.sh

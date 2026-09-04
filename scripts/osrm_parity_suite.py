@@ -14,6 +14,8 @@ import requests
 import random
 import time
 import sys
+import os
+import tempfile
 import json
 import statistics
 import math
@@ -141,8 +143,17 @@ def calculate_correlation(x: List[float], y: List[float]) -> float:
     return num / (denom_x * denom_y)
 
 
-def run_parity_suite(n_queries: int = 10000, n_workers: int = 16, save_flagged: bool = True):
-    """Run the full parity suite."""
+def run_parity_suite(
+    n_queries: int = 10000,
+    n_workers: int = 16,
+    save_flagged: bool = True,
+    out_path: Optional[str] = None,
+):
+    """Run the full parity suite.
+
+    Flagged queries are written to ``out_path`` (default: the system temp
+    dir). Never a path inside ``scripts/`` — that dirtied the tree (#591).
+    """
     print("=" * 70)
     print("OSRM SANITY PARITY SUITE")
     print("=" * 70)
@@ -289,7 +300,7 @@ def run_parity_suite(n_queries: int = 10000, n_workers: int = 16, save_flagged: 
                 "drift_pct": r.duration_diff_pct,
             })
 
-        flagged_path = "scripts/osrm_parity_flagged.json"
+        flagged_path = out_path or os.path.join(tempfile.gettempdir(), "osrm_parity_flagged.json")
         with open(flagged_path, "w") as f:
             json.dump(flagged_data, f, indent=2)
         print(f"  Saved to: {flagged_path}")
@@ -365,6 +376,12 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--n-queries", type=int, default=10000, help="Number of random queries")
     parser.add_argument("-w", "--workers", type=int, default=16, help="Number of parallel workers")
     parser.add_argument("--no-save", action="store_true", help="Don't save flagged queries to file")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Where to write the flagged queries JSON "
+        "(default: <system temp dir>/osrm_parity_flagged.json; never under scripts/)",
+    )
     args = parser.parse_args()
 
-    run_parity_suite(args.n_queries, args.workers, not args.no_save)
+    run_parity_suite(args.n_queries, args.workers, not args.no_save, args.out)
