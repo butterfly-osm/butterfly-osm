@@ -1552,16 +1552,164 @@ struct RoutePairRow {
     wkb: Option<Vec<u8>>,
 }
 
+/// #580: how one surface drives a single (src,dst) pair through the CCH.
+///
+/// `route_batch` (bounded and unbounded) and `edges_batch` all snap both
+/// endpoints, run the query and escalate on a miss. They carried a private
+/// copy of all three tiers and differed only in these knobs — plus what they
+/// do with the result, which is the `emit` closure of [`drive_pair`].
+struct PairPlan<'a> {
+    /// Bumped once per pair whose phantom-seeded fast path missed and had to
+    /// escalate. `route_batch` logs the rate per chunk (#275-bench);
+    /// `edges_batch` does not instrument it.
+    fallback_count: Option<&'a std::sync::atomic::AtomicU64>,
+    /// Try the direct K=1 snap + query before paying the K=64 collect.
+    /// `edges_batch` does (#438: it also feeds the grouped path's precomputed
+    /// ranks); `route_batch` does not, and enabling it there would change
+    /// which of several equal-cost geometries a phantom-miss pair returns.
+    k1_shortcut: bool,
+    /// Cap on (source × destination) candidate combinations in the K=64
+    /// escalation. NOT the same on both surfaces — see
+    /// [`EDGES_BATCH_MAX_COMBOS`].
+    max_combos: usize,
+}
+
+/// `edges_batch`'s escalation cap. Bounds the worst-case cost of a pair whose
+/// K=64 candidates don't connect: reachable pairs connect on the
+/// closest-sum-first combos almost immediately (the #197 connectivity masks
+/// keep candidates on the main component), and the Belgium benchmark's
+/// reachable count is identical at 8 / 16 / 200.
+///
+/// It is NOT [`super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS`], which #548
+/// set to 400 everywhere else precisely so two surfaces could not disagree on
+/// whether a pair is routable at all. `edges_batch` is the one surface still
+/// outside that: a pair it calls unreachable can be routable on `/route`.
+/// Raising it is a measurable change (25× the combos on disconnected pairs),
+/// so it stays named and deliberate rather than quietly unified here.
+const EDGES_BATCH_MAX_COMBOS: usize = 16;
+
+/// `edges_batch`'s plan: K=1 shortcut, bounded escalation, no instrumentation.
+const EDGES_PAIR_PLAN: PairPlan<'static> = PairPlan {
+    fallback_count: None,
+    k1_shortcut: true,
+    max_combos: EDGES_BATCH_MAX_COMBOS,
+};
+
+/// `route_batch`'s plan (bounded and unbounded alike): no K=1 shortcut, the
+/// org-wide 400-combo escalation, fallback rate instrumented.
+fn route_pair_plan(fallback_count: &std::sync::atomic::AtomicU64) -> PairPlan<'_> {
+    PairPlan {
+        fallback_count: Some(fallback_count),
+        k1_shortcut: false,
+        max_combos: super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    }
+}
+
+/// #502/#506/#509: the phantom-seeded fast path — both directed twins of up
+/// to 3 near-equidistant physical edges per endpoint with exact partial
+/// costs, one seeded query. Replaces the K=1 single-directed-edge commitment
+/// that caused 4× fwd/rev asymmetry on long rural chains, and is what makes
+/// `/route`, `route_batch` and `edges_batch` return the SAME route for a pair.
+///
+/// `None` ⇒ an endpoint had no phantom, or the seeded query did not connect;
+/// the caller escalates.
+fn phantom_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+) -> Option<(u32, u32, super::query::QueryResult)> {
+    use super::types::SnapRole;
+    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+    // #585: one `phantom_for` per endpoint — snap candidates + build, once.
+    let sp = super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None)?;
+    let dp = super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None)?;
+    let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+    let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+    let r = query.query_seeded(&src_seeds, &dst_seeds, false)?;
+    Some((
+        r.src_root,
+        r.dst_root,
+        super::query::QueryResult {
+            distance: r.distance.saturating_sub(dst_shift),
+            meeting_node: r.meeting_node,
+            forward_parent: r.forward_parent,
+            backward_parent: r.backward_parent,
+        },
+    ))
+}
+
+/// #580: ONE per-pair routing core. Phantom-seeded fast path
+/// ([`phantom_pair`]); on a miss, the plan's optional K=1 shortcut; then the
+/// K=64 + combo escalation ([`escalate_route`]). `None` ⇒ unreachable.
+///
+/// Reads only `&state` + `&mode_data`; safe to call from many worker threads
+/// in parallel (`CchQueryState` is thread-local, so the bidirectional search
+/// never contends).
+fn route_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+    plan: &PairPlan<'_>,
+) -> Option<(u32, u32, super::query::QueryResult)> {
+    if let Some(hit) = phantom_pair(state, mode_data, mode, query, pair) {
+        return Some(hit);
+    }
+    // #275-bench: the phantom fast path missed.
+    if let Some(c) = plan.fallback_count {
+        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if plan.k1_shortcut {
+        use super::types::SnapRole;
+        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+        let src_role = SnapRole::Src.role_filter(mode_data);
+        let dst_role = SnapRole::Dst.role_filter(mode_data);
+        if let (Some(src_id), Some(dst_id)) = (
+            state
+                .snap_index
+                .snap_filtered_role(slon, slat, mode.0, None, src_role),
+            state
+                .snap_index
+                .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+        ) && let (Some(s), Some(d)) = (
+            mode_data.orig_to_rank.get(src_id as usize).copied(),
+            mode_data.orig_to_rank.get(dst_id as usize).copied(),
+        ) && s != u32::MAX
+            && d != u32::MAX
+            && let Some(r) = query.query(s, d)
+        {
+            return Some((s, d, r));
+        }
+    }
+    escalate_route(state, mode_data, mode, query, pair, plan.max_combos)
+}
+
+/// #580: [`route_pair`] plus the ONE thing the surfaces actually differ on —
+/// what they build out of a successful `QueryResult`. `route_batch` encodes a
+/// WKB route (or just its length, under `max_meters`); `edges_batch` unpacks
+/// per-edge OSM rows. `None` ⇒ the pair did not route, and `emit` never ran.
+fn drive_pair<R>(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+    plan: &PairPlan<'_>,
+    emit: impl FnOnce(u32, u32, &super::query::QueryResult) -> R,
+) -> Option<R> {
+    route_pair(state, mode_data, mode, query, pair, plan)
+        .map(|(src_rank, dst_rank, result)| emit(src_rank, dst_rank, &result))
+}
+
 /// Compute a single pair's `(duration, distance, WKB linestring)`.
 ///
-/// Two-tier snap strategy: K=1 fast path first (covers most pairs per
-/// #197 connectivity-aware role masks); on miss, escalate to K=64 +
-/// (i+j)-combo fallback. Eliminates the K=64 tax on the hot path:
-/// 5.79 ms/pair down to roughly 0.5 ms/pair on Belgium.
-///
-/// Reads only `&state` + `&mode_data`; safe to call from many worker
-/// threads in parallel. `CchQueryState` is thread-local so the
-/// bidirectional search never contends.
+/// #580: [`drive_pair`] under [`route_pair_plan`] — the phantom-seeded fast
+/// path, then the K=64 + (i+j)-combo escalation — with `build_route_output`
+/// as the emit. Skipping the K=64 tax on the hot path is what took Belgium
+/// from 5.79 ms/pair to roughly 0.5 ms/pair.
 #[allow(clippy::too_many_arguments)]
 fn compute_route_pair(
     state: &ServerState,
@@ -1575,70 +1723,17 @@ fn compute_route_pair(
     fallback_count: &std::sync::atomic::AtomicU64,
     scratch: &mut RouteScratch,
 ) -> Option<(f32, f32, Vec<u8>)> {
-    use super::types::SnapRole;
-
-    // Fast path (#502): phantom-seeded single query — both directed twins of
-    // up to 3 near-equidistant physical edges per endpoint, exact partial
-    // costs. Replaces the K=1 single-directed-edge commitment that caused 4x
-    // fwd/rev asymmetry on long rural chains.
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            let result = super::query::QueryResult {
-                distance: r.distance.saturating_sub(dst_shift),
-                meeting_node: r.meeting_node,
-                forward_parent: r.forward_parent,
-                backward_parent: r.backward_parent,
-            };
-            return Some(build_route_output(
-                state, mode_data, &result, r.src_root, r.dst_root, scratch,
-            ));
-        }
-    }
-
-    // #275-bench: increment fallback counter — K=1 fast path missed.
-    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // Slow path: K=64 K-best snap + (i+j)-combo fallback.
-    use super::snap_kbest::SNAP_K;
-    let src_snap = super::snap_kbest::snap_k_pair_role(
+    drive_pair(
         state,
         mode_data,
         mode,
-        slon,
-        slat,
-        SnapRole::Src,
-        None,
-        SNAP_K,
-    );
-    let dst_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        dlon,
-        dlat,
-        SnapRole::Dst,
-        None,
-        SNAP_K,
-    );
-
-    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-        return None;
-    }
-
-    super::snap_kbest::p2p_with_kbest_fallback(
         query,
-        &src_snap.ranks,
-        &dst_snap.ranks,
-        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+        &[slon, slat, dlon, dlat],
+        &route_pair_plan(fallback_count),
+        |src_rank, dst_rank, result| {
+            build_route_output(state, mode_data, result, src_rank, dst_rank, scratch)
+        },
     )
-    .map(|(src_rank, dst_rank, result)| {
-        build_route_output(state, mode_data, &result, src_rank, dst_rank, scratch)
-    })
 }
 
 /// Common output builder for a successful CCH P2P result. Returns
@@ -1719,12 +1814,14 @@ fn build_route_output(
 /// re-validation), and it uses the fast time CCH — not the distance metric
 /// (the dropped #482 approach was ~12x slower AND a different metric, #487).
 ///
-/// Snap MIRRORS `compute_route_pair`: K=1 fast path, then K=64 + 16-combo
-/// fallback ONLY when the K=1 snap misses or the snapped ranks do not
-/// connect — NOT when the route simply exceeds the bound. An over-bound
-/// pair whose endpoints snapped fine is dropped immediately (one time
-/// query), which is the whole point of a prune; the original #482 code's
-/// escalation-on-over-bound made the pruned pairs the SLOWEST (the 12x).
+/// #580: the SAME [`drive_pair`] and the SAME [`route_pair_plan`] as the
+/// unbounded path, so bounded and unbounded `route_batch` cannot disagree on
+/// which route a pair gets (and therefore on the distance the bound prunes).
+/// The bound lives in the EMIT, not in the driver: escalation is triggered by
+/// the query failing, never by a route merely exceeding the bound. An
+/// over-bound pair whose endpoints snapped fine is dropped after one time
+/// query, which is the whole point of a prune — the original #482 code
+/// escalated on over-bound and made the pruned pairs the SLOWEST (the 12x).
 #[allow(clippy::too_many_arguments)]
 fn compute_route_distance_bounded(
     state: &ServerState,
@@ -1739,73 +1836,20 @@ fn compute_route_distance_bounded(
     fallback_count: &std::sync::atomic::AtomicU64,
     scratch: &mut RouteScratch,
 ) -> Option<f32> {
-    use super::types::SnapRole;
     let bound = max_m as f32;
-
-    // Fast path (#506): phantom-seeded single query — same seeding as the
-    // unbounded `compute_route_pair`, so bounded and unbounded route_batch
-    // agree on the route (and therefore on the distance the bound prunes).
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            // Reachability is authoritative here: if the seeded query
-            // connects, the bound decides — over-bound DROPS, no K=64
-            // escalation (same rule as the pre-#506 K=1 path).
-            let result = super::query::QueryResult {
-                distance: r.distance.saturating_sub(dst_shift),
-                meeting_node: r.meeting_node,
-                forward_parent: r.forward_parent,
-                backward_parent: r.backward_parent,
-            };
-            let dist = build_route_distance(state, mode_data, &result, r.src_root, scratch);
-            return if dist <= bound { Some(dist) } else { None };
-        }
-        // seeded query found no path → fall through to K=64 (same
-        // reachability escalation compute_route_pair does).
-    }
-
-    // K=64 escalation — only reached on a K=1 snap miss / non-connecting
-    // ranks, NOT on over-bound. Find the time-optimal route over combos,
-    // then apply the bound ONCE.
-    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    use super::snap_kbest::SNAP_K;
-    let src_snap = super::snap_kbest::snap_k_pair_role(
+    drive_pair(
         state,
         mode_data,
         mode,
-        slon,
-        slat,
-        SnapRole::Src,
-        None,
-        SNAP_K,
-    );
-    let dst_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        dlon,
-        dlat,
-        SnapRole::Dst,
-        None,
-        SNAP_K,
-    );
-    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-        return None;
-    }
-    super::snap_kbest::p2p_with_kbest_fallback(
         query,
-        &src_snap.ranks,
-        &dst_snap.ranks,
-        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+        &[slon, slat, dlon, dlat],
+        &route_pair_plan(fallback_count),
+        |src_rank, _dst_rank, result| {
+            let dist = build_route_distance(state, mode_data, result, src_rank, scratch);
+            (dist <= bound).then_some(dist)
+        },
     )
-    .and_then(|(src_rank, _dst_rank, result)| {
-        let dist = build_route_distance(state, mode_data, &result, src_rank, scratch);
-        if dist <= bound { Some(dist) } else { None }
-    })
+    .flatten()
 }
 
 fn route_batch_worker_threads(n_pairs: usize) -> usize {
@@ -2558,13 +2602,12 @@ pub struct PairEdges {
 /// Compute the unpacked edge sequence for a single (src,dst) pair.
 ///
 /// #436: factored out of `do_edges_batch` so the chunk loop can fan it
-/// across rayon workers. Mirrors `compute_route_pair`'s lean K=1 snap
-/// fast path (direct `snap_filtered_role`, no K=64 collect) and only
-/// escalates to the K=64 + combo fallback when the fast path misses —
-/// the dominant per-pair cost cut, since most realistic pairs snap on
-/// the first try. `CchQuery::new` is free (just references + a
-/// thread-local scratch reused across pairs on the same worker), so
-/// constructing it per pair carries no allocation.
+/// across rayon workers. #580: [`drive_pair`] under [`EDGES_PAIR_PLAN`] with
+/// [`emit_pair_rows`] as the emit — the same three routing tiers
+/// `route_batch` runs, differing only in the plan's two named knobs.
+/// `CchQuery::new` is free (just references + a thread-local scratch reused
+/// across pairs on the same worker), so constructing it per pair carries no
+/// allocation.
 pub(crate) fn edges_for_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -2573,22 +2616,27 @@ pub(crate) fn edges_for_pair(
     query_idx: u32,
     pair: &[f64; 4],
 ) -> PairEdges {
-    match route_for_pair(state, mode_data, mode, query, pair) {
-        Some((src_rank, dst_rank, result)) => {
-            emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx)
-        }
-        None => PairEdges {
-            query_idx,
-            rows: Vec::new(),
-            cch_distance: None,
+    drive_pair(
+        state,
+        mode_data,
+        mode,
+        query,
+        pair,
+        &EDGES_PAIR_PLAN,
+        |src_rank, dst_rank, result| {
+            emit_pair_rows(state, mode_data, src_rank, dst_rank, result, query_idx)
         },
-    }
+    )
+    .unwrap_or(PairEdges {
+        query_idx,
+        rows: Vec::new(),
+        cch_distance: None,
+    })
 }
 
-/// #460: the routing core of [`edges_for_pair`] WITHOUT row emission —
-/// K=1 fast path + K=64/16-combo escalation, returning the raw
-/// `(src_rank, dst_rank, QueryResult)` so flow accumulation can fold
-/// ranks instead of materialized rows. `None` ⇒ unreachable.
+/// #460: the routing core of [`edges_for_pair`] WITHOUT row emission,
+/// returning the raw `(src_rank, dst_rank, QueryResult)` so flow accumulation
+/// can fold ranks instead of materialized rows. `None` ⇒ unreachable.
 pub(crate) fn route_for_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -2596,62 +2644,16 @@ pub(crate) fn route_for_pair(
     query: &super::query::CchQuery<'_>,
     pair: &[f64; 4],
 ) -> Option<(u32, u32, super::query::QueryResult)> {
-    use super::types::SnapRole;
-    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-
-    // Phantom-seeded fast path (#506/#509): same seeding as /route and
-    // route_batch, so the emitted per-edge path is the SAME route those
-    // endpoints return — no more directional-commit detours feeding flow
-    // analytics (fixtures emitted 334s/2880m vs the true 163s/1258m).
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            return Some((
-                r.src_root,
-                r.dst_root,
-                super::query::QueryResult {
-                    distance: r.distance.saturating_sub(dst_shift),
-                    meeting_node: r.meeting_node,
-                    forward_parent: r.forward_parent,
-                    backward_parent: r.backward_parent,
-                },
-            ));
-        }
-    }
-
-    // Phantom missed / didn't connect → legacy K=1 + K=64 escalation.
-    let src_role = SnapRole::Src.role_filter(mode_data);
-    let dst_role = SnapRole::Dst.role_filter(mode_data);
-    if let (Some(src_id), Some(dst_id)) = (
-        state
-            .snap_index
-            .snap_filtered_role(slon, slat, mode.0, None, src_role),
-        state
-            .snap_index
-            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
-    ) && let (Some(s), Some(d)) = (
-        mode_data.orig_to_rank.get(src_id as usize).copied(),
-        mode_data.orig_to_rank.get(dst_id as usize).copied(),
-    ) && s != u32::MAX
-        && d != u32::MAX
-        && let Some(r) = query.query(s, d)
-    {
-        return Some((s, d, r));
-    }
-    // K=1 didn't connect → K=64 escalation.
-    escalate_route(state, mode_data, mode, query, pair)
+    route_pair(state, mode_data, mode, query, pair, &EDGES_PAIR_PLAN)
 }
 
-/// #438: K=64 + 16-combo escalation for a pair the K=1 fast path could not
+/// #438: K=64 + combo escalation for a pair the cheaper tiers could not
 /// connect. Snaps both ends to 64 candidates and tries the closest-sum-first
-/// combos. Routing only (#460 split — callers emit rows via
-/// [`emit_pair_rows`] or fold ranks); `None` ⇒ unreachable.
+/// combos, capped at `max_combos` ([`PairPlan::max_combos`]). Routing only
+/// (#460 split — callers emit rows via [`emit_pair_rows`] or fold ranks);
+/// `None` ⇒ unreachable.
 ///
-/// Split out of `edges_for_pair` so the source-grouped per-pair path
+/// Split out of the per-pair path so the source-grouped driver
 /// (`process_per_pair_work`) can escalate WITHOUT re-doing the K=1 snap+query
 /// it already attempted with the precomputed ranks (#438-review: avoids the
 /// redundant K=1 work that made the all-singleton workload regress).
@@ -2661,13 +2663,14 @@ fn escalate_route(
     mode: Mode,
     query: &super::query::CchQuery<'_>,
     pair: &[f64; 4],
+    max_combos: usize,
 ) -> Option<(u32, u32, super::query::QueryResult)> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
     use super::snap_kbest::SNAP_K;
-    // Rescues K=1 misses, including pairs whose closest snap had a u32::MAX
-    // rank (not in this mode's CCH) — K=64 looks further out for a contracted
-    // node.
+    // Rescues fast-path misses, including pairs whose closest snap had a
+    // u32::MAX rank (not in this mode's CCH) — K=64 looks further out for a
+    // contracted node.
     let src_snap = super::snap_kbest::snap_k_pair_role(
         state,
         mode_data,
@@ -2688,24 +2691,10 @@ fn escalate_route(
         None,
         SNAP_K,
     );
-    if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
-        // Bound the escalation at 16 combos rather than the default 200.
-        // Reachable pairs connect on the closest-sum-first combos almost
-        // immediately (the #197 connectivity masks keep candidates on the main
-        // component), so 16 loses no reachable pairs on the Belgium benchmark
-        // (reachable count identical at 8 / 16 / 200) while bounding the
-        // worst-case cost of a pair whose K=64 candidates don't connect.
-        const EDGES_BATCH_MAX_COMBOS: usize = 16;
-        if let Some(hit) = super::snap_kbest::p2p_with_kbest_fallback(
-            query,
-            &src_snap.ranks,
-            &dst_snap.ranks,
-            EDGES_BATCH_MAX_COMBOS,
-        ) {
-            return Some(hit);
-        }
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+        return None;
     }
-    None // unreachable
+    super::snap_kbest::p2p_with_kbest_fallback(query, &src_snap.ranks, &dst_snap.ranks, max_combos)
 }
 
 /// #438: shared unpack + per-edge row emit. Used by BOTH the per-pair
