@@ -23,9 +23,10 @@ Checks
    co-located-candidate regime where a legacy same-rank shortcut and a reduce
    clamp both emitted bogus 0 s answers and which uniform sampling never
    reaches.
-5. ISOCHRONE CONTAINMENT (#497/#506): every isochrone polygon must contain
-   its own SNAPPED origin (snapped-road-point semantics — the raw query
-   point may legitimately sit outside when it is far off-network).
+5. ISOCHRONE TOPOLOGY + CONTAINMENT (#497/#506/#542): ONE simple polygon,
+   closed CCW polyline6 ring, containing its own SNAPPED origin
+   (snapped-road-point semantics — the raw query point may legitimately sit
+   outside when it is far off-network).
 
 Fail-loud rules (#550)
 ----------------------
@@ -41,14 +42,21 @@ Fail-loud rules (#550)
 
 Usage
 -----
+    BUTTERFLY_REFS_DIR=/path/to/reference-trips \
     python3 bench/postdeploy_gate.py --base http://localhost:3001 \
         [--trips /path/to/od.csv] [--quick] [--no-flight] \
         [--flight-base grpc://host:port]
     python3 bench/postdeploy_gate.py --list-gates    # names only, exit 0
+    python3 bench/test_postdeploy_gate.py            # offline unit checks
 
 `--quick` skips the 1,000-trip ground truth (runs invariants only, ~30 s).
+`$BUTTERFLY_REFS_DIR` is REQUIRED by the gates that read reference trips
+(#589) — there is no default path. It is resolved when such a gate RUNS, so
+`--help`, `--list-gates` and the unit tests need no environment; unset, those
+gates FAIL by name instead of taking the process down.
 Thresholds live in ONE table (THRESHOLDS below); RATCHET THEM DOWN as tails
-get fixed, never up.
+get fixed, never up. Every threshold is a ratio, a bound derived from ONE
+tolerance, or a structural invariant — never a measured-then-pasted count.
 """
 
 import argparse
@@ -67,58 +75,87 @@ import urllib.parse
 import urllib.request
 
 # Reference trip sets are generic CSV inputs (route_id,long_1,lat_1,long_2,
-# lat_2,ref_min,ref_km) staged by the private deploy tooling into
-# $BUTTERFLY_REFS_DIR (default /data/reference-trips). 2026-09-03: durations
-# are judged on the TIME-STAMPED typical set (weekday 07-19 h observed
-# historic times); the old od.csv (1 000 long trips, no hour) is free-flow
-# and let a free-flow engine pass at p50 1.0.
-REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR", "/data/reference-trips")
-
-
-def _apply_windows_config():
-    """One source of truth for the level tolerances (2026-09-04): when the
-    deploy tooling stages `windows.json` beside the reference sets, its
-    `never_fast` / `tol` / `match_tol` override the defaults in THRESHOLDS —
-    the same numbers the speed pipeline and the weekly window report use."""
-    path = os.path.join(REFS_DIR, "windows.json")
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            w = json.load(f)
-    except Exception as ex:  # a broken config must not silently loosen the gate
-        raise SystemExit(f"windows.json at {path} is unreadable: {ex}")
-    lo = float(w.get("never_fast", THRESHOLDS["band_level"][0]))
-    tol = float(w.get("tol", THRESHOLDS["band_level"][1] - 1.03))
-    THRESHOLDS["band_level"] = (lo, round(1.0 + tol + 0.03, 3))
-    THRESHOLDS["band_regional"] = (lo, round(1.0 + tol + 0.06, 3))
-    THRESHOLDS["dur_p50"] = (lo, THRESHOLDS["dur_p50"][1])
-    THRESHOLDS["like_for_like_km_tol"] = float(w.get("match_tol", THRESHOLDS["like_for_like_km_tol"]))
-    print(f"[windows] {path}: never_fast {lo}, tol {tol}, match_tol {THRESHOLDS['like_for_like_km_tol']}")
-
-DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
+# lat_2,ref_min,ref_km) staged by the deploy tooling into $BUTTERFLY_REFS_DIR.
+# 2026-09-03: durations are judged on the TIME-STAMPED typical set (weekday
+# 07-19 h observed historic times); the old od.csv (1 000 long trips, no hour)
+# is free-flow and let a free-flow engine pass at p50 1.0.
+# #589: NO default directory — the old hardcoded fallback path was never
+# created by anything, so a mis-staged runner failed deep inside a gate on a
+# missing CSV instead of saying which variable was unset. The directory is
+# resolved LAZILY, by `refs_path()`, when a refs-dependent gate actually runs:
+# `--help`, `--list-gates` and the offline unit tests need no environment at
+# all, and the three gates that do need it FAIL (loudly, naming the variable)
+# instead of taking the process down at import time.
+REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR")
+DEFAULT_TRIPS = "od_typical.csv"  # under $BUTTERFLY_REFS_DIR
 # Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
 # free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
 # a solid route-length truth (motorway-dominated), which the ~40-min regional
 # od_typical pairs are not (the reference router and the engine pick
 # different regional routes on ~17 % of them, identically on a free-flow
 # engine — see #545).
-LEGACY_TRIPS_DISTANCE = os.path.join(REFS_DIR, "od.csv")
+LEGACY_TRIPS_DISTANCE = "od.csv"  # under $BUTTERFLY_REFS_DIR
+REFS_PREFIX = "od"  # <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR
+
+
+class RefsUnavailable(RuntimeError):
+    """#589: `$BUTTERFLY_REFS_DIR` is unset or not a directory. Raised by
+    `refs_path()`, i.e. only from a gate that actually needs the reference
+    trips — main() turns it into that gate's FAIL line, so the operator sees
+    WHICH gates could not run and WHY, and the rest of the suite still runs."""
+
+
+def require_refs_dir(refs_dir=None):
+    """The resolved reference directory, or RefsUnavailable naming the env
+    variable. Never a default path: nothing creates one."""
+    refs_dir = REFS_DIR if refs_dir is None else refs_dir
+    if not refs_dir:
+        raise RefsUnavailable(
+            "BUTTERFLY_REFS_DIR is not set — export it to the directory holding the reference "
+            f"trip sets ({REFS_PREFIX}_{{typical,best,worst}}.csv, {LEGACY_TRIPS_DISTANCE}, "
+            "optional windows.json).")
+    if not os.path.isdir(refs_dir):
+        raise RefsUnavailable(f"BUTTERFLY_REFS_DIR={refs_dir!r} is not a directory.")
+    return refs_dir
+
+
+def refs_path(name, override=None):
+    """Resolve a reference input. `override` (a --trips / --refs-prefix value)
+    wins as given — an absolute or relative path the operator typed; otherwise
+    `name` is joined onto $BUTTERFLY_REFS_DIR. Called at GATE RUN TIME, never
+    at argparse-default time (that is the #589 crash: `--list-gates` died in
+    `os.path.join(None, "od")` before printing a single name)."""
+    if override:
+        return override
+    return os.path.join(require_refs_dir(), name)
+
 
 # BASELINE 2026-07-16 (engine d97168d, 1000 trips, zero errors):
 #   duration ratio: p05=0.854 p50=1.029 p90=1.246 p95=1.304 mean=1.048
 #   distance ratio: p05=0.933 p50=1.004 p90=1.148 p95=1.253 mean=1.039
-#   distance outliers (<0.85 / >1.2): 73
+#   distance outliers (<0.85 / >1.2): 73 of 1000 = 7.3 %
 #
 # ONE table for every tolerance in this file (#550) — no gate hardcodes a
-# bound of its own.
+# bound of its own. Three kinds of entry, nothing else (#589):
+#   * a RATIO of a sample (trip-set-size independent);
+#   * a bound DERIVED from the level tolerance below (`derive_level_bounds`);
+#   * a structural INVARIANT (a lower bound the engine's design guarantees).
 THRESHOLDS = {
+    # --- level (ground truth + bands): ONE tolerance, every bound derived ---
+    # Pierre 2026-09-03 ("mieux vaut trop lent que trop rapide"): never more
+    # than 2 % fast; up to `tol` + slack slow. windows.json (staged beside the
+    # reference sets by the deploy tooling) may override these four; the
+    # bounds `dur_p50`, `band_level`, `band_regional` are ALWAYS derived from
+    # them by derive_level_bounds() — never stored, never inverted back.
+    "never_fast": 0.98,  # lower bound of every level ratio (engine / reference)
+    "tol": 0.06,  # level tolerance: like-for-like median may be this much slow ...
+    "slack_level": 0.03,  # ... + this slack per profile level (best / typical / worst) → 1.09
+    "slack_regional": 0.06,  # ... + this slack per region and on the ~40-min typical set → 1.12
     # --- ground truth (reference trips) ---
-    "dur_p50": (0.98, 1.12),  # Pierre 2026-09-03: never >2 % fast, up to 12 % slow
     "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
-    "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs richer per-edge speed data
+    "dist_outliers_frac": 0.08,  # share of trips with distance ratio <0.85 or >1.2 (baseline 7.3 %)
     "like_for_like_km_tol": 0.10,  # pinned corridors: compare only same-length routes
     # --- sampling gates ---
     "symmetry_ratio_max": 1.5,
@@ -126,9 +163,7 @@ THRESHOLDS = {
     "consistency_tolerance_s": 3.0,
     "close_pair_mismatch_max": 2,
     "max_errors": 5,  # transport errors / unroutable trips tolerated before failing
-    # --- bands (#543) ---
-    "band_level": (0.98, 1.09),  # median(engine/reference) per profile
-    "band_regional": (0.98, 1.12),  # per-region median, typical profile
+    # --- bands (#543) — `band_level` / `band_regional` are derived (see above) ---
     "band_spread_min": 1.10,  # median(worst/best) over the typical trips
     "band_min_trips": 100,  # like-for-like trips needed to judge a level
     "band_min_regional": 10,
@@ -136,7 +171,11 @@ THRESHOLDS = {
     "iso_reach_slack": 1.20,  # max vertex reach ≤ v_max × T × slack
     "iso_nest_tol": 0.98,  # outer contour reach ≥ inner × tol
     "topology_outside_m": 150.0,  # a network vertex counts "outside" beyond this
-    "topology_outside_frac": 0.015,  # ≤1.5 % of the engine's own reachable network
+    # INVARIANT (ratio, #589): share of the engine's OWN reachable network
+    # vertices left > topology_outside_m outside the polygon. Detached reach
+    # under ~300 m across is deliberately not drawn (crumb filter), which is
+    # ~1.1 % at rural origins, ~0 % urban; anything above 1.5 % is under-draw.
+    "topology_outside_frac": 0.015,
     "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
     "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
     "reach_out_tol": 0.95,  # nothing reachable ≤0.95 T may lie outside
@@ -156,11 +195,77 @@ THRESHOLDS = {
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
     "wkb_len_tol": 0.05,  # route_batch geometry_wkb vs distance_m
     "edges_sum_bounds": (0.9, 1.45),  # Σ per-edge duration vs /route
-    "lopsided_scaling_max": 6.0,  # 1×800 vs 1×50 wall ratio (linear bucket ~×16)
-    "catchment_min_vertices": 50,  # the retired sector lasso capped at 18 extremes
+    # WARN only (#589): the suite's single wall-clock number. 1×800 vs 1×50
+    # wall ratio — a sublinear (seeded PHAST) plan stays ~×1-3, the linear
+    # bucket plan ~×16. A loaded runner flaps it, so it is reported, never
+    # decisive. Asserting on a server-REPORTED plan would be better, but no
+    # such signal exists today: /table sets no response header and the only
+    # /metrics labels are (region, endpoint) — the plan choice (phast_dir in
+    # matrix/bucket_ch.rs) never leaves the process. Expose it and this
+    # becomes a real assertion.
+    "lopsided_scaling_warn": 6.0,
+    # INVARIANT (structural lower bound, #589): a road-following contour at a
+    # 5-decimal Douglas-Peucker tolerance has hundreds of vertices; the
+    # retired sector lasso (#536) could never emit more than 18. Not a
+    # measured level — any value between the two shapes separates them.
+    "catchment_min_vertices": 50,
 }
 
-_apply_windows_config()
+
+def derive_level_bounds():
+    """#589: the three level bounds come from ONE tolerance and named slack
+    constants — `tol` is stored, the bounds are derived, never the reverse
+    (the old code inverted `band_level[1] - 1.03` to recover `tol`, so a
+    change to either literal silently moved the other)."""
+    t = THRESHOLDS
+    lo, tol = t["never_fast"], t["tol"]
+    t["band_level"] = (lo, round(1.0 + tol + t["slack_level"], 3))  # per-profile median (#543)
+    t["band_regional"] = (lo, round(1.0 + tol + t["slack_regional"], 3))  # per-region median, typical
+    # The typical reference set IS regional ~40-min pairs → the same bound.
+    t["dur_p50"] = t["band_regional"]
+    return t
+
+
+def _apply_windows_config(refs_dir=None):
+    """One source of truth for the level tolerances (2026-09-04): when the
+    deploy tooling stages `windows.json` beside the reference sets, its
+    `never_fast` / `tol` / `slack_level` / `slack_regional` / `match_tol`
+    override the defaults in THRESHOLDS — the same numbers the speed
+    pipeline and the weekly window report use. Bounds are then re-derived."""
+    refs_dir = REFS_DIR if refs_dir is None else refs_dir
+    path = os.path.join(refs_dir, "windows.json") if refs_dir else None
+    if not path or not os.path.exists(path):
+        return derive_level_bounds()
+    try:
+        with open(path) as f:
+            w = json.load(f)
+    except Exception as ex:  # a broken config must not silently loosen the gate
+        raise SystemExit(f"windows.json at {path} is unreadable: {ex}")
+    for key in ("never_fast", "tol", "slack_level", "slack_regional"):
+        if key in w:
+            THRESHOLDS[key] = float(w[key])
+    if "match_tol" in w:
+        THRESHOLDS["like_for_like_km_tol"] = float(w["match_tol"])
+    t = derive_level_bounds()
+    print(f"[windows] {path}: never_fast {t['never_fast']}, tol {t['tol']}, slack {t['slack_level']}/"
+          f"{t['slack_regional']}, match_tol {t['like_for_like_km_tol']} → dur_p50 {t['dur_p50']}, "
+          f"band_level {t['band_level']}, band_regional {t['band_regional']}")
+    return t
+
+
+def print_thresholds():
+    """#589 guard: every resolved threshold is printed, so a PASS line can be
+    read against the bound that produced it."""
+    print("thresholds:")
+    for k in sorted(THRESHOLDS):
+        print(f"  {k} = {THRESHOLDS[k]}")
+
+
+# Import-time: derive the level bounds from the stored tolerance so THRESHOLDS
+# is complete for any importer (the offline unit tests included). Reading
+# `windows.json` is a LIVE-RUN step done by main() — it prints, and
+# `--list-gates` must stay a bare list of names for the CI smoke diff.
+derive_level_bounds()
 
 MAX_U32 = 4294967295
 
@@ -214,6 +319,21 @@ def post_json(url, payload, timeout=120):
         headers={"Content-Type": "application/json"})
 
 
+def http_status(url, method="GET", body=None, timeout=120):
+    """(status, content_type, bytes). An HTTP error status is RETURNED, not
+    raised — the endpoint smoke judges statuses (404 = optional surface,
+    503 = subsystem not loaded). Transport failures still raise."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+        headers={"Content-Type": "application/json"} if data is not None else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", "") or "", r.read()
+    except urllib.error.HTTPError as e:
+        ctype = e.headers.get("Content-Type", "") if e.headers else ""
+        return e.code, ctype or "", e.read()
+
+
 def route_json(base, olon, olat, dlon, dlat, mode="car", timeout=60, **extra):
     q = {
         "origin_lon": olon,
@@ -249,9 +369,23 @@ def pct(xs, q):
     return xs[min(int(len(xs) * q), len(xs) - 1)]
 
 
+def outlier_frac(ratios, lo=0.85, hi=1.2):
+    """(count, share) of ratios outside [lo, hi] — the share is what the gate
+    judges (#589: trip-set-size independent)."""
+    n = sum(1 for r in ratios if r < lo or r > hi)
+    return n, (n / len(ratios) if ratios else 0.0)
+
+
 def check(name, ok, detail):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     return ok
+
+
+def warn(name, detail):
+    """A measurement worth printing that must NOT decide the gate (#589: a
+    wall-clock ratio flaps on a loaded runner). Never fails."""
+    print(f"  [WARN] {name}: {detail}")
+    return True
 
 
 def check_errors(label, errors, unroutable=None):
@@ -300,8 +434,10 @@ def decode_polyline6(s):
 
 
 def point_in_ring(pt, ring):
-    """Even-odd point-in-polygon. `ring` must be the OPEN ring (no repeated
-    last vertex) — callers pass ring[:-1]."""
+    """Even-odd point-in-polygon. Closure-TOLERANT (#589): a closed ring
+    (first vertex repeated last) gives the same answer as the open one — the
+    duplicate closing edge has yi == yj and is never crossed. Callers pass
+    ring[:-1] by convention; passing the closed ring is not a bug."""
     x, y = pt[0], pt[1]
     inside = False
     j = len(ring) - 1
@@ -993,6 +1129,8 @@ def gate_isochrone_topology(base):
         immediate backtrack (a,b,a) — the zero-width-spur signature;
       * outer rings CCW, holes CW (RFC 7946), each hole strictly inside its
         outer ring and never containing the origin;
+      * the polyline6 `polygon` string of the JSON surface decodes to the SAME
+        contract — a CLOSED, CCW ring (#589: the 0719f14 contract had no gate);
       * the snapped origin lies in the PRIMARY (first) polygon;
       * self-consistency: the engine's own reachable network (include=network)
         is represented — at most 1.5% of its vertices lie > 150 m outside every
@@ -1010,6 +1148,7 @@ def gate_isochrone_topology(base):
         b = iso_bundle(base, lon, lat, mode, time_s)
         try:
             wkb, polys, sp, net, gj = b.wkb, b.polys, b.snap, b.network, b.geojson
+            p6 = b.rings
         except Exception as ex:
             details.append(f"{name}: {ex}")
             continue
@@ -1042,6 +1181,16 @@ def gate_isochrone_topology(base):
                         why.append(f"p{pi}r{ri}: hole outside its outer ring")
                     if point_in_ring(sp, body):
                         why.append(f"p{pi}r{ri}: hole contains the origin")
+        # #589: the JSON polyline6 `polygon` carries the SAME ring contract
+        # as the WKB (closed, CCW) — 0719f14 shipped it, nothing checked it,
+        # and a consumer decoding polyline6 sees only this surface.
+        if len(p6) != 1:
+            why.append(f"polyline6: {len(p6)} contour rings for one time_s (want 1)")
+        for ri, r in enumerate(p6):
+            if len(r) < 4 or r[0] != r[-1]:
+                why.append(f"polyline6 r{ri}: ring not closed (r[0] != r[-1])")
+            elif ring_area2(r[:-1]) <= 0:
+                why.append(f"polyline6 r{ri}: ring not CCW")
         if polys and not point_in_ring(sp, polys[0][0][:-1]):
             why.append("origin not in the primary polygon")
         # self-consistency vs the engine's own reachable network
@@ -1298,7 +1447,7 @@ def gate_ground_truth(base, trips_path, checks="all"):
     lfl = t["like_for_like_km_tol"]
     dur = [x[0] for x in ok_res if checks != "duration" or abs(x[1] - 1.0) <= lfl]
     dist = [x[1] for x in ok_res]
-    outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
+    outliers, out_frac = outlier_frac(dist)
     # #550: errors are checked on EVERY invocation (the distance pass used to
     # skip the count entirely).
     passed = check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
@@ -1312,8 +1461,10 @@ def gate_ground_truth(base, trips_path, checks="all"):
         passed &= check("distance p50", t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
                         f"{p50m:.3f} (bounds {t['dist_p50']})")
         passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
-        passed &= check("distance outliers", outliers <= t["dist_outliers_max"],
-                        f"{outliers} (max {t['dist_outliers_max']})")
+        # #589: a RATIO of the trip set — an absolute count passed vacuously
+        # on a shrunken CSV.
+        passed &= check("distance outliers", out_frac <= t["dist_outliers_frac"],
+                        f"{outliers}/{len(dist)} = {out_frac:.3f} (max {t['dist_outliers_frac']})")
     print(f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
         f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}")
     return passed
@@ -1516,8 +1667,18 @@ def gate_lopsided(base):
     big, tb = timed(dests)
     _small, ts = timed(dests[:50])
     ratio = tb / max(ts, 1e-3)
-    ok_scale = check("lopsided scaling", ratio < THRESHOLDS["lopsided_scaling_max"],
-        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} (linear bucket ~x16, PHAST ~x1)")
+    # #589: the suite's ONLY wall-clock number — informational. A loaded
+    # runner (the validation instance shares its host) flaps it, and the
+    # server reports no chosen plan to assert on instead (no /table response
+    # header; /metrics carries only (region, endpoint) labels). The decisive
+    # checks are the value ones below:
+    # route==table cell-for-cell on BOTH channels — a wrong plan that still
+    # returns the right numbers is a performance ticket, not a gate failure.
+    lim = THRESHOLDS["lopsided_scaling_warn"]
+    ok_scale = warn("lopsided scaling (wall-clock, informational)",
+        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} "
+        f"({'sublinear' if ratio < lim else f'≥ x{lim:.0f}: looks LINEAR — check the plan'}; "
+        "linear bucket ~x16, PHAST ~x1)")
 
     def compare(tab, idxs, channel, relative):
         """Sampled table cells vs /route on the SAME mode → (checked, over-tol
@@ -2147,7 +2308,7 @@ def build_gates(args):
         ("isochrone_topology", False, lambda: gate_isochrone_topology(b)),
         ("isochrone_reach_truth", False, lambda: gate_isochrone_reach_truth(b)),
         ("isochrone_upper_bound", False, lambda: gate_isochrone_upper_bound(b)),
-        ("bands", False, lambda: gate_bands(b, args.refs_prefix)),
+        ("bands", False, lambda: gate_bands(b, refs_path(REFS_PREFIX, args.refs_prefix))),
         ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
         ("lopsided_matrix", False, lambda: gate_lopsided(b)),
         ("radius_prune", False, lambda: gate_radius_prune(b)),
@@ -2169,19 +2330,28 @@ def build_gates(args):
         ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),
     ]
     if not args.quick:
-        gates.append(("ground_truth_duration", False, lambda: gate_ground_truth(b, args.trips, "duration")))
+        gates.append(("ground_truth_duration", False,
+                      lambda: gate_ground_truth(b, refs_path(DEFAULT_TRIPS, args.trips), "duration")))
         gates.append(("ground_truth_distance", False,
-                      lambda: gate_ground_truth(b, args.distance_trips, "distance")))
+                      lambda: gate_ground_truth(b, refs_path(LEGACY_TRIPS_DISTANCE, args.distance_trips),
+                                                "distance")))
     return gates
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", help="e.g. http://localhost:3001")
-    ap.add_argument("--trips", default=DEFAULT_TRIPS)
-    ap.add_argument("--distance-trips", default=LEGACY_TRIPS_DISTANCE)
-    ap.add_argument("--refs-prefix", default=os.path.join(REFS_DIR, "od"),
-        help="time-stamped reference sets <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR")
+    # #589: NO argparse default may touch $BUTTERFLY_REFS_DIR — an unset
+    # variable used to crash `--list-gates` and `--help` in os.path.join(None,
+    # ...). Unset here means "resolve under $BUTTERFLY_REFS_DIR when the gate
+    # runs" (refs_path); a value given wins as typed.
+    ap.add_argument("--trips", default=None,
+        help=f"duration reference set (default: {DEFAULT_TRIPS} under $BUTTERFLY_REFS_DIR)")
+    ap.add_argument("--distance-trips", default=None,
+        help=f"route-length reference set (default: {LEGACY_TRIPS_DISTANCE} under $BUTTERFLY_REFS_DIR)")
+    ap.add_argument("--refs-prefix", default=None,
+        help="time-stamped reference sets <prefix>_{typical,best,worst}.csv "
+             f"(default prefix: {REFS_PREFIX!r} under $BUTTERFLY_REFS_DIR)")
     ap.add_argument("--quick", action="store_true", help="skip the 1000-trip ground truth")
     ap.add_argument("--no-flight", action="store_true",
         help="skip every Arrow Flight gate (the ONLY way to run without pyarrow/pandas)")
@@ -2215,6 +2385,8 @@ def main():
             sys.exit(1)
 
     print(f"post-deploy gate against {base}" + ("" if CONFIG["flight"] else " (--no-flight)"))
+    _apply_windows_config()  # staged tolerances override the defaults, then re-derive
+    print_thresholds()  # #589 guard: read every PASS line against the bound that produced it
     ok = True
     t0 = time.time()
     for name, needs_flight, fn in build_gates(args):
@@ -2225,6 +2397,10 @@ def main():
         started = time.time()
         try:
             ok &= bool(fn())
+        except RefsUnavailable as e:
+            # #589: a refs-dependent gate cannot run — FAIL it by name (never a
+            # silent skip, never a process-wide SystemExit) and keep going.
+            ok &= check(name, False, str(e))
         except Exception as e:
             ok &= check(name, False, f"raised {type(e).__name__}: {str(e)[:200]}")
         print(f"  ({name}: {time.time() - started:.1f}s)")
