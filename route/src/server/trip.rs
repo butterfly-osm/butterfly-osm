@@ -12,11 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::model::types::Mode;
-
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
+use super::types::{ErrorResponse, bad_request_deprecated, parse_mode, validate_coord};
 
 // ============ TSP Solver (pure algorithm) ============
 
@@ -493,14 +492,7 @@ pub async fn trip_handler(
     // into one region. Mixed-region trips require the cross-region
     // overlay (PR C / Phase 2) and are rejected with 501 here.
     if req.points.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "coordinates cannot be empty"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("coordinates cannot be empty").into_response();
     }
     let coords_iter = req.points.iter().map(|&[lon, lat]| (lon, lat));
     let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
@@ -516,70 +508,36 @@ pub async fn trip_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
-    // Validate coordinates
+    // Validate coordinates (#576: the shared validator, not a fourth
+    // hand-rolled bounds check — same checks, same order, one wording).
     for (i, &[lon, lat]) in req.points.iter().enumerate() {
-        if !(-180.0..=180.0).contains(&lon)
-            || !(-90.0..=90.0).contains(&lat)
-            || lon.is_nan()
-            || lat.is_nan()
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "InvalidValue",
-                    "message": format!("coordinate[{}] ({}, {}) is outside valid bounds", i, lon, lat)
-                })),
-            )
-                .into_response();
+        if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
+            return bad_request_deprecated(e).into_response();
         }
     }
 
     // Validate waypoint count
     let n = req.points.len();
     if n < 2 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "At least 2 waypoints required"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("At least 2 waypoints required").into_response();
     }
     if n > 100 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "Maximum 100 waypoints supported"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("Maximum 100 waypoints supported").into_response();
     }
 
     // Parse annotations
     let annotations: Vec<&str> = req.annotations.split(',').map(|s| s.trim()).collect();
     for &a in &annotations {
         if !a.is_empty() && a != "duration" && a != "distance" {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "InvalidValue",
-                    "message": format!(
-                        "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
-                        a
-                    )
-                })),
-            )
-                .into_response();
+            return bad_request_deprecated(format!(
+                "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
+                a
+            ))
+            .into_response();
         }
     }
     let want_distance = annotations.contains(&"distance");
@@ -588,11 +546,7 @@ pub async fn trip_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -600,11 +554,7 @@ pub async fn trip_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -615,10 +565,7 @@ pub async fn trip_handler(
             if req.mode != "car" || req.exclude.is_some() || req.avoid_polygons.is_some() {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "code": "InvalidOptions",
-                        "message": "uncertainty=bands is car-only and incompatible with exclude/avoid_polygons"
-                    })),
+                    Json(ErrorResponse::new("uncertainty=bands is car-only and incompatible with exclude/avoid_polygons").with_deprecated_fields("InvalidOptions")),
                 )
                     .into_response();
             }
@@ -627,10 +574,12 @@ pub async fn trip_handler(
         Some(other) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "InvalidOptions",
-                    "message": format!("unknown uncertainty value '{other}' (expected 'bands')")
-                })),
+                Json(
+                    ErrorResponse::new(format!(
+                        "unknown uncertainty value '{other}' (expected 'bands')"
+                    ))
+                    .with_deprecated_fields("InvalidOptions"),
+                ),
             )
                 .into_response();
         }
@@ -641,10 +590,7 @@ pub async fn trip_handler(
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "code": "InvalidOptions",
-                        "message": "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns"
-                    })),
+                    Json(ErrorResponse::new("uncertainty bands not available: the loaded edge_speeds table has no best/worst columns").with_deprecated_fields("InvalidOptions")),
                 )
                     .into_response();
             }
@@ -739,13 +685,11 @@ pub async fn trip_handler(
             if !v {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({
-                        "code": "NoSegment",
-                        "message": format!(
-                            "Could not snap waypoint {} ([{}, {}]) to road network for mode '{}'",
-                            i, coordinates[i][0], coordinates[i][1], mode_str
-                        )
-                    }),
+                    ErrorResponse::new(format!(
+                        "Could not snap waypoint {} ([{}, {}]) to road network for mode '{}'",
+                        i, coordinates[i][0], coordinates[i][1], mode_str
+                    ))
+                    .with_deprecated_fields("NoSegment"),
                 ));
             }
         }
@@ -1157,38 +1101,18 @@ pub async fn trip_handler(
             }
             Json(response).into_response()
         }
-        Ok(Err((status, json_val))) => (status, Json(json_val)).into_response(),
+        Ok(Err((status, body))) => (status, Json(body)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "code": "InternalError",
-                "message": format!("trip computation failed: {}", e)
-            })),
+            Json(
+                ErrorResponse::new(format!("trip computation failed: {}", e))
+                    .with_deprecated_fields("InternalError"),
+            ),
         )
             .into_response(),
     };
     ctx.record("trip");
     resp
-}
-
-/// Parse mode string into Mode using dynamic lookup
-fn parse_mode(
-    s: &str,
-    mode_lookup: &std::collections::HashMap<String, u8>,
-) -> Result<Mode, String> {
-    let s_lower = s.to_lowercase();
-    match mode_lookup.get(&s_lower) {
-        Some(&idx) => Ok(Mode(idx)),
-        None => {
-            let mut available: Vec<&str> = mode_lookup.keys().map(|s| s.as_str()).collect();
-            available.sort();
-            Err(format!(
-                "Invalid mode: {}. Available: {}.",
-                s,
-                available.join(", ")
-            ))
-        }
-    }
 }
 
 /// Get snapped location [lon, lat] for an original EBG node

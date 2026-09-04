@@ -1367,20 +1367,19 @@ impl DispatchError {
         }
     }
 
-    /// Same status and wording as [`Self::into_response_parts`], in the
-    /// `{code, message}` body `/trip` and `/match` answer with. Both
-    /// rendered it inline; one function keeps the two surfaces from
-    /// drifting apart and makes the rejection testable without a loaded
+    /// Same status and same wording as [`Self::into_response_parts`],
+    /// in the body `/trip` and `/match` answer with. Both rendered it
+    /// inline (#577); one function keeps the two surfaces from drifting
+    /// apart and makes the rejection testable without a loaded
     /// container.
-    pub fn into_code_message_parts(self) -> (axum::http::StatusCode, serde_json::Value) {
+    ///
+    /// That body used to be `{code, message}` alone. Since #576 it also
+    /// carries the documented `error` field — the deprecation window —
+    /// and when the window closes (2.2.0) this function collapses into
+    /// [`Self::into_response_parts`] and disappears.
+    pub fn into_code_message_parts(self) -> (axum::http::StatusCode, ErrorResponse) {
         let (code, body) = self.into_response_parts();
-        (
-            code,
-            serde_json::json!({
-                "code": "InvalidValue",
-                "message": body.error,
-            }),
-        )
+        (code, body.with_deprecated_fields("InvalidValue"))
     }
 }
 
@@ -1538,9 +1537,16 @@ mod tests {
         );
     }
 
-    /// Same rejection, same status, in the `{code, message}` body
-    /// `/trip` and `/match` answer with (#577: both rendered it inline
-    /// before; one function now, so they cannot drift apart).
+    /// Same rejection, same status, in the body `/trip` and `/match`
+    /// answer with (#577: both rendered it inline before; one function
+    /// now, so they cannot drift apart).
+    ///
+    /// The frozen part is the STATUS and the message TEXT, and both are
+    /// byte-identical to what this test pinned when it was written. The
+    /// third field is #576's deprecation window: `error` is the
+    /// documented field, `message` repeats it verbatim for the clients
+    /// that read the legacy one. The body returns to two fields — `error`
+    /// alone — when the window closes in 2.2.0.
     #[test]
     fn cross_region_rejection_wording_is_frozen_on_the_code_message_surfaces() {
         let err = DispatchError::CrossRegion {
@@ -1550,17 +1556,24 @@ mod tests {
         let (code, body) = err.into_code_message_parts();
         assert_eq!(code, axum::http::StatusCode::NOT_IMPLEMENTED);
         assert_eq!(
-            body,
+            serde_json::to_value(body).unwrap(),
             serde_json::json!({
+                "error": "route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)",
                 "code": "InvalidValue",
                 "message": "route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)",
             })
         );
     }
 
-    /// The `{code, message}` surfaces must keep answering every other
+    /// The `/trip` and `/match` surfaces must keep answering every other
     /// dispatch failure with the status the `ErrorResponse` surfaces
     /// use, and with the identical message text.
+    ///
+    /// Three fields, not two: `error` is the documented one (#576),
+    /// `code` and `message` are the deprecation window repeating it for
+    /// the clients that parsed the legacy body. The count returns to one
+    /// field when the window closes in 2.2.0 — the status and the text
+    /// asserted above it do not move either way.
     #[test]
     fn code_message_parts_agree_with_response_parts_on_every_dispatch_error() {
         let errors = [
@@ -1584,13 +1597,15 @@ mod tests {
         for err in errors {
             let (rest_code, rest_body) = err.clone().into_response_parts();
             let (cm_code, cm_body) = err.into_code_message_parts();
+            let cm_body = serde_json::to_value(cm_body).unwrap();
             assert_eq!(cm_code, rest_code);
+            assert_eq!(cm_body["error"], rest_body.error);
             assert_eq!(cm_body["message"], rest_body.error);
             assert_eq!(cm_body["code"], "InvalidValue");
             assert_eq!(
                 cm_body.as_object().map(|o| o.len()),
-                Some(2),
-                "body gained a field: {cm_body}"
+                Some(3),
+                "body gained a field beyond the #576 window: {cm_body}"
             );
         }
     }

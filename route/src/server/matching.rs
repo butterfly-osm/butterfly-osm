@@ -9,7 +9,7 @@ use super::geometry::{GeometryFormat, RouteGeometry, build_geometry};
 use super::regions::RegionsState;
 use super::route::{RouteStep, build_steps, lookup_road_name};
 use super::state::ServerState;
-use super::types::{parse_mode, validate_coord};
+use super::types::{ErrorResponse, bad_request_deprecated, parse_mode, validate_coord};
 
 // ============ Types ============
 
@@ -120,14 +120,7 @@ pub async fn match_trace_handler(
     Json(req): Json<MatchRequest>,
 ) -> impl IntoResponse {
     if req.points.len() < 2 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "At least 2 coordinates required"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("At least 2 coordinates required").into_response();
     }
 
     // Region dispatch (#91 + #194):
@@ -155,44 +148,22 @@ pub async fn match_trace_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
     // Validate coordinates
     if req.points.len() < 2 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "At least 2 coordinates required"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("At least 2 coordinates required").into_response();
     }
 
     if req.points.len() > 500 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "Maximum 500 coordinates allowed"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("Maximum 500 coordinates allowed").into_response();
     }
 
     for (i, &[lon, lat]) in req.points.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     }
 
@@ -200,13 +171,7 @@ pub async fn match_trace_handler(
     if let Some(acc) = req.gps_accuracy
         && (acc <= 0.0 || acc > 100.0 || acc.is_nan())
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "gps_accuracy must be between 0 and 100 meters"
-            })),
-        )
+        return bad_request_deprecated("gps_accuracy must be between 0 and 100 meters")
             .into_response();
     }
 
@@ -214,11 +179,7 @@ pub async fn match_trace_handler(
     let geom_format = match GeometryFormat::parse(&req.geometry) {
         Ok(f) => f,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -226,11 +187,7 @@ pub async fn match_trace_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -238,11 +195,7 @@ pub async fn match_trace_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -357,18 +310,18 @@ pub async fn match_trace_handler(
         Ok(Some(response)) => Json(response).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "code": "NoMatch",
-                "message": "Could not match trace to road network"
-            })),
+            Json(
+                ErrorResponse::new("Could not match trace to road network")
+                    .with_deprecated_fields("NoMatch"),
+            ),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "code": "InternalError",
-                "message": format!("map match computation failed: {}", e)
-            })),
+            Json(
+                ErrorResponse::new(format!("map match computation failed: {}", e))
+                    .with_deprecated_fields("InternalError"),
+            ),
         )
             .into_response(),
     };
@@ -402,55 +355,27 @@ async fn cross_region_match_inner(
 ) -> axum::response::Response {
     // Validate inputs (same checks as the single-region path).
     if req.points.len() < 2 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "At least 2 coordinates required"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("At least 2 coordinates required").into_response();
     }
     if req.points.len() > 500 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "Maximum 500 coordinates allowed"
-            })),
-        )
-            .into_response();
+        return bad_request_deprecated("Maximum 500 coordinates allowed").into_response();
     }
     for (i, &[lon, lat]) in req.points.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("coordinate[{}]", i)) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     }
     if let Some(acc) = req.gps_accuracy
         && (acc <= 0.0 || acc > 100.0 || acc.is_nan())
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "gps_accuracy must be between 0 and 100 meters"
-            })),
-        )
+        return bad_request_deprecated("gps_accuracy must be between 0 and 100 meters")
             .into_response();
     }
 
     let geom_format = match GeometryFormat::parse(&req.geometry) {
         Ok(f) => f,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "code": "InvalidValue", "message": e })),
-            )
-                .into_response();
+            return bad_request_deprecated(e).into_response();
         }
     };
 
@@ -459,24 +384,16 @@ async fn cross_region_match_inner(
     // overlay solver, which is out of scope for #194. Reject with a
     // clear error.
     if req.exclude.as_deref().is_some_and(|s| !s.is_empty()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "exclude is not supported on cross-region map matching (yet)"
-            })),
+        return bad_request_deprecated(
+            "exclude is not supported on cross-region map matching (yet)",
         )
-            .into_response();
+        .into_response();
     }
     if req.avoid_polygons.as_deref().is_some_and(|s| !s.is_empty()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "code": "InvalidValue",
-                "message": "avoid_polygons is not supported on cross-region map matching (yet)"
-            })),
+        return bad_request_deprecated(
+            "avoid_polygons is not supported on cross-region map matching (yet)",
         )
-            .into_response();
+        .into_response();
     }
 
     let coords: Vec<(f64, f64)> = req.points.iter().map(|&[lon, lat]| (lon, lat)).collect();
@@ -573,18 +490,18 @@ async fn cross_region_match_inner(
         Ok(Some(response)) => Json(response).into_response(),
         Ok(None) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "code": "NoMatch",
-                "message": "Could not match cross-region trace"
-            })),
+            Json(
+                ErrorResponse::new("Could not match cross-region trace")
+                    .with_deprecated_fields("NoMatch"),
+            ),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "code": "InternalError",
-                "message": format!("map match computation failed: {}", e)
-            })),
+            Json(
+                ErrorResponse::new(format!("map match computation failed: {}", e))
+                    .with_deprecated_fields("InternalError"),
+            ),
         )
             .into_response(),
     };
