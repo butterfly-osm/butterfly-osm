@@ -183,6 +183,21 @@ impl NbgGeoFile {
         Self::read_from_reader(std::io::Cursor::new(bytes))
     }
 
+    /// `true` when `bytes` is an edges-only image (#579) — the header
+    /// alone answers it, no body walk. Callers that hand these bytes to
+    /// something expecting a complete `nbg.geo` (`pack::unpack` writing
+    /// a step-3 tree) use this to say so instead of leaving a file that
+    /// only fails later.
+    pub fn is_edges_only(bytes: &[u8]) -> Result<bool> {
+        anyhow::ensure!(
+            bytes.len() >= HEADER_LEN,
+            "nbg.geo image is shorter than its {} byte header",
+            HEADER_LEN
+        );
+        let (version, _, _) = parse_header(&bytes[..HEADER_LEN])?;
+        Ok(version == VERSION_EDGES_ONLY)
+    }
+
     /// Read just the header + the per-edge metadata array, skipping the
     /// polyline blob. The returned `NbgGeo` has `polylines` left as empty
     /// `PolyLine` placeholders (one per edge, all with empty lat_fxp /

@@ -581,6 +581,19 @@ pub enum Commands {
         /// re-ingesting the PBF.
         #[arg(long)]
         keep_intermediates: bool,
+
+        /// Pack a full-fidelity container instead of the lean default.
+        ///
+        /// The default pack drops the sections no server reads and
+        /// stores `nbg.geo` without its polyline body (see
+        /// `PackOptions::lean`). Those bytes exist only in the
+        /// `step{1..8}/` tree — which `pack` then deletes unless
+        /// `--keep-intermediates` is passed — so a lean pack is a
+        /// one-way trip. `--full` keeps every section, which is what
+        /// `unpack` needs to restore a byte-identical step tree
+        /// (validators, pack/unpack debugging). Never needed to serve.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Verify a `*.butterfly` container is self-consistent and then
@@ -638,6 +651,13 @@ pub enum Commands {
     /// Useful for round-trip tests and for feeding `serve --data-dir`
     /// with the unpacked tree until the in-place container loader
     /// (Phase 5) lands.
+    ///
+    /// Restores the step files the container carries verbatim, and
+    /// rejoins the split CCH topology into one `step7/cch.<mode>.topo`.
+    /// Sections `pack` synthesises (flat adjacencies, snap index, flat
+    /// edge geometry, the way-name index) are skipped — the next `pack`
+    /// rebuilds them. Sections the lean default never packed cannot be
+    /// restored; pack with `--full` if you need them back.
     Unpack {
         /// Path to a `*.butterfly` container.
         #[arg(short, long)]
@@ -2012,8 +2032,15 @@ impl Cli {
                 step_prefix,
                 region,
                 keep_intermediates,
+                full,
             } => {
-                crate::pack::pack(&data_dir, &out, step_prefix.as_deref(), region.as_deref())?;
+                crate::pack::pack_with_options(
+                    &data_dir,
+                    &out,
+                    step_prefix.as_deref(),
+                    region.as_deref(),
+                    crate::pack::PackOptions { lean: !full },
+                )?;
                 if !keep_intermediates {
                     println!();
                     println!(
