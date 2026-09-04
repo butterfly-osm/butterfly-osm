@@ -1541,9 +1541,12 @@ fn test_197_directional_snap_asymmetry_reproducer() {
 /// changed (different polyline densification, different cell
 /// occupancy, etc.) and we lost the ability to detect the
 /// directional bug from this pair alone — pick a fresh reproducer
-/// from `bench/route/results/correctness-sweep-2026-05-06/results-car.jsonl`
-/// (filter where butterfly_distance_m is null and osrm_distance_m
-/// is not null).
+/// from the 2026-05-06 sweep's raw `results-car.jsonl` (filter where
+/// butterfly_distance_m is null and osrm_distance_m is not null). That
+/// file is no longer in the working tree (#586); see the "Raw per-pair
+/// data" section of
+/// `bench/route/results/correctness-sweep-2026-05-06/REPORT.md` for the
+/// commit that holds it.
 #[test]
 fn test_197_unfiltered_snap_still_demonstrates_bug() {
     use super::query::CchQuery;

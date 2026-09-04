@@ -6,6 +6,11 @@ butterfly returned 404 ("No route found") and OSRM successfully
 routed. Hits the local Butterfly /route on the configured port and
 reports how many of the previously-failing pairs now succeed.
 
+The raw `results-car.jsonl` this reads is no longer in the working tree
+(#586) — restore it from history or regenerate it; see the "Raw per-pair
+data" section of
+bench/route/results/correctness-sweep-2026-05-06/REPORT.md.
+
 Usage:
     python3 scripts/verify_197.py [--port 3010] [--out PATH]
 """

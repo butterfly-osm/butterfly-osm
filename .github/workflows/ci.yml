@@ -44,15 +44,11 @@ jobs:
           toolchain: 1.95.0
           components: clippy, rustfmt
 
-      # `gtfs-rt` (transit GTFS-RT decoding) runs `prost-build` at build time,
-      # which shells out to `protoc`. The runner image doesn't ship it, so
-      # `--all-features` clippy/build fail with "Could not find `protoc`".
-      # Pin the version for reproducibility (matches the build rules).
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "27.2"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # No `protoc` step (#574). It used to be here because `gtfs-rt` ran
+      # `prost-build` at build time; the GTFS-Realtime bindings are now
+      # generated ahead of time and committed, so nothing in the build shells
+      # out to a protobuf compiler. `scripts/gen-gtfs-rt.sh` still needs it,
+      # but that runs by hand, only when the (frozen) spec moves.
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
@@ -69,7 +65,11 @@ jobs:
       #   `feature = "bench"`-gated tests; this is also what links the
       #   bench-only butterfly-bench) · a count guard proving the all-features
       #   test list is a strict superset of the default one · py_compile of the
-      #   post-deploy gate · the gate's --list-gates registry smoke.
+      #   post-deploy gate · the gate's --list-gates registry smoke and unit
+      #   tests · the `Dockerfile.tools` shim-is-derived check (#573) · a real
+      #   `docker build` of BOTH image targets with their sizes printed (#565,
+      #   #573 — nothing built the images before, and the builder stage hid its
+      #   own failures behind `|| true`).
       # Each step is wrapped in a ::group:: so the log stays readable.
-      - name: ci steps (fmt, clippy, tests, post-deploy gate)
+      - name: ci steps (fmt, clippy, tests, post-deploy gate, images)
         run: bash scripts/ci-steps.sh

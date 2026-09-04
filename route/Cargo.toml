@@ -145,11 +145,17 @@ metrics = "0.24"
 # Transit: GTFS static feed parsing
 gtfs-structures = "0.47"
 # Transit: GTFS-RT protobuf ingestion (one-shot snapshots applied at
-# startup — no polling loop).
-# gtfs-rt 0.5 depends on prost 0.11; we expose the matching `Message` trait
-# via a renamed `prost_011` dependency so call sites can decode FeedMessage.
-gtfs-rt = "0.5"
-prost_011 = { package = "prost", version = "0.11" }
+# startup — no polling loop). The message types are our own committed
+# prost bindings, `src/transit/gtfs_realtime.rs`, generated from the
+# vendored `src/transit/gtfs-realtime.proto` by `scripts/gen-gtfs-rt.sh`
+# (#574). Before that, `gtfs-rt 0.5` dragged a whole second protobuf
+# toolchain into the graph — prost 0.11 + prost-derive + prost-types +
+# prost-build + prettyplease 0.1 + heck 0.4 + itertools 0.10 + petgraph +
+# multimap + fixedbitset — alongside the prost 0.14 above, and made
+# `protoc` a build-host requirement for a schema frozen for years.
+# NB: `syn 1.0` is still in the graph, but no longer because of protobuf:
+# its one remaining consumer is `gtfs-structures 0.47 -> derivative 2.2`
+# (dropped upstream in gtfs-structures 0.49, which is a separate bump).
 # Transit feed downloads now delegate to butterfly-dl's `verified`
 # module (#100). The HTTP stack lives there; route no longer needs
 # a direct reqwest dep. Feed config + orchestration + GTFS parsing
