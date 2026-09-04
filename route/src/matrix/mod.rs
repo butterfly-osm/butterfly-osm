@@ -61,3 +61,80 @@ pub use bucket_ch::{
     table_bucket_full_flat,
     table_bucket_parallel,
 };
+
+#[cfg(test)]
+mod layering {
+    //! #569: the matrix engine must not import the HTTP server.
+    //!
+    //! It did: `matrix::bucket_ch` reached into
+    //! `server::isochrone_handler` for the four seeded PHAST scans, so the
+    //! query engine depended on a web handler module and the scans could only
+    //! be built with the server compiled in. The scans now live in
+    //! `range::phast_seeded` and the scratch-cell registry in
+    //! `crate::evictable`; this test is what stops the inversion coming back
+    //! by accident.
+    //!
+    //! Scope is `matrix/` alone — `range` still borrows `server::query`'s
+    //! `HANDLE_NONE`, which is a separate cleanup.
+
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    /// The module no `matrix/` source may path into.
+    const UP: &str = "server";
+
+    /// Upward imports, in the two spellings that reach [`UP`] from inside
+    /// `matrix/`. Assembled at run time, never written out: a guard whose own
+    /// needle is a literal flags itself. A doc comment may NAME the module;
+    /// only a path does the damage, and a path needs one of these prefixes.
+    fn forbidden() -> [String; 2] {
+        [format!("crate::{UP}"), format!("super::{UP}")]
+    }
+
+    fn matrix_dir() -> PathBuf {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/matrix"))
+    }
+
+    #[test]
+    fn matrix_does_not_import_server() {
+        let dir = matrix_dir();
+        let mut scanned: BTreeSet<String> = BTreeSet::new();
+        let mut offenders: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(&dir).expect("matrix source directory is readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("utf-8 file name")
+                .to_string();
+            let src = std::fs::read_to_string(&path).expect("matrix source is readable");
+            for (i, line) in src.lines().enumerate() {
+                if let Some(needle) = forbidden().iter().find(|n| line.contains(n.as_str())) {
+                    offenders.push(format!("{name}:{}: {needle} — {}", i + 1, line.trim()));
+                }
+            }
+            scanned.insert(name);
+        }
+
+        // A path typo or a moved module must FAIL the test, not silently
+        // scan nothing: pin the files the guard is known to cover.
+        assert!(
+            scanned.contains("bucket_ch.rs") && scanned.contains("mod.rs"),
+            "guard scanned {scanned:?} in {} — it is not looking at the \
+             matrix module",
+            dir.display()
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "#569: the matrix engine imports the HTTP server — move the \
+             shared code down (engine modules: `range`, `evictable`, \
+             `formats`) instead of reaching up:\n{}",
+            offenders.join("\n")
+        );
+    }
+}

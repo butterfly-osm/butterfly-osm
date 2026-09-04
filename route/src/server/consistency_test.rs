@@ -18,10 +18,10 @@ use std::sync::Arc;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::profile_abi::Mode;
 
-use super::isochrone_handler::run_phast_bounded_fast;
 use super::query::CchQuery;
 use super::state::ServerState;
 use super::unpack::unpack_path;
+use crate::range::phast_seeded::run_phast_bounded_fast;
 
 /// Test coordinate pairs across Belgium
 #[allow(clippy::type_complexity)]
