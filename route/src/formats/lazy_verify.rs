@@ -249,24 +249,6 @@ impl LazyContainer {
         })
     }
 
-    /// Eager open: read manifest, then verify every section
-    /// immediately. Equivalent to the pre-#160 behaviour. Useful for
-    /// tools that want to validate a container in one pass and for
-    /// tests that exercise the verified-state branches.
-    pub fn open_eager(path: &std::path::Path) -> Result<Self> {
-        let lazy = Self::open_lazy(path)?;
-        for entry in lazy.container.sections.iter() {
-            lazy.verify_now(&entry.name).with_context(|| {
-                format!(
-                    "eager verification of section '{}' in {}",
-                    entry.name,
-                    path.display()
-                )
-            })?;
-        }
-        Ok(lazy)
-    }
-
     /// Borrow the underlying [`Container`] manifest (directory, lookup
     /// helpers, etc).
     pub fn container(&self) -> &Container {
@@ -644,13 +626,20 @@ mod tests {
         Ok(())
     }
 
+    /// The `--eager-verify` boot path: open lazily, register the pending
+    /// count, then drive every section through `verify_now`. Every
+    /// section must end Verified with a recorded duration.
     #[test]
-    fn open_eager_marks_all_verified() -> Result<()> {
+    fn verify_now_over_every_section_marks_all_verified() -> Result<()> {
         let tmp = NamedTempFile::new()?;
         write_demo(tmp.path())?;
 
-        let lc = LazyContainer::open_eager(tmp.path())?;
+        let lc = LazyContainer::open_lazy(tmp.path())?;
         assert_eq!(lc.n_sections(), 3);
+        let names: Vec<String> = lc.iter_runtimes().map(|(n, _)| n.clone()).collect();
+        for name in &names {
+            lc.verify_now(name)?;
+        }
         for (_, rt) in lc.iter_runtimes() {
             assert_eq!(rt.state(), SectionVerifyState::Verified);
             assert!(rt.verify_duration_s().is_some());
@@ -786,7 +775,8 @@ mod tests {
         let tmp = NamedTempFile::new()?;
         write_demo(tmp.path())?;
 
-        let lc = Arc::new(LazyContainer::open_eager(tmp.path())?);
+        let lc = Arc::new(LazyContainer::open_lazy(tmp.path())?);
+        lc.verify_now("shared/cch.topo")?;
         // Already-verified section should return immediately.
         lc.ensure_verified_async("shared/cch.topo").await?;
         Ok(())
