@@ -261,37 +261,20 @@ pub struct ModeSlot {
     pub evictable: std::sync::atomic::AtomicBool,
 }
 
-/// #402: a mode name is a traffic-variant iff it has the shape
-/// `<base>_<variant>` where `<base>` is also present in the loaded
-/// mode set. The boot loader pushes both base modes (e.g. `car`) and
-/// variants (e.g. `car_freeflow`) into the same `mode_names` Vec, so
-/// we detect variants by walking prefixes.
-fn is_variant_mode_name(name: &str, all_names: &[String]) -> bool {
-    for sep in name.match_indices('_') {
-        let prefix = &name[..sep.0];
-        if all_names.iter().any(|n| n == prefix) {
-            return true;
-        }
-    }
-    false
-}
-
 impl ModeSlot {
-    pub fn new_loaded(mode_name: String, data: ModeData) -> Self {
+    /// #578: `evictable` is passed by the construction site, which
+    /// knows what it just built — a base mode reloadable from its
+    /// container bundle (`true`), or a synthetic mode with no bundle
+    /// behind it (`false`). It used to be inferred by scanning every
+    /// mode name for an underscore whose prefix was also a loaded mode,
+    /// which was O(n^2) over the mode list and silently pinned any
+    /// future base mode named after a loaded one plus a suffix.
+    pub fn new_loaded(mode_name: String, data: ModeData, evictable: bool) -> Self {
         Self {
             mode_name,
             state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
             last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            evictable: std::sync::atomic::AtomicBool::new(true),
-        }
-    }
-
-    pub fn new_loaded_variant(mode_name: String, data: ModeData) -> Self {
-        Self {
-            mode_name,
-            state: parking_lot::RwLock::new(Some(std::sync::Arc::new(data))),
-            last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            evictable: std::sync::atomic::AtomicBool::new(false),
+            evictable: std::sync::atomic::AtomicBool::new(evictable),
         }
     }
 }
@@ -531,7 +514,10 @@ impl ServerState {
                 up_edges = mode_data.cch_topo.up_targets.len(),
                 "loaded mode data"
             );
-            tables.push(mode_name.clone(), mode_data);
+            // Base modes are evictable (#578); the directory-tree path
+            // has no container to reload from, but eviction is not armed
+            // there either — see the slot comment below.
+            tables.push(mode_name.clone(), mode_data, true);
             base_mode_idx.insert(mode_name.clone(), mode_index);
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
@@ -563,11 +549,13 @@ impl ServerState {
                             continue;
                         }
                     };
-                    let base_data = &tables.data[base_idx];
+                    let base_data = tables.data_at(base_idx);
                     let variant_data = load_traffic_variant_mode_data(
                         base_data, variant, base, &step8_dir, &step2_dir, &ebg_nodes, &nbg_geo,
                     )?;
-                    let new_index = tables.push(synthetic.clone(), variant_data);
+                    // Variants are pinned: their load shape differs
+                    // from a base mode's bundle (#578).
+                    let new_index = tables.push(synthetic.clone(), variant_data, false);
                     tracing::info!(
                         base = base.as_str(),
                         variant = variant.as_str(),
