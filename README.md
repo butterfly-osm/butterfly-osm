@@ -269,3 +269,10 @@ canonical FSF text.
 
 Built by Pierre &lt;pierre@warnier.net&gt; for the broader OpenStreetMap
 community.
+
+### Bench feature
+
+Historical algorithm variants, validation harnesses and the `butterfly-bench`
+binary are behind the `bench` cargo feature (#553): the server binary builds
+without them; `cargo build --release --features bench --bin butterfly-bench`
+brings them back, reproducible.

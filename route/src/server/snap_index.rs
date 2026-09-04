@@ -490,6 +490,7 @@ impl PackedSnapIndex {
         best
     }
 
+    #[cfg(feature = "bench")]
     /// Convenience: like [`snap`] but also constrained by a dynamic
     /// EBG-id-indexed `edge_filter` (exclude/avoid path).
     pub fn snap_filtered(
@@ -520,6 +521,7 @@ impl PackedSnapIndex {
             .map(|(id, _, _, _)| id)
     }
 
+    #[cfg(feature = "bench")]
     /// Snap with bearing filter. `bearing` and `range` are degrees.
     pub fn snap_with_bearing(
         &self,
@@ -532,6 +534,7 @@ impl PackedSnapIndex {
         self.snap_with_bearing_filtered(lon, lat, mode_idx, bearing, range, None)
     }
 
+    #[cfg(feature = "bench")]
     /// Snap with bearing filter + optional EBG-id-indexed edge filter.
     pub fn snap_with_bearing_filtered(
         &self,
@@ -1116,6 +1119,7 @@ mod tests {
         assert_eq!(id, Some(0));
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn bearing_filter_rejects_outside_range() {
         // Synthetic two-vertex polylines with known endpoint bearings.

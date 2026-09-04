@@ -34,11 +34,14 @@ use crate::formats::{CchTopo, CchWeights};
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat};
 use crate::server::evictable::EvictableCell;
 use crate::server::query::HANDLE_NONE;
+#[cfg(feature = "bench")]
 use std::cmp::Reverse;
+#[cfg(feature = "bench")]
 use std::collections::BinaryHeap;
 
 /// Block size for the gated downward scan — matches
 /// [`crate::range::phast::BLOCK_SIZE`].
+#[cfg(feature = "bench")]
 const BLOCK_SIZE: usize = 4096;
 
 /// Direction tag on the parent arc: set ⇒ DOWN arc, clear ⇒ UP arc.
@@ -188,6 +191,7 @@ pub enum TreeSettle {
     BadOrigin,
 }
 
+#[cfg(feature = "bench")]
 /// Settle the bounded shortest-path tree from `origin` (a CCH rank) up to
 /// `threshold` (same weight unit as the CCH weights — seconds for TIME).
 ///
@@ -429,6 +433,7 @@ pub struct TreePath {
     pub backward_parent: Vec<(u32, u32)>,
 }
 
+#[cfg(feature = "bench")]
 /// Backtrack `target` (a CCH rank) out of the tree settled by the last
 /// [`tree_settle`] on this thread. Returns `None` when the target was not
 /// settled within the threshold (unreachable OR beyond the bound — the caller

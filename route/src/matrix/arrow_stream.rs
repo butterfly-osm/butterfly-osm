@@ -45,6 +45,7 @@ pub struct MatrixTile {
 }
 
 impl MatrixTile {
+    #[cfg(feature = "bench")]
     /// Create a new tile from a slice of the distance matrix
     ///
     /// # Arguments
@@ -142,6 +143,7 @@ pub fn tiles_to_record_batch(tiles: &[MatrixTile]) -> anyhow::Result<RecordBatch
     Ok(batch)
 }
 
+#[cfg(feature = "bench")]
 /// Arrow IPC stream writer for matrix tiles
 pub struct ArrowMatrixWriter<W: std::io::Write> {
     writer: StreamWriter<W>,
@@ -149,6 +151,7 @@ pub struct ArrowMatrixWriter<W: std::io::Write> {
     bytes_written: usize,
 }
 
+#[cfg(feature = "bench")]
 impl<W: std::io::Write> ArrowMatrixWriter<W> {
     /// Create a new Arrow IPC stream writer
     pub fn new(inner: W) -> anyhow::Result<Self> {
@@ -210,7 +213,7 @@ pub fn record_batch_to_bytes(batch: &RecordBatch) -> anyhow::Result<Bytes> {
 /// Content type for Arrow IPC stream
 pub const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bench"))]
 mod tests {
     use super::*;
 

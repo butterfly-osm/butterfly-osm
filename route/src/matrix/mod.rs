@@ -29,10 +29,13 @@ pub mod bucket_ch;
 pub mod neighbors;
 pub mod tile_geometry;
 
-pub use arrow_stream::{ArrowMatrixWriter, MatrixTile};
+#[cfg(feature = "bench")]
+pub use arrow_stream::ArrowMatrixWriter;
+pub use arrow_stream::MatrixTile;
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
+#[cfg(feature = "bench")]
+pub use bucket_ch::{BucketArena, table_bucket, table_bucket_optimized};
 pub use bucket_ch::{
-    BucketArena,
     BucketM2MEngine,
     BucketM2MStats,
     // Data structures
@@ -42,8 +45,6 @@ pub use bucket_ch::{
     backward_join_with_buckets,
     // Source-block optimized API (avoids repeated forward computation)
     forward_build_buckets,
-    table_bucket,
     table_bucket_full_flat,
-    table_bucket_optimized,
     table_bucket_parallel,
 };

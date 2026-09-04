@@ -172,6 +172,12 @@ tempfile = { workspace = true }
 geo = "0.33"
 wiremock = { workspace = true }
 
+[features]
+# Historical algorithm variants and harnesses kept reproducible for the
+# bench binary (#553); the server builds without them.
+bench = []
+
 [[bin]]
 name = "butterfly-bench"
 path = "src/bench/main.rs"
+required-features = ["bench"]
