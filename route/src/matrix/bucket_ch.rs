@@ -6540,6 +6540,7 @@ fn table_phast_lopsided_2ch(
         let src_ranks: std::collections::HashSet<u32> = seeds.iter().map(|s| s.0).collect();
         // 2-channel seeds: (rank, part_time, part_len).
         let phast_seeds: Vec<(u32, u32, u32)> = seeds.iter().map(|s| (s.0, s.1, s.2)).collect();
+        let t0 = std::time::Instant::now();
         let settled = crate::server::isochrone_handler::run_phast_bounded_fast_seeded_2ch(
             up_adj_flat,
             down_fwd_time,
@@ -6549,6 +6550,8 @@ fn table_phast_lopsided_2ch(
             field_bound(seeds),
             mode,
         );
+        // #546: the 2-channel scan (the /table default) never fed the router.
+        update_cost_ewma(&SCAN_NS, t0.elapsed().as_nanos() as u64);
         let mut field: std::collections::HashMap<u32, (u32, u32)> =
             std::collections::HashMap::with_capacity(tgt_ranks.len());
         for (rank, t, l) in settled {
@@ -6825,10 +6828,19 @@ fn phast_dir(
     } else {
         FieldDir::Rev
     };
-    match std::env::var("BUTTERFLY_MATRIX_ALGO").as_deref() {
-        Ok("bucket") => return None,
-        Ok("phast") => return Some(dir),
-        _ => {}
+    // #546: read once — `std::env::var` allocates and takes the process env
+    // lock, and this sits on every /table, Flight matrix and /trip call.
+    static ALGO_OVERRIDE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    let force_phast =
+        ALGO_OVERRIDE.get_or_init(|| match std::env::var("BUTTERFLY_MATRIX_ALGO").as_deref() {
+            Ok("bucket") => Some(false),
+            Ok("phast") => Some(true),
+            _ => None,
+        });
+    match force_phast {
+        Some(false) => return None,
+        Some(true) => return Some(dir),
+        None => {}
     }
     let sweep = SWEEP_NS.load(std::sync::atomic::Ordering::Relaxed);
     let scan = match dir {
@@ -6905,6 +6917,12 @@ fn table_phast_lopsided(
         }
     };
 
+    // Field values at exactly the ranks the targets can land on — built once
+    // (#546: it was rebuilt inside per_source, S times).
+    let tgt_ranks: std::collections::HashSet<u32> = tgt_seedsets
+        .iter()
+        .flat_map(|v| v.iter().map(|x| x.0))
+        .collect();
     let per_source = |(source_idx, seeds): (usize, &Vec<EngineSeed>)| -> (Vec<u32>, Vec<usize>) {
         let mut row = vec![u32::MAX; n_targets];
         let mut conflicts: Vec<usize> = Vec::new();
@@ -6922,11 +6940,6 @@ fn table_phast_lopsided(
             mode,
         );
         update_cost_ewma(&SCAN_NS, t0.elapsed().as_nanos() as u64);
-        // Field values at exactly the ranks the targets can land on.
-        let tgt_ranks: std::collections::HashSet<u32> = tgt_seedsets
-            .iter()
-            .flat_map(|v| v.iter().map(|x| x.0))
-            .collect();
         let mut field: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::with_capacity(tgt_ranks.len());
         for (rank, dist) in settled {
@@ -7724,6 +7737,8 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
 ) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    // #546: feed the router's per-sweep cost from the 2-channel path too.
+    let t_all = std::time::Instant::now();
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     if n_sources == 0 || n_targets == 0 {
@@ -7904,6 +7919,11 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
             time_out[row_off + c.target_idx] = c.time_col[src];
             lat_out[row_off + c.target_idx] = c.lat_col[src];
         }
+    }
+    if let Some(per_sweep) =
+        (t_all.elapsed().as_nanos() as u64).checked_div((n_sources + n_targets) as u64)
+    {
+        update_cost_ewma(&SWEEP_NS, per_sweep);
     }
     (time_out, lat_out, stats)
 }

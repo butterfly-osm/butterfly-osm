@@ -680,7 +680,7 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
     // way /table POST does — see snap_kbest.rs. Lazy version (#368
     // pattern): K=1 primary upfront, K=64 only when an INF cell needs
     // it.
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     for store_input in &req.stores {
         let store_rank = match super::snap_kbest::snap_primary_role(
             &state,

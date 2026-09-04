@@ -391,11 +391,6 @@ fn test_max_table_cells_is_sensible() {
 }
 
 #[test]
-fn test_table_stream_has_no_hard_limit() {
-    // /table/stream has no hard point-count limit
-}
-
-#[test]
 fn test_max_bulk_origins_is_sensible() {
     let max_bulk_origins: usize = 10_000;
     assert!(max_bulk_origins <= 10_000);

@@ -713,7 +713,7 @@ pub async fn trip_handler(
         // M2M, escalate to K=64 for ONLY the affected waypoint
         // indices and replay the combo fallback (#197). Healthy tours
         // never pay the K=64 snap cost.
-        const SNAP_K: usize = 64;
+        use super::snap_kbest::SNAP_K;
 
         let mut ranks: Vec<u32> = Vec::with_capacity(n);
         let mut snapped_locations: Vec<[f64; 2]> = Vec::with_capacity(n);
@@ -893,7 +893,7 @@ pub async fn trip_handler(
             // table.rs::apply_k_best_fallback — keeps tail latency in
             // check on pathological tours where many legs straddle
             // disconnected fragments.
-            const MAX_FALLBACK_COMBOS: usize = 200;
+            const MAX_FALLBACK_COMBOS: usize = super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS;
             let combo_enum = |k_src: usize, k_dst: usize| -> Vec<(usize, usize)> {
                 let mut order = Vec::new();
                 for sum in 0..(k_src + k_dst) {

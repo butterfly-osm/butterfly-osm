@@ -577,7 +577,7 @@ pub async fn route_handler(
     // escalation only fires on the ~1.3 % pathological pairs where
     // the geometrically-closest candidate is the wrong same-geometry
     // directional twin or a disconnected mode-filtered island.
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     let src_bearing = bearing_hints.as_ref().and_then(|h| h.first().copied());
     let dst_bearing = bearing_hints.as_ref().and_then(|h| h.get(1).copied());
 
@@ -885,7 +885,7 @@ pub async fn route_handler(
     // Worst case ≈ 400 × 5-50 ms = 2-20 s tail, only on the
     // ~1.3 % pathological pairs that genuinely have no nearby
     // dynamic or geometrically ambiguous cases.
-    const MAX_FALLBACK_COMBOS: usize = 400;
+    const MAX_FALLBACK_COMBOS: usize = super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS;
     let mut combo_order = build_combo_order(
         src_rank_candidates.len(),
         dst_rank_candidates.len(),
