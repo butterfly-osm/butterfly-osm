@@ -564,10 +564,12 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 /// Determinism: for identical inputs the returned `(up, down, up_middle,
 /// down_middle)` values are element-for-element equal to what the CLI
 /// `customize_cch` writes to `cch.w.<mode>.u32` (pinned by the
-/// `customize_in_memory_matches_cli` round-trip test). The in-memory
-/// `WeightArray`s use u32 storage rather than the on-disk narrowest width, but
-/// that is a storage detail invisible to the value-level consumers (the
-/// `*AdjFlat` builders and CCH search).
+/// `customize_in_memory_matches_cli` round-trip test). Since #552 the
+/// returned `WeightArray`s are stored at the same narrowest width the
+/// on-disk writer picks ([`crate::formats::WeightWidth::choose`]) — a
+/// storage detail invisible to the value-level consumers (the `*AdjFlat`
+/// builders and CCH search), which read through `get`/`iter`, but worth
+/// ~50 % of the anon RSS of every pinned recustomized car-family mode.
 pub fn customize_cch_time_in_memory(
     topo: &CchTopo,
     filtered_ebg: &crate::formats::FilteredEbg,
@@ -634,8 +636,8 @@ pub fn customize_cch_time_in_memory(
 
     Ok((
         CchWeights {
-            up: WeightArray::from_vec_u32(time_up),
-            down: WeightArray::from_vec_u32(time_down),
+            up: WeightArray::from_vec_u32_narrowed(time_up),
+            down: WeightArray::from_vec_u32_narrowed(time_down),
             up_middle: ArcCow::from_vec(time_up_mid),
             down_middle: ArcCow::from_vec(time_down_mid),
         },
@@ -943,8 +945,10 @@ pub fn recompute_len_along_time_from_middles(
         },
     );
     CchWeights {
-        up: WeightArray::from_vec_u32(lat_up),
-        down: WeightArray::from_vec_u32(lat_down),
+        // #552: same narrowing as the TIME path above — length-along-time
+        // is metres, which is u24 on a country-sized graph.
+        up: WeightArray::from_vec_u32_narrowed(lat_up),
+        down: WeightArray::from_vec_u32_narrowed(lat_down),
         up_middle: ArcCow::from_vec(up_middle.to_vec()),
         down_middle: ArcCow::from_vec(down_middle.to_vec()),
     }
