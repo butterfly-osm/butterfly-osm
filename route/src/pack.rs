@@ -1937,6 +1937,18 @@ pub fn unpack(path: &Path, out_dir: &Path) -> Result<()> {
         } else {
             std::fs::write(&out_path, &bytes)?;
         }
+        // A lean pack stores `nbg.geo` without its polyline body
+        // (#579). The bytes are gone — say so rather than leave a
+        // step-3 file that only fails when something reads it.
+        // Best-effort: a header we cannot parse is the section's own
+        // problem, not a reason to abort the extraction.
+        if sec.kind == SectionKind::NbgGeo && NbgGeoFile::is_edges_only(&bytes).unwrap_or(false) {
+            println!(
+                "  !  {} is an edges-only image (lean pack): polylines are NOT restored. \
+                 Re-pack the source tree with `pack --full` for a complete step3/.",
+                out_path.display()
+            );
+        }
         println!(
             "  -> [{:>5} MiB] {:<32} -> {}",
             bytes.len() / (1024 * 1024),
@@ -2932,6 +2944,7 @@ mod tests {
     use super::*;
     use crate::formats::filtered_ebg::FilteredEbg;
     use crate::formats::order_ebg::OrderEbg;
+    use crate::formats::{BitsetField, CchTopo};
     use crate::model::types::Mode;
     use std::fs;
     use tempfile::{NamedTempFile, TempDir};
@@ -3438,6 +3451,480 @@ mod tests {
         fs::create_dir_all(&existing)?;
         let res = unpack(&container, &existing);
         assert!(res.is_err());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // #600: unpack on a container shaped like the ones we ship.
+    //
+    // `synth_dir` writes byte-string placeholders wherever `pack` only
+    // copies, so every derivation in the packer silently skipped and
+    // the container it produced carried none of the synthesised
+    // sections. That is why `unpack` could go years mapping neither
+    // `edge_geom_*` nor `way_names_idx` nor the split topology and no
+    // test noticed. `realistic_dir` writes REAL files instead, so the
+    // packer runs every derivation and the container below carries
+    // every section family a production artifact does.
+    // -----------------------------------------------------------------
+
+    /// Three EBG nodes over the two `write_real_nbg_geo` polylines.
+    fn write_real_ebg_nodes(root: &Path) -> Result<()> {
+        use crate::formats::ebg_nodes::{EbgNode, EbgNodes, EbgNodesFile};
+        let node = |geom_idx: u32, tail: u32, head: u32| EbgNode {
+            tail_nbg: tail,
+            head_nbg: head,
+            geom_idx,
+            length_m: 12,
+            class_bits: 0,
+            primary_way: 7,
+        };
+        let data = EbgNodes {
+            n_nodes: 3,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: crate::formats::ArcCow::from_vec(vec![
+                node(0, 0, 1),
+                node(1, 1, 2),
+                node(1, 2, 1),
+            ]),
+        };
+        EbgNodesFile::write(root.join("step4").join("ebg.nodes"), &data)?;
+        Ok(())
+    }
+
+    /// A `filtered.<mode>.ebg` whose node counts agree with
+    /// `write_real_ebg_nodes`, so the snap-index build accepts it.
+    fn write_real_filtered_ebg(root: &Path, mode_name: &str, mode: Mode) -> Result<()> {
+        let data = FilteredEbg {
+            mode,
+            n_filtered_nodes: 3,
+            n_filtered_arcs: 0,
+            n_original_nodes: 3,
+            inputs_sha: [7u8; 32],
+            offsets: crate::formats::ArcCow::from_vec(vec![0u64; 4]),
+            heads: crate::formats::ArcCow::from_vec(vec![]),
+            original_arc_idx: crate::formats::ArcCow::from_vec(vec![]),
+            filtered_to_original: crate::formats::ArcCow::from_vec(vec![0, 1, 2]),
+            original_to_filtered: crate::formats::ArcCow::from_vec(vec![0, 1, 2]),
+        };
+        crate::formats::FilteredEbgFile::write(
+            root.join("step5")
+                .join(format!("filtered.{}.ebg", mode_name)),
+            &data,
+        )?;
+        Ok(())
+    }
+
+    /// The matching `order.<mode>.ebg` (`n_nodes` must equal the
+    /// filtered node count or `pack` refuses).
+    fn write_real_order_ebg(root: &Path, mode_name: &str) -> Result<()> {
+        let data = OrderEbg {
+            n_nodes: 3,
+            inputs_sha: [7u8; 32],
+            perm: vec![0, 1, 2],
+            inv_perm: vec![0, 1, 2],
+        };
+        crate::formats::OrderEbgFile::write(
+            root.join("step6").join(format!("order.{}.ebg", mode_name)),
+            &data,
+        )?;
+        Ok(())
+    }
+
+    /// A three-rank CCH with one original arc and one shortcut per
+    /// direction, plus the two step-8 weight files that go with it. Big
+    /// enough that `pack` splits the topology (#359: hot topo + cold
+    /// middles) and builds the flat adjacencies (#345) — the section
+    /// families `unpack` used to choke on.
+    fn write_real_cch(root: &Path, mode_name: &str, mode: Mode) -> Result<()> {
+        let topo = CchTopo {
+            n_nodes: 3,
+            n_shortcuts: 2,
+            n_original_arcs: 2,
+            inputs_sha: [7u8; 32],
+            up_offsets: crate::formats::ArcCow::from_vec(vec![0, 1, 2, 2]),
+            up_targets: crate::formats::ArcCow::from_vec(vec![1, 2]),
+            // Edge 1 is the shortcut (bit 1 set).
+            up_is_shortcut: BitsetField::from_owned_words(vec![0b10], 2),
+            up_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(vec![u32::MAX, 1]),
+            down_offsets: crate::formats::ArcCow::from_vec(vec![0, 0, 1, 2]),
+            down_targets: crate::formats::ArcCow::from_vec(vec![0, 1]),
+            down_is_shortcut: BitsetField::from_owned_words(vec![0b10], 2),
+            down_middle: crate::formats::cch_weights::WeightArray::from_vec_u32(vec![u32::MAX, 1]),
+            rank_to_filtered: crate::formats::ArcCow::from_vec(vec![0, 1, 2]),
+        };
+        CchTopoFile::write(
+            root.join("step7").join(format!("cch.{}.topo", mode_name)),
+            &topo,
+        )?;
+
+        let middles: Vec<u32> = vec![u32::MAX, 1];
+        crate::customization::write_cch_weights(
+            &root.join("step8").join(format!("cch.w.{}.u32", mode_name)),
+            &[110, 250],
+            &[120, 260],
+            &middles,
+            &middles,
+            mode,
+        )?;
+        crate::customization::write_cch_weights(
+            &root.join("step8").join(format!("cch.d.{}.u32", mode_name)),
+            &[1100, 2500],
+            &[1200, 2600],
+            &middles,
+            &middles,
+            mode,
+        )?;
+        Ok(())
+    }
+
+    /// A `ways.raw` with a `name` tag, so `pack` builds a non-empty
+    /// `shared/way_names_idx` instead of skipping the section.
+    fn write_real_ways_raw(root: &Path) -> Result<()> {
+        use crate::formats::WaysFile;
+        use crate::formats::ways::Way;
+        let ways = vec![
+            Way {
+                id: 7,
+                nodes: vec![100, 101, 102, 103],
+                tags: vec![
+                    ("highway".to_string(), "residential".to_string()),
+                    ("name".to_string(), "Kortestraat".to_string()),
+                ],
+            },
+            Way {
+                id: 8,
+                nodes: vec![103, 104],
+                tags: vec![
+                    ("highway".to_string(), "residential".to_string()),
+                    ("name".to_string(), "Langestraat".to_string()),
+                ],
+            },
+        ];
+        WaysFile::write(root.join("step1").join("ways.raw"), &ways)?;
+        Ok(())
+    }
+
+    /// The step-3 per-edge OSM node chains (#460): one id per polyline
+    /// vertex, so the counts line up with `write_real_nbg_geo`.
+    fn write_real_edge_osm(root: &Path) -> Result<()> {
+        use crate::formats::edge_osm::{
+            EdgeOsmIds, EdgeOsmIdsFile, EdgeOsmOffsets, EdgeOsmOffsetsFile,
+        };
+        let step3 = root.join("step3");
+        EdgeOsmOffsetsFile::write(
+            step3.join("nbg.edge_osm.offsets"),
+            &EdgeOsmOffsets {
+                n_edges: 2,
+                n_ids: 6,
+                offsets: crate::formats::ArcCow::from_vec(vec![0, 4, 6]),
+            },
+        )?;
+        EdgeOsmIdsFile::write(
+            step3.join("nbg.edge_osm.ids"),
+            &EdgeOsmIds {
+                n_ids: 6,
+                ids: crate::formats::ArcCow::from_vec(vec![100, 101, 102, 103, 103, 104]),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Every file a production step tree has that `synth_dir` fakes.
+    /// The container packed from this carries all five synthesised
+    /// families (flats, snap index, region tiles, flat edge geometry,
+    /// way-name index), the split CCH topology, the verbatim per-edge
+    /// OSM chains and a traffic variant.
+    fn realistic_dir() -> Result<TempDir> {
+        let tmp = synth_dir()?;
+        let root = tmp.path();
+        write_real_nbg_geo(root)?;
+        write_real_edge_osm(root)?;
+        write_real_ways_raw(root)?;
+        write_real_ebg_nodes(root)?;
+        for (mode_name, mode) in [("bike", Mode(0)), ("car", Mode(1))] {
+            write_real_filtered_ebg(root, mode_name, mode)?;
+            write_real_order_ebg(root, mode_name)?;
+            write_real_cch(root, mode_name, mode)?;
+        }
+        // #84/#392 variant: recustomised weights + their provenance
+        // sidecar. `pack` skips a variant whose sidecar is missing, so
+        // `synth_dir`'s lone `cch.w.car_p3.u32` never produced one.
+        crate::customization::write_cch_weights(
+            &root.join("step8").join("cch.w.car_p3.u32"),
+            &[90, 200],
+            &[95, 210],
+            &[u32::MAX, 1],
+            &[u32::MAX, 1],
+            Mode(1),
+        )?;
+        write_file(
+            &root.join("step8").join("cch.w.car_p3.traffic.json"),
+            br#"{"name":"p3","factors":{"urban_high":0.6}}"#,
+        )?;
+        Ok(tmp)
+    }
+
+    /// Every section family a realistic container carries, and what
+    /// `unpack` owes it: `None` = synthesised at pack time, so no file;
+    /// `Some(path)` = restored, and byte-for-byte from that source.
+    const REALISTIC_SECTIONS: &[(&str, Option<&str>)] = &[
+        ("shared/step1.ways.raw", Some("step1/ways.raw")),
+        ("shared/nbg.geo", None), // lean packs it edges-only; see below
+        ("shared/nbg.node_map", Some("step3/nbg.node_map")),
+        ("shared/edge_geom_offsets", None),
+        ("shared/edge_geom_points", None),
+        (
+            "shared/edge_osm_offsets",
+            Some("step3/nbg.edge_osm.offsets"),
+        ),
+        ("shared/edge_osm_ids", Some("step3/nbg.edge_osm.ids")),
+        ("shared/way_names_idx", None),
+        ("shared/snap_points", None),
+        ("shared/snap_grid", None),
+        ("shared/region_tiles", None),
+        ("shared/ebg.nodes", Some("step4/ebg.nodes")),
+        ("mode/car/way_attrs", Some("step2/way_attrs.car.bin")),
+        ("mode/car/filtered_ebg", Some("step5/filtered.car.ebg")),
+        ("mode/car/order", Some("step6/order.car.ebg")),
+        ("mode/car/orig_to_rank", None),
+        ("mode/car/filtered_to_original", None),
+        ("mode/car/snap_mask", None),
+        ("mode/car/up_adj.topo", None),
+        ("mode/car/up_adj.weights.time", None),
+        ("mode/car/up_adj.weights.dist", None),
+        ("mode/car/down_adj.topo", None),
+        ("mode/car/down_reverse_adj.topo", None),
+        ("mode/car/weights.time", Some("step8/cch.w.car.u32")),
+        ("mode/car/weights.dist", Some("step8/cch.d.car.u32")),
+        (
+            "mode/car/_variant/p3/weights.time",
+            Some("step8/cch.w.car_p3.u32"),
+        ),
+        (
+            "mode/car/_variant/p3/traffic.json",
+            Some("step8/cch.w.car_p3.traffic.json"),
+        ),
+        // The split topology is a pair: neither half is a step file on
+        // its own, so both are checked by `restore_cch_topo`'s test.
+        ("mode/car/topo", None),
+        ("mode/car/middles", None),
+    ];
+
+    /// The end-to-end claim in the `unpack` doc comment, on a container
+    /// shaped like the ones we ship (#600): every section either goes
+    /// back to the step file it was copied from, or is skipped because
+    /// `pack` built it.
+    #[test]
+    fn unpack_restores_a_realistic_container() -> Result<()> {
+        let tmp = realistic_dir()?;
+        let out = tmp.path().join("realistic.butterfly");
+        pack(tmp.path(), &out, None, None)?;
+        let c = Container::open(&out)?;
+
+        // The fixture is only worth anything if the packer really did
+        // emit every family — a silently-skipped derivation would make
+        // the unpack below vacuous.
+        for (section, _) in REALISTIC_SECTIONS {
+            assert!(
+                c.get(section).is_some(),
+                "fixture produced no {} — the packer skipped a derivation",
+                section
+            );
+        }
+
+        // Before #600 this call failed on the first unmapped section.
+        let unpacked = tmp.path().join("realistic-out");
+        unpack(&out, &unpacked)?;
+
+        for (section, source) in REALISTIC_SECTIONS {
+            let Some(source) = source else { continue };
+            assert_eq!(
+                fs::read(tmp.path().join(source))?,
+                fs::read(unpacked.join(source))?,
+                "{} did not come back byte-for-byte from {}",
+                source,
+                section
+            );
+        }
+
+        // The unpacked tree holds EXACTLY the restored files — a
+        // synthesised section must not invent one, and none may go
+        // missing. (`step3/nbg.geo` is restored but edges-only under
+        // the lean default, so it is compared separately below.)
+        let mut found: Vec<String> = Vec::new();
+        let mut stack = vec![unpacked.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir)? {
+                let p = entry?.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    found.push(
+                        p.strip_prefix(&unpacked)
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+        found.sort();
+        let mut expected: Vec<String> = REALISTIC_SECTIONS
+            .iter()
+            .filter_map(|(_, src)| src.map(|s| s.to_string()))
+            .chain([
+                "manifest.json".to_string(),
+                "step2/turn_rules.car.bin".to_string(),
+                "step2/turn_rules.bike.bin".to_string(),
+                "step2/way_attrs.bike.bin".to_string(),
+                "step3/nbg.geo".to_string(),
+                "step4/ebg.csr".to_string(),
+                "step5/filtered.bike.ebg".to_string(),
+                "step5/mask.bike.bitset".to_string(),
+                "step5/mask.car.bitset".to_string(),
+                "step5/t.bike.u32".to_string(),
+                "step5/t.car.u32".to_string(),
+                "step5/w.bike.u32".to_string(),
+                "step5/w.car.u32".to_string(),
+                "step6/order.bike.ebg".to_string(),
+                "step7/cch.bike.topo".to_string(),
+                "step7/cch.car.topo".to_string(),
+                "step8/cch.d.bike.u32".to_string(),
+                "step8/cch.w.bike.u32".to_string(),
+            ])
+            .collect();
+        expected.sort();
+        assert_eq!(found, expected, "unpacked tree is not the restored set");
+        Ok(())
+    }
+
+    /// The #359 split is a transform, not a derivation: `pack` writes
+    /// the topology and its middles as two sections, and the step-7
+    /// file is the whole thing. Restoring only the hot half would leave
+    /// a tree whose shortcuts cannot be unpacked — silently, which is
+    /// worse than the error #600 reported.
+    #[test]
+    fn unpack_folds_the_split_topology_back_into_one_step7_file() -> Result<()> {
+        let tmp = realistic_dir()?;
+        let out = tmp.path().join("realistic.butterfly");
+        pack(tmp.path(), &out, None, None)?;
+        let c = Container::open(&out)?;
+        let topo_sec = c.get("mode/car/topo").expect("topo section");
+        assert!(c.get("mode/car/middles").is_some(), "middles not split out");
+        // The packed half really is missing its middles.
+        let packed = CchTopoFile::read_from_bytes(&c.read_section_verified(&out, topo_sec)?)?;
+        assert!(packed.up_middle.is_empty());
+
+        let unpacked = tmp.path().join("realistic-out");
+        unpack(&out, &unpacked)?;
+        let restored = CchTopoFile::read(unpacked.join("step7/cch.car.topo"))?;
+        assert_eq!(restored.up_middle.to_vec_u32(), vec![u32::MAX, 1]);
+        assert_eq!(restored.down_middle.to_vec_u32(), vec![u32::MAX, 1]);
+        assert_eq!(
+            fs::read(tmp.path().join("step7/cch.car.topo"))?,
+            fs::read(unpacked.join("step7/cch.car.topo"))?,
+            "the rejoined topology must be the file that was packed"
+        );
+        Ok(())
+    }
+
+    /// The whole point of restoring a step tree: pack it again and get
+    /// the same container. Closes the loop on both halves of the rule —
+    /// a missing verbatim file would leave a section out of the second
+    /// pack, and a section wrongly called synthesised would come back
+    /// different (or not at all).
+    #[test]
+    fn a_full_pack_unpacks_and_repacks_to_the_same_container() -> Result<()> {
+        let tmp = realistic_dir()?;
+        let first_path = tmp.path().join("first.butterfly");
+        pack_with_options(
+            tmp.path(),
+            &first_path,
+            None,
+            None,
+            PackOptions { lean: false },
+        )?;
+
+        let unpacked = tmp.path().join("round-trip");
+        unpack(&first_path, &unpacked)?;
+
+        let second_path = tmp.path().join("second.butterfly");
+        pack_with_options(
+            &unpacked,
+            &second_path,
+            None,
+            None,
+            PackOptions { lean: false },
+        )?;
+
+        let first = Container::open(&first_path)?;
+        let second = Container::open(&second_path)?;
+        let names =
+            |c: &Container| -> Vec<String> { c.sections.iter().map(|s| s.name.clone()).collect() };
+        assert_eq!(
+            names(&first),
+            names(&second),
+            "a repack of the unpacked tree must carry the same sections"
+        );
+        for sec in &first.sections {
+            let other = second.get(&sec.name).unwrap();
+            assert_eq!(
+                first.read_section_verified(&first_path, sec)?,
+                second.read_section_verified(&second_path, other)?,
+                "section {} changed across pack → unpack → pack",
+                sec.name
+            );
+        }
+        Ok(())
+    }
+
+    /// `--full` on the command line is `PackOptions { lean: false }`,
+    /// and the lean default is what `pack` (no flag) produces (#600).
+    #[test]
+    fn the_pack_cli_full_flag_selects_the_full_fidelity_policy() -> Result<()> {
+        use clap::Parser;
+        let tmp = realistic_dir()?;
+        let parse = |args: &[&str]| -> bool {
+            match crate::cli::Cli::parse_from(args).command {
+                crate::cli::Commands::Pack { full, .. } => full,
+                _ => panic!("expected the pack subcommand"),
+            }
+        };
+        assert!(!parse(&["butterfly-route", "pack", "-d", ".", "-o", "x"]));
+        assert!(parse(&[
+            "butterfly-route",
+            "pack",
+            "-d",
+            ".",
+            "-o",
+            "x",
+            "--full"
+        ]));
+
+        // And the policy the flag picks is the one that round-trips.
+        let full_out = tmp.path().join("full.butterfly");
+        pack_with_options(
+            tmp.path(),
+            &full_out,
+            None,
+            None,
+            PackOptions { lean: false },
+        )?;
+        let c = Container::open(&full_out)?;
+        for (section, file) in OMITTED_SECTION_SOURCES {
+            // `node_signals.bin` is optional in the fixture and in the
+            // pipeline; the rest must all be there.
+            if tmp.path().join(file).exists() {
+                assert!(c.get(section).is_some(), "--full must keep {}", section);
+            }
+        }
+        let sec = c.get("shared/nbg.geo").expect("nbg.geo");
+        assert_eq!(
+            c.read_section_verified(&full_out, sec)?,
+            fs::read(tmp.path().join("step3/nbg.geo"))?,
+            "--full must keep nbg.geo whole"
+        );
         Ok(())
     }
 
