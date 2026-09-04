@@ -2477,7 +2477,11 @@ fn do_isochrone(
     state: &Arc<ServerState>,
     mode: Mode,
     params: IsochroneParams,
-) -> std::result::Result<BatchStream, Status> {
+) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
+    // #560: same contract as `do_matrix` / `do_route_batch` — the returned
+    // `done` flag is what lets the do_get wrapper append the #533
+    // completeness trailer (or fail non-OK). The whole result is one batch
+    // materialised BEFORE the stream exists, so completion is decided here.
     if params.intervals.is_empty() {
         return Err(Status::invalid_argument("intervals must not be empty"));
     }
@@ -2551,7 +2555,10 @@ fn do_isochrone(
     )
     .map_err(|e| Status::internal(format!("Arrow error: {}", e)))?;
 
-    Ok(Box::pin(stream::once(async move { Ok(batch) })))
+    Ok((
+        Box::pin(stream::once(async move { Ok(batch) })),
+        Arc::new(AtomicBool::new(true)),
+    ))
 }
 
 // =============================================================================
@@ -3824,9 +3831,23 @@ fn count_rows_into(batch_stream: BatchStream, rows: Arc<AtomicU64>) -> BatchStre
     }))
 }
 
+/// Every `do_get` action name the dispatch recognises. ONE table: the
+/// unknown-action error lists it, and `flight_completeness_tests` reads the
+/// dispatch SOURCE to assert that this table is exactly the set of arms and
+/// that every arm encodes through [`completed_flight_stream`] — so a new
+/// action cannot ship without the #533 completeness trailer (#560:
+/// `isochrone` did exactly that).
+const DO_GET_ACTIONS: &[&str] = &[
+    "matrix",
+    "route_batch",
+    "isochrone",
+    "transit_bulk",
+    "edges_batch",
+];
+
 /// #533/#532: encode a `do_get` batch stream, then append a deterministic
 /// completeness signal so clients can fail loud on truncation. Shared by
-/// `matrix`, `edges_batch` and `transit_bulk` — every streamed do_get action
+/// EVERY do_get action ([`DO_GET_ACTIONS`]) — every streamed do_get action
 /// runs its producer in a `spawn_blocking` + rayon region feeding an mpsc
 /// channel, where a panic drops the sender and the receiver reads the clean
 /// channel-close as a normal gRPC-OK end-of-stream (silent data loss).
@@ -4539,21 +4560,23 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
-                let (schema, batch_stream) = if let Some(plan) = plan {
+                let (schema, batch_stream, done) = if let Some(plan) = plan {
+                    let done_all = Arc::new(AtomicBool::new(false));
                     let st = state.clone();
-                    let run: Arc<BandRun> = Arc::new(move |m| {
-                        do_isochrone(&st, m, params.clone())
-                            .map(|s| (s, Arc::new(AtomicBool::new(true))))
-                    });
+                    let run: Arc<BandRun> = Arc::new(move |m| do_isochrone(&st, m, params.clone()));
                     (
                         Arc::new(banded_schema(isochrone_schema())),
-                        chain_bands(plan, run, Arc::new(AtomicBool::new(false))),
+                        chain_bands(plan, run, done_all.clone()),
+                        done_all,
                     )
                 } else {
-                    let bs = off_runtime(move || do_isochrone(&state, mode, params)).await?;
-                    (Arc::new(isochrone_schema()), bs)
+                    let (bs, done) =
+                        off_runtime(move || do_isochrone(&state, mode, params)).await?;
+                    (Arc::new(isochrone_schema()), bs, done)
                 };
-                let flight_stream = batches_to_flight_data(schema, batch_stream);
+                // #533/#560: completeness trailer or non-OK error on truncation —
+                // isochrone was the one do_get action still shipping without it.
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
                 Ok(Response::new(flight_stream))
             }
             "transit_bulk" => {
@@ -4623,8 +4646,9 @@ impl FlightService for ButterflyFlight {
                 Ok(Response::new(flight_stream))
             }
             other => Err(Status::invalid_argument(format!(
-                "Unknown action '{}'. Available: matrix, route_batch, isochrone, transit_bulk, edges_batch",
-                other
+                "Unknown action '{}'. Available: {}",
+                other,
+                DO_GET_ACTIONS.join(", ")
             ))),
         }
     }
@@ -5688,7 +5712,8 @@ mod matrix_sparse_tests {
 }
 
 /// #533/#532: NO streamed Flight do_get action (matrix, route_batch,
-/// edges_batch, transit_bulk) may terminate gRPC-OK with an incomplete stream.
+/// isochrone, edges_batch, transit_bulk) may terminate gRPC-OK with an
+/// incomplete stream.
 /// The shared `completed_flight_stream` appends a deterministic completeness
 /// trailer when the producer signalled `done`, and a non-OK error when it did
 /// not (panic / abort / early close). These tests drive the FlightData stream
@@ -5696,7 +5721,7 @@ mod matrix_sparse_tests {
 /// matrix, `""` for edges_batch / transit_bulk / route_batch.
 #[cfg(test)]
 mod flight_completeness_tests {
-    use super::{BatchStream, completed_flight_stream, matrix_schema};
+    use super::{BatchStream, DO_GET_ACTIONS, completed_flight_stream, matrix_schema};
     use arrow::array::{ArrayRef, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use arrow_flight::FlightData;
@@ -5823,6 +5848,57 @@ mod flight_completeness_tests {
                 serde_json::from_str(&meta).unwrap_or_else(|_| panic!("bad JSON: {meta}"));
             assert_eq!(v["complete"], true);
             assert_eq!(v["total_rows"], 2);
+        }
+    }
+
+    /// #560: the do_get dispatch and [`DO_GET_ACTIONS`] are ONE table, and
+    /// every arm encodes through `completed_flight_stream`. Both facts are
+    /// read from the dispatch SOURCE, so adding an action (or hand-rolling
+    /// `batches_to_flight_data` in one) fails here instead of silently
+    /// shipping a stream that ends gRPC-OK when truncated — the exact
+    /// regression `isochrone` carried.
+    #[test]
+    fn every_do_get_arm_is_listed_and_uses_completed_flight_stream() {
+        let src = include_str!("flight.rs");
+        let start = src
+            .find("    async fn do_get(")
+            .expect("do_get dispatch present in flight.rs");
+        let end = start
+            + src[start..]
+                .find("    async fn get_flight_info(")
+                .expect("do_get is followed by get_flight_info");
+        let body = &src[start..end];
+
+        // Every dispatch arm, in source order: a line `            "name" => {`.
+        let arms: Vec<(&str, usize)> = body
+            .match_indices("\n            \"")
+            .filter_map(|(i, _)| {
+                let rest = &body[i + 14..];
+                let name_end = rest.find('"')?;
+                let name = &rest[..name_end];
+                rest[name_end + 1..]
+                    .starts_with(" => {")
+                    .then_some((name, i))
+            })
+            .collect();
+
+        let names: Vec<&str> = arms.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names, DO_GET_ACTIONS,
+            "do_get dispatch arms and DO_GET_ACTIONS must be the same table"
+        );
+
+        for (idx, (name, at)) in arms.iter().enumerate() {
+            let arm_end = arms.get(idx + 1).map_or(body.len(), |(_, next)| *next);
+            let arm = &body[*at..arm_end];
+            assert!(
+                arm.contains("completed_flight_stream("),
+                "do_get arm '{name}' does not go through completed_flight_stream (#533/#560)"
+            );
+            assert!(
+                !arm.contains("batches_to_flight_data("),
+                "do_get arm '{name}' encodes with the raw batches_to_flight_data — no trailer"
+            );
         }
     }
 }
