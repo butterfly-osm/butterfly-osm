@@ -10,6 +10,37 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — Arrive isochrones reach as far as they should (#544)
+
+An arrive (`direction=arrive`) isochrone was seeded at `w(edge) − part_time`
+with no shift. That is the destination convention (`shift − part_time`, the
+caller subtracts the shift) plus one full seed-edge weight, so **every**
+reverse label came out `w(snapped edge)` too large and the polygon served
+the `T − w(snapped edge)` isochrone. On a rural snap onto a long fast edge
+that is tens of seconds of missing road at the boundary — up to ~9 % of the
+threshold.
+
+- The arrive field now uses the SAME seeding as `/route` and the many-to-one
+  matrix field (`PhantomEnd::query_seeds_and_shift`): one convention, no
+  second copy. The pipeline bounds the field at `T + shift` and normalises
+  every label by `− shift`, so a settled label means the same thing in both
+  directions.
+- `arrive_reach` is now the ONE named definition of the arrive direction's
+  reach, the dual of `depart_frontier`. No predecessor scan and no
+  reverse-UP adjacency: a depart label is an arrival at the HEAD, so the
+  partial edges are UNREACHED successors (no labels — hence the scan), while
+  an arrive label is the cost FROM the head to the snap, so every edge with a
+  reachable point already HAS a label. The partial edges are the settled ones.
+- Depart is untouched (shift 0, same stamp, same frontier).
+- Proof, data-free: `arrive_reach` against a brute-force reference at every
+  threshold on the six-edge synthetic hierarchy, and — on the synthetic
+  lattice with a real steps 6/7/8 contraction — the arrive field against BOTH
+  the many-to-one table and an independent reverse Dijkstra written in the
+  test. Served-polygon coverage on a 400 m / 60 s lattice: **0.00 %** of the
+  reachable network more than 150 m outside (0/292 at 300 s, 0/1348 at
+  600 s), where the pre-fix field left **15.75 %** and **7.72 %** out, worst
+  257 m. No over-reach: 0 unreachable points sit deeper than 150 m inside.
+
 ### 2026-09-04 — One query context for the handlers that never cross a region (#577)
 
 `RegionsState` was the axum state of a dozen handlers, but only `/route` and
