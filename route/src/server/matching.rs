@@ -146,15 +146,8 @@ pub async fn match_trace_handler(
                 return cross_region_match_inner(regions, req, started_dispatch).await;
             }
             Err(e) => {
-                let (code, body) = e.into_response_parts();
-                return (
-                    code,
-                    Json(serde_json::json!({
-                        "code": "InvalidValue",
-                        "message": body.error
-                    })),
-                )
-                    .into_response();
+                let (code, body) = e.into_code_message_parts();
+                return (code, Json(body)).into_response();
             }
         };
 

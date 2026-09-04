@@ -506,15 +506,8 @@ pub async fn trip_handler(
     let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
         Ok(ctx) => ctx,
         Err(e) => {
-            let (code, body) = e.into_response_parts();
-            return (
-                code,
-                Json(serde_json::json!({
-                    "code": "InvalidValue",
-                    "message": body.error,
-                })),
-            )
-                .into_response();
+            let (code, body) = e.into_code_message_parts();
+            return (code, Json(body)).into_response();
         }
     };
     let state: Arc<ServerState> = Arc::clone(&ctx.state);
