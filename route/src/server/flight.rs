@@ -43,10 +43,7 @@ use crate::profile_abi::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{Point, ReachModel, build_isochrone_topology};
-use super::isochrone_handler::{
-    run_phast_bounded_fast_reverse_seeded, run_phast_bounded_fast_seeded,
-};
+use super::geometry::{IsochroneQuery, IsochroneSnapError, Point, isochrone_polygons};
 use super::query::CchQuery;
 use super::state::ServerState;
 
@@ -2498,116 +2495,44 @@ fn do_isochrone(
 
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
-
     let is_reverse = params.direction.to_lowercase() == "arrive";
-    // #197 directional snap: depart → center is a source (needs outbound),
-    // arrive → center is a destination (needs inbound).
-    let center_role = if is_reverse {
-        super::types::SnapRole::Dst
-    } else {
-        super::types::SnapRole::Src
-    };
-    let orig_id = state
-        .snap_index
-        .snap_filtered_role(
-            params.lon,
-            params.lat,
-            mode.0,
-            None,
-            center_role.role_filter(&mode_data),
-        )
-        .ok_or_else(|| Status::not_found("Could not snap to road network"))?;
-    let origin_rank = mode_data.orig_to_rank[orig_id as usize];
-    if origin_rank == u32::MAX {
-        return Err(Status::not_found(
-            "Snapped node not accessible for this mode",
-        ));
-    }
-    // #506: phantom center — multi-seed init so the polygon isn't committed
-    // to one departure/arrival direction of the snapped edge. Same seeding
-    // as the REST /isochrone handler.
-    let (center_seeds, center_anchor) = super::phantom::isochrone_center_seeds(
+
+    // THE pipeline (#549): snap (directional role, #197) -> phantom center
+    // seeds (#506) -> seeded PHAST -> per-interval depart frontier ->
+    // topology. Shared verbatim with REST /isochrone, bands, the bulk
+    // endpoint and the catchment hull.
+    let field = isochrone_polygons(
         state,
         &mode_data,
         mode,
-        params.lon,
-        params.lat,
-        center_role,
-        None,
-        is_reverse,
-        origin_rank,
-    );
-    // Intervals are user-input seconds; weights are also seconds (post-#297),
-    // so the threshold passes through unchanged.
-    let max_threshold_s = *params.intervals.iter().max().unwrap();
+        &IsochroneQuery {
+            lon: params.lon,
+            lat: params.lat,
+            // Intervals are user-input seconds; weights are also seconds
+            // (post-#297), so thresholds pass through unchanged.
+            thresholds: &params.intervals,
+            reverse: is_reverse,
+            mode_name,
+            snap_mask: None,
+            flats: None,
+            include_network: false,
+        },
+    )
+    .map_err(|e| match e {
+        IsochroneSnapError::NoSnap => Status::not_found("Could not snap to road network"),
+        IsochroneSnapError::NotAccessible => {
+            Status::not_found("Snapped node not accessible for this mode")
+        }
+    })?;
 
-    let settled = if is_reverse {
-        run_phast_bounded_fast_reverse_seeded(
-            &mode_data.up_adj_flat,
-            &mode_data.down_rev_flat,
-            &center_seeds,
-            max_threshold_s,
-            mode,
-        )
-    } else {
-        run_phast_bounded_fast_seeded(
-            &mode_data.up_adj_flat,
-            &mode_data.down_adj_flat,
-            &center_seeds,
-            max_threshold_s,
-            mode,
-        )
-    };
-
-    // Map settled ranks back to original EBG IDs
-    let settled_original: Vec<(u32, u32)> = settled
-        .iter()
-        .map(|&(rank, dist)| {
-            let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-            let orig_id = mode_data.filtered_to_original[filt_id as usize];
-            (orig_id, dist)
+    let intervals_s: Vec<u32> = params.intervals;
+    let wkb_data: Vec<Vec<u8>> = field
+        .topologies
+        .into_iter()
+        .map(|topology| {
+            encode_polygon_wkb(&ContourResult::from_polygons(topology)).unwrap_or_default()
         })
         .collect();
-
-    let node_weights = &mode_data.node_weights;
-
-    let mut intervals_s = Vec::with_capacity(params.intervals.len());
-    let mut wkb_data: Vec<Vec<u8>> = Vec::with_capacity(params.intervals.len());
-
-    for &interval_s in &params.intervals {
-        // No scaling: thresholds and weights are both in seconds (post-#297).
-        // Full topology (2026-09-03): Polygon with holes, or MultiPolygon when
-        // the reachable set is disconnected — nothing is dropped any more.
-        let frontier = if is_reverse {
-            Vec::new()
-        } else {
-            super::isochrone_handler::depart_frontier(
-                &settled,
-                interval_s,
-                &mode_data.up_adj_flat,
-                &mode_data.down_adj_flat,
-                &mode_data,
-                node_weights,
-            )
-        };
-        let model = ReachModel::for_direction(is_reverse, &frontier);
-        let topology = build_isochrone_topology(
-            &settled_original,
-            interval_s,
-            node_weights,
-            &state.ebg_nodes,
-            &state.edge_geom,
-            mode_name,
-            center_anchor,
-            Some((params.lon, params.lat)),
-            &model,
-        );
-        let contour = ContourResult::from_polygons(topology);
-
-        let wkb = encode_polygon_wkb(&contour).unwrap_or_default();
-        intervals_s.push(interval_s);
-        wkb_data.push(wkb);
-    }
 
     let schema = Arc::new(isochrone_schema());
     let n = intervals_s.len();
