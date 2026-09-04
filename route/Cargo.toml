@@ -142,8 +142,12 @@ axum-prometheus = "0.10"
 # so we don't end up with two recorder versions.
 metrics = "0.24"
 
-# Transit: GTFS static feed parsing
-gtfs-structures = "0.47"
+# Transit: GTFS static feed parsing.
+# Pinned to 0.4x: 0.50 swaps chrono for jiff in the public calendar
+# types, which is a breaking change for `transit::gtfs`. 0.49 is a
+# source-compatible drop-in and drops the `derivative` proc-macro,
+# removing this crate's edge to syn 1.0.
+gtfs-structures = "0.49"
 # Transit: GTFS-RT protobuf ingestion (one-shot snapshots applied at
 # startup — no polling loop). The message types are our own committed
 # prost bindings, `src/transit/gtfs_realtime.rs`, generated from the

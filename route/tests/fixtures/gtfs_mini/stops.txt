@@ -1,0 +1,7 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type,parent_station
+S3,Cygnus Quay,50.200000,4.200000,0,
+S1B,Aurora Central Platform B,50.000200,4.000200,0,S1
+S4,Draco Halt,50.300000,4.300000,0,
+S1,Aurora Central,50.000000,4.000000,1,
+S2,Borealis Park,50.100000,4.100000,0,
+S1A,Aurora Central Platform A,50.000100,4.000100,0,S1
