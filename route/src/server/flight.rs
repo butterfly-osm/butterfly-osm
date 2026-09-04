@@ -744,7 +744,7 @@ fn do_matrix(
     // has_inbound). The first candidate per slot feeds the bucket
     // M2M primary pass; the rest power the per-cell P2P fallback for
     // INF cells in the small-matrix branch below.
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     use rayon::prelude::*;
     // Lazy snap (#368 pattern): K=1 primary upfront, K=64 escalation
     // lives in the INF-cell fallback below.
@@ -905,7 +905,6 @@ fn do_matrix(
 
     if n_origin * n_dst <= BUCKET_M2M_THRESHOLD {
         // ---- SMALL MATRIX: Bucket M2M, single batch ----
-        let use_parallel = n_valid_origin * n_valid_dst >= 2500;
         let up = &mode_data.up_adj_flat;
         let down = &mode_data.down_rev_flat;
 
@@ -964,7 +963,6 @@ fn do_matrix(
         // #509: seeds go INTO the bucket engine (super-source forward,
         // shift-trick backward, pure-meet guard) — S×T cells, replacing the
         // #502 API-layer SeedExpansion (~(avg seeds)^2 engine cells).
-        let _ = use_parallel; // seeded driver dispatches internally
         let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
             let (m, lm, st) = {
                 // #527: 2-channel shape-aware router (plain weights).
@@ -1621,7 +1619,7 @@ fn compute_route_pair(
     fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Slow path: K=64 K-best snap + (i+j)-combo fallback.
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     let src_snap = super::snap_kbest::snap_k_pair_role(
         state,
         mode_data,
@@ -1821,7 +1819,7 @@ fn compute_route_distance_bounded(
     // ranks, NOT on over-bound. Find the time-optimal route over combos,
     // then apply the bound ONCE.
     fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     let src_snap = super::snap_kbest::snap_k_pair_role(
         state,
         mode_data,
@@ -2462,6 +2460,7 @@ fn do_route_batch(
 // =============================================================================
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)] // #548: a stale/mistyped field must fail loud, not be ignored
 struct IsochroneParams {
     lon: f64,
     lat: f64,
@@ -2639,6 +2638,7 @@ fn do_isochrone(
 /// `queries` shape from the ticket is a follow-up that depends on a
 /// predecessor-tracking batched PHAST variant.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] // #548
 pub struct EdgesBatchParams {
     pub pairs: Vec<[f64; 4]>, // [origin_lon, origin_lat, destination_lon, destination_lat]
 }
@@ -2808,7 +2808,7 @@ fn escalate_route(
 ) -> Option<(u32, u32, super::query::QueryResult)> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-    const SNAP_K: usize = 64;
+    use super::snap_kbest::SNAP_K;
     // Rescues K=1 misses, including pairs whose closest snap had a u32::MAX
     // rank (not in this mode's CCH) — K=64 looks further out for a contracted
     // node.
@@ -3674,6 +3674,7 @@ pub fn do_edges_batch(
 /// shape of `TransitBulkRequest` from the Axum REST endpoint so REST
 /// and Flight clients share the same request schema.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] // #548
 pub struct TransitBulkParams {
     pub queries: Vec<super::transit_handler::TransitRequest>,
     /// Optional batch defaults — applied to any query that omits the
@@ -4264,7 +4265,7 @@ async fn do_exchange_catchment(
             // Lazy snap (#368 pattern): K=1 primary upfront for store
             // and all clients; K=64 escalation lives in the INF-cell
             // fallback below.
-            const SNAP_K: usize = 64;
+            use super::snap_kbest::SNAP_K;
             let store_rank = match super::snap_kbest::snap_primary_role(
                 &state,
                 &mode_data,

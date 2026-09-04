@@ -34,7 +34,16 @@ use super::types::SnapRole;
 /// Default cap on per-query (or per-cell) combo enumeration. Matches
 /// /route's historical value, which keeps the 200-pair Belgium sweep
 /// at zero `/route`-only-success regressions.
-pub const DEFAULT_MAX_FALLBACK_COMBOS: usize = 200;
+/// K-best snap candidates examined per endpoint by every surface (#548: one
+/// value for /route, /table, /trip, catchment and Flight — they used to
+/// redeclare it locally).
+pub const SNAP_K: usize = 64;
+/// Cap on (source × destination) candidate combinations tried when the
+/// primary pair is unroutable. #548: /route used 400 while /table and /trip
+/// used 200, so the two surfaces could disagree on whether a pair is
+/// routable at all; 400 everywhere (the extra cost only hits disconnected
+/// pairs).
+pub const DEFAULT_MAX_FALLBACK_COMBOS: usize = 400;
 
 /// Build the `(i+j)`-ordered combo list for K-best fallback. Caps at
 /// `max_combos` so callers don't have to repeat that truncation.
