@@ -1,0 +1,3 @@
+route_id,agency_id,route_short_name,route_long_name,route_type
+R1,AG1,A1,Aurora - Draco,2
+R2,AG1,,,3
