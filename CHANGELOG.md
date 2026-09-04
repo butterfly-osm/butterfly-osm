@@ -10,6 +10,65 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — One matrix batch builder, one seed split, one pair driver (#580)
+
+Three consolidations in `route/src/server/flight.rs`. No behaviour change on
+any surface. The engine half of the file loses 74 code lines (3611 → 3537
+non-comment, non-blank) and gains the doc comments that explain what is now
+single, plus 5 tests: three invariants that survived only as comments now fail
+a test instead.
+
+- **One matrix batch builder.** The small (whole-grid) and streamed (tiled)
+  matrix paths emitted the same four columns with the same sparse and
+  radius-mask semantics, differing only in which index vector they walked and
+  in the tiled copy hardcoding `distance_m = u32::MAX`. That divergence is not
+  hypothetical — it shipped (#534) and large-request clients read whole tiles
+  as unreachable; the fix at the time was a comment plus a values-only
+  cross-path test. Both call sites now enter one body: the small branch hands
+  it the whole valid grid with an unbounded threshold, the tiled branch one
+  source block plus the bound. `small_and_tile_emit_identical_schema` asserts
+  the two shapings emit the same field names, types, nullability and order,
+  dense and sparse, with and without a lat matrix.
+- **One seed split per role, K-best rescue by position.** The "walk the primary
+  snaps, push what snapped into four parallel vectors" loop was written twice
+  (origins, destinations), each copy CLONING the endpoint's phantom seed set
+  although the snap vector is dead on the next line. The per-cell K=64 rescue
+  was the same shape a third time and kept its answers in two
+  `HashMap<usize, Vec<u32>>` keyed by original input index — so every cell of
+  the fallback join hashed a `usize` and needed an `&empty` sentinel, while
+  every lookup it ever did was by POSITION. Now `split_primary_snaps` (seeds
+  moved, not cloned) and `kbest_ranks_by_position` (a position-indexed
+  `Vec<Option<Vec<u32>>>`, selected by a `Vec<bool>`).
+- **One per-pair driver.** `route_batch` unbounded, `route_batch` under
+  `max_meters`, and `edges_batch` each carried a private copy of the whole
+  per-pair stack: the phantom-seeded fast path three times, the K=64
+  closest-sum-first escalation three times. That fast path is exactly what
+  makes `/route`, `route_batch` and `edges_batch` agree on the route for a
+  pair, and hand-copies of it are how they drifted apart before. Now
+  `phantom_pair` + `escalate_route` (combo cap as an argument) run under a
+  named `PairPlan`, and `drive_pair` hands the `QueryResult` to the one thing
+  the surfaces actually differ on — a WKB route, that route's length under a
+  bound, or per-edge OSM rows. Four guards pin it, including a source scan
+  that the phantom-seeded query exists exactly once.
+- **Two differences kept and named rather than traded away.** `edges_batch`
+  tries a direct K=1 snap before the K=64 collect and `route_batch` does not
+  (enabling it there would change which of several equal-cost geometries a
+  phantom-miss pair returns); and `edges_batch` caps its escalation at 16
+  combos where #548 set every other surface to 400 precisely so two surfaces
+  could not disagree on whether a pair is routable at all. The second is a
+  real residual disagreement — a pair `edges_batch` calls unreachable can be
+  routable on `/route` — now a named constant with a compile-time assertion
+  that it is the narrower one, instead of a literal buried in a third copy.
+- **Not done: the shared-forward win the ticket expected.** #580 assumed
+  `edges_batch` groups pairs by source and `route_batch` does not, so one
+  driver would hand `route_batch` the #438 grouping. It does not: `do_edges_batch`
+  builds an EMPTY group list and routes every pair through the per-pair path
+  (`let _ = group_pairs;`), because #506 found the group machinery keys on
+  single K=1 ranks and emits pre-phantom detour paths. The grouping is live
+  only in `compute_edges_grouped`, i.e. the bench and the equivalence oracle.
+  Unifying the drivers therefore gives `route_batch` no grouping; restoring it
+  needs the seeded meet-group tracked on #506.
+
 ### 2026-09-04 — One atomic file per cached recustomization pass (#571)
 
 The boot recustomization cache was ONE file grown by append, and nearly all
