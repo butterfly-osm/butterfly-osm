@@ -2667,28 +2667,7 @@ impl Cli {
                 let sparse_result = crate::range::generate_sparse_contour(&segments, &config)?;
                 let active_tiles = sparse_result.stats.active_tiles_after_morphology;
 
-                let contour = crate::range::ContourResult {
-                    outer_ring: sparse_result.outer_ring,
-                    holes: sparse_result.holes,
-                    extra: vec![],
-                    stats: crate::range::ContourStats {
-                        input_segments: sparse_result.stats.input_segments,
-                        grid_cols: 0,
-                        grid_rows: 0,
-                        filled_cells: sparse_result.stats.total_cells_set,
-                        contour_vertices_before_simplify: sparse_result
-                            .stats
-                            .contour_vertices_before_simplify,
-                        contour_vertices_after_simplify: sparse_result
-                            .stats
-                            .contour_vertices_after_simplify,
-                        elapsed_ms: (sparse_result.stats.stamp_time_us
-                            + sparse_result.stats.morphology_time_us
-                            + sparse_result.stats.contour_time_us
-                            + sparse_result.stats.simplify_time_us)
-                            / 1000,
-                    },
-                };
+                let contour: crate::range::ContourResult = sparse_result.into();
 
                 println!(
                     "  ✓ {} tiles, {} filled cells → {} vertices (before simplify: {})",

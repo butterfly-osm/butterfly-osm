@@ -2572,7 +2572,7 @@ fn do_isochrone(
         .topologies
         .into_iter()
         .map(|topology| {
-            encode_polygon_wkb(&ContourResult::from_polygons(topology)).unwrap_or_default()
+            encode_polygon_wkb(&ContourResult::from_topology(topology)).unwrap_or_default()
         })
         .collect();
 

@@ -158,40 +158,14 @@ impl BatchedIsochroneEngine {
         let config = self.config.clone();
         let contours: Vec<ContourResult> = segments
             .par_iter()
-            .filter_map(|segs| {
-                generate_sparse_contour(segs, &config).ok().map(|sparse| {
-                    // Convert SparseContourResult to ContourResult
-                    let elapsed_us = sparse.stats.stamp_time_us
-                        + sparse.stats.morphology_time_us
-                        + sparse.stats.contour_time_us
-                        + sparse.stats.simplify_time_us;
-                    ContourResult {
-                        outer_ring: sparse.outer_ring,
-                        holes: sparse.holes,
-                        extra: vec![], // one simple polygon by definition (2026-09-03)
-                        stats: super::contour::ContourStats {
-                            input_segments: sparse.stats.input_segments,
-                            grid_cols: 0,
-                            grid_rows: 0,
-                            filled_cells: sparse.stats.total_cells_set,
-                            contour_vertices_before_simplify: sparse
-                                .stats
-                                .contour_vertices_before_simplify,
-                            contour_vertices_after_simplify: sparse
-                                .stats
-                                .contour_vertices_after_simplify,
-                            elapsed_ms: elapsed_us / 1000,
-                        },
-                    }
-                })
-            })
+            .filter_map(|segs| generate_sparse_contour(segs, &config).ok().map(Into::into))
             .collect();
 
         stats.contour_time_ms = contour_start.elapsed().as_millis() as u64;
 
         // Compute average vertices
         if !contours.is_empty() {
-            let total_verts: usize = contours.iter().map(|c| c.outer_ring.len()).sum();
+            let total_verts: usize = contours.iter().map(|c| c.ring.len()).sum();
             stats.avg_vertices = total_verts / contours.len();
         }
 
@@ -297,40 +271,10 @@ impl AdaptiveIsochroneEngine {
             .extract_reachable_segments(&phast_result.dist, threshold_s);
 
         if segments.is_empty() {
-            return Ok(ContourResult {
-                outer_ring: vec![],
-                holes: vec![],
-                extra: vec![],
-                stats: super::contour::ContourStats::default(),
-            });
+            return Ok(ContourResult::default());
         }
 
-        let sparse_result = generate_sparse_contour(&segments, &self.config)?;
-
-        // Convert to ContourResult
-        let elapsed_us = sparse_result.stats.stamp_time_us
-            + sparse_result.stats.morphology_time_us
-            + sparse_result.stats.contour_time_us
-            + sparse_result.stats.simplify_time_us;
-
-        Ok(ContourResult {
-            outer_ring: sparse_result.outer_ring,
-            holes: sparse_result.holes,
-            extra: vec![], // one simple polygon by definition (2026-09-03)
-            stats: super::contour::ContourStats {
-                input_segments: sparse_result.stats.input_segments,
-                grid_cols: 0,
-                grid_rows: 0,
-                filled_cells: sparse_result.stats.total_cells_set,
-                contour_vertices_before_simplify: sparse_result
-                    .stats
-                    .contour_vertices_before_simplify,
-                contour_vertices_after_simplify: sparse_result
-                    .stats
-                    .contour_vertices_after_simplify,
-                elapsed_ms: elapsed_us / 1000,
-            },
-        })
+        Ok(generate_sparse_contour(&segments, &self.config)?.into())
     }
 
     /// Generate multiple isochrones, automatically choosing the best algorithm
@@ -363,39 +307,11 @@ impl AdaptiveIsochroneEngine {
                         let segments = extractor
                             .extract_reachable_segments(&phast_result.dist[lane], threshold_s);
                         if segments.is_empty() {
-                            return Some(ContourResult {
-                                outer_ring: vec![],
-                                holes: vec![],
-                                extra: vec![],
-                                stats: super::contour::ContourStats::default(),
-                            });
+                            return Some(ContourResult::default());
                         }
                         generate_sparse_contour(&segments, &config)
                             .ok()
-                            .map(|sparse| {
-                                let elapsed_us = sparse.stats.stamp_time_us
-                                    + sparse.stats.morphology_time_us
-                                    + sparse.stats.contour_time_us
-                                    + sparse.stats.simplify_time_us;
-                                ContourResult {
-                                    outer_ring: sparse.outer_ring,
-                                    holes: sparse.holes,
-                                    extra: vec![], // one simple polygon by definition (2026-09-03)
-                                    stats: super::contour::ContourStats {
-                                        input_segments: sparse.stats.input_segments,
-                                        grid_cols: 0,
-                                        grid_rows: 0,
-                                        filled_cells: sparse.stats.total_cells_set,
-                                        contour_vertices_before_simplify: sparse
-                                            .stats
-                                            .contour_vertices_before_simplify,
-                                        contour_vertices_after_simplify: sparse
-                                            .stats
-                                            .contour_vertices_after_simplify,
-                                        elapsed_ms: elapsed_us / 1000,
-                                    },
-                                }
-                            })
+                            .map(Into::into)
                     })
                     .collect();
 
@@ -439,13 +355,13 @@ pub fn export_batch_geojson_collection(
     let mut features = Vec::new();
 
     for (i, contour) in contours.iter().enumerate() {
-        if contour.outer_ring.is_empty() {
+        if contour.ring.is_empty() {
             continue;
         }
 
         // Build coordinates array
         let coords: Vec<String> = contour
-            .outer_ring
+            .ring
             .iter()
             .map(|(lon, lat)| format!("[{:.6}, {:.6}]", lon, lat))
             .collect();
@@ -465,7 +381,7 @@ pub fn export_batch_geojson_collection(
       }}
     }}"#,
             origin_id,
-            contour.outer_ring.len(),
+            contour.ring.len(),
             coords.join(", ")
         ));
     }
