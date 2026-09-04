@@ -2048,6 +2048,249 @@ mod tests {
         );
     }
 
+    // ==================================================================
+    // #590: property test — the served contour of ANY raster is exactly
+    // one simple closed CCW ring (no repeated vertex, no a,b,a spur, no
+    // self-intersection), `polygons.len() == 1`, no holes.
+    // ==================================================================
+
+    /// Deterministic 64-bit LCG (Knuth MMIX constants). `proptest` is not a
+    /// dev-dependency and none is added: a seeded loop is reproducible from
+    /// the seed printed in the failure message.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        /// Uniform in `0..n` (`n ≥ 1`).
+        fn below(&mut self, n: i32) -> i32 {
+            assert!(n >= 1);
+            (self.next_u64() % n as u64) as i32
+        }
+    }
+
+    /// A random raster shaped like what PHAST actually stamps: 1–4
+    /// `block()`s (optionally holed) that touch, overlap, sit diagonally or
+    /// float apart; 0–3 one-cell-wide CORRIDORS radiating in one of the 8
+    /// directions (the arms and tongues that survive simplification and make
+    /// the outline concave — a bag of blocks alone traces as a near-convex
+    /// box); and a few loose cells. The anchor is a cell of the first block.
+    fn random_block_raster(rng: &mut Lcg) -> (Vec<(i32, i32)>, (i32, i32)) {
+        const DIRS: [(i32, i32); 8] = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ];
+        let n_blocks = 1 + rng.below(4);
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        let mut anchor = None;
+        for _ in 0..n_blocks {
+            let (c0, r0) = (rng.below(40), rng.below(40));
+            let (w, h) = (1 + rng.below(28), 1 + rng.below(28));
+            let hole = (w >= 4 && h >= 4 && rng.below(3) == 0).then(|| {
+                let hc0 = c0 + 1 + rng.below(w - 3);
+                let hc1 = hc0 + 1 + rng.below(c0 + w - 1 - hc0);
+                let hr0 = r0 + 1 + rng.below(h - 3);
+                let hr1 = hr0 + 1 + rng.below(r0 + h - 1 - hr0);
+                (hc0, hc1, hr0, hr1)
+            });
+            let b = block(c0, c0 + w, r0, r0 + h, hole);
+            if anchor.is_none() {
+                anchor = Some(b[rng.below(b.len() as i32) as usize]);
+            }
+            cells.extend(b);
+        }
+        let root = anchor.expect("at least one block");
+        for _ in 0..rng.below(4) {
+            let (dc, dr) = DIRS[rng.below(8) as usize];
+            let (mut c, mut r) = (root.0 + rng.below(20) - 10, root.1 + rng.below(20) - 10);
+            for _ in 0..8 + rng.below(28) {
+                cells.push((c, r));
+                c += dc;
+                r += dr;
+            }
+        }
+        for _ in 0..rng.below(7) {
+            cells.push((rng.below(60), rng.below(60)));
+        }
+        (cells, root)
+    }
+
+    /// Cell `(col, row)` centre as a `(lat_e7, lon_e7)` segment point, on a
+    /// `cell_m` Mercator grid near Brussels.
+    fn cell_center_e7(col: i32, row: i32, cell_m: f64) -> (i32, i32) {
+        let base = to_mercator(50.8, 4.4);
+        let (lat, lon) = from_mercator(
+            base.x + (col as f64 + 0.5) * cell_m,
+            base.y + (row as f64 + 0.5) * cell_m,
+        );
+        ((lat * 1e7).round() as i32, (lon * 1e7).round() as i32)
+    }
+
+    fn orient(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> f64 {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    }
+
+    fn on_segment(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> bool {
+        r.0 >= p.0.min(q.0) && r.0 <= p.0.max(q.0) && r.1 >= p.1.min(q.1) && r.1 <= p.1.max(q.1)
+    }
+
+    /// Closed segments `ab` and `cd` share at least one point (proper
+    /// crossing, touching, or collinear overlap).
+    fn segments_meet(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+        let (o1, o2, o3, o4) = (
+            orient(a, b, c),
+            orient(a, b, d),
+            orient(c, d, a),
+            orient(c, d, b),
+        );
+        if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+            return true;
+        }
+        (o1 == 0.0 && on_segment(a, b, c))
+            || (o2 == 0.0 && on_segment(a, b, d))
+            || (o3 == 0.0 && on_segment(c, d, a))
+            || (o4 == 0.0 && on_segment(c, d, b))
+    }
+
+    /// The gate's ring contract, on a served (closed) ring: closed, ≥ 3
+    /// distinct vertices, no repeated vertex besides the closure, no a,b,a
+    /// spur, no two non-adjacent edges meeting, CCW.
+    fn assert_simple_closed_ccw(ring: &[(f64, f64)], what: &str) {
+        assert!(ring.len() >= 4, "{what}: ring too short: {ring:?}");
+        assert_eq!(
+            ring.first(),
+            ring.last(),
+            "{what}: ring is not closed: {ring:?}"
+        );
+        let v = &ring[..ring.len() - 1];
+        let n = v.len();
+        assert!(n >= 3, "{what}: fewer than 3 distinct vertices: {ring:?}");
+        let mut seen: HashSet<(u64, u64)> = HashSet::with_capacity(n);
+        for &(x, y) in v {
+            assert!(
+                seen.insert((x.to_bits(), y.to_bits())),
+                "{what}: repeated vertex ({x}, {y}) — self-touching ring"
+            );
+        }
+        for i in 0..n {
+            assert_ne!(
+                v[(i + n - 1) % n],
+                v[(i + 1) % n],
+                "{what}: a,b,a spur at vertex {i} ({:?})",
+                v[i]
+            );
+        }
+        for i in 0..n {
+            let (a, b) = (v[i], v[(i + 1) % n]);
+            for j in i + 2..n {
+                if i == 0 && j == n - 1 {
+                    continue; // adjacent through the closure
+                }
+                let (c, d) = (v[j], v[(j + 1) % n]);
+                assert!(
+                    !segments_meet(a, b, c, d),
+                    "{what}: edges {i} ({a:?}→{b:?}) and {j} ({c:?}→{d:?}) meet"
+                );
+            }
+        }
+        let area2: f64 = (0..n)
+            .map(|i| {
+                let (x1, y1) = v[i];
+                let (x2, y2) = v[(i + 1) % n];
+                x1 * y2 - x2 * y1
+            })
+            .sum();
+        assert!(area2 > 0.0, "{what}: ring is not CCW (2A = {area2})");
+    }
+
+    #[test]
+    fn served_contour_of_random_block_rasters_is_one_simple_closed_ccw_ring() {
+        use crate::server::geometry::{GeometryFormat, Point, encode_contour};
+
+        let configs: [(&str, SparseContourConfig); 3] = [
+            ("car", SparseContourConfig::for_car()),
+            ("bike", SparseContourConfig::for_bike()),
+            ("foot", SparseContourConfig::for_foot()),
+        ];
+        let mut rng = Lcg(0x5905_9059_0590_5905);
+        // The generator must keep producing genuinely concave outlines: a
+        // rectangle satisfies every invariant below for free.
+        let mut complex_rings = 0usize;
+        let mut max_ring = 0usize;
+        for case in 0..200 {
+            let seed = rng.0;
+            let (cells, anchor) = random_block_raster(&mut rng);
+            for (mode, cfg) in &configs {
+                let segs: Vec<ReachableSegment> = cells
+                    .iter()
+                    .map(|&(c, r)| ReachableSegment {
+                        points: vec![cell_center_e7(c, r, cfg.cell_size_m)],
+                    })
+                    .collect();
+                let anchor_e7 = cell_center_e7(anchor.0, anchor.1, cfg.cell_size_m);
+                let res = generate_sparse_contour_anchored(&segs, cfg, Some(anchor_e7)).unwrap();
+                let what = format!(
+                    "case {case}/{mode} (lcg state {seed:#x}, {} cells)",
+                    cells.len()
+                );
+                complex_rings += usize::from(res.outer_ring.len() >= 12);
+                max_ring = max_ring.max(res.outer_ring.len());
+
+                assert_eq!(res.polygons.len(), 1, "{what}: exactly one polygon");
+                assert!(res.holes.is_empty(), "{what}: no holes");
+                assert!(res.polygons[0].holes.is_empty(), "{what}: no holes");
+                assert_eq!(
+                    res.polygons[0].outer, res.outer_ring,
+                    "{what}: outer_ring IS the served polygon"
+                );
+                assert!(
+                    res.outer_ring.len() >= 3,
+                    "{what}: the anchor's component must survive"
+                );
+
+                // Through the ONE contour encoder every REST surface uses
+                // (CCW + closure), in both the exact and the 5-decimal shape.
+                let ring: Vec<Point> = res
+                    .outer_ring
+                    .iter()
+                    .map(|&(lon, lat)| Point { lon, lat })
+                    .collect();
+                let (_, geojson, _) = encode_contour(&ring, GeometryFormat::GeoJson);
+                let geojson: Vec<(f64, f64)> = geojson
+                    .expect("geojson ring")
+                    .into_iter()
+                    .map(|[x, y]| (x, y))
+                    .collect();
+                assert_simple_closed_ccw(&geojson, &format!("{what} geojson"));
+                let (_, _, points) = encode_contour(&ring, GeometryFormat::Points);
+                let points: Vec<(f64, f64)> = points
+                    .expect("points ring")
+                    .into_iter()
+                    .map(|p| (p.lon, p.lat))
+                    .collect();
+                assert_simple_closed_ccw(&points, &format!("{what} points"));
+            }
+        }
+        assert!(
+            complex_rings >= 100 && max_ring >= 20,
+            "the raster generator went trivial: only {complex_rings} rings with \
+             >= 12 vertices, longest {max_ring} — near-convex boxes satisfy the \
+             simplicity invariants for free"
+        );
+    }
+
     fn real_network_fixture() -> (Vec<ReachableSegment>, (i32, i32)) {
         let j: serde_json::Value =
             serde_json::from_str(include_str!("testdata/car_600s_reachable_network.json")).unwrap();
