@@ -9,8 +9,8 @@
 //! ## Mechanism
 //!
 //! A background thread sleeps `poll_interval`, then calls
-//! [`crate::server::evictable::evict_idle`], which walks a process-
-//! global registry of [`crate::server::evictable::EvictableCell`]s —
+//! [`crate::evictable::evict_idle`], which walks a process-
+//! global registry of [`crate::evictable::EvictableCell`]s —
 //! one per (scratch cell, thread). Each cell carries its own last-touch
 //! timestamp (stamped on the query hot path) and a `try_lock`-guarded
 //! slot; a cell idle longer than `threshold` is freed cross-thread.
@@ -116,7 +116,7 @@ fn evict_all_workers(threshold: Duration) {
     // and small-N `/table` actually execute). The registry holds a Weak
     // to every per-thread cell regardless of pool, so this frees them
     // all and prunes cells whose owning thread has died.
-    let freed = crate::server::evictable::evict_idle(threshold);
+    let freed = crate::evictable::evict_idle(threshold);
     if freed > 0 {
         tracing::info!(
             cells_freed = freed,

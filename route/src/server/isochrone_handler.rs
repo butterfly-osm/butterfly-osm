@@ -355,8 +355,8 @@ thread_local! {
     /// frees the whole `PhastSlots` arena (up to MAX_MODES × ~80 MB)
     /// regardless of which pool owns the thread — `/isochrone` runs
     /// inline on Tokio workers, which `rayon::broadcast` could not reach.
-    static PHAST_STATES: crate::server::evictable::EvictableCell<PhastSlots> =
-        const { crate::server::evictable::EvictableCell::new() };
+    static PHAST_STATES: crate::evictable::EvictableCell<PhastSlots> =
+        const { crate::evictable::EvictableCell::new() };
 }
 
 /// Run PHAST bounded query using thread-local state.
@@ -740,8 +740,8 @@ thread_local! {
     /// #408: reverse-PHAST mode-slot LRU, per worker thread. Same
     /// shape and capacity policy as `PHAST_STATES` (forward). #409:
     /// EvictableCell for cross-thread idle reclamation.
-    static PHAST_STATES_REV: crate::server::evictable::EvictableCell<PhastSlots> =
-        const { crate::server::evictable::EvictableCell::new() };
+    static PHAST_STATES_REV: crate::evictable::EvictableCell<PhastSlots> =
+        const { crate::evictable::EvictableCell::new() };
 }
 
 /// Run REVERSE PHAST bounded query -- computes d(all -> target) for reverse isochrones.

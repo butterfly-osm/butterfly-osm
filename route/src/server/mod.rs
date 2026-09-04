@@ -38,7 +38,6 @@ pub mod cross_region;
 pub mod edge_geom;
 pub mod edge_osm;
 pub mod elevation;
-pub mod evictable;
 pub mod exclude;
 pub mod overlay;
 pub mod phantom;
