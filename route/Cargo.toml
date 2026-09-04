@@ -169,7 +169,8 @@ workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
-geo = "0.33"
+# NB: `geo` is NOT repeated here — it is a normal dependency above (same
+# version, same features), which tests and benches already see.
 wiremock = { workspace = true }
 
 [features]
