@@ -1374,6 +1374,22 @@ impl DispatchError {
             ),
         }
     }
+
+    /// Same status and wording as [`Self::into_response_parts`], in the
+    /// `{code, message}` body `/trip` and `/match` answer with. Both
+    /// rendered it inline; one function keeps the two surfaces from
+    /// drifting apart and makes the rejection testable without a loaded
+    /// container.
+    pub fn into_code_message_parts(self) -> (axum::http::StatusCode, serde_json::Value) {
+        let (code, body) = self.into_response_parts();
+        (
+            code,
+            serde_json::json!({
+                "code": "InvalidValue",
+                "message": body.error,
+            }),
+        )
+    }
 }
 
 /// Peek the region id, `shared/snap_points` bbox, and mode-name list
@@ -1507,6 +1523,84 @@ mod tests {
         };
         let (_, body_dst) = dst_err.into_response_parts();
         assert!(body_dst.error.contains("destination"), "{}", body_dst.error);
+    }
+
+    /// The exact 501 body every `ErrorResponse`-shaped surface answers
+    /// a mixed-region request with. `/table`, `/trip`, `/catchment`,
+    /// `/isochrone/bulk`, `/transit` and `/transit/bulk` all reach it
+    /// through `QueryContext`; `/route` and `/match` reach it when no
+    /// overlay is loaded. Byte-exact on purpose (#577): the prologue
+    /// those handlers each carried is gone, and this wording is what it
+    /// was carrying.
+    #[test]
+    fn cross_region_rejection_wording_is_frozen_on_the_error_response_surfaces() {
+        let err = DispatchError::CrossRegion {
+            src_region: "BE".into(),
+            dst_region: "LU".into(),
+        };
+        let (code, body) = err.into_response_parts();
+        assert_eq!(code, axum::http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            body.error,
+            "route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)"
+        );
+    }
+
+    /// Same rejection, same status, in the `{code, message}` body
+    /// `/trip` and `/match` answer with (#577: both rendered it inline
+    /// before; one function now, so they cannot drift apart).
+    #[test]
+    fn cross_region_rejection_wording_is_frozen_on_the_code_message_surfaces() {
+        let err = DispatchError::CrossRegion {
+            src_region: "BE".into(),
+            dst_region: "LU".into(),
+        };
+        let (code, body) = err.into_code_message_parts();
+        assert_eq!(code, axum::http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "code": "InvalidValue",
+                "message": "route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)",
+            })
+        );
+    }
+
+    /// The `{code, message}` surfaces must keep answering every other
+    /// dispatch failure with the status the `ErrorResponse` surfaces
+    /// use, and with the identical message text.
+    #[test]
+    fn code_message_parts_agree_with_response_parts_on_every_dispatch_error() {
+        let errors = [
+            DispatchError::CrossRegion {
+                src_region: "BE".into(),
+                dst_region: "LU".into(),
+            },
+            DispatchError::NoRegion {
+                endpoint: Endpoint::ManyAt(3),
+                lon: 1.0,
+                lat: 2.0,
+                mode: "car".into(),
+                tried: vec!["BE".into()],
+            },
+            DispatchError::InvalidMode {
+                mode: "ferry".into(),
+                available: vec!["car".into()],
+            },
+            DispatchError::Empty,
+        ];
+        for err in errors {
+            let (rest_code, rest_body) = err.clone().into_response_parts();
+            let (cm_code, cm_body) = err.into_code_message_parts();
+            assert_eq!(cm_code, rest_code);
+            assert_eq!(cm_body["message"], rest_body.error);
+            assert_eq!(cm_body["code"], "InvalidValue");
+            assert_eq!(
+                cm_body.as_object().map(|o| o.len()),
+                Some(2),
+                "body gained a field: {cm_body}"
+            );
+        }
     }
 
     #[test]

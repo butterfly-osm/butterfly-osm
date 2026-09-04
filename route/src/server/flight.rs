@@ -5010,6 +5010,65 @@ mod edges_batch_null_row_tests {
 }
 
 #[cfg(test)]
+mod dispatch_status_tests {
+    use super::dispatch_to_status;
+    use crate::server::regions::{DispatchError, Endpoint};
+
+    /// #577: the Flight surface of the mixed-region rejection. Every
+    /// coordinate-bearing action reaches it through
+    /// `QueryContext::from_point` / `from_pair`, which hand the
+    /// `DispatchError` back untouched — so this status and this wording
+    /// are what a cross-region Flight request still gets. Byte-exact on
+    /// purpose: the REST side answers 501 with different wording, and
+    /// the two must not converge by accident.
+    #[test]
+    fn cross_region_rejection_wording_is_frozen_on_flight() {
+        let status = dispatch_to_status(DispatchError::CrossRegion {
+            src_region: "BE".to_string(),
+            dst_region: "LU".to_string(),
+        });
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            status.message(),
+            "request spans regions BE \u{2192} LU; cross-region Flight not yet implemented (#336 follow-up)"
+        );
+    }
+
+    /// The other dispatch failures keep their Flight codes: an
+    /// unsnappable coordinate is NotFound, a bad profile is
+    /// InvalidArgument, an empty coordinate list is InvalidArgument.
+    #[test]
+    fn other_dispatch_errors_keep_their_flight_codes() {
+        let not_found = dispatch_to_status(DispatchError::NoRegion {
+            endpoint: Endpoint::Source,
+            lon: 0.0,
+            lat: 0.0,
+            mode: "car".to_string(),
+            tried: vec!["BE".to_string()],
+        });
+        assert_eq!(not_found.code(), tonic::Code::NotFound);
+        assert_eq!(
+            not_found.message(),
+            "No road found within snap distance for source (0, 0) mode=car"
+        );
+
+        let invalid = dispatch_to_status(DispatchError::InvalidMode {
+            mode: "cra".to_string(),
+            available: vec!["car".to_string()],
+        });
+        assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            invalid.message(),
+            "Invalid mode 'cra'. Available across loaded regions: car."
+        );
+
+        let empty = dispatch_to_status(DispatchError::Empty);
+        assert_eq!(empty.code(), tonic::Code::InvalidArgument);
+        assert_eq!(empty.message(), "no coordinates supplied to dispatcher");
+    }
+}
+
+#[cfg(test)]
 mod edges_batch_grouping_tests {
     use super::{compute_edges_flat, compute_edges_grouped};
     use crate::model::types::Mode;

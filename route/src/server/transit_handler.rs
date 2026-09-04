@@ -959,6 +959,51 @@ impl OriginGroupKey {
     }
 }
 
+/// `/transit/bulk`'s own mixed-region rejection: query `query_idx`
+/// carries a coordinate the bbox tier proved is outside the region the
+/// batch resolved to. 501, like every other cross-region rejection, but
+/// worded to point at the offending query and side.
+///
+/// Split out of the preflight loop so the wording is checkable without
+/// a loaded multi-region container (#577).
+fn bulk_out_of_region(
+    query_idx: usize,
+    endpoint: crate::server::regions::Endpoint,
+    lon: f64,
+    lat: f64,
+    region_id: &str,
+) -> (StatusCode, ErrorResponse) {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        ErrorResponse {
+            error: format!(
+                "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
+                query_idx,
+                match endpoint {
+                    crate::server::regions::Endpoint::Source => "origin",
+                    crate::server::regions::Endpoint::Destination => "destination",
+                    _ => "coord",
+                },
+                lon,
+                lat,
+                region_id
+            ),
+        },
+    )
+}
+
+/// `/transit/bulk`'s rejection for a query the bbox tier could not
+/// decide: the full snap ran and failed. Same status and wording as
+/// every other surface, prefixed with the query index.
+fn bulk_query_dispatch_error(
+    query_idx: usize,
+    err: crate::server::regions::DispatchError,
+) -> (StatusCode, ErrorResponse) {
+    let (status, mut body) = err.into_response_parts();
+    body.error = format!("query[{}]: {}", query_idx, body.error);
+    (status, body)
+}
+
 #[utoipa::path(post, path = "/transit/bulk", tag = "Transit", summary = "Batch multimodal transit journeys",
     request_body(content = serde_json::Value, description = "{queries:[TransitRequest], defaults}"),
     responses((status = 200, description = "Per-query journeys"), (status = 503, description = "Transit not loaded")))]
@@ -1077,27 +1122,13 @@ pub async fn transit_bulk_handler(
                 crate::server::regions::RegionAffinity::OutOfBbox => {
                     // Definite cross-region — surface 501 with the
                     // query index + the offending side.
-                    let body = ErrorResponse {
-                        error: format!(
-                            "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
-                            i,
-                            match ep {
-                                crate::server::regions::Endpoint::Source => "origin",
-                                crate::server::regions::Endpoint::Destination => "destination",
-                                _ => "coord",
-                            },
-                            lon,
-                            lat,
-                            ctx.region_id
-                        ),
-                    };
-                    return Err((StatusCode::NOT_IMPLEMENTED, Json(body)));
+                    let (status, body) = bulk_out_of_region(i, ep, lon, lat, &ctx.region_id);
+                    return Err((status, Json(body)));
                 }
                 crate::server::regions::RegionAffinity::Ambiguous => {
                     // Bbox overlap — must run a full snap to confirm.
                     if let Err(err) = regions.dispatch_p2p(lon, lat, lon, lat, &q_mode) {
-                        let (status, mut body) = err.into_response_parts();
-                        body.error = format!("query[{}]: {}", i, body.error);
+                        let (status, body) = bulk_query_dispatch_error(i, err);
                         return Err((status, Json(body)));
                     }
                 }
@@ -1388,4 +1419,67 @@ fn snap_to_rank_role(
         .snap_index
         .snap_filtered_role(lon, lat, mode_idx, None, role_filter)?;
     mode_data.rank_for_original(orig)
+}
+
+#[cfg(test)]
+mod bulk_reject_tests {
+    use super::{bulk_out_of_region, bulk_query_dispatch_error};
+    use crate::server::regions::{DispatchError, Endpoint};
+    use axum::http::StatusCode;
+
+    /// #577: `/transit/bulk` rejects a mixed-region batch on its own
+    /// wording, not the dispatcher's — the bbox tier decides for
+    /// `queries[1..]`, so the message names the query and the side.
+    /// Byte-exact: this is the rejection the prologue was carrying.
+    #[test]
+    fn out_of_region_query_is_501_with_the_query_index_and_side() {
+        let (status, body) = bulk_out_of_region(7, Endpoint::Source, 6.1296, 49.6116, "BE");
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            body.error,
+            "query[7]: origin (6.1296,49.6116) does not snap to region BE"
+        );
+
+        let (status, body) = bulk_out_of_region(0, Endpoint::Destination, 4.3517, 50.8503, "LU");
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            body.error,
+            "query[0]: destination (4.3517,50.8503) does not snap to region LU"
+        );
+    }
+
+    /// The border-overlap fallback: the full snap ran and returned a
+    /// dispatch error. Status and wording stay the dispatcher's, with
+    /// the query index prefixed.
+    #[test]
+    fn ambiguous_query_keeps_the_dispatcher_status_and_wording() {
+        let (status, body) = bulk_query_dispatch_error(
+            3,
+            DispatchError::CrossRegion {
+                src_region: "BE".to_string(),
+                dst_region: "LU".to_string(),
+            },
+        );
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            body.error,
+            "query[3]: route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)"
+        );
+
+        let (status, body) = bulk_query_dispatch_error(
+            1,
+            DispatchError::NoRegion {
+                endpoint: Endpoint::Source,
+                lon: 0.0,
+                lat: 0.0,
+                mode: "foot".to_string(),
+                tried: vec!["BE".to_string()],
+            },
+        );
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body.error,
+            "query[1]: No road found within snap distance for source (0, 0) mode=foot"
+        );
+    }
 }
