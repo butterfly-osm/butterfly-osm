@@ -59,8 +59,8 @@ Flight:
 
 JSON serialisation + HTTP framing + per-request routing dominate small
 REST calls; Flight moves Arrow record batches with zero re-encoding and
-amortises everything. The REST `POST /table/stream` exception is legacy —
-new bulk consumers get no new Arrow-over-HTTP endpoints.
+amortises everything. There are no Arrow-over-HTTP endpoints: the pre-Flight
+REST exception `/table/stream` was removed in #547.
 
 Connect: the Flight port is always REST port + 1 inside the container
 (8080/8081). Docker: publish both (`-p 3001:8080 -p 3002:8081`), then

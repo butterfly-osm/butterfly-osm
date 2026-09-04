@@ -35,7 +35,9 @@ Arrow Flight on 8081. `serve` flags that matter:
 
 Env overrides worth knowing: `RUST_LOG`, `BUTTERFLY_TRANSIT`,
 `BUTTERFLY_RSS_BUDGET_GB`, `BUTTERFLY_IDLE_COMPACT_SECS`, `BUTTERFLY_REFS_DIR`,
-`BUTTERFLY_MODELS_DIR`, `BUTTERFLY_MATRIX_ALGO=bucket|phast`,
+`BUTTERFLY_MODELS_DIR`, `BUTTERFLY_MATRIX_ALGO=bucket|phast` (read ONCE at the
+first matrix call and then frozen for the life of the process — set it before
+`serve` starts, it cannot be flipped on a live server; #546, #591),
 `BUTTERFLY_BOOT_RECUSTOMIZE=off` (uncalibrated free-flow car).
 
 ## 2. Workspace map and data flow
@@ -167,14 +169,21 @@ fastest way to tell whether a regression is in the graph or in the speed table.
 ## 5. Testing and the post-deploy gate
 
 ```bash
-cargo test --workspace                     # ~700 in-process unit tests, no data
+cargo test --workspace                     # ~860 tests (unit + integration + doc), no data
+cargo test --workspace --all-features      # + the `feature = "bench"` tests (#556)
 bash scripts/check-upstream-clean.sh       # public-repo leak guard
 BUTTERFLY_REFS_DIR=/data/reference-trips python3 bench/postdeploy_gate.py --base http://localhost:3001 [--quick] [--no-flight] [--list-gates]
 ```
 
-Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` (fmt, clippy with
-warnings as errors, `cargo test --workspace`, the upstream-clean guard, the gate's
-`py_compile` + `--list-gates` smoke); `scripts/hooks/install.sh` installs the hook. Skip it with
+Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` — print it with
+`bash scripts/ci-steps.sh --list`. In order: the upstream-clean leak guard,
+`cargo fmt --check`, clippy with warnings as errors (all targets, all features),
+`cargo test --workspace`, `cargo test --workspace --all-features` (#556), a count
+guard proving the all-features test list is a strict superset of the default one,
+and the gate's `py_compile` + `--list-gates` smoke. There is no separate
+`cargo build` step: `cargo test --workspace` already links `butterfly-route` and
+`butterfly-dl`, and `butterfly-bench` is a `--all-features` bin (#591).
+`scripts/hooks/install.sh` installs the hook. Skip it with
 `BUTTERFLY_NO_VERIFY=1` in emergencies only. Belgium is the only test dataset —
 do not add fixtures for other regions.
 
