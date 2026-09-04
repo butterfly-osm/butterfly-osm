@@ -444,6 +444,7 @@ impl BatchedPhastEngine {
         }
     }
 
+    #[cfg(feature = "bench")]
     /// Run K-lane batched PHAST with rank-aligned CCH
     ///
     /// With rank-aligned CCH (Version 2), this method achieves cache efficiency:
@@ -459,6 +460,7 @@ impl BatchedPhastEngine {
         self.query_batch(sources)
     }
 
+    #[cfg(feature = "bench")]
     /// Run K-lane batched PHAST with SoA (Structure of Arrays) layout
     ///
     /// This is the most cache-efficient version:
@@ -608,6 +610,7 @@ impl BatchedPhastEngine {
         }
     }
 
+    #[cfg(feature = "bench")]
     /// Compute full many-to-many matrix using K-lane batching
     ///
     /// # Arguments
@@ -706,6 +709,7 @@ impl BatchedPhastEngine {
     }
 
     /// Compute matrix using blocked relaxation for better cache efficiency
+    #[cfg(feature = "bench")]
     pub fn compute_matrix_flat_blocked(
         &self,
         sources: &[u32],
@@ -1217,6 +1221,7 @@ impl BatchedPhastEngine {
         }
     }
 
+    #[cfg(feature = "bench")]
     /// Compute distance matrix with K-lane block-gated PHAST for bounded queries
     ///
     /// This is the bulk matrix computation path optimized for bounded isochrones.

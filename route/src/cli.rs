@@ -959,6 +959,7 @@ pub enum Commands {
         mode: String,
     },
 
+    #[cfg(feature = "bench")]
     /// Bounded Dijkstra for isochrone (range query)
     RangeCch {
         /// Path to cch.*.topo from Step 7
@@ -986,6 +987,7 @@ pub enum Commands {
         mode: String,
     },
 
+    #[cfg(feature = "bench")]
     /// Validate range query properties (monotonicity, equivalence, P2P consistency)
     ValidateRange {
         /// Path to cch.*.topo from Step 7
@@ -1009,6 +1011,7 @@ pub enum Commands {
         mode: String,
     },
 
+    #[cfg(feature = "bench")]
     /// PHAST-based range query (fast one-to-many)
     PhastRange {
         /// Path to cch.*.topo from Step 7
@@ -1036,6 +1039,7 @@ pub enum Commands {
         mode: String,
     },
 
+    #[cfg(feature = "bench")]
     /// Validate PHAST correctness against naive Dijkstra
     ValidatePhast {
         /// Path to cch.*.topo from Step 7
@@ -1063,6 +1067,7 @@ pub enum Commands {
         mode: String,
     },
 
+    #[cfg(feature = "bench")]
     /// Validate block-gated PHAST against active-set PHAST
     ValidateBlockGated {
         /// Path to cch.*.topo from Step 7
@@ -1086,6 +1091,7 @@ pub enum Commands {
         thresholds: String,
     },
 
+    #[cfg(feature = "bench")]
     /// Extract frontier on base graph (real road segments, not CCH shortcuts)
     ExtractFrontier {
         /// Path to cch.*.topo from Step 7
@@ -1133,6 +1139,7 @@ pub enum Commands {
         geojson_out: Option<PathBuf>,
     },
 
+    #[cfg(feature = "bench")]
     /// Generate isochrone polygon (full pipeline: PHAST → frontier → contour)
     Isochrone {
         /// Path to cch.*.topo from Step 7
@@ -2406,6 +2413,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::RangeCch {
                 cch_topo,
                 cch_weights,
@@ -2440,6 +2448,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::ValidateRange {
                 cch_topo,
                 cch_weights,
@@ -2461,6 +2470,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::PhastRange {
                 cch_topo,
                 cch_weights,
@@ -2484,6 +2494,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::ValidatePhast {
                 cch_topo,
                 cch_weights,
@@ -2507,6 +2518,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::ValidateBlockGated {
                 cch_topo,
                 cch_weights,
@@ -2536,6 +2548,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::ExtractFrontier {
                 cch_topo,
                 cch_weights,
@@ -2586,6 +2599,7 @@ impl Cli {
 
                 Ok(())
             }
+            #[cfg(feature = "bench")]
             Commands::Isochrone {
                 cch_topo,
                 cch_weights,

@@ -3,10 +3,14 @@
 //! Extracts frontier on original EBG edges (real road segments), not CCH shortcuts.
 //! This is what we need for meaningful isochrone polygons.
 
+#[cfg(feature = "bench")]
 use anyhow::Result;
+#[cfg(feature = "bench")]
 use std::path::Path;
 
+#[cfg(feature = "bench")]
 use crate::formats::{EbgNodes, EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeo, NbgGeoFile};
+#[cfg(feature = "bench")]
 /// A frontier cut point on the base graph
 #[derive(Debug, Clone)]
 pub struct FrontierCutPoint {
@@ -24,6 +28,7 @@ pub struct FrontierCutPoint {
     pub lon_fxp: i32,
 }
 
+#[cfg(feature = "bench")]
 /// A reachable point (interior of isochrone)
 #[derive(Debug, Clone)]
 pub struct ReachablePoint {
@@ -40,6 +45,7 @@ pub struct ReachableSegment {
     pub points: Vec<(i32, i32)>,
 }
 
+#[cfg(feature = "bench")]
 /// Base graph frontier extractor
 pub struct FrontierExtractor {
     /// Filtered EBG (for ID mapping)
@@ -54,6 +60,7 @@ pub struct FrontierExtractor {
     weights: Vec<u32>,
 }
 
+#[cfg(feature = "bench")]
 impl FrontierExtractor {
     /// Load all required data
     pub fn load(
@@ -408,6 +415,7 @@ impl FrontierExtractor {
     }
 }
 
+#[cfg(feature = "bench")]
 /// Load weights from w.*.u32 file
 fn load_weights(path: &Path) -> Result<Vec<u32>> {
     use std::fs::File;
@@ -433,6 +441,7 @@ fn load_weights(path: &Path) -> Result<Vec<u32>> {
     Ok(weights)
 }
 
+#[cfg(feature = "bench")]
 /// Run frontier extraction from command line
 pub fn run_frontier_extraction(
     filtered_ebg_path: &Path,
@@ -490,6 +499,7 @@ pub fn run_frontier_extraction(
     Ok(cut_points)
 }
 
+#[cfg(feature = "bench")]
 /// Export frontier cut points to GeoJSON for visualization
 pub fn export_geojson(cut_points: &[FrontierCutPoint], output_path: &Path) -> Result<()> {
     use std::fs::File;

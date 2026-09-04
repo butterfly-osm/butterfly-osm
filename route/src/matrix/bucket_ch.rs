@@ -53,8 +53,11 @@ thread_local! {
     // the calling thread (the axum handler thread, not a rayon worker)
     // so it doesn't conflict with the parallel path's per-rayon-worker
     // FORWARD_STATE_LAT / BACKWARD_STATE_LAT.
+    #[cfg(feature = "bench")]
     static SEQ_STATE_LAT: EvictableCell<SearchState2> = const { EvictableCell::new() };
+    #[cfg(feature = "bench")]
     static SEQ_BUCKETS_LAT: EvictableCell<PrefixSumBuckets2> = const { EvictableCell::new() };
+    #[cfg(feature = "bench")]
     static SEQ_BUCKET_ITEMS_LAT: EvictableCell<Vec<(u32, u32, u32, u32)>> =
         const { EvictableCell::new() };
 
@@ -2676,6 +2679,7 @@ pub struct BucketM2MStats {
     pub stale_pops: usize,
 }
 
+#[cfg(feature = "bench")]
 /// Compute many-to-many distance matrix using optimized bucket algorithm
 ///
 /// Uses the correct directed-graph formulation:
@@ -2698,6 +2702,7 @@ pub fn table_bucket(
     table_bucket_optimized(topo, weights, &down_rev_flat, sources, targets)
 }
 
+#[cfg(feature = "bench")]
 /// Optimized version using pre-built flat reverse adjacency
 pub fn table_bucket_optimized(
     topo: &CchTopo,
@@ -4026,10 +4031,12 @@ fn backward_join_parallel_prefix(
 // LEGACY API - For compatibility with existing code
 // =============================================================================
 
+#[cfg(feature = "bench")]
 pub struct BucketArena {
     items: Vec<(u32, u32, u32)>,
 }
 
+#[cfg(feature = "bench")]
 impl BucketArena {
     pub fn new(_n_nodes: usize, _n_sources: usize, _avg_visited_per_source: usize) -> Self {
         Self { items: Vec::new() }
@@ -4310,6 +4317,7 @@ impl SearchState2 {
     }
 }
 
+#[cfg(feature = "bench")]
 /// Forward search using flat UP adjacency for BOTH metrics. `up_adj_flat`
 /// and `up_adj_flat_len_along_time` share the CCH topology — index `i` addresses
 /// the same edge in both. Reads time from the first, lat from the second.
@@ -4347,6 +4355,7 @@ fn forward_fill_buckets_flat_len_along_time(
     }
 }
 
+#[cfg(feature = "bench")]
 /// Backward search from target — joins buckets at the meeting node and
 /// writes BOTH the time-min and the lat-at-time-min into the output
 /// matrices. The meeting node is chosen by min-TIME; lat is reported at
@@ -4419,6 +4428,7 @@ fn backward_join_prefix_len_along_time(
     (visited, joins)
 }
 
+#[cfg(feature = "bench")]
 /// 2-channel bucket-M2M (#372). Mirrors `table_bucket_full_flat` but
 /// returns two matrices: time and length-along-time-shortest. The path
 /// chosen at every cell is the time-shortest one; the lat number
@@ -4541,6 +4551,7 @@ pub fn table_bucket_full_flat_len_along_time(
     (time_matrix, lat_matrix, stats)
 }
 
+#[cfg(feature = "bench")]
 /// Parallel 2-channel backward join. Writes into a single
 /// `AtomicU64` matrix where each cell packs `(time << 32) | lat` —
 /// `fetch_min` on this packed value keeps time and lat in lock-step
@@ -4623,6 +4634,7 @@ fn backward_join_local_columns_len_along_time(
     (visited, joins)
 }
 
+#[cfg(feature = "bench")]
 /// Parallel 2-channel bucket-M2M. Mirrors `table_bucket_parallel` but
 /// propagates length-along-time alongside time using thread-local
 /// `SearchState2`. Backward phase writes into a packed `AtomicU64`
@@ -4654,6 +4666,7 @@ pub fn table_bucket_parallel_len_along_time(
     )
 }
 
+#[cfg(feature = "bench")]
 /// Time-bounded 2-channel bucket-M2M (max_minutes, #415). `threshold` bounds
 /// the TIME channel (the ordering metric); the length-along-time channel is
 /// carried unbounded alongside. `u32::MAX` = unbounded. See
@@ -6048,6 +6061,7 @@ mod max_minutes_bound_tests {
         }
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn bounded_2channel_time_bound_carries_length() {
         // 12×12 → 2-channel parallel path. Bound is on TIME; the length

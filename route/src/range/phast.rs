@@ -14,12 +14,17 @@
 //! - `dist[rank]` is sequential access
 //! - Significant cache efficiency improvement
 
+#[cfg(feature = "bench")]
 use std::cmp::Reverse;
+#[cfg(feature = "bench")]
 use std::collections::BinaryHeap;
 
+#[cfg(feature = "bench")]
 use crate::formats::{CchTopo, CchWeights};
+#[cfg(feature = "bench")]
 use crate::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
 
+#[cfg(feature = "bench")]
 /// PHAST query engine
 ///
 /// # Rank-Aligned CCH
@@ -76,6 +81,7 @@ pub struct PhastStats {
 /// - Small enough for fine-grained gating
 pub const BLOCK_SIZE: usize = 4096;
 
+#[cfg(feature = "bench")]
 impl PhastEngine {
     /// Create PHAST engine from loaded CCH data
     ///
@@ -1169,7 +1175,7 @@ impl PhastEngine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bench"))]
 mod tests {
     use super::*;
     use crate::formats::{CchTopo, CchWeights};

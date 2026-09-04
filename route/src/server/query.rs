@@ -6,6 +6,7 @@
 
 use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
+#[cfg(feature = "bench")]
 use crate::profile_abi::Mode;
 
 /// Local alias for the shared `bucket_ch::INVALID_HANDLE` sentinel
@@ -17,7 +18,9 @@ use crate::profile_abi::Mode;
 /// full `bucket_ch::INVALID_HANDLE` path.
 pub(crate) const HANDLE_NONE: u32 = INVALID_HANDLE;
 
-use super::state::{CchWeights, ServerState};
+use super::state::CchWeights;
+#[cfg(feature = "bench")]
+use super::state::ServerState;
 
 /// Query result
 #[derive(Debug, Clone)]
@@ -1402,6 +1405,7 @@ impl GroupMeet<'_, '_> {
     }
 }
 
+#[cfg(feature = "bench")]
 /// One-to-many query for distance matrix
 pub fn query_one_to_many(
     state: &ServerState,

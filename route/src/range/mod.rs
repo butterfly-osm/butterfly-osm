@@ -17,15 +17,19 @@ use crate::formats::{CchTopoFile, CchWeightsFile};
 use crate::profile_abi::Mode;
 
 pub mod phast;
-pub use phast::{BLOCK_SIZE, PhastEngine, PhastResult, PhastStats};
+#[cfg(feature = "bench")]
+pub use phast::PhastEngine;
+pub use phast::{BLOCK_SIZE, PhastResult, PhastStats};
 
 pub mod tree_phast;
-pub use tree_phast::{TreePath, TreeSettle, tree_backtrack, tree_settle};
+pub use tree_phast::{TreePath, TreeSettle};
+#[cfg(feature = "bench")]
+pub use tree_phast::{tree_backtrack, tree_settle};
 
 pub mod frontier;
-pub use frontier::{
-    FrontierCutPoint, FrontierExtractor, ReachablePoint, ReachableSegment, run_frontier_extraction,
-};
+pub use frontier::ReachableSegment;
+#[cfg(feature = "bench")]
+pub use frontier::{FrontierCutPoint, FrontierExtractor, ReachablePoint, run_frontier_extraction};
 
 pub mod contour;
 pub use contour::{ContourPolygon, ContourResult, ContourStats, export_contour_geojson};
@@ -36,7 +40,9 @@ pub use sparse_contour::{
     generate_sparse_contour_anchored,
 };
 
+#[cfg(feature = "bench")]
 pub mod batched_isochrone;
+#[cfg(feature = "bench")]
 pub use batched_isochrone::{
     ADAPTIVE_THRESHOLD_S, AdaptiveIsochroneEngine, BatchedIsochroneEngine, BatchedIsochroneResult,
     BatchedIsochroneStats,
@@ -369,6 +375,7 @@ impl RangeEngine {
     }
 }
 
+#[cfg(feature = "bench")]
 /// Run range query from command line
 pub fn run_range_query(
     topo_path: &Path,
@@ -431,6 +438,7 @@ pub fn run_range_query(
     Ok(result)
 }
 
+#[cfg(feature = "bench")]
 /// Validate range query properties
 pub mod validate {
     use super::*;
@@ -576,6 +584,7 @@ pub mod validate {
     }
 }
 
+#[cfg(feature = "bench")]
 /// Run validation tests for range query
 pub fn run_range_validation(
     topo_path: &Path,
@@ -667,6 +676,7 @@ pub fn run_range_validation(
     Ok(())
 }
 
+#[cfg(feature = "bench")]
 /// Run PHAST-based range query (much faster than naive Dijkstra)
 pub fn run_phast_query(
     topo_path: &Path,
@@ -724,6 +734,7 @@ pub fn run_phast_query(
     Ok(result)
 }
 
+#[cfg(feature = "bench")]
 /// Validate PHAST against naive Dijkstra
 pub fn validate_phast(
     topo_path: &Path,
@@ -815,6 +826,7 @@ pub fn validate_phast(
     Ok(())
 }
 
+#[cfg(feature = "bench")]
 /// Validate block-gated PHAST against active-set PHAST (the baseline)
 ///
 /// Compares distances and reachable sets for multiple thresholds and origins.

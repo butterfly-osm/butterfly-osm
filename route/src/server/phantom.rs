@@ -381,6 +381,7 @@ fn phantom_from_primary_inner(
 // back to S×T with exact partial-edge adjustments.
 // =============================================================================
 
+#[cfg(feature = "bench")]
 /// Expanded seed lists for one matrix axis.
 pub struct SeedExpansion {
     /// Rank per expanded row/column (engine input).
@@ -391,6 +392,7 @@ pub struct SeedExpansion {
     pub parts: Vec<(u32, u32, bool)>,
 }
 
+#[cfg(feature = "bench")]
 impl SeedExpansion {
     /// Build from per-endpoint seed sets `(rank, time_part, len_part,
     /// direct_ok)`. Empty sets (invalid endpoints) get one placeholder so
@@ -821,6 +823,7 @@ mod tests {
 
     // --- SeedExpansion ------------------------------------------------------
 
+    #[cfg(feature = "bench")]
     #[test]
     fn seed_expansion_build_spans_and_placeholder_for_empty_sets() {
         // endpoint 0: two seeds; endpoint 1: none (invalid) -> one placeholder.
@@ -836,6 +839,7 @@ mod tests {
         assert_eq!(exp.slack(), 5);
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_applies_source_plus_minus_target_partial() {
         // 1 source seed (rank 10, +5 s) x 1 target seed (rank 20, -7 s).
@@ -850,6 +854,7 @@ mod tests {
         assert_eq!(out_c.unwrap(), vec![49]);
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn reduce_len_uses_the_length_partials() {
         // reduce_len picks the LENGTH partials (index .1): 200 + 3 - 4 = 199.
@@ -859,6 +864,7 @@ mod tests {
         assert_eq!(src.reduce_len(&tgt, &m), vec![199]);
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_rejects_clamped_secondary_same_rank_meet() {
         // Same rank on both sides is the engine's zero-cost identity cell. It
@@ -873,6 +879,7 @@ mod tests {
         assert_eq!(out, vec![u32::MAX], "clamped same-rank meet is not a path");
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_rejects_negative_same_edge_meet_but_keeps_positive() {
         // Both seeds direct_ok and same rank (same physical edge). The
@@ -897,6 +904,7 @@ mod tests {
         assert_eq!(pos, vec![6], "behind-on-edge meet = 16 - 10 = 6 s");
     }
 
+    #[cfg(feature = "bench")]
     #[test]
     fn reduce_time_takes_the_minimum_over_the_seed_cross_product() {
         // One source with two directional seeds x one target with two seeds:
