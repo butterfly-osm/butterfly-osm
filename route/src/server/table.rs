@@ -1014,8 +1014,8 @@ fn apply_k_best_fallback(
     // because it is genuinely beyond the bound (correctly excluded) rather
     // than a snap/connectivity gap. The fallback must NOT resurrect those.
     // We gate every fill on a bounded time query so out-of-bound pairs stay
-    // None, while in-bound snap-gap cells are still recovered.
-    let threshold = threshold_s.unwrap_or(u32::MAX);
+    // None, while in-bound snap-gap cells are still recovered. The gate
+    // itself lives in `snap_kbest::cell_with_kbest_fallback` (#567).
     let bounded = threshold_s.is_some();
 
     // Cap per-cell fallback combos. /route uses 400 because a single
@@ -1108,24 +1108,6 @@ fn apply_k_best_fallback(
         ))
     } else {
         None
-    };
-
-    // Build (i+j)-ordered combo enumeration; same shape as /route.
-    let combo_enum = |k_src: usize, k_dst: usize| -> Vec<(usize, usize)> {
-        let mut order = Vec::new();
-        for sum in 0..(k_src + k_dst) {
-            for i in 0..k_src {
-                if let Some(j) = sum.checked_sub(i)
-                    && j < k_dst
-                {
-                    order.push((i, j));
-                }
-            }
-        }
-        if order.len() > MAX_FALLBACK_COMBOS {
-            order.truncate(MAX_FALLBACK_COMBOS);
-        }
-        order
     };
 
     let t_fb_work = std::time::Instant::now();
@@ -1258,63 +1240,27 @@ fn apply_k_best_fallback(
             let empty: Vec<u32> = Vec::new();
             let src_cands = sources_candidates[src_idx].as_ref().unwrap_or(&empty);
             let tgt_cands = targets_candidates[tgt_idx].as_ref().unwrap_or(&empty);
-            let order = combo_enum(src_cands.len(), tgt_cands.len());
-            let mut dur_done = !dur_missing;
-            let mut dist_done = !dist_missing;
-            let mut dur_val: Option<f64> = None;
-            let mut dist_val: Option<f64> = None;
-            for &(i, j) in &order {
-                let s_rank = src_cands[i];
-                let d_rank = tgt_cands[j];
-                if s_rank == d_rank {
-                    continue;
-                }
-                if bounded {
-                    // A recovered cell is only valid if the pair is within the
-                    // minutes bound. `distance_bounded` returns None for
-                    // > threshold or unreachable, so out-of-bound cells stay
-                    // None. The time gate also covers distance-only requests.
-                    if let Some(tq) = time_query_ref
-                        && let Some(t) = tq.distance_bounded(s_rank, d_rank, threshold)
-                    {
-                        if !dur_done {
-                            dur_val = Some(t as f64);
-                            dur_done = true;
-                        }
-                        if !dist_done
-                            && let Some(dq) = dist_query_ref
-                            && let Some(r) = dq.query(s_rank, d_rank)
-                        {
-                            dist_val = Some(r.distance as f64);
-                            dist_done = true;
-                        }
-                        if dur_done && dist_done {
-                            break;
-                        }
-                    }
-                } else {
-                    if !dur_done
-                        && let Some(tq) = time_query_ref
-                        && let Some(r) = tq.query(s_rank, d_rank)
-                    {
-                        // r.distance is already in seconds (post-#297).
-                        dur_val = Some(r.distance as f64);
-                        dur_done = true;
-                    }
-                    if !dist_done
-                        && let Some(dq) = dist_query_ref
-                        && let Some(r) = dq.query(s_rank, d_rank)
-                    {
-                        // r.distance is already in meters (post-#297).
-                        dist_val = Some(r.distance as f64);
-                        dist_done = true;
-                    }
-                    if dur_done && dist_done {
-                        break;
-                    }
-                }
-            }
-            (src_idx, tgt_idx, dur_val, dist_val)
+            // Shared #197 escalation (#567). `threshold_s` carries the
+            // bounded rule: under a minutes bound a cell is recovered only
+            // when the pair's travel time is ≤ the bound, and that time gate
+            // covers the distance channel too. Values are already seconds /
+            // metres (post-#297).
+            let cell = super::snap_kbest::cell_with_kbest_fallback(
+                time_query_ref,
+                dist_query_ref,
+                src_cands,
+                tgt_cands,
+                dur_missing,
+                dist_missing,
+                threshold_s,
+                MAX_FALLBACK_COMBOS,
+            );
+            (
+                src_idx,
+                tgt_idx,
+                cell.time.map(|t| t as f64),
+                cell.distance.map(|d| d as f64),
+            )
         })
         .collect();
 
