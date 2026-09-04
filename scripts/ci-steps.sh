@@ -9,8 +9,10 @@
 # Usage: bash scripts/ci-steps.sh          # run every step, stop at the first failure
 #        bash scripts/ci-steps.sh --list   # print the step labels, exit 0
 #
-# Toolchain (rustc/cargo, protoc, python3) is the caller's job: CI installs it
-# in earlier workflow steps, the hook uses whatever is on your PATH.
+# Toolchain (rustc/cargo, python3, and docker for the image step) is the
+# caller's job: CI installs it in earlier workflow steps, the hook uses
+# whatever is on your PATH. No protobuf compiler is needed — the GTFS-RT
+# bindings are generated ahead of time and committed (#574).
 # ============================================================================
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -54,6 +56,17 @@ STEPS=(
   # FAIL). They existed but no runner executed them, so a break in the gate's
   # own logic reached a deploy before anyone looked.
   "post-deploy gate unit tests|python3 bench/test_postdeploy_gate.py"
+  # #573: `Dockerfile.tools` is DERIVED from `Dockerfile` (the runtime stage
+  # cut off), so the deprecated shim cannot drift from the real manifest.
+  # Costs milliseconds and needs no toolchain.
+  "Dockerfile.tools shim in sync|bash scripts/gen-dockerfile-tools.sh --check"
+  # #565/#573: actually build both image targets. Before, nothing built the
+  # images in CI, and the builder stage pre-compiled dependencies under
+  # `2>/dev/null || true` — a broken dependency layer looked green. Both are
+  # fixed; this step is what keeps them fixed. It also prints the image sizes,
+  # which is the number #573 is about. Skips (loudly) when there is no Docker
+  # daemon to talk to, so the rest of the list still runs.
+  "docker build (runtime + tools targets)|bash scripts/ci-docker-build.sh"
 )
 
 if [[ "${1:-}" == "--list" ]]; then

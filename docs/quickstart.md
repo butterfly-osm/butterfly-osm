@@ -71,7 +71,7 @@ Sample response (polyline truncated):
 curl http://localhost:3001/health
 ```
 
-Returns uptime, per-region node/edge counts, mode list, CRC verification status, and per-region `avoid_cache` stats (hits/misses/size/capacity, see #242). Use it as your Docker `HEALTHCHECK` target — the Dockerfile already wires it.
+Returns uptime, per-region node/edge counts, mode list, CRC verification status, and per-region `avoid_cache` stats (hits/misses/size/capacity, see #242). The Dockerfile already wires it as the `HEALTHCHECK`, via the binary's own probe (`butterfly-route healthcheck`) rather than `curl` — the runtime image no longer ships one (#573).
 
 ## Next steps
 

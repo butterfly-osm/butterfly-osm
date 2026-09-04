@@ -1,56 +1,113 @@
-# Multi-stage build for butterfly-route
-# Stage 1: Build
-# Pin to trixie for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM rust:1.95-trixie AS builder
+# syntax=docker/dockerfile:1
+#
+# ONE manifest, three stages, two shippable targets (#573):
+#
+#   docker build .                        → the serving image (default target)
+#   docker build --target runtime .       → the same thing, named
+#   docker build --target tools .         → the pipeline/fetch image
+#
+# `runtime` is deliberately the LAST stage so a bare `docker build .` keeps
+# producing the serving image, exactly as before.
+#
+# Before this, `Dockerfile` and `Dockerfile.tools` each carried their own copy
+# of the builder stage, so building both images compiled the whole workspace
+# twice and the two copies could drift. Now the builder is shared: both
+# targets reuse one compile.
 
-# protoc required by `gtfs-rt` (prost-build codegen for GTFS-RT protobuf).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
+# ---------------------------------------------------------------------------
+# Stage 1 — build both binaries, once.
+# Pin to trixie for reproducibility. For exact reproducibility, pin to a SHA
+# digest.
+# ---------------------------------------------------------------------------
+FROM rust:1.95-trixie AS builder
 
 WORKDIR /build
 
-# Copy workspace manifests first for layer caching
+# Explicit COPYs, not `COPY . .`: the build context stays a few MB and
+# `target/` can never leak into the image or bust the layer cache.
 COPY Cargo.toml Cargo.lock ./
-COPY butterfly-common/Cargo.toml butterfly-common/Cargo.toml
-COPY dl/Cargo.toml dl/Cargo.toml
-COPY route/Cargo.toml route/Cargo.toml
-
-# Create dummy source files for dependency caching
-RUN mkdir -p butterfly-common/src dl/src route/src route/src/bench && \
-    echo "fn main() {}" > butterfly-common/src/lib.rs && \
-    echo "fn main() {}" > dl/src/lib.rs && \
-    echo "fn main() {}" > route/src/lib.rs && \
-    echo "fn main() {}" > route/src/main.rs && \
-    echo "fn main() {}" > route/src/bench/main.rs
-
-# Build dependencies only (cached layer)
-RUN cargo build --release -p butterfly-route 2>/dev/null || true
-
-# Copy actual source code
 COPY butterfly-common/ butterfly-common/
 COPY dl/ dl/
 COPY route/ route/
 
-# Touch source files to invalidate the build cache for actual code
-RUN touch butterfly-common/src/lib.rs dl/src/lib.rs \
-    route/src/lib.rs route/src/main.rs
+# Dependencies are cached by BuildKit cache mounts, not by the old
+# dummy-source trick (#565). That trick ended in `2>/dev/null || true`, which
+# swallowed a failed dependency layer: a broken cache looked green and only
+# blew up later, in the real build, with a confusing error — or, worse,
+# succeeded against stale deps. There is no error swallowing here; if the
+# compile fails, the build fails.
+#
+# The cargo registry, the git checkouts and `target/` all live in cache
+# mounts, so a source-only change recompiles just our three crates. Because
+# `target/` is a mount rather than a layer, the binaries have to be copied out
+# of it inside the same RUN — afterwards it is no longer visible.
+#
+# `protobuf-compiler` used to be installed here for `gtfs-rt`'s `prost-build`
+# codegen. The GTFS-Realtime bindings are now generated ahead of time and
+# committed (#574), so no protobuf toolchain is needed to build this image.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --release -p butterfly-dl -p butterfly-route \
+    && mkdir -p /out \
+    && cp target/release/butterfly-dl target/release/butterfly-route /out/
 
-# Build release binary
-RUN cargo build --release -p butterfly-route
+# ---------------------------------------------------------------------------
+# Stage 2 — tools image: fetch a PBF (+ optional transit feeds) with
+# butterfly-dl and compile the CCH artefacts (step1 → step8) into /data.
+#
+# Used by Kubernetes initContainers / Argo Workflows. Nothing in here is
+# needed at request-serving time; the serving image below stays minimal.
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim AS tools
 
-# Stage 2: Runtime
-# Pin to trixie for reproducibility. For exact reproducibility, pin to a SHA digest.
-FROM debian:trixie-slim
-
-# curl needed for Docker HEALTHCHECK; ca-certificates for HTTPS
+# gzip: decompress the SRTM .hgt.gz tiles fetched for /height (#413).
+# curl stays in THIS image (unlike the serving image): workflow steps drive it
+# from the outside, so removing it would take away a capability rather than
+# just trim bytes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    bash ca-certificates coreutils curl gzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/butterfly-dl    /usr/local/bin/butterfly-dl
+COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
+
+# Profile models and traffic profiles — small (< 100 KB total) so we
+# bake them in rather than mount via ConfigMap.
+COPY models/  /opt/butterfly/models/
+COPY traffic/ /opt/butterfly/traffic/
+
+# Pipeline driver (idempotent — checks step8 outputs against PBF mtime).
+COPY scripts/build-pipeline.sh /usr/local/bin/butterfly-build-pipeline
+RUN chmod +x /usr/local/bin/butterfly-build-pipeline
+
+ENV BUTTERFLY_MODELS_DIR=/opt/butterfly/models
+ENV BUTTERFLY_TRAFFIC_DIR=/opt/butterfly/traffic
+
+WORKDIR /data
+ENTRYPOINT ["/bin/bash"]
+
+# >>> runtime stage — everything ABOVE this line is the deprecated
+# >>> `Dockerfile.tools` shim, generated by scripts/gen-dockerfile-tools.sh.
+# ---------------------------------------------------------------------------
+# Stage 3 — serving image. LAST stage, so it is the default build target.
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim AS runtime
+
+# ca-certificates: HTTPS for transit-feed fetches.
+#
+# `curl` is gone (#573). It existed solely so the Dockerfile HEALTHCHECK could
+# call /health, and it brought libcurl plus ~10 transitive libraries — and
+# their CVE stream — into an image that otherwise holds one static binary.
+# The healthcheck itself is NOT gone: the binary probes itself with
+# `butterfly-route healthcheck`, so `docker run` / Compose / Swarm keep the
+# liveness signal they had. Kubernetes ignores HEALTHCHECK in favour of its
+# own httpGet probe either way.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built binary
-COPY --from=builder /build/target/release/butterfly-route /usr/local/bin/butterfly-route
+COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
 
 # Run as non-root user for security
 RUN groupadd -r butterfly && useradd -r -g butterfly butterfly
@@ -65,7 +122,7 @@ EXPOSE 8080 8081
 ENV RUST_LOG=info,tower_http=debug
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD ["butterfly-route", "healthcheck", "--url", "http://127.0.0.1:8080/health"]
 
 ENTRYPOINT ["butterfly-route"]
 CMD ["serve", "--data-dir", "/data", "--port", "8080", "--log-format", "json"]

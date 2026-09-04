@@ -13,7 +13,8 @@ cargo fmt --all
 cargo build --release --features bench --bin butterfly-bench  # benchmark harness (bench feature)
 ./target/release/butterfly-bench bucket-m2m --data-dir ./data/belgium --sizes 10,25,50,100
 
-docker build -t butterfly-route .
+docker build -t butterfly-route .                   # serving image (default target)
+docker build --target tools -t butterfly-tools .    # pipeline / fetch image
 docker run -d --name butterfly -p 3001:8080 -p 3002:8081 \
   -v "${PWD}/data/belgium:/data" butterfly-route && curl localhost:3001/health
 ```
@@ -24,7 +25,13 @@ ahead of time and committed (`route/src/transit/gtfs_realtime.rs`, #574).
 (frozen) spec moves. The toolchain is pinned by `rust-version` in the root
 `Cargo.toml` (edition 2024).
 
-Multi-stage image
+One multi-target image manifest (#573): `Dockerfile` holds a shared `builder`
+stage plus a `tools` and a `runtime` stage, `runtime` last so a bare
+`docker build .` still produces the serving image. `Dockerfile.tools` is a
+deprecated generated shim (`scripts/gen-dockerfile-tools.sh`, checked by CI)
+kept for one release. Release binaries are stripped
+(`[profile.release] strip = "symbols"`); build `--profile release-debug` when
+you need named backtrace frames. Multi-stage image
 (`rust:1.95-trixie` → `debian:trixie-slim`, non-root); default
 `CMD` is `serve --data-dir /data --port 8080 --log-format json` — REST on 8080,
 Arrow Flight on 8081. `serve` flags that matter:

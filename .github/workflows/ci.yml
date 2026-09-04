@@ -65,7 +65,11 @@ jobs:
       #   `feature = "bench"`-gated tests; this is also what links the
       #   bench-only butterfly-bench) · a count guard proving the all-features
       #   test list is a strict superset of the default one · py_compile of the
-      #   post-deploy gate · the gate's --list-gates registry smoke.
+      #   post-deploy gate · the gate's --list-gates registry smoke and unit
+      #   tests · the `Dockerfile.tools` shim-is-derived check (#573) · a real
+      #   `docker build` of BOTH image targets with their sizes printed (#565,
+      #   #573 — nothing built the images before, and the builder stage hid its
+      #   own failures behind `|| true`).
       # Each step is wrapped in a ::group:: so the log stays readable.
-      - name: ci steps (fmt, clippy, tests, post-deploy gate)
+      - name: ci steps (fmt, clippy, tests, post-deploy gate, images)
         run: bash scripts/ci-steps.sh

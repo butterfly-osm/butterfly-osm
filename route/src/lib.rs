@@ -20,6 +20,7 @@ pub mod customization;
 pub mod density;
 pub mod ebg;
 pub mod formats;
+pub mod healthcheck;
 pub mod ingest;
 pub mod matrix;
 pub mod model;
