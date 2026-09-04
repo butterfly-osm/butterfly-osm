@@ -28,10 +28,14 @@
 //!   triangle dominance restriction.
 //! * [`transfers_cache`] — Binary cache format for the transfer graph.
 //! * [`realtime`]        — GTFS-RT protobuf ingestion, applied once at startup.
+//! * [`gtfs_realtime`]   — prost bindings for the GTFS-Realtime schema, generated
+//!   from the vendored `gtfs-realtime.proto` and committed (#574) so the build
+//!   needs neither `prost-build` nor `protoc`.
 
 pub mod config;
 pub mod feeds;
 pub mod gtfs;
+pub mod gtfs_realtime;
 pub mod netex_epip;
 pub mod raptor;
 pub mod realtime;
