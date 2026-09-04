@@ -36,7 +36,7 @@ use crate::matrix::lex_better;
 // old `rayon::broadcast`-based eviction could never reach. The cells
 // own their `Option`/`Vec` interior, so an idle take() frees the whole
 // arena; the next query rebuilds via the `with_or_init` initialiser.
-use crate::server::evictable::EvictableCell;
+use crate::evictable::EvictableCell;
 thread_local! {
     static FORWARD_STATE: EvictableCell<SearchState> = const { EvictableCell::new() };
     static BACKWARD_STATE: EvictableCell<SearchState> = const { EvictableCell::new() };
