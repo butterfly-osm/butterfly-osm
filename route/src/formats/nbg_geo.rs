@@ -8,7 +8,56 @@ use std::path::Path;
 use super::crc;
 
 const MAGIC: u32 = 0x4E424747; // "NBGG"
+
+/// Full image: header + edge records + polyline blob + footer. What
+/// [`NbgGeoFile::write`] emits, and what step 3 leaves on disk.
 const VERSION: u16 = 1;
+
+/// Edges-only image (#579): header + edge records + footer, with the
+/// polyline blob dropped. Produced by [`NbgGeoFile::encode_edges_only`]
+/// for containers that also carry the flat `shared/edge_geom_*` sections
+/// — those hold the same vertices, so the blob inside `nbg.geo` is dead
+/// weight the serve path already skips.
+///
+/// The edge records are copied verbatim (`n_poly_pts` and `poly_off`
+/// included): they index the flat sections' vertex ranges 1:1, so an
+/// edges-only image describes exactly the same edges as its source.
+const VERSION_EDGES_ONLY: u16 = 2;
+
+/// Bytes per edge record on disk.
+const EDGE_RECORD_LEN: usize = 36;
+
+/// Bytes in the file header.
+const HEADER_LEN: usize = 64;
+
+/// Parse and validate the 64-byte header, returning `(version,
+/// n_edges_und, poly_bytes)`.
+fn parse_header(header: &[u8]) -> Result<(u16, u64, u64)> {
+    anyhow::ensure!(
+        header.len() == HEADER_LEN,
+        "nbg.geo header must be {} bytes, got {}",
+        HEADER_LEN,
+        header.len()
+    );
+    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    anyhow::ensure!(
+        magic == MAGIC,
+        "bad magic in nbg.geo: got 0x{:08X}, expected 0x{:08X}",
+        magic,
+        MAGIC
+    );
+    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
+    anyhow::ensure!(
+        version == VERSION || version == VERSION_EDGES_ONLY,
+        "unsupported nbg.geo version {} (expected {} or {})",
+        version,
+        VERSION,
+        VERSION_EDGES_ONLY
+    );
+    let n_edges_und = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    let poly_bytes = u64::from_le_bytes(header[16..24].try_into().unwrap());
+    Ok((version, n_edges_und, poly_bytes))
+}
 
 #[derive(Debug, Clone)]
 pub struct NbgEdge {
@@ -147,6 +196,10 @@ impl NbgGeoFile {
     /// CRC over header + edges + polyline body is still validated — the
     /// polyline-body bytes are streamed through the digest without being
     /// retained in memory.
+    ///
+    /// Accepts both the full image and the edges-only image written by
+    /// [`Self::encode_edges_only`] (#579), which simply has no polyline
+    /// body to stream.
     pub fn read_edges_only_from_bytes(bytes: &[u8]) -> Result<NbgGeo> {
         Self::read_edges_only_from_reader(std::io::Cursor::new(bytes))
     }
@@ -154,14 +207,10 @@ impl NbgGeoFile {
     fn read_edges_only_from_reader<R: std::io::Read>(mut reader: R) -> Result<NbgGeo> {
         let mut crc_digest = crc::Digest::new();
 
-        let mut header = vec![0u8; 64];
+        let mut header = vec![0u8; HEADER_LEN];
         reader.read_exact(&mut header)?;
+        let (version, n_edges_und, _poly_bytes) = parse_header(&header)?;
         crc_digest.update(&header);
-
-        let n_edges_und = u64::from_le_bytes([
-            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
-            header[15],
-        ]);
 
         let mut edges = Vec::with_capacity(n_edges_und as usize);
         for _ in 0..n_edges_und {
@@ -189,15 +238,18 @@ impl NbgGeoFile {
 
         // Stream the polyline body through the CRC digest without
         // retaining it. Each edge contributes 8 bytes per polyline
-        // vertex (4-byte lat + 4-byte lon).
-        let mut buf = [0u8; 4096];
-        for edge in &edges {
-            let mut remaining = (edge.n_poly_pts as usize) * 8;
-            while remaining > 0 {
-                let take = remaining.min(buf.len());
-                reader.read_exact(&mut buf[..take])?;
-                crc_digest.update(&buf[..take]);
-                remaining -= take;
+        // vertex (4-byte lat + 4-byte lon). An edges-only image (#579)
+        // has no body: its footer follows the edge records directly.
+        if version == VERSION {
+            let mut buf = [0u8; 4096];
+            for edge in &edges {
+                let mut remaining = (edge.n_poly_pts as usize) * 8;
+                while remaining > 0 {
+                    let take = remaining.min(buf.len());
+                    reader.read_exact(&mut buf[..take])?;
+                    crc_digest.update(&buf[..take]);
+                    remaining -= take;
+                }
             }
         }
 
@@ -230,17 +282,110 @@ impl NbgGeoFile {
         })
     }
 
+    /// Re-encode a full `nbg.geo` image as the edges-only image (#579):
+    /// same header fields and the same edge records, byte-for-byte, with
+    /// the polyline blob dropped.
+    ///
+    /// The source is fully validated on the way through — every polyline
+    /// byte is streamed into the CRC digest and checked against the
+    /// footer — so a corrupt input is rejected here rather than silently
+    /// re-signed. The result is a self-consistent `nbg.geo` file with its
+    /// own CRC footer that [`Self::read_edges_only_from_bytes`] reads and
+    /// [`Self::read_from_bytes`] refuses.
+    ///
+    /// Peak memory is the edge array (36 B/edge, ~98 MiB on Belgium), not
+    /// the whole file: the blob is streamed, never retained.
+    pub fn encode_edges_only<R: std::io::Read>(mut reader: R) -> Result<Vec<u8>> {
+        let mut crc_digest = crc::Digest::new();
+
+        let mut header = vec![0u8; HEADER_LEN];
+        reader.read_exact(&mut header)?;
+        let (version, n_edges_und, poly_bytes) = parse_header(&header)?;
+        anyhow::ensure!(
+            version == VERSION,
+            "nbg.geo is already an edges-only image (version {})",
+            version
+        );
+        crc_digest.update(&header);
+
+        let edges_len = (n_edges_und as usize)
+            .checked_mul(EDGE_RECORD_LEN)
+            .ok_or_else(|| anyhow::anyhow!("nbg.geo edge array size overflows usize"))?;
+        let mut edge_bytes = vec![0u8; edges_len];
+        reader.read_exact(&mut edge_bytes)?;
+        crc_digest.update(&edge_bytes);
+
+        // Stream the polyline blob through the digest. Its length is the
+        // sum of the per-edge vertex counts, which must agree with the
+        // header's `poly_bytes` — a mismatch means the two halves of the
+        // file disagree about their own shape.
+        let mut declared: u64 = 0;
+        for i in 0..n_edges_und as usize {
+            let off = i * EDGE_RECORD_LEN + 14;
+            let n_pts = u16::from_le_bytes(edge_bytes[off..off + 2].try_into().unwrap()) as u64;
+            declared += n_pts * 8;
+        }
+        anyhow::ensure!(
+            declared == poly_bytes,
+            "nbg.geo header declares {} polyline bytes, edge records sum to {}",
+            poly_bytes,
+            declared
+        );
+        let mut buf = [0u8; 8192];
+        let mut remaining = declared;
+        while remaining > 0 {
+            let take = (remaining as usize).min(buf.len());
+            reader.read_exact(&mut buf[..take])?;
+            crc_digest.update(&buf[..take]);
+            remaining -= take as u64;
+        }
+
+        let computed_crc = crc_digest.finalize();
+        let mut footer = [0u8; 16];
+        reader.read_exact(&mut footer)?;
+        let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
+        anyhow::ensure!(
+            computed_crc == stored_crc,
+            "CRC64 mismatch in nbg.geo (edges-only encode): computed 0x{:016X}, stored 0x{:016X}",
+            computed_crc,
+            stored_crc
+        );
+
+        // ---- Emit the edges-only image ------------------------------
+        let mut out = Vec::with_capacity(HEADER_LEN + edges_len + 16);
+        out.extend_from_slice(&MAGIC.to_le_bytes());
+        out.extend_from_slice(&VERSION_EDGES_ONLY.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // reserved
+        out.extend_from_slice(&n_edges_und.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes()); // poly_bytes: none carried
+        out.extend_from_slice(&[0u8; 40]); // padding to 64 bytes
+        debug_assert_eq!(out.len(), HEADER_LEN);
+        out.extend_from_slice(&edge_bytes);
+
+        let body_crc = crc::checksum(&out);
+        out.extend_from_slice(&body_crc.to_le_bytes());
+        out.extend_from_slice(&body_crc.to_le_bytes()); // file crc == body crc
+        Ok(out)
+    }
+
     fn read_from_reader<R: std::io::Read>(mut reader: R) -> Result<NbgGeo> {
         let mut crc_digest = crc::Digest::new();
 
-        let mut header = vec![0u8; 64];
+        let mut header = vec![0u8; HEADER_LEN];
         reader.read_exact(&mut header)?;
+        let (version, n_edges_und, _poly_bytes) = parse_header(&header)?;
+        // An edges-only image (#579) carries no polylines. Callers that
+        // need them must read the flat `edge_geom_*` sections instead —
+        // never silently hand back empty polylines, which would look
+        // like a network with no geometry.
+        anyhow::ensure!(
+            version == VERSION,
+            "nbg.geo is an edges-only image (version {}): it has no polyline body. \
+             Read the vertices from the flat edge_geom_offsets/edge_geom_points \
+             sections, or re-pack with lean=false for a full nbg.geo",
+            version
+        );
         crc_digest.update(&header);
-
-        let n_edges_und = u64::from_le_bytes([
-            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
-            header[15],
-        ]);
 
         // Read edges (36 bytes each)
         let mut edges = Vec::with_capacity(n_edges_und as usize);
@@ -440,6 +585,100 @@ mod tests {
                 "wrong error: {}",
                 e
             ),
+        }
+    }
+
+    /// #579: the edges-only image describes exactly the same edges as
+    /// its source, and is exactly the polyline blob smaller.
+    #[test]
+    fn edges_only_encode_keeps_every_edge_and_drops_only_the_blob() {
+        let geo = fixture();
+        let full_bytes = encode_to_bytes(&geo);
+        let lean_bytes = NbgGeoFile::encode_edges_only(Cursor::new(&full_bytes)).unwrap();
+
+        // 3 + 0 + 5 vertices × 8 bytes of polyline blob.
+        let blob_len: usize = geo.polylines.iter().map(|p| 8 * p.lat_fxp.len()).sum();
+        assert_eq!(
+            full_bytes.len() - lean_bytes.len(),
+            blob_len,
+            "edges-only must drop exactly the polyline blob"
+        );
+
+        let full = NbgGeoFile::read_edges_only_from_bytes(&full_bytes).unwrap();
+        let lean = NbgGeoFile::read_edges_only_from_bytes(&lean_bytes).unwrap();
+        assert_eq!(full.n_edges_und, lean.n_edges_und);
+        assert_eq!(full.edges.len(), lean.edges.len());
+        for (a, b) in full.edges.iter().zip(lean.edges.iter()) {
+            // `n_poly_pts` / `poly_off` are preserved verbatim: they
+            // still index the flat edge_geom sections.
+            assert_eq!(a.u_node, b.u_node);
+            assert_eq!(a.v_node, b.v_node);
+            assert_eq!(a.length_mm, b.length_mm);
+            assert_eq!(a.bearing_deci_deg, b.bearing_deci_deg);
+            assert_eq!(a.n_poly_pts, b.n_poly_pts);
+            assert_eq!(a.poly_off, b.poly_off);
+            assert_eq!(a.first_osm_way_id, b.first_osm_way_id);
+            assert_eq!(a.flags, b.flags);
+        }
+        assert_eq!(lean.polylines.len(), geo.edges.len());
+    }
+
+    /// The full reader must REFUSE an edges-only image rather than hand
+    /// back empty polylines that look like a geometry-less network.
+    #[test]
+    fn full_read_of_an_edges_only_image_fails_loudly() {
+        let geo = fixture();
+        let lean_bytes =
+            NbgGeoFile::encode_edges_only(Cursor::new(&encode_to_bytes(&geo))).unwrap();
+        match NbgGeoFile::read_from_bytes(&lean_bytes) {
+            Ok(_) => panic!("full read of an edges-only image must fail"),
+            Err(e) => assert!(e.to_string().contains("edges-only"), "wrong error: {}", e),
+        }
+    }
+
+    #[test]
+    fn edges_only_encode_rejects_a_corrupt_source() {
+        let geo = fixture();
+        let mut bytes = encode_to_bytes(&geo);
+        // Stomp a polyline byte: the blob is dropped from the OUTPUT,
+        // but it is still verified on the way in.
+        bytes[64 + 3 * 36] ^= 0xFF;
+        match NbgGeoFile::encode_edges_only(Cursor::new(&bytes)) {
+            Ok(_) => panic!("expected the source CRC check to fail"),
+            Err(e) => assert!(
+                e.to_string().contains("CRC64 mismatch"),
+                "wrong error: {}",
+                e
+            ),
+        }
+    }
+
+    #[test]
+    fn edges_only_encode_refuses_to_re_encode_itself() {
+        let geo = fixture();
+        let lean = NbgGeoFile::encode_edges_only(Cursor::new(&encode_to_bytes(&geo))).unwrap();
+        match NbgGeoFile::encode_edges_only(Cursor::new(&lean)) {
+            Ok(_) => panic!("re-encoding an edges-only image must fail"),
+            Err(e) => assert!(
+                e.to_string().contains("already an edges-only image"),
+                "wrong error: {}",
+                e
+            ),
+        }
+    }
+
+    #[test]
+    fn readers_reject_a_foreign_magic() {
+        let geo = fixture();
+        let mut bytes = encode_to_bytes(&geo);
+        bytes[0] ^= 0xFF;
+        for e in [
+            NbgGeoFile::read_from_bytes(&bytes).err(),
+            NbgGeoFile::read_edges_only_from_bytes(&bytes).err(),
+            NbgGeoFile::encode_edges_only(Cursor::new(&bytes)).err(),
+        ] {
+            let e = e.expect("bad magic must be rejected");
+            assert!(e.to_string().contains("bad magic"), "wrong error: {}", e);
         }
     }
 
