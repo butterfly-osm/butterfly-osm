@@ -210,17 +210,20 @@ pub async fn table_post_handler(
         )
             .into_response();
     }
-    // Refuse an over-large request loudly and early, before any snapping:
-    // endpoints first (that is what bounds per-endpoint state, and it makes
-    // the cell multiplication below safe), then the JSON grid this endpoint
-    // has to materialise.
-    for check in [
-        crate::server::types::validate_matrix_endpoints(req.origins.len(), req.destinations.len()),
-        crate::server::types::validate_table_cells(req.origins.len(), req.destinations.len()),
-    ] {
-        if let Err(error) = check {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
-        }
+    // Refuse an over-large request loudly and early, before any snapping.
+    // Endpoints first and only then cells: the endpoint ceiling is what
+    // bounds per-endpoint state, and it is also what makes the cell
+    // multiplication safe to evaluate at all.
+    let size_check =
+        crate::server::types::validate_matrix_endpoints(req.origins.len(), req.destinations.len())
+            .and_then(|()| {
+                crate::server::types::validate_table_cells(
+                    req.origins.len(),
+                    req.destinations.len(),
+                )
+            });
+    if let Err(error) = size_check {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
     }
     if req.destinations.is_empty() {
         return (
