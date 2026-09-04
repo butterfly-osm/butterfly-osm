@@ -570,7 +570,8 @@ use super::types::{ErrorResponse, parse_mode, validate_coord};
     description = "Per-store catchment polygons: the road-following hull (the threshold isochrone) or a convex hull, at the requested client percentiles. \
 `radius_km` (number, \"auto\" or null) is an optional per-store Euclidean pre-filter; clients beyond it are excluded from that store's matrix and catchment entirely. \
 The Flight `catchment` DoExchange action takes the SAME parameter set (#596) — only the mode (ticket profile) and the stores/clients (input columns) travel differently.",
-    responses((status = 200, description = "Catchments per store"), (status = 400, description = "Invalid request")))]
+    responses((status = 200, description = "Catchments per store"),
+        (status = 400, description = "Invalid request", body = ErrorResponse)))]
 /// POST /catchment handler
 pub async fn catchment_handler(
     State(regions): State<Arc<RegionsState>>,
@@ -614,35 +615,33 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
     // Validate percentiles (#564: same rule as the Flight exchange path)
     if let Err(e) = validate_percentiles(&req.percentiles) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
 
     // Validate stores
     if req.stores.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "stores must not be empty".into(),
-            }),
+            Json(ErrorResponse::new("stores must not be empty")),
         )
             .into_response();
     }
     for (i, s) in req.stores.iter().enumerate() {
         if let Err(e) = validate_coord(s.lon, s.lat, &format!("store[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
 
     // Validate clients
     for (i, c) in req.clients.iter().enumerate() {
         if let Err(e) = validate_coord(c.lon, c.lat, &format!("client[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
 

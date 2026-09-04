@@ -546,19 +546,9 @@ pub fn parse_coordinates(input: &str) -> Result<Vec<(f64, f64)>, String> {
             )
         })?;
 
-        // Basic range validation
-        if !(-90.0..=90.0).contains(&lat) {
-            return Err(format!(
-                "coordinate {} has latitude {} outside valid range [-90, 90]",
-                i, lat
-            ));
-        }
-        if !(-180.0..=180.0).contains(&lon) {
-            return Err(format!(
-                "coordinate {} has longitude {} outside valid range [-180, 180]",
-                i, lon
-            ));
-        }
+        // Range validation: the shared validator (#576), not a fourth
+        // hand-rolled copy of the same two bounds.
+        super::types::validate_coord(lon, lat, &format!("coordinate {}", i))?;
 
         result.push((lon, lat));
     }
@@ -1009,11 +999,18 @@ mod tests {
         // Invalid number
         assert!(parse_coordinates("abc,50.0").is_err());
 
-        // Out of range latitude
-        assert!(parse_coordinates("4.0,91.0").is_err());
+        // Out of range latitude — refused in the shared validator's own
+        // words (#576), so `/height` cannot drift from `/route`.
+        assert_eq!(
+            parse_coordinates("4.0,91.0").unwrap_err(),
+            super::super::types::validate_coord(4.0, 91.0, "coordinate 0").unwrap_err()
+        );
 
         // Out of range longitude
-        assert!(parse_coordinates("181.0,50.0").is_err());
+        assert_eq!(
+            parse_coordinates("181.0,50.0").unwrap_err(),
+            super::super::types::validate_coord(181.0, 50.0, "coordinate 0").unwrap_err()
+        );
 
         // Negative coordinates (valid)
         let neg = parse_coordinates("-77.0,-12.0").unwrap();

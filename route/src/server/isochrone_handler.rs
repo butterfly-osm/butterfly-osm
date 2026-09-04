@@ -211,7 +211,7 @@ pub async fn isochrone_handler(
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "center") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
 
     // Region dispatch (#91): the isochrone origin determines the
@@ -244,10 +244,9 @@ pub async fn isochrone_handler(
     if req.time_s.is_none() && req.contours.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Provide time_s (one contour) or contours (comma-separated seconds)"
-                    .to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Provide time_s (one contour) or contours (comma-separated seconds)".to_string(),
+            )),
         )
             .into_response();
     }
@@ -256,9 +255,10 @@ pub async fn isochrone_handler(
         if t == 0 || t > 7200 {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("time_s must be between 1 and 7200, got {}", t),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "time_s must be between 1 and 7200, got {}",
+                    t
+                ))),
             )
                 .into_response();
         }
@@ -272,18 +272,20 @@ pub async fn isochrone_handler(
                 Ok(v) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("contour value must be between 1 and 7200, got {}", v),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "contour value must be between 1 and 7200, got {}",
+                            v
+                        ))),
                     )
                         .into_response();
                 }
                 Err(_) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("invalid contour value: '{}'", part),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "invalid contour value: '{}'",
+                            part
+                        ))),
                     )
                         .into_response();
                 }
@@ -292,9 +294,10 @@ pub async fn isochrone_handler(
         if values.is_empty() || values.len() > 10 {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("contours must have 1-10 values, got {}", values.len()),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "contours must have 1-10 values, got {}",
+                    values.len()
+                ))),
             )
                 .into_response();
         }
@@ -311,12 +314,12 @@ pub async fn isochrone_handler(
         // `CatchPanicLayer`. (#141)
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "isochrone metric dispatch fell through; this is a server bug \
+            Json(ErrorResponse::new(
+                "isochrone metric dispatch fell through; this is a server bug \
                         — the request validator and metric parser disagree about which \
                         fields are accepted"
                     .to_string(),
-            }),
+            )),
         )
             .into_response();
     };
@@ -324,7 +327,7 @@ pub async fn isochrone_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -335,9 +338,7 @@ pub async fn isochrone_handler(
             if req.mode != "car" || req.avoid_polygons.is_some() || req.exclude.is_some() {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "uncertainty=bands is car-only and incompatible with avoid_polygons/exclude".to_string(),
-                    }),
+                    Json(ErrorResponse::new("uncertainty=bands is car-only and incompatible with avoid_polygons/exclude".to_string())),
                 )
                     .into_response();
             }
@@ -346,9 +347,9 @@ pub async fn isochrone_handler(
         Some(other) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "unknown uncertainty value '{other}' (expected 'bands')"
+                ))),
             )
                 .into_response();
         }
@@ -357,7 +358,7 @@ pub async fn isochrone_handler(
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -367,9 +368,10 @@ pub async fn isochrone_handler(
         other => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Invalid direction: '{}'. Use 'depart' or 'arrive'.", other),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Invalid direction: '{}'. Use 'depart' or 'arrive'.",
+                    other
+                ))),
             )
                 .into_response();
         }
@@ -379,7 +381,7 @@ pub async fn isochrone_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -387,7 +389,7 @@ pub async fn isochrone_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -405,7 +407,7 @@ pub async fn isochrone_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -447,9 +449,7 @@ pub async fn isochrone_handler(
     if let Some(err) = wkb_request_rejection(wants_wkb, thresholds.len(), bands_requested) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: err.to_string(),
-            }),
+            Json(ErrorResponse::new(err.to_string())),
         )
             .into_response();
     }
@@ -483,18 +483,18 @@ pub async fn isochrone_handler(
         Err(IsochroneSnapError::NoSnap) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Could not snap center to road network".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Could not snap center to road network".to_string(),
+                )),
             )
                 .into_response();
         }
         Err(IsochroneSnapError::NotAccessible) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Center not accessible for this mode".to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Center not accessible for this mode".to_string(),
+                )),
             )
                 .into_response();
         }
@@ -551,9 +551,7 @@ pub async fn isochrone_handler(
         let Some((pess, opt)) = state.band_modes() else {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".to_string(),
-                }),
+                Json(ErrorResponse::new("uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".to_string())),
             )
                 .into_response();
         };
@@ -571,9 +569,9 @@ pub async fn isochrone_handler(
                 None => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("band '{tag}': could not snap/compute isochrone"),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "band '{tag}': could not snap/compute isochrone"
+                        ))),
                     )
                         .into_response();
                 }
@@ -801,7 +799,7 @@ pub fn depart_frontier(
     request_body(content = BulkIsochroneRequest, description = "Origins, time limit, and mode"),
     responses(
         (status = 200, description = "Binary WKB stream", content_type = "application/octet-stream"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
 pub async fn isochrone_bulk_handler(
@@ -823,9 +821,7 @@ fn isochrone_bulk_sync(
     if req.origins.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "origins cannot be empty".into(),
-            }),
+            Json(ErrorResponse::new("origins cannot be empty")),
         )
             .into_response();
     }
@@ -833,27 +829,26 @@ fn isochrone_bulk_sync(
     if req.origins.len() > MAX_BULK_ORIGINS {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "too many origins: {} exceeds maximum of {}",
-                    req.origins.len(),
-                    MAX_BULK_ORIGINS
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "too many origins: {} exceeds maximum of {}",
+                req.origins.len(),
+                MAX_BULK_ORIGINS
+            ))),
         )
             .into_response();
     }
     for (i, &[lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(lon, lat, &format!("origin[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
     if req.time_s == 0 || req.time_s > 7200 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("time_s must be between 1 and 7200, got {}", req.time_s),
-            }),
+            Json(ErrorResponse::new(format!(
+                "time_s must be between 1 and 7200, got {}",
+                req.time_s
+            ))),
         )
             .into_response();
     }
@@ -874,7 +869,7 @@ fn isochrone_bulk_sync(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -882,7 +877,7 @@ fn isochrone_bulk_sync(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -890,7 +885,7 @@ fn isochrone_bulk_sync(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -910,7 +905,7 @@ fn isochrone_bulk_sync(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
     let snap_mask: &[u64] = &weight_plan.snap_mask;

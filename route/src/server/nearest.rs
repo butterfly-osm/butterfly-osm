@@ -95,23 +95,22 @@ pub async fn nearest_handler(
     Query(req): Query<NearestRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "query point") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
     if req.number == 0 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "number must be at least 1".into(),
-            }),
+            Json(ErrorResponse::new("number must be at least 1")),
         )
             .into_response();
     }
     if req.number > 100 {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("number {} exceeds maximum of 100", req.number),
-            }),
+            Json(ErrorResponse::new(format!(
+                "number {} exceeds maximum of 100",
+                req.number
+            ))),
         )
             .into_response();
     }
@@ -131,7 +130,7 @@ pub async fn nearest_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -157,9 +156,9 @@ pub async fn nearest_handler(
         // /route and Flight answer, not a malformed request (400).
         return (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "No road found within snap distance".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "No road found within snap distance".to_string(),
+            )),
         )
             .into_response();
     }

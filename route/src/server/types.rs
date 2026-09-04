@@ -6,10 +6,60 @@ use utoipa::ToSchema;
 
 use crate::model::types::Mode;
 
-/// Standard error response body
+/// THE error body of the REST surface: every endpoint that refuses a
+/// request answers with this shape, and `error` is the field to read.
+///
+/// `code` and `message` are the deprecation window of #576. `/trip` and
+/// `/match` used to answer with an ad-hoc `{"code": "InvalidValue",
+/// "message": ...}` body that no OpenAPI component described; switching
+/// them to `{error}` outright would break any client reading `message`.
+/// For one release those two endpoints therefore emit BOTH — `error`
+/// plus the two legacy fields, carrying the identical text — via
+/// [`ErrorResponse::with_deprecated_fields`]. Every other endpoint
+/// leaves them `None`, and `skip_serializing_if` keeps them out of the
+/// body entirely, so the eight endpoints that already served `{error}`
+/// are byte-identical to before.
+///
+/// Removing the window is deleting the two fields, the constructor that
+/// sets them, and the two call sites — see CHANGELOG (deprecated in
+/// 2.1.0, removed in 2.2.0).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
+    /// Human-readable description of what was refused.
     pub error: String,
+    /// Deprecated (#576), `/trip` and `/match` only: the legacy constant
+    /// of that call site (`InvalidValue`, `NoSegment`, `NoMatch`,
+    /// `InternalError`). Read `error` and the HTTP status instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(deprecated)]
+    pub code: Option<String>,
+    /// Deprecated (#576), `/trip` and `/match` only: a verbatim copy of
+    /// `error`. Read `error` instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(deprecated)]
+    pub message: Option<String>,
+}
+
+impl ErrorResponse {
+    /// The documented body: `error` alone.
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: None,
+            message: None,
+        }
+    }
+
+    /// The same body plus the two legacy fields `/trip` and `/match`
+    /// answered with before #576: `code` is the legacy constant of that
+    /// call site (`InvalidValue`, `NoSegment`, `NoMatch`,
+    /// `InternalError`) and `message` repeats `error` verbatim.
+    /// Deprecation window only — see the type docs.
+    pub fn with_deprecated_fields(mut self, code: &str) -> Self {
+        self.code = Some(code.to_string());
+        self.message = Some(self.error.clone());
+        self
+    }
 }
 
 /// Directional role of a snap query (#197). The packed snap index
@@ -180,7 +230,20 @@ pub fn parse_mode(
 pub fn bad_request(error: String) -> (axum::http::StatusCode, Json<ErrorResponse>) {
     (
         axum::http::StatusCode::BAD_REQUEST,
-        Json(ErrorResponse { error }),
+        Json(ErrorResponse::new(error)),
+    )
+}
+
+/// A 400 in the `/trip` and `/match` body of the #576 deprecation
+/// window: the documented `error` field plus the legacy `code` /
+/// `message` pair. Closing the window is deleting this function and
+/// pointing its call sites at [`bad_request`].
+pub fn bad_request_deprecated(
+    error: impl Into<String>,
+) -> (axum::http::StatusCode, Json<ErrorResponse>) {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new(error).with_deprecated_fields("InvalidValue")),
     )
 }
 
@@ -196,4 +259,37 @@ pub fn get_node_location(state: &super::state::ServerState, node_id: u32) -> [f6
         return [lon, lat];
     }
     [0.0, 0.0]
+}
+
+#[cfg(test)]
+mod error_body_tests {
+    use super::*;
+
+    /// The eight endpoints that already served `{error}` must keep
+    /// serving exactly that: the #576 deprecation fields are skipped
+    /// when unset, so their bodies are byte-identical to before.
+    #[test]
+    fn documented_body_is_the_error_field_alone() {
+        let body = serde_json::to_value(ErrorResponse::new("nope")).unwrap();
+        assert_eq!(body, serde_json::json!({"error": "nope"}));
+    }
+
+    /// `/trip` and `/match` serve the documented field AND the two
+    /// legacy fields for one release, carrying the identical text, so a
+    /// client reading `message` keeps working while `error` becomes
+    /// available (#576).
+    #[test]
+    fn deprecated_body_carries_the_documented_field_and_the_legacy_pair() {
+        let body =
+            serde_json::to_value(ErrorResponse::new("nope").with_deprecated_fields("InvalidValue"))
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "nope",
+                "code": "InvalidValue",
+                "message": "nope",
+            })
+        );
+    }
 }

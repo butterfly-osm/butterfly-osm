@@ -294,6 +294,34 @@ class RestProbeParity(unittest.TestCase):
                 self.assertIsInstance(body, dict, f"{path}: POST probe needs a JSON body")
                 json.dumps(body)  # must be serialisable
 
+    def test_every_input_taking_path_has_an_invalid_probe(self):
+        """#576: the refusal shape is part of the API, so every path that
+        parses input must be probed with one bad request. Only the three
+        inputless paths are exempt — the same list `api.rs` names."""
+        expected = set(self.mounted_paths()) - set(g.REST_INPUTLESS_PATHS)
+        self.assertEqual(set(g.rest_invalid_probes()), expected)
+
+    def test_inputless_paths_match_the_router(self):
+        src = os.path.join(REPO, "route", "src", "server", "api.rs")
+        if not os.path.exists(src):
+            self.skipTest(f"{src} not present")
+        with open(src) as f:
+            text = f.read()
+        m = re.search(r"INPUTLESS_PATHS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", text, re.S)
+        self.assertIsNotNone(m, "INPUTLESS_PATHS not found in api.rs")
+        self.assertEqual(set(re.findall(r'"([^"]+)"', m.group(1))),
+                         set(g.REST_INPUTLESS_PATHS))
+
+    def test_invalid_probes_are_actually_invalid(self):
+        """Each invalid probe must carry the out-of-range longitude — a
+        probe that quietly became valid would pass the gate for the wrong
+        reason."""
+        for path, (method, target, body) in g.rest_invalid_probes().items():
+            self.assertIn(method, ("GET", "POST"), path)
+            self.assertTrue(target.startswith(path), f"{path}: probe targets {target}")
+            payload = target if body is None else json.dumps(body)
+            self.assertIn("999", payload, f"{path}: probe carries no out-of-range coordinate")
+
     def test_only_documented_optional_surfaces_may_skip(self):
         probes = g.rest_probes()
         for path, skips in g.REST_PROBE_SKIPS.items():

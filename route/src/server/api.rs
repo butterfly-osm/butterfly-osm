@@ -331,4 +331,125 @@ mod openapi_parity {
             .collect();
         assert!(extra.is_empty(), "documented but not mounted: {extra:?}");
     }
+
+    /// The three paths that take no request input at all — nothing to
+    /// refuse, so nothing to document a refusal for. Every OTHER mounted
+    /// path parses a coordinate, a mode or a body, and therefore MUST
+    /// document what it answers when that parse fails.
+    const INPUTLESS_PATHS: &[&str] = &["/health", "/version", "/regions"];
+
+    /// #576: the router and the document must agree on the error SHAPE,
+    /// not just on the path list. `/trip` and `/match` drifted for a
+    /// year — they answered `{code, message}` while their OpenAPI entry
+    /// said either nothing or `ErrorResponse` — because nothing checked.
+    /// Every non-2xx response of every mounted path now has to name the
+    /// one shared component; a new endpoint that invents its own body
+    /// fails this test before it can ship.
+    #[test]
+    fn every_documented_error_response_is_the_one_error_shape() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi serialises");
+        let paths = doc["paths"].as_object().expect("paths object");
+        let mut undocumented_errors: Vec<&str> = Vec::new();
+        for path in MOUNTED_PATHS {
+            let item = paths
+                .get(*path)
+                .unwrap_or_else(|| panic!("{path} missing from the OpenAPI document"));
+            let mut documents_an_error = false;
+            for (method, op) in item.as_object().expect("path item object") {
+                let Some(responses) = op.get("responses").and_then(|r| r.as_object()) else {
+                    continue;
+                };
+                for (status, response) in responses {
+                    if status.starts_with('2') {
+                        continue;
+                    }
+                    documents_an_error = true;
+                    let schema = &response["content"]["application/json"]["schema"]["$ref"];
+                    assert_eq!(
+                        schema.as_str(),
+                        Some("#/components/schemas/ErrorResponse"),
+                        "{method} {path} answers {status} with something other than \
+                         the shared ErrorResponse: {response}"
+                    );
+                }
+            }
+            if !documents_an_error && !INPUTLESS_PATHS.contains(path) {
+                undocumented_errors.push(path);
+            }
+        }
+        assert!(
+            undocumented_errors.is_empty(),
+            "these paths refuse bad input but document no error response: \
+             {undocumented_errors:?}"
+        );
+    }
+
+    /// Every REST handler module, embedded at compile time. `types.rs`
+    /// is deliberately absent: it OWNS the deprecation window and is the
+    /// one place allowed to name the legacy keys.
+    const HANDLER_SOURCES: &[(&str, &str)] = &[
+        ("route.rs", include_str!("route.rs")),
+        ("table.rs", include_str!("table.rs")),
+        ("isochrone_handler.rs", include_str!("isochrone_handler.rs")),
+        ("nearest.rs", include_str!("nearest.rs")),
+        ("matching.rs", include_str!("matching.rs")),
+        ("trip.rs", include_str!("trip.rs")),
+        ("catchment.rs", include_str!("catchment.rs")),
+        ("transit_handler.rs", include_str!("transit_handler.rs")),
+        ("height_handler.rs", include_str!("height_handler.rs")),
+        ("health_handler.rs", include_str!("health_handler.rs")),
+        ("regions_handler.rs", include_str!("regions_handler.rs")),
+    ];
+
+    /// The other half of the #576 guard: the document says
+    /// `ErrorResponse` (the test above), and no handler may hand-build a
+    /// body that says something else. The legacy shape was 35 inline
+    /// `serde_json::json!({"code": ..., "message": ...})` literals in
+    /// `/trip` and `/match`; a handler that types those keys again is
+    /// re-opening the drift, so the keys themselves are the tripwire.
+    /// The one place allowed to name them is `types.rs`, which serves
+    /// them for the deprecation window.
+    #[test]
+    fn no_handler_hand_builds_an_error_body() {
+        let mut offenders = Vec::new();
+        for (name, src) in HANDLER_SOURCES {
+            for (i, line) in src.lines().enumerate() {
+                if line.contains("\"code\":") || line.contains("\"message\":") {
+                    offenders.push(format!("{name}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "an error body is being hand-built instead of `types::ErrorResponse` \
+             — the whole point of #576:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// The documented field is `error`, and the two legacy `/trip` and
+    /// `/match` fields are documented AS deprecated for the length of
+    /// the #576 window — a client reading the Swagger UI must be able to
+    /// see which field survives it.
+    #[test]
+    fn the_error_component_documents_the_field_to_read_and_the_two_deprecated_ones() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi serialises");
+        let schema = &doc["components"]["schemas"]["ErrorResponse"];
+        let props = schema["properties"]
+            .as_object()
+            .expect("ErrorResponse properties");
+        assert!(props.contains_key("error"), "{schema}");
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["error"]),
+            "only `error` is guaranteed: {schema}"
+        );
+        for legacy in ["code", "message"] {
+            assert_eq!(
+                props[legacy]["deprecated"],
+                serde_json::json!(true),
+                "the legacy `{legacy}` field must be documented as deprecated: {schema}"
+            );
+        }
+    }
 }
