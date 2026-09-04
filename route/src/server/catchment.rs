@@ -503,6 +503,10 @@ use std::sync::Arc;
 use super::regions::RegionsState;
 use super::types::{ErrorResponse, parse_mode, validate_coord};
 
+#[utoipa::path(post, path = "/catchment", tag = "Catchment", summary = "Store catchments from client locations",
+    request_body(content = serde_json::Value, description = "{mode, hull_shape, percentiles, remove_outliers, stores:[{id,lon,lat}], clients:[{lon,lat}], radius_km}"),
+    description = "Per-store catchment polygons: the road-following hull (the threshold isochrone) or a convex hull, at the requested client percentiles.",
+    responses((status = 200, description = "Catchments per store"), (status = 400, description = "Invalid request")))]
 /// POST /catchment handler
 pub async fn catchment_handler(
     State(regions): State<Arc<RegionsState>>,

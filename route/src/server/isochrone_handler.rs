@@ -960,11 +960,11 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
     path = "/isochrone",
     tag = "Isochrone",
     summary = "Compute reachability polygon",
-    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nProvide exactly one of: `time_s` or `contours`.\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
+    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\n`time_s` is the one-contour form of `contours` (`contours` wins when both are given).\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
     params(
         ("lon" = f64, Query, description = "Center longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Center latitude", example = 50.8503),
-        ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200). Mutually exclusive with contours.", example = 600),
+        ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200) — the one-contour form of contours.", example = 600),
         ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s.", example = json!(null)),
         ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot \u{2014} depends on available models)", example = "car"),
         ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
@@ -1010,22 +1010,21 @@ pub async fn isochrone_handler(
         MultiTime(Vec<u32>), // sorted thresholds in seconds
     }
 
-    let provided = [req.time_s.is_some(), req.contours.is_some()]
-        .iter()
-        .filter(|&&b| b)
-        .count();
-
-    if provided != 1 {
+    // #554: `time_s` is the one-contour spelling of `contours`; `contours` wins
+    // when both are given (they used to be mutually exclusive, a 400 for no
+    // benefit).
+    if req.time_s.is_none() && req.contours.is_none() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Provide exactly one of: time_s or contours".to_string(),
+                error: "Provide time_s (one contour) or contours (comma-separated seconds)"
+                    .to_string(),
             }),
         )
             .into_response();
     }
 
-    let metric = if let Some(t) = req.time_s {
+    let metric = if let (Some(t), None) = (req.time_s, req.contours.as_ref()) {
         if t == 0 || t > 7200 {
             return (
                 StatusCode::BAD_REQUEST,

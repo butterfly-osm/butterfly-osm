@@ -41,6 +41,10 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::height_handler::height_handler,
         super::health_handler::health_handler,
         super::regions_handler::regions_handler,
+        super::catchment::catchment_handler,
+        super::transit_handler::transit_handler,
+        super::transit_handler::transit_bulk_handler,
+        version_handler,
     ),
     components(schemas(
         super::route::RouteRequest,
@@ -141,15 +145,7 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
             post(super::transit_handler::transit_bulk_handler),
         )
         .route("/health", get(super::health_handler::health_handler))
-        .route(
-            "/version",
-            get(|| async {
-                axum::Json(serde_json::json!({
-                    "name": "butterfly-route",
-                    "version": env!("CARGO_PKG_VERSION"),
-                }))
-            }),
-        )
+        .route("/version", get(version_handler))
         .route("/regions", get(super::regions_handler::regions_handler));
     if elevation_loaded {
         api_routes = api_routes.route("/height", get(super::height_handler::height_handler));
@@ -190,4 +186,60 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+/// `GET /version` — name and version (org standard, #516).
+#[utoipa::path(get, path = "/version", tag = "System", summary = "Name and version",
+    responses((status = 200, description = "{name, version}")))]
+pub async fn version_handler() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "name": "butterfly-route",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+/// Every REST path the router mounts (#554). `/height` is mounted only when
+/// `<data>/srtm/` exists and `/metrics`, `/swagger-ui` are not API paths, so
+/// they are excluded from the OpenAPI parity check below.
+pub const MOUNTED_PATHS: &[&str] = &[
+    "/route",
+    "/nearest",
+    "/table",
+    "/isochrone",
+    "/isochrone/bulk",
+    "/trip",
+    "/match",
+    "/catchment",
+    "/transit",
+    "/transit/bulk",
+    "/health",
+    "/version",
+    "/regions",
+    "/height",
+];
+
+#[cfg(test)]
+mod openapi_parity {
+    use super::*;
+    use utoipa::OpenApi;
+
+    /// #554: a mounted path without OpenAPI documentation is a defect — the
+    /// Swagger UI is the only public reference of the REST surface.
+    #[test]
+    fn openapi_documents_every_mounted_path() {
+        let doc = ApiDoc::openapi();
+        let documented: std::collections::BTreeSet<String> =
+            doc.paths.paths.keys().cloned().collect();
+        let missing: Vec<&str> = MOUNTED_PATHS
+            .iter()
+            .copied()
+            .filter(|p| !documented.contains(*p))
+            .collect();
+        assert!(missing.is_empty(), "mounted but undocumented: {missing:?}");
+        let extra: Vec<&String> = documented
+            .iter()
+            .filter(|p| !MOUNTED_PATHS.contains(&p.as_str()))
+            .collect();
+        assert!(extra.is_empty(), "documented but not mounted: {extra:?}");
+    }
 }
