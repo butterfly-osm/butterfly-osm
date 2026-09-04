@@ -2132,16 +2132,13 @@ def gate_flight_completeness(base):
             f"{type(ex).__name__}: {ex}")
     passed &= probe("route_batch", "route_batch", {"pairs": pairs})
     passed &= probe("edges_batch", "edges_batch", {"pairs": pairs})
-    # isochrone: KNOWN GAP. The action streams WKB polygons and ends WITHOUT a
-    # trailer, so a truncated isochrone batch is indistinguishable from a small
-    # one — exactly the #533 failure, on the one producer the merge exposed.
-    # This probe is EXPECTED TO FAIL until the isochrone trailer lands; the fix
-    # is server-side (emit the same app_metadata the matrix actions do), NOT
-    # deleting or relaxing the probe.
-    iso_note = (" — KNOWN GAP: the isochrone action emits no completeness trailer yet; "
-        "land it server-side, do not silence this probe (#533 follow-up)")
-    passed &= probe("isochrone", "isochrone",
-        {"lon": ISO_POINTS[0][1], "lat": ISO_POINTS[0][2], "intervals": [600]}, note=iso_note)
+    # isochrone: the gap this merge exposed, closed server-side by #560 — the
+    # action now encodes through the same `completed_flight_stream` as every
+    # other do_get arm. Probed plain AND banded: the banded path chains three
+    # passes and may only claim complete when all three finished.
+    iso = {"lon": ISO_POINTS[0][1], "lat": ISO_POINTS[0][2], "intervals": [600]}
+    passed &= probe("isochrone", "isochrone", iso)
+    passed &= probe("isochrone bands", "isochrone", {**iso, "uncertainty": "bands"})
     # edges_flow (do_exchange): the summary carries complete:true and is
     # sent only after every chunk streamed.
     tbl = pa.table({"src_lon": pa.array([p[0] for p in pairs]), "src_lat": pa.array([p[1] for p in pairs]),
