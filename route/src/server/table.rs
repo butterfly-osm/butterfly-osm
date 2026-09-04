@@ -274,47 +274,25 @@ pub async fn table_post_handler(
 
     let mode_data = state.get_mode(mode);
 
-    // Compute avoid weights (includes exclude if both present)
-    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-            }
+    // #566: one resolution of exclude + avoid_polygons — avoid weights
+    // (borrowed from the cache, no deep clone), the snap mask and the
+    // avoid-over-exclude priority. #561: the mask is BORROWED when
+    // neither option is present, where /table used to clone the whole
+    // bitset on every request.
+    let weight_plan = match super::avoid::resolve_weights(
+        &state,
+        &mode_data,
+        mode,
+        exclude_mask,
+        avoid_json.as_deref(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
-    } else {
-        None
     };
-
-    // Get exclude weights if only exclude (no avoid)
-    let exclude_weights = if avoid_entry.is_none() {
-        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
-    } else {
-        None
-    };
-
-    // Build snap mask
-    let snap_mask: Vec<u64> = if let Some(ref entry) = avoid_entry {
-        super::avoid::build_avoid_mask(
-            &mode_data.mask,
-            &entry.flags,
-            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
-        )
-    } else if let Some(exc) = exclude_mask {
-        super::exclude::build_exclude_mask(&mode_data.mask, &state.edge_exclude_flags, exc)
-    } else {
-        mode_data.mask.clone()
-    };
-
-    // Determine custom weights: avoid takes priority, then exclude.
-    // /table holds an Arc<AvoidEntry>; the borrow points into the cache
-    // so /table cache hits avoid the prior ~200 MB deep clone.
-    let custom_weights_ref: Option<&super::exclude::ExcludeWeights> =
-        if let Some(ref entry) = avoid_entry {
-            Some(&entry.weights)
-        } else {
-            exclude_weights.as_deref()
-        };
+    let snap_mask: &[u64] = &weight_plan.snap_mask;
+    let custom_weights_ref: Option<&super::exclude::ExcludeWeights> = weight_plan.weights();
 
     let radius_param = parse_radius(req.radius_km.as_ref());
     // #531: a per-origin radii array must be exactly one entry per origin —
@@ -354,7 +332,7 @@ pub async fn table_post_handler(
             want_duration,
             want_distance,
             custom_weights_ref,
-            &snap_mask,
+            snap_mask,
             radius_param,
             threshold_s,
         )
