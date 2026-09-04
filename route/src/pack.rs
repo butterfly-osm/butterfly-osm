@@ -2055,6 +2055,16 @@ impl EdgeVertices {
         }
     }
 
+    /// How many edges this source describes, so the caller can reject a
+    /// container whose geometry and edge list disagree instead of
+    /// indexing past the end of one of them.
+    fn n_edges(&self) -> usize {
+        match self {
+            Self::Flat { offsets, .. } => offsets.offsets.len().saturating_sub(1),
+            Self::Heap(polylines) => polylines.len(),
+        }
+    }
+
     /// `(lat_e7, lon_e7)` per vertex of edge `ei`.
     fn edge(&self, ei: usize) -> Vec<(i32, i32)> {
         match self {
@@ -2186,6 +2196,12 @@ pub fn export_edges(path: &Path, out: &Path, segments_out: Option<&Path>) -> Res
         // (#579) they are the ONLY copy. Fall back to the heap polylines
         // for containers packed before the flat sections existed.
         let vertices = EdgeVertices::open(&c, path, &geo_bytes)?;
+        anyhow::ensure!(
+            vertices.n_edges() == geo.edges.len(),
+            "edge geometry covers {} edges, nbg.geo has {}",
+            vertices.n_edges(),
+            geo.edges.len()
+        );
         let off_sec = find("shared/edge_osm_offsets")?;
         let ids_sec = find("shared/edge_osm_ids")?;
         let off = EdgeOsmOffsetsFile::read_from_bytes(&c.read_section_verified(path, off_sec)?)?;
