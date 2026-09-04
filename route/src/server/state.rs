@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::formats::{
     CchTopo, CchTopoFile, CchWeightsFile, EbgCsr, EbgCsrFile, EbgNodes, EbgNodesFile,
-    FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbgFile, WaysFile, mod_weights,
+    FilteredEbgFile, NbgGeo, NbgGeoFile, NbgNodeMapFile, OrderEbgFile, mod_weights,
     mode_index::{ModeIndexFile, ModeIndexKind},
 };
 // Re-export CchWeights for use by api.rs
@@ -26,9 +26,17 @@ use super::exclude::{self, ExcludeWeights};
 mod recustomize;
 pub use recustomize::{EdgeRecustomizePrep, EdgeTableColumn};
 
+// #578: the boot loader, split along the phase banners it already had.
+// `load` / `load_from_container_with_options` below are the
+// orchestrators; each module owns one self-contained phase.
+mod auxiliary;
+mod modes;
+mod shared;
+mod snap;
+
 use super::edge_geom::EdgeGeometry;
 use super::elevation::ElevationData;
-use super::snap_index::{DEFAULT_CELL_LOG2, PackedSnapIndex, SnapBuilderMode, build_snap_index};
+use super::snap_index::PackedSnapIndex;
 use crate::formats::way_names_idx::WayNamesIdx;
 
 /// Road-name lookup backend.
@@ -502,13 +510,11 @@ impl ServerState {
 
         // Load per-mode CCH data
         tracing::info!("Loading per-mode CCH data...");
-        let mut modes_data = Vec::with_capacity(discovered_modes.len());
-        let mut mode_names = Vec::with_capacity(discovered_modes.len());
-        let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
+        let mut tables = modes::ModeTables::with_capacity(discovered_modes.len());
 
         crate::server::rss::checkpoint("load.shared");
 
-        // Track each base mode's index in `modes_data` so we can later
+        // Track each base mode's index in `tables` so we can later
         // synthesize traffic variants from the same in-memory topology.
         let mut base_mode_idx: HashMap<String, usize> = HashMap::new();
 
@@ -525,10 +531,8 @@ impl ServerState {
                 up_edges = mode_data.cch_topo.up_targets.len(),
                 "loaded mode data"
             );
-            modes_data.push(mode_data);
+            tables.push(mode_name.clone(), mode_data);
             base_mode_idx.insert(mode_name.clone(), mode_index);
-            mode_lookup.insert(mode_name.clone(), mode_index as u8);
-            mode_names.push(mode_name.clone());
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
         }
 
@@ -541,7 +545,7 @@ impl ServerState {
                 tracing::info!(n_variants = variants.len(), "registering traffic variants");
                 for (base, variant) in &variants {
                     let synthetic = format!("{}_{}", base, variant);
-                    if mode_lookup.contains_key(&synthetic) {
+                    if tables.lookup.contains_key(&synthetic) {
                         tracing::warn!(
                             mode = synthetic.as_str(),
                             "skipping traffic variant: a base mode with the same name already exists"
@@ -559,11 +563,11 @@ impl ServerState {
                             continue;
                         }
                     };
-                    let base_data = &modes_data[base_idx];
+                    let base_data = &tables.data[base_idx];
                     let variant_data = load_traffic_variant_mode_data(
                         base_data, variant, base, &step8_dir, &step2_dir, &ebg_nodes, &nbg_geo,
                     )?;
-                    let new_index = modes_data.len();
+                    let new_index = tables.push(synthetic.clone(), variant_data);
                     tracing::info!(
                         base = base.as_str(),
                         variant = variant.as_str(),
@@ -571,9 +575,6 @@ impl ServerState {
                         index = new_index,
                         "registered traffic variant"
                     );
-                    modes_data.push(variant_data);
-                    mode_lookup.insert(synthetic.clone(), new_index as u8);
-                    mode_names.push(synthetic.clone());
                     crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
                 }
             }
@@ -589,10 +590,9 @@ impl ServerState {
         // Always build in memory for the directory path. The container
         // path can read prebuilt sections zero-copy.
         tracing::info!("Building packed snap index (in memory)...");
-        let snap_index =
-            build_packed_snap_index_inmem(&ebg_nodes, &nbg_geo, &modes_data, &mode_names);
+        let snap_index = snap::build_packed_snap_index_inmem(&ebg_nodes, &nbg_geo, &tables);
         crate::server::rss::checkpoint("spatial.global");
-        for name in &mode_names {
+        for name in &tables.names {
             crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
         }
 
@@ -601,13 +601,13 @@ impl ServerState {
         // path (`load_state_from_bundle`) can use the compact mmap
         // index when `shared/way_names_idx` is present (#282).
         tracing::info!("Loading road names...");
-        let way_names = WayNames::from_heap(load_way_names(&step1_dir)?);
+        let way_names = WayNames::from_heap(auxiliary::load_way_names(&step1_dir)?);
         tracing::info!(named_roads = way_names.len(), "loaded road names");
 
         // Build per-edge exclude flags from way_attrs.car.bin
         // Try car first, then any available mode's way_attrs
         tracing::info!("Loading edge exclude flags...");
-        let way_attrs_path = find_way_attrs_path(&step2_dir, &discovered_modes);
+        let way_attrs_path = auxiliary::find_way_attrs_path(&step2_dir, &discovered_modes);
         let edge_exclude_flags = if let Some(attrs_path) = way_attrs_path {
             exclude::build_edge_exclude_flags(&ebg_nodes, &attrs_path)?
         } else {
@@ -666,17 +666,7 @@ impl ServerState {
         // lazy reload path will panic if a slot is ever evicted —
         // this path is only used by tests + the legacy --data-dir
         // flow where eviction shouldn't fire.
-        let modes_slots: Vec<ModeSlot> = modes_data
-            .into_iter()
-            .zip(mode_names.iter().cloned())
-            .map(|(data, name)| {
-                if is_variant_mode_name(&name, &mode_names) {
-                    ModeSlot::new_loaded_variant(name, data)
-                } else {
-                    ModeSlot::new_loaded(name, data)
-                }
-            })
-            .collect();
+        let (modes_slots, mode_names, mode_lookup) = tables.finish();
         Ok(Self {
             ebg_nodes,
             ebg_csr,
@@ -805,7 +795,7 @@ impl ServerState {
         // did upgrade are the largest by far (CCH weights, EBG
         // nodes/CSR, snap index, edge geom, flats).
         //
-        // Page-fault footprint after a `section_arc` call — i.e. AFTER
+        // Page-fault footprint after a `Sections::arc` call — i.e. AFTER
         // LazyContainer's CRC walk:
         //   - `EbgNodesFile`, `EbgCsrFile`, `SnapPointsFile`,
         //     `SnapGridFile`, `EdgeGeomOffsetsFile`,
@@ -820,247 +810,24 @@ impl ServerState {
         //     full body to populate the edges Vec; an explicit
         //     `madvise(DONTNEED)` immediately after parsing returns
         //     those pages to the kernel.
-        let lazy_for_bytes = std::sync::Arc::clone(&lazy_arc);
-        let mmap_for_bytes = std::sync::Arc::clone(&mmap);
 
-        // Returns `(Arc<Mmap>, byte_offset, byte_len)` for the
-        // `read_from_mmap_unverified` path. Cloning the Arc is cheap
-        // (atomic inc). Each format reader holds its own clone so the
-        // mapping stays alive as long as any reader does — when
-        // `ServerState` drops, every reader's `ArcCow` drops, refcount
-        // hits 0, `munmap` fires.
-        let section_arc = |name: &str| -> Result<(std::sync::Arc<memmap2::Mmap>, usize, usize)> {
-            let entry = container
-                .get(name)
-                .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
-            let off = entry.offset as usize;
-            let len = entry.len as usize;
-            // Use checked_add so a malformed container with
-            // pathologically large offset+len cannot wrap usize and
-            // bypass the bounds check.
-            let _end = off.checked_add(len).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "section '{}' offset+len overflows usize (off={}, len={})",
-                    name,
-                    off,
-                    len
-                )
-            })?;
-            anyhow::ensure!(
-                off + len <= mmap_for_bytes.len(),
-                "section '{}' bytes [{},{}) exceed mmap len {}",
-                name,
-                off,
-                off + len,
-                mmap_for_bytes.len()
-            );
-            // Drive lazy CRC verification through LazyContainer. The
-            // first call to `verify_now` walks the section body once;
-            // subsequent calls observe `Verified` and short-circuit.
-            // This both updates `butterfly_route_sections_*` metrics
-            // and lets format readers skip their own body CRC walk
-            // via the `_unverified` entry points.
-            lazy_for_bytes.verify_now(name)?;
-            Ok((std::sync::Arc::clone(&mmap_for_bytes), off, len))
-        };
-        // Byte-slice accessors borrowed from the live `Arc<Mmap>`.
-        // Lifetimes are tied to `mmap_for_bytes` (not `'static`), used
-        // by `madvise(DONTNEED)` callers and the non-zero-copy readers
-        // that still consume `&[u8]` directly (NbgGeoFile, WaysFile,
-        // way_attrs, mod_weights).
-        let section_bytes = |name: &str| -> Result<&[u8]> {
-            let entry = container
-                .get(name)
-                .ok_or_else(|| anyhow::anyhow!("missing required section '{}'", name))?;
-            let off = entry.offset as usize;
-            let len = entry.len as usize;
-            anyhow::ensure!(
-                off + len <= mmap_for_bytes.len(),
-                "section '{}' bytes [{},{}) exceed mmap len {}",
-                name,
-                off,
-                off + len,
-                mmap_for_bytes.len()
-            );
-            lazy_for_bytes.verify_now(name)?;
-            Ok(&mmap_for_bytes[off..off + len])
-        };
-        let optional_section = |name: &str| -> Result<Option<&[u8]>> {
-            match container.get(name) {
-                Some(entry) => {
-                    let off = entry.offset as usize;
-                    let len = entry.len as usize;
-                    let _end = off.checked_add(len).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "section '{}' offset+len overflows usize (off={}, len={})",
-                            name,
-                            off,
-                            len
-                        )
-                    })?;
-                    anyhow::ensure!(
-                        off + len <= mmap_for_bytes.len(),
-                        "section '{}' bytes [{},{}) exceed mmap len {}",
-                        name,
-                        off,
-                        off + len,
-                        mmap_for_bytes.len()
-                    );
-                    lazy_for_bytes.verify_now(name)?;
-                    Ok(Some(&mmap_for_bytes[off..off + len]))
-                }
-                None => Ok(None),
-            }
-        };
+        // The section accessors used by every phase below: they resolve
+        // a name to a byte range, drive the lazy CRC gate, and hand the
+        // format readers an `Arc<Mmap>` clone.
+        let sec = shared::Sections::new(&container, &mmap, &lazy_arc);
 
         // ---- Shared graph tables ------------------------------------
-        // #152: ebg.nodes / ebg.csr are now read zero-copy. The
-        // numeric arrays (`nodes`, `offsets`, `heads`, `turn_idx`)
-        // borrow straight from the mmap, so we save ~250 MB of heap
-        // on Belgium that the legacy owning-Vec readers used to copy.
         crate::server::rss::checkpoint("load.container.opened");
-
-        tracing::info!("Loading EBG nodes (zero-copy)...");
-        // #161: LazyContainer already CRC-verified the section bytes;
-        // skip the per-format CRC walk to avoid paging the body twice.
-        let (m, off, len) = section_arc("shared/ebg.nodes")?;
-        let ebg_nodes = EbgNodesFile::read_from_mmap_unverified(m, off, len)?;
-        tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
-
-        tracing::info!("Loading EBG CSR (zero-copy)...");
-        let (m, off, len) = section_arc("shared/ebg.csr")?;
-        let ebg_csr_bytes = &mmap_for_bytes[off..off + len];
-        let ebg_csr = EbgCsrFile::read_from_mmap_unverified(m, off, len)?;
-        tracing::info!(arcs = ebg_csr.n_arcs, "loaded EBG CSR");
-        // #152: ebg.csr is build/validate-only at serve time. The only
-        // field any handler reads is `n_arcs` (a u64 in the header used
-        // by /health). The body arrays (offsets, heads, turn_idx) are
-        // touched by validate/step4 + ordering/contraction, none of
-        // which run on the serve path. Drop the file pages from RSS;
-        // the borrowed ArcCow slices stay valid (the Arc<Mmap> is still
-        // alive) and a rare cold reader pages them back at fault cost.
-        if let Err(e) = crate::formats::mmap::madvise_dontneed(ebg_csr_bytes) {
-            tracing::warn!(
-                section = "shared/ebg.csr",
-                error = %e,
-                "madvise(DONTNEED) on ebg.csr failed; ignoring"
-            );
-        } else {
-            tracing::info!(
-                section = "shared/ebg.csr",
-                bytes = ebg_csr_bytes.len(),
-                "madvise(DONTNEED) on cold ebg.csr section"
-            );
-        }
-
-        // ---- NBG geo ----
-        // If the container carries the flat edge geometry sections (#155),
-        // we read NBG geo edges-only and let the polyline body stay on
-        // disk. The new sections back the serve-path geometry hot
-        // consumers; nothing downstream reads `nbg_geo.polylines` once
-        // EdgeGeometry is wired below.
-        let nbg_geo_section = section_bytes("shared/nbg.geo")?;
-        let has_flat_edge_geom = container.get("shared/edge_geom_offsets").is_some()
-            && container.get("shared/edge_geom_points").is_some();
-        let nbg_geo = if has_flat_edge_geom {
-            tracing::info!("Loading NBG geo (edges-only — polylines via flat sections)...");
-            NbgGeoFile::read_edges_only_from_bytes(nbg_geo_section)?
-        } else {
-            tracing::info!("Loading NBG geo (full polylines — no flat sections)...");
-            NbgGeoFile::read_from_bytes(nbg_geo_section)?
-        };
-        tracing::info!(edges = nbg_geo.edges.len(), "loaded NBG geo");
-
-        // When we read edges-only, the polyline body bytes have been
-        // streamed through the CRC verifier but never copied onto the
-        // heap. Hint the kernel to drop those pages from RSS — the bytes
-        // are cold under steady-state operation (the flat sections carry
-        // the serve-path representation), so freeing them yields the
-        // bulk of #155's RSS win.
-        if has_flat_edge_geom {
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(nbg_geo_section) {
-                tracing::warn!(
-                    section = "shared/nbg.geo",
-                    error = %e,
-                    "madvise(DONTNEED) on nbg.geo failed; ignoring"
-                );
-            } else {
-                tracing::info!(
-                    section = "shared/nbg.geo",
-                    bytes = nbg_geo_section.len(),
-                    "madvise(DONTNEED) on cold nbg.geo section (polylines live in flat sections)"
-                );
-            }
-        }
-
-        tracing::info!("Loading NBG node-id map...");
-        let nbg_node_map =
-            NbgNodeMapFile::read_map_from_bytes(section_bytes("shared/nbg.node_map")?)?;
-        let max_compact = nbg_node_map
-            .mappings
-            .iter()
-            .map(|m| m.compact_id)
-            .max()
-            .unwrap_or(0);
-        let mut nbg_node_to_osm: Vec<i64> = vec![0; (max_compact as usize) + 1];
-        for m in &nbg_node_map.mappings {
-            nbg_node_to_osm[m.compact_id as usize] = m.osm_node_id;
-        }
+        let graph = shared::load_shared_tables(&sec)?;
 
         // ---- Mode discovery + filter --------------------------------
-        let all_modes = container.list_modes();
-        if all_modes.is_empty() {
-            anyhow::bail!(
-                "container {} has no `mode/<name>/...` bundles; cannot serve",
-                container_path.display()
-            );
-        }
-        let global_index: HashMap<String, u8> = all_modes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (n.clone(), i as u8))
-            .collect();
-        let discovered_modes: Vec<String> = if let Some(filter) = mode_filter {
-            all_modes
-                .into_iter()
-                .filter(|m| filter.iter().any(|f| f == m))
-                .collect()
-        } else {
-            all_modes
-        };
-        if discovered_modes.is_empty() {
-            anyhow::bail!("mode filter excluded every mode in the container");
-        }
-        tracing::info!(modes = ?discovered_modes, "discovered transport modes");
+        let (discovered_modes, global_index) =
+            modes::discover(&container, mode_filter, container_path)?;
 
         crate::server::rss::checkpoint("load.shared");
 
         // ---- Per-mode bundle load -----------------------------------
-        let mut modes_data = Vec::with_capacity(discovered_modes.len());
-        let mut mode_names = Vec::with_capacity(discovered_modes.len());
-        let mut mode_lookup = HashMap::with_capacity(discovered_modes.len());
-
-        for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
-            let mode = Mode(global_index[mode_name]);
-            let mode_data = load_mode_data_from_bundle(
-                mode_name,
-                mode,
-                &container,
-                &mmap_for_bytes,
-                &lazy_arc,
-            )?;
-            tracing::info!(
-                mode = mode_name.as_str(),
-                index = mode_index,
-                filtered_nodes = mode_data.n_filtered_nodes,
-                up_edges = mode_data.cch_topo.up_targets.len(),
-                "loaded mode bundle"
-            );
-            modes_data.push(mode_data);
-            mode_lookup.insert(mode_name.clone(), mode_index as u8);
-            mode_names.push(mode_name.clone());
-            crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
-        }
+        let mut tables = modes::load_bundles(&sec, &discovered_modes, &global_index)?;
 
         // Traffic-variant discovery — list now, register AFTER the
         // snap-index build below. Variants share topology + snap mask
@@ -1070,560 +837,22 @@ impl ServerState {
         let container_variants = container.list_traffic_variants();
 
         // ---- Packed snap index (#154) -------------------------------
-        // Prefer mmap-backed sections from the container; fall back to
-        // building the legacy rstar in heap memory when the container
-        // pre-dates #154.
-        let snap_index = match try_load_packed_snap_index(
-            &container,
-            &mmap_for_bytes,
-            &mode_names,
-            &lazy_arc,
-        )? {
-            Some(idx) => {
-                tracing::info!(
-                    n_points = idx.n_indexed(),
-                    "loaded packed snap index zero-copy"
-                );
-                crate::server::rss::checkpoint("spatial.global");
-                for name in &mode_names {
-                    crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
-                }
-                idx
-            }
-            None => {
-                tracing::warn!(
-                    "packed snap index sections missing; building rstar at boot \
-                         (this container pre-dates #154 — re-pack to drop ~1 GB anon)"
-                );
-                let idx =
-                    build_packed_snap_index_inmem(&ebg_nodes, &nbg_geo, &modes_data, &mode_names);
-                crate::server::rss::checkpoint("spatial.global");
-                for name in &mode_names {
-                    crate::server::rss::checkpoint(&format!("spatial.mode.{}", name));
-                }
-                idx
-            }
-        };
+        let mut snap_index = snap::load_or_build(&sec, &graph, &tables)?;
 
-        // Register container traffic-variants now that snap_index is
-        // built. Each variant becomes a synthetic mode `<base>_<variant>`
-        // sharing topology, snap mask, and the physical dist flats with its
-        // base. The TIME flats AND the len-along-time flats are rebuilt
-        // against the variant's recustomised cch_weights (len-along-time is
-        // path-dependent, not traffic-invariant — #528).
-        let mut snap_index = snap_index;
-        for (base, variant) in &container_variants {
-            let synthetic = format!("{}_{}", base, variant);
-            if mode_lookup.contains_key(&synthetic) {
-                tracing::warn!(
-                    mode = synthetic.as_str(),
-                    "skipping container traffic variant: a base mode with the same name already exists"
-                );
-                continue;
-            }
-            let base_idx = match mode_lookup.get(base) {
-                Some(i) => *i as usize,
-                None => {
-                    tracing::warn!(
-                        base = base.as_str(),
-                        variant = variant.as_str(),
-                        "skipping container traffic variant: base mode not loaded"
-                    );
-                    continue;
-                }
-            };
-            let weights_section_name = format!("mode/{}/_variant/{}/weights.time", base, variant);
-            let provenance_section_name =
-                format!("mode/{}/_variant/{}/traffic.json", base, variant);
-            let Some(weights_entry) = container.get(&weights_section_name) else {
-                tracing::warn!(
-                    section = weights_section_name.as_str(),
-                    "skipping container traffic variant: weights section missing"
-                );
-                continue;
-            };
-            if container.get(&provenance_section_name).is_none() {
-                tracing::warn!(
-                    section = provenance_section_name.as_str(),
-                    "skipping container traffic variant: provenance .traffic.json section missing"
-                );
-                continue;
-            }
-            lazy_arc.verify_now(&weights_section_name)?;
-            lazy_arc.verify_now(&provenance_section_name)?;
-            let off = weights_entry.offset as usize;
-            let len = weights_entry.len as usize;
-            anyhow::ensure!(
-                off + len <= mmap_for_bytes.len(),
-                "section '{}' bytes [{},{}) exceed mmap len {}",
-                weights_section_name,
-                off,
-                off + len,
-                mmap_for_bytes.len()
-            );
-            let variant_cch_weights =
-                CchWeightsFile::read_from_mmap_unverified(mmap_for_bytes.clone(), off, len)?;
-            let base_data = &modes_data[base_idx];
+        // ---- Container traffic variants (#84) -----------------------
+        modes::register_container_variants(
+            &sec,
+            &container_variants,
+            &graph,
+            &mut tables,
+            &mut snap_index.masks,
+        )?;
 
-            // #440: derive traffic-adjusted per-node weights from the
-            // provenance profile (verified above) + the base mode's way_attrs
-            // section, so edges_batch per-edge durations match variant paths.
-            let adjusted_node_weights = {
-                let prov = container.get(&provenance_section_name).and_then(|e| {
-                    let o = e.offset as usize;
-                    let l = e.len as usize;
-                    std::str::from_utf8(&mmap_for_bytes[o..o + l])
-                        .ok()
-                        .map(|j| j.to_string())
-                });
-                let attrs = container
-                    .get(&format!("mode/{base}/way_attrs"))
-                    .and_then(|e| {
-                        lazy_arc
-                            .verify_now(&format!("mode/{base}/way_attrs"))
-                            .ok()?;
-                        let o = e.offset as usize;
-                        let l = e.len as usize;
-                        crate::formats::way_attrs::read_all_from_bytes(&mmap_for_bytes[o..o + l])
-                            .ok()
-                    });
-                match (prov, attrs) {
-                    (Some(json), Some(attrs)) => variant_adjusted_node_weights(
-                        base_data, &json, &attrs, &nbg_geo, &ebg_nodes,
-                    ),
-                    _ => None,
-                }
-            };
-            // Rebuild the TIME flats against the variant weights. The dist
-            // channel stays cloned (physical, traffic-invariant). The
-            // len-along-time channel is NOT traffic-invariant (#528): it is
-            // the physical length along the TIME-optimal path, and the
-            // variant's different time weights move the optimal middles, so
-            // the base bytes describe the WRONG (clean-car) paths. Recompute
-            // it from the variant's own middles, mirroring
-            // `refresh_len_along_time` on the boot-recustomization sites. If
-            // the baked variant section carries no middles we cannot
-            // recompute — fall back to the base clone and warn (the pre-#528
-            // shape, kept only as a non-panicking degradation).
-            let up_adj_flat =
-                UpAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
-            let down_rev_flat =
-                DownReverseAdjFlat::build_with(&base_data.cch_topo, &variant_cch_weights, true);
-            let down_adj_flat = DownAdjFlat::build(&base_data.cch_topo, &variant_cch_weights);
-            let effective_node_weights: std::borrow::Cow<'static, [u32]> = adjusted_node_weights
-                .map(std::borrow::Cow::Owned)
-                .unwrap_or_else(|| base_data.node_weights.clone());
-            let n_up = base_data.cch_topo.up_targets.len();
-            let (lat_weights, lat_flat_up, lat_flat_down) =
-                if base_data.cch_weights_len_along_time.is_some()
-                    && variant_cch_weights.up_middle.len() == n_up
-                {
-                    refresh_len_along_time(
-                        base_data,
-                        &ebg_nodes,
-                        &variant_cch_weights,
-                        &effective_node_weights,
-                    )
-                } else {
-                    if base_data.cch_weights_len_along_time.is_some() {
-                        tracing::warn!(
-                            base = base.as_str(),
-                            variant = variant.as_str(),
-                            "container traffic variant: baked weights carry no middles; \
-                             len-along-time distance channel falls back to base and may \
-                             diverge from /route (#528)"
-                        );
-                    }
-                    (
-                        base_data.cch_weights_len_along_time.clone(),
-                        base_data.up_adj_flat_len_along_time.clone(),
-                        base_data.down_rev_flat_len_along_time.clone(),
-                    )
-                };
-            let variant_data = ModeData {
-                mode: base_data.mode,
-                cch_topo: base_data.cch_topo.clone(),
-                cch_weights: variant_cch_weights,
-                cch_weights_dist: base_data.cch_weights_dist.clone(),
-                cch_weights_len_along_time: lat_weights,
-                orig_to_rank: base_data.orig_to_rank.clone(),
-                filtered_to_original: base_data.filtered_to_original.clone(),
-                n_filtered_nodes: base_data.n_filtered_nodes,
-                n_original_nodes: base_data.n_original_nodes,
-                node_weights: effective_node_weights,
-                mask: base_data.mask.clone(),
-                has_outbound: base_data.has_outbound.clone(),
-                has_inbound: base_data.has_inbound.clone(),
-                up_adj_flat,
-                down_rev_flat,
-                down_adj_flat,
-                up_adj_flat_dist: base_data.up_adj_flat_dist.clone(),
-                down_rev_flat_dist: base_data.down_rev_flat_dist.clone(),
-                up_adj_flat_len_along_time: lat_flat_up,
-                down_rev_flat_len_along_time: lat_flat_down,
-                down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
-                exclude_cache: super::exclude::ExcludeWeightCache::default(),
-            };
-            let new_index = modes_data.len();
-            tracing::info!(
-                base = base.as_str(),
-                variant = variant.as_str(),
-                synthetic = synthetic.as_str(),
-                index = new_index,
-                "registered container traffic variant"
-            );
-            modes_data.push(variant_data);
-            mode_lookup.insert(synthetic.clone(), new_index as u8);
-            mode_names.push(synthetic.clone());
-            // Snap_index masks are indexed by mode_idx; a variant shares
-            // its base's eligible-edges mask, so push an ArcCow clone of
-            // the base's mask at the variant's new mode_idx slot. ArcCow
-            // clone is an Arc bump — no body copy.
-            if let Some(base_mask) = snap_index.masks.get(base_idx).cloned() {
-                snap_index.masks.push(base_mask);
-            } else {
-                tracing::warn!(
-                    base = base.as_str(),
-                    variant = variant.as_str(),
-                    base_idx,
-                    "container traffic variant: base snap mask missing; snap will reject variant queries"
-                );
-            }
-            crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
-        }
+        // ---- Cold per-mode sections ---------------------------------
+        modes::evict_cold_mode_sections(&sec, &discovered_modes);
 
-        // #149: Now that every mode's flat adjacencies are built, hint
-        // the kernel that the cch_weights.{time,dist} byte ranges are
-        // cold. The routing hot path (CchQuery, isochrone PHAST,
-        // matrix bucket M2M) reads weights through the flats; the only
-        // remaining `cch_weights.up`/`.down` readers are
-        //   - the transit fingerprint hash (one-time, at startup)
-        //   - the per-call exclude/avoid recustomizers (cold)
-        //   - validators / bench harness (off the production path)
-        // so dropping these pages from RSS is a pure win. The Cow
-        // slices into them remain valid; subsequent rare reads page
-        // them back in at standard fault cost.
-        for mode_name in &discovered_modes {
-            for leaf in ["weights.time", "weights.dist", "weights.lat"] {
-                let section = format!("mode/{}/{}", mode_name, leaf);
-                if let Some(entry) = container.get(&section) {
-                    let off = entry.offset as usize;
-                    let len = entry.len as usize;
-                    let range = &mmap_for_bytes[off..off + len];
-                    match crate::formats::mmap::madvise_dontneed(range) {
-                        Ok(()) => tracing::info!(
-                            section = %section,
-                            bytes = len,
-                            "madvise(DONTNEED) on cold weight section"
-                        ),
-                        Err(e) => tracing::warn!(
-                            section = %section,
-                            error = %e,
-                            "madvise(DONTNEED) failed, ignoring"
-                        ),
-                    }
-                }
-            }
-        }
-
-        // #279: evict TIME flats for non-default modes too.
-        //
-        // Each mode loads three time-metric flat sections
-        // (up_adj_flat.time, down_reverse_adj_flat.time,
-        // down_adj_flat.time). They are zero-copy Cow::Borrowed views
-        // and the boot-time CRC walk forces them resident. For
-        // workloads dominated by one mode (almost always car on
-        // consumer routing, truck on delivery, etc.) the non-default
-        // modes' flats sit resident for nothing.
-        //
-        // Pick the same "default" mode as the exclude-flag loader
-        // (car if present, otherwise the first discovered mode). Evict
-        // every other mode's time flats. madvise on a zero-copy view's
-        // backing pages is safe — the view stays valid; kernel
-        // demand-pages on first query of that mode.
-        //
-        // On Belgium with 4 modes (car/bike/foot/truck) this evicts
-        // ~3 × 1.6 GiB ≈ 5 GiB of flats. First bike/foot/truck query
-        // pays one cold page-in pass; the kernel keeps subsequent
-        // queries hot via its page cache.
-        let default_mode = if discovered_modes.iter().any(|m| m == "car") {
-            "car"
-        } else {
-            discovered_modes[0].as_str()
-        };
-        for mode_name in &discovered_modes {
-            if mode_name == default_mode {
-                continue;
-            }
-            for leaf in [
-                "up_adj_flat.time",
-                "down_reverse_adj_flat.time",
-                "down_adj_flat.time",
-            ] {
-                let section = format!("mode/{}/{}", mode_name, leaf);
-                if let Some(entry) = container.get(&section) {
-                    let off = entry.offset as usize;
-                    let len = entry.len as usize;
-                    // Use checked_add so corrupted container metadata
-                    // can't overflow usize and silently bypass the
-                    // bounds check.
-                    let end = match off.checked_add(len) {
-                        Some(e) => e,
-                        None => {
-                            tracing::warn!(
-                                section = %section,
-                                offset = off,
-                                len = len,
-                                "container section offset+len overflows usize; skipping madvise"
-                            );
-                            continue;
-                        }
-                    };
-                    if end > mmap_for_bytes.len() {
-                        tracing::warn!(
-                            section = %section,
-                            offset = off,
-                            len = len,
-                            mmap_len = mmap_for_bytes.len(),
-                            "container section out-of-bounds vs mmap; skipping madvise"
-                        );
-                        continue;
-                    }
-                    let range = &mmap_for_bytes[off..end];
-                    if let Err(e) = crate::formats::mmap::madvise_dontneed(range) {
-                        tracing::warn!(
-                            section = %section,
-                            error = %e,
-                            "madvise(DONTNEED) on non-default flat failed; ignoring"
-                        );
-                    } else {
-                        tracing::info!(
-                            section = %section,
-                            bytes = len,
-                            "madvise(DONTNEED) on non-default mode time flat (#279)"
-                        );
-                    }
-                }
-            }
-        }
-
-        // ---- Road names ---------------------------------------------
-        // #282: prefer the compact mmap-backed `shared/way_names_idx`
-        // section (~5-10 KB heap on Belgium, scales to ~3 GiB saved at
-        // planet scale). Fall back to the legacy
-        // `shared/step1.ways.raw` HashMap build (~30-50 MB heap on
-        // Belgium) for containers that pre-date the index.
-        tracing::info!("Loading road names from container...");
-        // PR #324 review: do NOT call `lazy_for_bytes.verify_now` here.
-        // A synchronous verify walks the full ~19 MiB way_names_idx
-        // body, paging it in at boot, which defeats the
-        // demand-paged-mmap goal of the lazy index. The lazy header
-        // (magic / version / sizes) is still validated by
-        // `read_from_mmap_unverified` below; the body CRC stays
-        // deferred. Operators that want eager body CRC can opt in
-        // via `--warmup-on-boot` or `--eager-verify`, which the
-        // existing `LazyContainer::spawn_warmup` path already covers.
-        let way_names = if let Some(entry) = container.get("shared/way_names_idx") {
-            let off = entry.offset as usize;
-            let len = entry.len as usize;
-            let idx = crate::formats::way_names_idx::read_from_mmap_unverified(
-                std::sync::Arc::clone(&mmap_for_bytes),
-                off,
-                len,
-            )?;
-            tracing::info!(
-                source = "shared/way_names_idx",
-                named_roads = idx.len(),
-                "loaded road names (mmap-backed, body CRC deferred to warmup/eager flags)"
-            );
-            WayNames::Idx(idx)
-        } else if let Some(ways_bytes) = optional_section("shared/step1.ways.raw")? {
-            let names = load_way_names_from_bytes(ways_bytes)?;
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(ways_bytes) {
-                tracing::warn!(
-                    section = "shared/step1.ways.raw",
-                    error = %e,
-                    "madvise(DONTNEED) on ways.raw failed; ignoring"
-                );
-            } else {
-                tracing::info!(
-                    section = "shared/step1.ways.raw",
-                    bytes = ways_bytes.len(),
-                    "madvise(DONTNEED) on cold ways.raw section"
-                );
-            }
-            tracing::info!(
-                source = "shared/step1.ways.raw",
-                named_roads = names.len(),
-                "loaded road names (heap HashMap fallback)"
-            );
-            WayNames::Heap(names)
-        } else {
-            tracing::warn!("no way_names section in container, road names unavailable");
-            WayNames::Heap(HashMap::new())
-        };
-
-        // ---- Edge exclude flags from one mode's way_attrs -----------
-        // #275: way_attrs is read once at boot to build the per-edge
-        // exclude flag table. The flags live in a heap Vec from that
-        // point on; the mmap'd byte range (this mode's plus every other
-        // mode's, all forced resident by the boot CRC walk) is cold for
-        // the rest of the process lifetime. Drop those pages too.
-        //
-        // Prefer car if available, otherwise the alphabetically first mode.
-        let attrs_mode = if discovered_modes.iter().any(|m| m == "car") {
-            "car".to_string()
-        } else {
-            discovered_modes[0].clone()
-        };
-        let attrs_section = format!("mode/{}/way_attrs", attrs_mode);
-        let edge_exclude_flags = if let Some(attr_bytes) = optional_section(&attrs_section)? {
-            let attrs = crate::formats::way_attrs::read_all_from_bytes(attr_bytes)?;
-            let flags = exclude::build_edge_exclude_flags_from_attrs(&ebg_nodes, &attrs)?;
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(attr_bytes) {
-                tracing::warn!(
-                    section = %attrs_section,
-                    error = %e,
-                    "madvise(DONTNEED) on way_attrs failed; ignoring"
-                );
-            } else {
-                tracing::info!(
-                    section = %attrs_section,
-                    bytes = attr_bytes.len(),
-                    "madvise(DONTNEED) on cold way_attrs section"
-                );
-            }
-            flags
-        } else {
-            tracing::warn!(section = %attrs_section, "way_attrs absent, exclude feature disabled");
-            vec![0u8; ebg_nodes.n_nodes as usize]
-        };
-
-        // Evict the other modes' way_attrs sections too — only one mode
-        // supplies the exclude flags, the rest stay cold forever.
-        //
-        // Important: resolve byte ranges via `container.get(..)` +
-        // `mmap_for_bytes[..]` directly. Do NOT route through
-        // `optional_section(..)` because that calls
-        // `lazy.verify_now(name)`, which would force a full CRC walk
-        // (and page-in) of every other mode's way_attrs at boot —
-        // defeating lazy verification. `madvise(MADV_DONTNEED)` is
-        // safe on unverified bytes: it evicts resident pages (a no-op
-        // on pages that were never faulted in).
-        for other_mode in &discovered_modes {
-            if other_mode == &attrs_mode {
-                continue;
-            }
-            let other_section = format!("mode/{}/way_attrs", other_mode);
-            let Some(entry) = container.get(&other_section) else {
-                continue;
-            };
-            let off = entry.offset as usize;
-            let len = entry.len as usize;
-            let Some(end) = off.checked_add(len) else {
-                tracing::warn!(
-                    section = %other_section,
-                    offset = off,
-                    len = len,
-                    "way_attrs section offset+len overflows usize; skipping evict"
-                );
-                continue;
-            };
-            if end > mmap_for_bytes.len() {
-                tracing::warn!(
-                    section = %other_section,
-                    "way_attrs section bytes exceed mmap; skipping evict"
-                );
-                continue;
-            }
-            let other_bytes = &mmap_for_bytes[off..end];
-            if let Err(e) = crate::formats::mmap::madvise_dontneed(other_bytes) {
-                tracing::warn!(
-                    section = %other_section,
-                    error = %e,
-                    "madvise(DONTNEED) on way_attrs failed; ignoring"
-                );
-            } else {
-                tracing::info!(
-                    section = %other_section,
-                    bytes = other_bytes.len(),
-                    "madvise(DONTNEED) on cold way_attrs section (no verify)"
-                );
-            }
-        }
-
-        // #297: EBG `length_m` is now metres (was `length_mm`).
-        let node_weights_dist: Vec<u32> = ebg_nodes.nodes.iter().map(|n| n.length_m).collect();
-
-        // ---- Optional SRTM (looked up next to the container file) --
-        let srtm_dir = container_path
-            .parent()
-            .map(|p| p.join("srtm"))
-            .unwrap_or_else(|| std::path::PathBuf::from("srtm"));
-        let elevation = if srtm_dir.is_dir() {
-            match ElevationData::load_from_dir(&srtm_dir) {
-                Ok(elev) => {
-                    tracing::info!(tiles = elev.tile_count(), "loaded SRTM elevation tiles");
-                    Some(elev)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "could not load SRTM data");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // ---- Flat edge geometry (#155) ------------------------------
-        // Prefer mmap-backed sections from the container; fall back to
-        // building the flat layout from the heap NbgGeo polylines when
-        // the container pre-dates #155.
-        //
-        // The dispatch matches the `has_flat_edge_geom` check used above
-        // for the NBG geo edges-only loader: if the sections existed at
-        // open time they're still there now, so the back-compat branch
-        // is for old containers that loaded the full NbgGeo.
-        let edge_geom = if has_flat_edge_geom {
-            let eg = try_load_edge_geometry(&container, &mmap_for_bytes, &lazy_arc)?.ok_or_else(
-                || {
-                    anyhow::anyhow!(
-                        "edge_geom sections vanished between open and load — container corrupt?"
-                    )
-                },
-            )?;
-            tracing::info!(
-                n_edges = eg.n_edges(),
-                n_points = eg.n_points(),
-                "loaded flat edge geometry zero-copy"
-            );
-            eg
-        } else {
-            tracing::warn!(
-                "flat edge geometry sections missing; building from heap polylines \
-                 at boot (this container pre-dates #155 — re-pack to drop ~544 MB anon)"
-            );
-            EdgeGeometry::from_legacy_polylines(&nbg_geo)
-        };
-        crate::server::rss::checkpoint("load.edge_geom");
-
-        // #460: per-edge OSM node id chains — optional sections (absent
-        // in pre-#460 containers; edges_flow then emits NBG-endpoint
-        // rows and logs once).
-        let edge_osm = match try_load_edge_osm(&container, &mmap_for_bytes, &lazy_arc)? {
-            Some(chains) => {
-                tracing::info!("loaded per-edge OSM id chains zero-copy (#460)");
-                chains
-            }
-            None => {
-                tracing::warn!(
-                    "edge_osm sections missing — edges_flow emits NBG-endpoint rows \
-                     (re-run step3 + pack for per-OSM-segment expansion, #460)"
-                );
-                crate::server::edge_osm::EdgeOsmChains::empty()
-            }
-        };
-        crate::server::rss::checkpoint("load.edge_osm");
+        // ---- Road names, exclude flags, elevation, geometry ----------
+        let aux = auxiliary::load_auxiliary(&sec, &graph, &discovered_modes, container_path)?;
 
         // #160: optionally schedule a background warmup pass to walk
         // every still-`Unverified` section's CRC in parallel. This
@@ -1634,57 +863,23 @@ impl ServerState {
             lazy_arc.spawn_warmup();
         }
 
-        // #450: register `car_freeflow` — an alias of the clean legal-limit
-        // base car AS LOADED. When the #433 boot recustomization later swaps
-        // the `car` slot to calibrated/flow-derived weights, this mode keeps
-        // serving free-flow (maxspeed-honoring) — required by traffic
-        // simulation consumers (congested speeds are circular for a sim).
-        // Field-clone is cheap (mmap/Arc-backed sections); the slot is
-        // non-evictable (no container section backs the synthetic name).
-        let mut car_freeflow_idx: Option<usize> = None;
-        if let Some(&car_idx) = mode_lookup.get("car") {
-            let freeflow = clone_mode_data(&modes_data[car_idx as usize]);
-            let new_index = modes_data.len();
-            modes_data.push(freeflow);
-            // NOT inserted into mode_lookup — resident base only, hidden from
-            // ?mode= and /health (single public car = median, #521). Kept in
-            // mode_names so the slot has a name (is_variant → pinned).
-            car_freeflow_idx = Some(new_index);
-            mode_names.push("car_freeflow".to_string());
-            // Snap masks are indexed by mode_idx — the synthetic mode shares
-            // car's eligible-edges mask (same fix as the traffic variants;
-            // without it every snap for this mode returns None → no routes).
-            if let Some(base_mask) = snap_index.masks.get(car_idx as usize).cloned() {
-                snap_index.masks.push(base_mask);
-            } else {
-                tracing::warn!("car snap mask missing — car_freeflow snapping degraded");
-            }
-            tracing::info!("registered car_freeflow (clean legal-limit base) alongside car (#450)");
-        }
+        // ---- Hidden free-flow car base (#450) -----------------------
+        let car_freeflow_idx = modes::register_car_freeflow(&mut tables, &mut snap_index.masks);
 
-        // #402: wrap each ModeData in a lazy/evictable slot. The
-        // container path retains _mmap_arc + lazy, so the slow path
-        // in `get_mode` (lazy reload after compactor eviction) can
-        // call back into `load_mode_data_from_bundle`. Variant modes
-        // (e.g. `car_freeflow`) get the non-evictable variant flag —
-        // their reload shape differs from base modes.
-        let modes_slots: Vec<ModeSlot> = modes_data
-            .into_iter()
-            .zip(mode_names.iter().cloned())
-            .map(|(data, name)| {
-                if is_variant_mode_name(&name, &mode_names) {
-                    ModeSlot::new_loaded_variant(name, data)
-                } else {
-                    ModeSlot::new_loaded(name, data)
-                }
-            })
-            .collect();
+        let (modes_slots, mode_names, mode_lookup) = tables.finish();
+        let shared::SharedTables {
+            ebg_nodes,
+            ebg_csr,
+            nbg_geo,
+            nbg_node_to_osm,
+            has_flat_edge_geom: _,
+        } = graph;
         Ok(Self {
             ebg_nodes,
             ebg_csr,
             nbg_geo,
-            edge_geom,
-            edge_osm,
+            edge_geom: aux.edge_geom,
+            edge_osm: aux.edge_osm,
             nbg_node_to_osm,
             modes: modes_slots,
             band_worst_idx: None,
@@ -1693,10 +888,10 @@ impl ServerState {
             mode_names,
             mode_lookup,
             snap_index,
-            elevation,
-            way_names,
-            node_weights_dist,
-            edge_exclude_flags,
+            elevation: aux.elevation,
+            way_names: aux.way_names,
+            node_weights_dist: aux.node_weights_dist,
+            edge_exclude_flags: aux.edge_exclude_flags,
             avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit: None,
             started_at: std::time::Instant::now(),
@@ -1997,26 +1192,6 @@ pub(crate) fn discover_traffic_variants(
     variants.sort();
     variants.dedup();
     Ok(variants)
-}
-
-/// Find the best way_attrs file for exclude flags.
-/// Prefers "car" if available, otherwise uses the first available mode.
-fn find_way_attrs_path(step2_dir: &Path, modes: &[String]) -> Option<std::path::PathBuf> {
-    // Prefer car mode for exclude flags (toll/ferry/motorway are car-centric)
-    let car_path = step2_dir.join("way_attrs.car.bin");
-    if car_path.exists() {
-        return Some(car_path);
-    }
-
-    // Fall back to any available mode
-    for mode_name in modes {
-        let path = step2_dir.join(format!("way_attrs.{}.bin", mode_name));
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
 }
 
 /// Build a synthetic `ModeData` for a traffic variant by reusing the base
@@ -2523,56 +1698,6 @@ fn build_orig_to_rank(
         }
     }
     out
-}
-
-/// Load road names from ways.raw (step1 output).
-/// Uses streaming to avoid loading all way data into memory at once.
-/// Returns way_id → name mapping for all ways that have a "name" tag.
-fn load_way_names(step1_dir: &Path) -> Result<HashMap<i64, String>> {
-    let ways_path = step1_dir.join("ways.raw");
-    if !ways_path.exists() {
-        tracing::warn!("ways.raw not found, road names unavailable");
-        return Ok(HashMap::new());
-    }
-
-    // Load dictionaries first
-    let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries(&ways_path)?;
-
-    // Find key ID for "name"
-    let name_key_id = key_dict
-        .iter()
-        .find(|(_, v)| v.as_str() == "name")
-        .map(|(k, _)| *k);
-
-    let name_key_id = match name_key_id {
-        Some(id) => id,
-        None => {
-            tracing::warn!("no 'name' key in dictionary, road names unavailable");
-            return Ok(HashMap::new());
-        }
-    };
-
-    // Stream ways and extract names
-    let mut way_names = HashMap::new();
-    let way_stream = WaysFile::stream_ways(&ways_path)?;
-
-    for result in way_stream {
-        let (way_id, keys, vals, _nodes) = result?;
-
-        // Find "name" tag value for this way
-        for (i, &k) in keys.iter().enumerate() {
-            if k == name_key_id {
-                if let Some(name) = val_dict.get(&vals[i])
-                    && !name.is_empty()
-                {
-                    way_names.insert(way_id, name.clone());
-                }
-                break; // each way has at most one "name" tag
-            }
-        }
-    }
-
-    Ok(way_names)
 }
 
 // Distance weights are now pre-computed in step8 pipeline (cch.d.{mode}.u32)
@@ -3312,261 +2437,6 @@ fn load_mode_data_from_bundle(
         down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
         exclude_cache: super::exclude::ExcludeWeightCache::default(),
     })
-}
-
-/// Same as `load_way_names` but reads from an in-memory ways.raw byte
-/// slice (mmap-backed container section).
-fn load_way_names_from_bytes(ways_bytes: &[u8]) -> Result<HashMap<i64, String>> {
-    let (key_dict, val_dict, _, _) = WaysFile::read_dictionaries_from_bytes(ways_bytes)?;
-    let name_key_id = key_dict
-        .iter()
-        .find(|(_, v)| v.as_str() == "name")
-        .map(|(k, _)| *k);
-    let name_key_id = match name_key_id {
-        Some(id) => id,
-        None => return Ok(HashMap::new()),
-    };
-
-    let mut way_names = HashMap::new();
-    for result in WaysFile::stream_ways_from_bytes(ways_bytes)? {
-        let (way_id, keys, vals, _nodes) = result?;
-        for (i, &k) in keys.iter().enumerate() {
-            if k == name_key_id {
-                if let Some(name) = val_dict.get(&vals[i])
-                    && !name.is_empty()
-                {
-                    way_names.insert(way_id, name.clone());
-                }
-                break;
-            }
-        }
-    }
-    Ok(way_names)
-}
-
-// ---------- Packed snap index helpers (#154) -------------------------------
-
-/// Build a packed snap index in heap memory from the loaded EBG + NBG
-/// + per-mode masks. Used by:
-///   - the directory-tree loader (always),
-///   - the container loader's back-compat path when the new sections
-///     are absent.
-///
-/// The resulting masks are aligned to `mode_names`, i.e. local-mode
-/// position in `modes_data`. On the container path with the prebuilt
-/// sections, `mode_names` order matches the container's mode-section
-/// emission order, which matches the global mode-byte alphabetical
-/// order — see [`try_load_packed_snap_index`] for the constraint.
-fn build_packed_snap_index_inmem(
-    ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &crate::formats::NbgGeo,
-    modes_data: &[ModeData],
-    mode_names: &[String],
-) -> PackedSnapIndex {
-    let builder_modes: Vec<SnapBuilderMode<'_>> = modes_data
-        .iter()
-        .map(|m| SnapBuilderMode {
-            mode_byte: m.mode.0,
-            mask: &m.mask,
-            inputs_sha: [0u8; 16],
-        })
-        .collect();
-    let built = build_snap_index(ebg_nodes, nbg_geo, &builder_modes, DEFAULT_CELL_LOG2);
-    tracing::info!(
-        n_points = built.points.points.len(),
-        n_cells = built.grid.n_cells_x as usize * built.grid.n_cells_y as usize,
-        n_modes = mode_names.len(),
-        "snap index built in memory"
-    );
-    PackedSnapIndex {
-        points: built.points,
-        grid: built.grid,
-        masks: built.masks,
-    }
-}
-
-/// Try to load a packed snap index zero-copy from a container.
-/// Returns `Ok(None)` if any of the required sections is missing —
-/// caller falls back to the in-memory builder.
-///
-/// #160: per-section CRC verification is gated by the [`LazyContainer`]
-/// in [`ServerState`], not here. We only resolve byte ranges; body
-/// pages stay cold until snap-index queries traverse them (or warmup
-/// walks them off the request path).
-fn try_load_packed_snap_index(
-    container: &crate::formats::butterfly_dat::Container,
-    mmap: &std::sync::Arc<memmap2::Mmap>,
-    mode_names: &[String],
-    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
-) -> Result<Option<PackedSnapIndex>> {
-    use crate::formats::snap_index::{SnapGridFile, SnapMaskFile, SnapPointsFile};
-
-    let pts_entry = match container.get("shared/snap_points") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let grid_entry = match container.get("shared/snap_grid") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-
-    let pts_off = pts_entry.offset as usize;
-    let pts_len = pts_entry.len as usize;
-    let grid_off = grid_entry.offset as usize;
-    let grid_len = grid_entry.len as usize;
-    anyhow::ensure!(
-        pts_off + pts_len <= mmap.len(),
-        "shared/snap_points section out of mmap bounds"
-    );
-    anyhow::ensure!(
-        grid_off + grid_len <= mmap.len(),
-        "shared/snap_grid section out of mmap bounds"
-    );
-
-    // #161: drive lazy CRC verification through LazyContainer; format
-    // readers below skip their own body walk.
-    lazy.verify_now("shared/snap_points")?;
-    lazy.verify_now("shared/snap_grid")?;
-    let points =
-        SnapPointsFile::read_from_mmap_unverified(std::sync::Arc::clone(mmap), pts_off, pts_len)
-            .with_context(|| "reading shared/snap_points zero-copy")?;
-    let grid =
-        SnapGridFile::read_from_mmap_unverified(std::sync::Arc::clone(mmap), grid_off, grid_len)
-            .with_context(|| "reading shared/snap_grid zero-copy")?;
-
-    // Per-mode masks: for every loaded mode_name, look up
-    // `mode/<name>/snap_mask`. Caller may have filtered to a subset of
-    // modes — if any one is missing, fall back to the legacy build
-    // path (rather than partially-load the index).
-    let mut masks = Vec::with_capacity(mode_names.len());
-    for name in mode_names {
-        let key = format!("mode/{}/snap_mask", name);
-        let entry = match container.get(&key) {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-        let mask_off = entry.offset as usize;
-        let mask_len = entry.len as usize;
-        anyhow::ensure!(
-            mask_off + mask_len <= mmap.len(),
-            "{} section out of mmap bounds",
-            key
-        );
-        lazy.verify_now(&key)?;
-        let mask = SnapMaskFile::read_from_mmap_unverified(
-            std::sync::Arc::clone(mmap),
-            mask_off,
-            mask_len,
-        )
-        .with_context(|| format!("reading {} zero-copy", key))?;
-        // Sanity: mask sample count must match the shared point array.
-        anyhow::ensure!(
-            mask.n_points == points.n_points,
-            "{} n_points {} != snap_points n_points {}",
-            key,
-            mask.n_points,
-            points.n_points
-        );
-        masks.push(mask);
-    }
-    Ok(Some(PackedSnapIndex {
-        points,
-        grid,
-        masks,
-    }))
-}
-
-/// Try to load the flat edge geometry sections (#155) zero-copy from a
-/// container. Returns `Ok(None)` if either section is missing — caller
-/// falls back to building from the heap polylines.
-///
-/// #160: per-section CRC verification is gated by [`LazyContainer`].
-/// #460: load the optional per-edge OSM id chain sections. `Ok(None)`
-/// when the container pre-dates them.
-fn try_load_edge_osm(
-    container: &crate::formats::butterfly_dat::Container,
-    mmap: &std::sync::Arc<memmap2::Mmap>,
-    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
-) -> Result<Option<crate::server::edge_osm::EdgeOsmChains>> {
-    use crate::formats::edge_osm::{EdgeOsmIdsFile, EdgeOsmOffsetsFile};
-
-    let off_entry = match container.get("shared/edge_osm_offsets") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let ids_entry = match container.get("shared/edge_osm_ids") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    lazy.verify_now("shared/edge_osm_offsets")?;
-    lazy.verify_now("shared/edge_osm_ids")?;
-
-    let off = EdgeOsmOffsetsFile::read_from_mmap_unverified(
-        std::sync::Arc::clone(mmap),
-        off_entry.offset as usize,
-        off_entry.len as usize,
-    )
-    .with_context(|| "reading shared/edge_osm_offsets zero-copy")?;
-    let ids = EdgeOsmIdsFile::read_from_mmap_unverified(
-        std::sync::Arc::clone(mmap),
-        ids_entry.offset as usize,
-        ids_entry.len as usize,
-    )
-    .with_context(|| "reading shared/edge_osm_ids zero-copy")?;
-
-    let chains = crate::server::edge_osm::EdgeOsmChains::from_sections(off, ids)
-        .with_context(|| "stitching edge_osm sections")?;
-    Ok(Some(chains))
-}
-
-fn try_load_edge_geometry(
-    container: &crate::formats::butterfly_dat::Container,
-    mmap: &std::sync::Arc<memmap2::Mmap>,
-    lazy: &std::sync::Arc<crate::formats::lazy_verify::LazyContainer>,
-) -> Result<Option<EdgeGeometry>> {
-    use crate::formats::edge_geom::{EdgeGeomOffsetsFile, EdgeGeomPointsFile};
-
-    let off_entry = match container.get("shared/edge_geom_offsets") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    let pts_entry = match container.get("shared/edge_geom_points") {
-        Some(e) => e,
-        None => return Ok(None),
-    };
-    // #161: drive lazy CRC verification through LazyContainer.
-    lazy.verify_now("shared/edge_geom_offsets")?;
-    lazy.verify_now("shared/edge_geom_points")?;
-
-    let off_off = off_entry.offset as usize;
-    let off_len = off_entry.len as usize;
-    let pts_off = pts_entry.offset as usize;
-    let pts_len = pts_entry.len as usize;
-    anyhow::ensure!(
-        off_off + off_len <= mmap.len(),
-        "shared/edge_geom_offsets section out of mmap bounds"
-    );
-    anyhow::ensure!(
-        pts_off + pts_len <= mmap.len(),
-        "shared/edge_geom_points section out of mmap bounds"
-    );
-
-    let off = EdgeGeomOffsetsFile::read_from_mmap_unverified(
-        std::sync::Arc::clone(mmap),
-        off_off,
-        off_len,
-    )
-    .with_context(|| "reading shared/edge_geom_offsets zero-copy")?;
-    let pts = EdgeGeomPointsFile::read_from_mmap_unverified(
-        std::sync::Arc::clone(mmap),
-        pts_off,
-        pts_len,
-    )
-    .with_context(|| "reading shared/edge_geom_points zero-copy")?;
-
-    let eg =
-        EdgeGeometry::from_sections(off, pts).with_context(|| "stitching edge_geom sections")?;
-    Ok(Some(eg))
 }
 
 /// #450: field-clone a loaded ModeData. Cheap on the container path — every
