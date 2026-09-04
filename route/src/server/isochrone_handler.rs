@@ -605,7 +605,7 @@ pub async fn isochrone_handler(
 /// mask beyond the band mode's own.
 fn band_isochrone_features(
     state: &ServerState,
-    band: crate::profile_abi::Mode,
+    band: crate::model::types::Mode,
     req: &IsochroneRequest,
     reverse: bool,
     thresholds: &[(u32, Option<u32>)],

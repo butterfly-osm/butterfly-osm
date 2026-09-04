@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::formats::{
     EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 // ---------------------------------------------------------------------------
 // Generic minimum-degree elimination ordering (M3/M4 optimization)

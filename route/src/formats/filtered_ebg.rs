@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use super::crc;
 use super::mmap::ArcCow;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 const MAGIC: u32 = 0x46454247; // "FEBG" = Filtered EBG
 const VERSION: u16 = 1;
@@ -284,7 +284,7 @@ impl FilteredEbgFile {
         }
 
         anyhow::ensure!(
-            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            (header[6] as usize) < crate::model::types::MAX_MODES,
             "Invalid mode: {}",
             header[6]
         );
@@ -426,7 +426,7 @@ impl FilteredEbgFile {
             "Unsupported filtered_ebg version {version}, expected {VERSION}",
         );
         anyhow::ensure!(
-            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            (header[6] as usize) < crate::model::types::MAX_MODES,
             "Invalid mode in filtered_ebg: {}",
             header[6]
         );

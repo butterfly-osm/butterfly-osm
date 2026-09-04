@@ -6,7 +6,7 @@ use utoipa::ToSchema;
 
 use crate::formats::EbgNodes;
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 use crate::range::{ContourPolygon, ReachableSegment, SparseContourConfig};
 use crate::server::edge_geom::EdgeGeometry;
 use crate::server::state::{ModeData, ServerState};

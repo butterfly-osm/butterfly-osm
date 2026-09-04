@@ -363,7 +363,7 @@ pub fn compile_model(
 
 /// Map class bit name to bit position
 fn class_bit_position(name: &str) -> Option<u32> {
-    use crate::profile_abi::class_bits;
+    use crate::model::types::class_bits;
     match name {
         "toll" => Some(class_bits::TOLL),
         "ferry" => Some(class_bits::FERRY),

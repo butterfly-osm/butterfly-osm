@@ -47,7 +47,7 @@ use super::border::BorderCrossing;
 use super::state::ServerState;
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
 use crate::matrix::bucket_ch::table_bucket_parallel;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Region id type. Owned String so the overlay can outlive any borrowed
 /// reference to the road state's region table.
@@ -149,8 +149,8 @@ impl OverlayCluster {
     /// Borrow the row-major matrix for `(src, dst, mode)` if it exists.
     ///
     /// The matrix indexes per-region *representatives*, not per-region
-    /// *borders*. Use [`Self::cluster_map`] to translate a `BorderIdx`
-    /// to its representative row/column.
+    /// *borders*; `cluster_maps[region][border_idx]` is the row/column
+    /// a given `BorderIdx` maps to.
     pub fn matrix(&self, src: &str, dst: &str, mode: &str) -> Option<&[u32]> {
         // Borrow-key lookup avoids the per-call `String` allocation that
         // the previous implementation incurred (Copilot finding #10).
@@ -177,16 +177,6 @@ impl OverlayCluster {
     /// region sits) of the overlay matrix.
     pub fn region_representatives(&self, region: &str) -> &[BorderNode] {
         self.representatives
-            .get(region)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Borrow the per-region cluster map: `cluster_map(region)[i]` is
-    /// the representative index in `representatives[region]` for border
-    /// `i` in `borders[region]`. Empty slice if the region is unknown.
-    pub fn cluster_map(&self, region: &str) -> &[u32] {
-        self.cluster_maps
             .get(region)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
@@ -273,19 +263,6 @@ pub fn build_overlay_in_memory(
     regions: &[(RegionId, Arc<ServerState>)],
     crossings: &[BorderCrossing],
     modes: &[String],
-) -> Result<OverlayCluster> {
-    build_overlay_in_memory_with_threshold(regions, crossings, modes, DEFAULT_MERGE_THRESHOLD_M)
-}
-
-/// Same as [`build_overlay_in_memory`] but with a configurable cluster
-/// merge threshold. Use 0.0 (or any value smaller than typical sample
-/// spacing) to disable clustering — every border becomes its own
-/// representative.
-pub fn build_overlay_in_memory_with_threshold(
-    regions: &[(RegionId, Arc<ServerState>)],
-    crossings: &[BorderCrossing],
-    modes: &[String],
-    merge_threshold_m: f64,
 ) -> Result<OverlayCluster> {
     // ---- Group border nodes by region ------------------------------
     // Use a deterministic order: regions sorted by id. Border nodes
@@ -396,7 +373,7 @@ pub fn build_overlay_in_memory_with_threshold(
                 edge_distance_m: 0.0,
             })
             .collect();
-        let (rep_synth, map) = super::border::prune_border_set(&synth, merge_threshold_m);
+        let (rep_synth, map) = super::border::prune_border_set(&synth, DEFAULT_MERGE_THRESHOLD_M);
         let reps_nodes: Vec<BorderNode> = rep_synth
             .iter()
             .map(|c| BorderNode {

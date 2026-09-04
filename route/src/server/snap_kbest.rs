@@ -25,7 +25,7 @@
 //! filter). 200 combos covers `(i+j) ≤ ~19` which empirically matches
 //! /route's hit rate on Belgium random pairs.
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::query::CchQuery;
 use super::state::{ModeData, ServerState};
@@ -97,11 +97,14 @@ pub fn snap_primary_role(
     snap_mask: Option<&[u64]>,
 ) -> Option<((u32, f64, f64, f64), u32)> {
     let role_filter = role.role_filter(mode_data);
-    if let Some((orig_id, plon, plat, d)) =
-        state
-            .snap_index
-            .snap_with_info_filtered_role(lon, lat, mode.0, snap_mask, role_filter)
-    {
+    if let Some((orig_id, plon, plat, d)) = state.snap_index.snap_with_info_filtered_role(
+        lon,
+        lat,
+        mode.0,
+        snap_mask,
+        role_filter,
+        None,
+    ) {
         let rank = mode_data.orig_to_rank[orig_id as usize];
         if rank != u32::MAX {
             return Some(((orig_id, plon, plat, d), rank));

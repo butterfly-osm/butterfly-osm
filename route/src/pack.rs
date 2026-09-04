@@ -2809,7 +2809,7 @@ mod tests {
     use super::*;
     use crate::formats::filtered_ebg::FilteredEbg;
     use crate::formats::order_ebg::OrderEbg;
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
     use std::fs;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -3564,7 +3564,7 @@ mod topology_diff_tests {
     use crate::formats::cch_topo::{CchTopo, CchTopoFile};
     use crate::formats::filtered_ebg::FilteredEbg;
     use crate::formats::{BitsetField, FilteredEbgFile};
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
     use tempfile::NamedTempFile;
 
     /// Write a minimal mask section bytestream: 24-byte header + bitset

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 use crate::server::edge_geom::EdgeGeometry;
 
 use super::cross_region::solve_cross_region;

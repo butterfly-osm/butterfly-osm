@@ -22,7 +22,7 @@
 //!   `seed(d) = shift - suffix(d)` with `shift = max suffix`; the caller
 //!   subtracts `shift` from the final best (see `query_phantom`).
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::edge_geom::EdgeGeometry;
 use super::state::{ModeData, ServerState};
@@ -229,6 +229,7 @@ pub fn build_phantom_end(
         mode.0,
         edge_filter,
         role_filter,
+        None,
     )?;
     phantom_from_primary(state, mode_data, primary_tuple, lon, lat, role, edge_filter)
 }
@@ -236,13 +237,53 @@ pub fn build_phantom_end(
 /// Build a phantom endpoint from an ALREADY-RESOLVED primary snap tuple
 /// `(ebg_id, snapped_lon, snapped_lat, snap_distance_m)` — used by handlers
 /// that have their own snap flow (K-best escalation, bearing filters).
+/// K used for the phantom candidate fetch. Near-equidistant PARALLEL
+/// physical edges must ALL be seeded (#502 Robertville: the correct road
+/// was 12 m further than a track whose both directions detour 15 km), so
+/// the snap asks for more than the one edge it will commit to. Every
+/// phantom-seeded surface uses this same K — that is the point of the
+/// constant.
+pub const PHANTOM_SNAP_K: usize = 8;
+
+/// Snap `(lon, lat)` for `role` and turn the K nearest candidates into a
+/// phantom endpoint — the whole of what a phantom-seeded surface needs
+/// from an input coordinate.
+///
+/// `/route`, `/table`, `/trip`, the isochrone centre seeds and the Flight
+/// `matrix` / `route_batch` / `edges_batch` drivers each open-coded this
+/// pair: the same `snap_k_with_info_filtered_role` call with K = 8 and
+/// `role.role_filter(mode_data)`, immediately followed by
+/// [`phantom_from_candidates`] with the SAME `edge_filter`. Those
+/// surfaces are required to agree on the route they produce (#506, #509,
+/// #512), which is exactly the property a copied pair of calls cannot
+/// guarantee; there is now one place where K and the filters are chosen.
+pub fn phantom_for(
+    state: &ServerState,
+    mode_data: &ModeData,
+    mode: Mode,
+    lon: f64,
+    lat: f64,
+    role: SnapRole,
+    edge_filter: Option<&[u64]>,
+) -> Option<PhantomEnd> {
+    let candidates = state.snap_index.snap_k_with_info_filtered_role(
+        lon,
+        lat,
+        mode.0,
+        PHANTOM_SNAP_K,
+        edge_filter,
+        role.role_filter(mode_data),
+    );
+    phantom_from_candidates(state, mode_data, &candidates, lon, lat, role, edge_filter)
+}
+
 /// Build a phantom endpoint from K nearest candidates: seeds the twins of up
 /// to `MAX_PHANTOM_EDGES` distinct physical edges whose snap distance is
 /// within `SNAP_SLACK_M` (or 20 %) of the best — two parallel roads at
 /// near-equal distance are BOTH plausible endpoints and the search must be
 /// allowed to pick (#502 Robertville: correct road was 12 m further than a
 /// track whose both directions detour 15 km).
-pub fn phantom_from_candidates(
+fn phantom_from_candidates(
     state: &ServerState,
     mode_data: &ModeData,
     candidates: &[(u32, f64, f64, f64)],
@@ -547,15 +588,7 @@ pub fn isochrone_center_seeds(
     is_reverse: bool,
     fallback_rank: u32,
 ) -> CenterSeeds {
-    let k = state.snap_index.snap_k_with_info_filtered_role(
-        lon,
-        lat,
-        mode.0,
-        8,
-        snap_mask,
-        role.role_filter(mode_data),
-    );
-    match phantom_from_candidates(state, mode_data, &k, lon, lat, role, snap_mask) {
+    match phantom_for(state, mode_data, mode, lon, lat, role, snap_mask) {
         Some(pe) => {
             let anchor = Some((pe.snapped_lon, pe.snapped_lat));
             let seeds = pe

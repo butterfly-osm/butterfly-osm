@@ -43,7 +43,7 @@ fn unpack_middle(packed: u64) -> u32 {
 use crate::formats::way_attrs;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-use crate::profile_abi::class_bits;
+use crate::model::types::class_bits;
 
 /// Exclude flags (bitmask, per EBG edge)
 pub const EXCLUDE_TOLL: u8 = 1; // bit 0

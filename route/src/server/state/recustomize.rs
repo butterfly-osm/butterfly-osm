@@ -28,7 +28,7 @@ use std::sync::Arc;
 use super::{ModeData, ModeSlot, ServerState, clone_mode_data, refresh_len_along_time};
 use crate::formats::{CchWeights, WeightArray, WeightWidth};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 // =====================================================================
 // Cache algorithm tags (#444)
@@ -1443,7 +1443,7 @@ mod pipeline_tests {
     use crate::formats::{
         ArcCow, BitsetField, CchTopo, EbgCsr, EbgNodes, FilteredEbg, FilteredEbgFile, WeightArray,
     };
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
     use std::sync::atomic::Ordering;
 
     /// The passes below read a process-global build counter, so they must not

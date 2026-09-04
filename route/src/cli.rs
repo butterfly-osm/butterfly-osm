@@ -8,11 +8,11 @@ use crate::contraction;
 use crate::customization;
 use crate::ebg::{EbgConfig, build_ebg};
 use crate::ingest::{IngestConfig, run_ingest};
+use crate::model::profiling::{ProfileConfig, run_profiling};
+use crate::model::types::Mode;
 use crate::nbg::{NbgConfig, build_nbg};
 use crate::ordering;
 use crate::ordering_lifted;
-use crate::profile::{ProfileConfig, run_profiling};
-use crate::profile_abi::Mode;
 use crate::server;
 use crate::validate::{
     Counts, LockFile, validate_step4, validate_step5, validate_step6, validate_step6_lifted,
@@ -1524,12 +1524,12 @@ impl Cli {
                 // would overflow. Defensive check in case the directory has
                 // stale way_attrs files from an older multi-mode run.
                 anyhow::ensure!(
-                    all_modes.len() <= crate::profile_abi::MAX_MODES,
+                    all_modes.len() <= crate::model::types::MAX_MODES,
                     "Found {} modes in {} but MAX_MODES is {}. Remove stale \
                      way_attrs.*.bin files before re-running step4-ebg.",
                     all_modes.len(),
                     step2_dir.display(),
-                    crate::profile_abi::MAX_MODES
+                    crate::model::types::MAX_MODES
                 );
 
                 // Build dynamic EbgModeConfig list — keep ONLY the modes

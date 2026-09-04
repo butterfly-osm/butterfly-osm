@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use super::exclude::{self, ExcludeWeights};
 use super::snap_index::PackedSnapIndex;
 use super::state::{ModeData, ServerState};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Default LRU capacity. Each full entry is ~100-200 MB on Belgium, so 8
 /// entries cap memory at ~1.6 GB. Override at boot via the

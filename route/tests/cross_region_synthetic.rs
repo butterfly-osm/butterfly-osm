@@ -658,8 +658,8 @@ fn e2e_be_to_lu_polyline_has_road_geometry() {
         ),
     };
 
-    let src_mode = butterfly_route::profile_abi::Mode(src_state.mode_lookup["car"]);
-    let dst_mode = butterfly_route::profile_abi::Mode(dst_state.mode_lookup["car"]);
+    let src_mode = butterfly_route::model::types::Mode(src_state.mode_lookup["car"]);
+    let dst_mode = butterfly_route::model::types::Mode(dst_state.mode_lookup["car"]);
     let src_md = src_state.get_mode(src_mode);
     let dst_md = dst_state.get_mode(dst_mode);
 

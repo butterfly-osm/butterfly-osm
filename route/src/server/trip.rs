@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::regions::RegionsState;
 use super::state::ServerState;
@@ -772,18 +772,10 @@ pub async fn trip_handler(
                 continue;
             }
             let mk = |role: super::types::SnapRole| -> Vec<(u32, u32, u32, bool)> {
-                let k = state_clone.snap_index.snap_k_with_info_filtered_role(
-                    lon,
-                    lat,
-                    mode.0,
-                    8,
-                    Some(snap_mask),
-                    role.role_filter(&mode_data),
-                );
-                match super::phantom::phantom_from_candidates(
+                match super::phantom::phantom_for(
                     &state_clone,
                     &mode_data,
-                    &k,
+                    mode,
                     lon,
                     lat,
                     role,
@@ -1157,7 +1149,7 @@ pub async fn trip_handler(
                 if round_trip && pts.len() > 1 {
                     pairs.push((*pts.last().unwrap(), pts[0]));
                 }
-                let sum_band = |band: crate::profile_abi::Mode| -> Option<f64> {
+                let sum_band = |band: crate::model::types::Mode| -> Option<f64> {
                     let mut total = 0.0;
                     for (a, b) in &pairs {
                         total +=
