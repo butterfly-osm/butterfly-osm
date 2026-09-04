@@ -999,3 +999,300 @@ mod tests {
         assert!(val.is_some());
     }
 }
+
+/// #566 / #561 — the six query surfaces resolve through ONE plan.
+///
+/// Two properties are locked here because both have already drifted
+/// once: the snap mask must be BORROWED on the no-option path (#561),
+/// and the six surfaces must derive the same plan from the same
+/// parameters (#566).
+///
+/// The first test runs anywhere; the other three need the Belgium
+/// artifact (#587) and are deliberately the expensive kind — between
+/// them they force one `exclude=` and two `avoid_polygons=`
+/// recustomizations, i.e. ~5 min for the module in a debug build. That
+/// IS the branch under test: a plan that resolves the wrong weight set
+/// is only visible once the weight set exists.
+#[cfg(test)]
+mod weight_plan_tests {
+    use super::*;
+    use crate::server::exclude::EXCLUDE_TOLL;
+    use std::borrow::Cow;
+
+    /// One skip line for this whole module (#587).
+    const SCOPE: &str = "avoid::weight_plan_tests";
+
+    /// A 0.02° box (~1.4 x 2.2 km) over central Brussels. Public
+    /// geography, and dense enough that `prepare_avoid_flags` finds
+    /// edges inside it.
+    const USABLE_AVOID: &str = "[[4.34,50.84],[4.36,50.84],[4.36,50.86],[4.34,50.86]]";
+
+    /// A box in the North Sea, ~40 km off Ostend: syntactically valid,
+    /// contains no road. This is the input on which the six surfaces
+    /// legitimately DISAGREE — see [`only_trip_and_match_ignore_an_unusable_avoid_polygon`].
+    const UNUSABLE_AVOID: &str = "[[2.40,51.60],[2.50,51.60],[2.50,51.70],[2.40,51.70]]";
+
+    /// How a surface answers an avoid polygon it cannot honour.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum AvoidPolicy {
+        /// 400 with the resolver's message: /route, /table, /isochrone,
+        /// /isochrone/bulk.
+        Reject,
+        /// Drop the polygon and answer a plain query: /trip, /match.
+        Ignore,
+    }
+
+    /// THE six call sites, as rows. `/isochrone` appears twice because
+    /// `isochrone_handler.rs` resolves twice — once for the single
+    /// query, once inside `isochrone_bulk_sync`.
+    const SURFACES: &[(&str, AvoidPolicy)] = &[
+        ("/route", AvoidPolicy::Reject),
+        ("/table", AvoidPolicy::Reject),
+        ("/isochrone", AvoidPolicy::Reject),
+        ("/isochrone/bulk", AvoidPolicy::Reject),
+        ("/trip", AvoidPolicy::Ignore),
+        ("/match", AvoidPolicy::Ignore),
+    ];
+
+    /// The resolution one surface performs, selected by its policy —
+    /// the only thing that differs between the six call sites.
+    fn resolve_as<'a>(
+        policy: AvoidPolicy,
+        state: &'a ServerState,
+        mode_data: &'a ModeData,
+        mode: Mode,
+        exclude_mask: Option<u8>,
+        avoid_json: Option<&str>,
+    ) -> Result<WeightPlan<'a>, String> {
+        match policy {
+            AvoidPolicy::Reject => {
+                resolve_weights(state, mode_data, mode, exclude_mask, avoid_json)
+            }
+            AvoidPolicy::Ignore => Ok(resolve_weights_lenient_avoid(
+                state,
+                mode_data,
+                mode,
+                exclude_mask,
+                avoid_json,
+            )),
+        }
+    }
+
+    /// #561, on the pure decision itself: `Cow::Borrowed` EXACTLY when
+    /// neither option filters the mask, `Cow::Owned` with the right bits
+    /// cleared otherwise. Runs without the Belgium artifact.
+    #[test]
+    fn snap_mask_is_borrowed_only_when_no_option_filters_it() {
+        // One 64-edge word, edges 0..=3 usable. Edge 0 is tolled;
+        // edge 1 falls inside the avoid polygon.
+        let base: Vec<u64> = vec![0b1111];
+        let mut exclude_flags = vec![0u8; 64];
+        exclude_flags[0] = EXCLUDE_TOLL;
+        let mut avoid_flags = vec![0u8; 64];
+        avoid_flags[1] = AVOID_BIT;
+
+        let neither = select_snap_mask(&base, &exclude_flags, None, None);
+        assert!(
+            matches!(neither, Cow::Borrowed(_)),
+            "#561: the no-option path must not copy the edge bitset"
+        );
+        assert!(
+            std::ptr::eq(neither.as_ref().as_ptr(), base.as_ptr()),
+            "#561: the borrow must be the mode's own mask, not a fresh buffer"
+        );
+        assert_eq!(neither.as_ref(), base.as_slice());
+
+        // Every combination that DOES filter, and the bits that survive it.
+        struct Filtered<'a> {
+            avoid: Option<&'a [u8]>,
+            exclude: Option<u8>,
+            survivors: u64,
+            why: &'a str,
+        }
+        let owned = [
+            Filtered {
+                avoid: None,
+                exclude: Some(EXCLUDE_TOLL),
+                survivors: 0b1110,
+                why: "exclude clears the tolled edge",
+            },
+            Filtered {
+                avoid: Some(&avoid_flags),
+                exclude: None,
+                survivors: 0b1101,
+                why: "avoid clears the edge inside the polygon",
+            },
+            Filtered {
+                avoid: Some(&avoid_flags),
+                exclude: Some(EXCLUDE_TOLL),
+                survivors: 0b1100,
+                why: "avoid folds the exclude bits in, so both edges go",
+            },
+        ];
+        for case in &owned {
+            let mask = select_snap_mask(&base, &exclude_flags, case.avoid, case.exclude);
+            assert!(
+                matches!(mask, Cow::Owned(_)),
+                "a filtered mask must be owned ({})",
+                case.why
+            );
+            assert_eq!(mask.as_ref(), &[case.survivors], "{}", case.why);
+        }
+    }
+
+    /// #561 again, one level up: the plan `/table` and `/isochrone/bulk`
+    /// actually build. Both used to clone `mode_data.mask` here.
+    #[test]
+    fn weight_plan_borrows_the_mode_mask_on_the_common_path() {
+        let Some(state) = crate::testutil::belgium_state(SCOPE) else {
+            return;
+        };
+        let mode = Mode(0);
+        let mode_data = state.get_mode(mode);
+
+        let base = resolve_weights(&state, &mode_data, mode, None, None).unwrap();
+        assert!(
+            matches!(base.snap_mask, Cow::Borrowed(_)),
+            "#561: no avoid, no exclude — nothing to copy"
+        );
+        assert!(
+            std::ptr::eq(base.snap_mask.as_ptr(), mode_data.mask.as_ptr()),
+            "#561: the plan must borrow the mode's own mask"
+        );
+        assert!(base.is_base());
+        assert!(!base.has_avoid());
+        assert!(base.weights().is_none(), "base weights, no recustomization");
+
+        let excluded = resolve_weights(&state, &mode_data, mode, Some(EXCLUDE_TOLL), None).unwrap();
+        assert!(
+            matches!(excluded.snap_mask, Cow::Owned(_)),
+            "exclude filters the mask, so it must be owned"
+        );
+        assert!(!excluded.is_base());
+        assert!(!excluded.has_avoid());
+        assert_eq!(excluded.exclude_mask, Some(EXCLUDE_TOLL));
+        assert!(
+            excluded.weights().is_some(),
+            "exclude alone selects the exclude weight set"
+        );
+    }
+
+    /// #566: the six surfaces derive the SAME plan from the same
+    /// parameters — the snap mask, the ownedness, the priority rule and
+    /// the resulting weight set.
+    #[test]
+    fn every_surface_resolves_the_same_plan() {
+        let Some(state) = crate::testutil::belgium_state(SCOPE) else {
+            return;
+        };
+        let mode = Mode(0);
+        let mode_data = state.get_mode(mode);
+
+        // (label, exclude, avoid). The avoid rows share one cache key
+        // per (mode, exclude) pair, so the recustomization runs once and
+        // the other five surfaces read the cached entry.
+        let cases: &[(&str, Option<u8>, Option<&str>)] = &[
+            ("no option", None, None),
+            ("exclude only", Some(EXCLUDE_TOLL), None),
+            ("avoid only", None, Some(USABLE_AVOID)),
+            ("avoid + exclude", Some(EXCLUDE_TOLL), Some(USABLE_AVOID)),
+        ];
+
+        for &(label, exclude, avoid) in cases {
+            let (first_name, first_policy) = SURFACES[0];
+            let expect = resolve_as(first_policy, &state, &mode_data, mode, exclude, avoid)
+                .unwrap_or_else(|e| panic!("{first_name} failed to resolve {label}: {e}"));
+            let expect_weights = expect.weights().map(|w| w as *const ExcludeWeights);
+
+            for &(name, policy) in &SURFACES[1..] {
+                let got = resolve_as(policy, &state, &mode_data, mode, exclude, avoid)
+                    .unwrap_or_else(|e| panic!("{name} failed to resolve {label}: {e}"));
+                assert_eq!(
+                    got.is_base(),
+                    expect.is_base(),
+                    "{name} vs {first_name}: is_base disagrees on '{label}'"
+                );
+                assert_eq!(
+                    got.has_avoid(),
+                    expect.has_avoid(),
+                    "{name} vs {first_name}: has_avoid disagrees on '{label}'"
+                );
+                assert_eq!(
+                    got.exclude_mask, expect.exclude_mask,
+                    "{name} vs {first_name}: exclude_mask disagrees on '{label}'"
+                );
+                assert_eq!(
+                    matches!(got.snap_mask, Cow::Owned(_)),
+                    matches!(expect.snap_mask, Cow::Owned(_)),
+                    "{name} vs {first_name}: mask ownedness disagrees on '{label}'"
+                );
+                assert_eq!(
+                    got.snap_mask.as_ref(),
+                    expect.snap_mask.as_ref(),
+                    "{name} vs {first_name}: snap mask disagrees on '{label}'"
+                );
+                assert_eq!(
+                    got.weights().map(|w| w as *const ExcludeWeights),
+                    expect_weights,
+                    "{name} vs {first_name}: resolved weight set disagrees on '{label}' \
+                     (the avoid-over-exclude priority, or the cache key)"
+                );
+            }
+
+            // The priority rule itself, asserted once per case.
+            match (exclude, avoid) {
+                (None, None) => assert!(expect.weights().is_none(), "'{label}': base weights"),
+                (_, Some(_)) => assert!(
+                    expect.has_avoid() && expect.weights().is_some(),
+                    "'{label}': avoid wins — its recustomization already folds exclude in"
+                ),
+                (Some(_), None) => assert!(
+                    !expect.has_avoid() && expect.weights().is_some(),
+                    "'{label}': exclude alone selects the exclude weight set"
+                ),
+            }
+        }
+    }
+
+    /// The ONE divergence between the six, found while consolidating and
+    /// deliberately kept: `/trip` and `/match` have always resolved their
+    /// avoid polygon with a bare `.ok()` inside `spawn_blocking`, so a
+    /// polygon that covers no edge degrades to a plain query there while
+    /// the other four answer 400. Locked, not traded away (#566).
+    #[test]
+    fn only_trip_and_match_ignore_an_unusable_avoid_polygon() {
+        let Some(state) = crate::testutil::belgium_state(SCOPE) else {
+            return;
+        };
+        let mode = Mode(0);
+        let mode_data = state.get_mode(mode);
+
+        for &(name, policy) in SURFACES {
+            let got = resolve_as(policy, &state, &mode_data, mode, None, Some(UNUSABLE_AVOID));
+            match policy {
+                AvoidPolicy::Reject => {
+                    let err = got.err().unwrap_or_else(|| {
+                        panic!("{name} must reject an avoid polygon that covers no edge")
+                    });
+                    assert_eq!(
+                        err, "no edges found inside avoid polygon(s)",
+                        "{name}: the 400 body must not drift"
+                    );
+                }
+                AvoidPolicy::Ignore => {
+                    let plan = got.unwrap_or_else(|_| {
+                        panic!("{name} must degrade to a plain query, not fail")
+                    });
+                    assert!(
+                        plan.is_base(),
+                        "{name}: the dropped polygon leaves a base plan"
+                    );
+                    assert!(
+                        matches!(plan.snap_mask, Cow::Borrowed(_)),
+                        "{name}: and a base plan borrows its mask (#561)"
+                    );
+                }
+            }
+        }
+    }
+}
