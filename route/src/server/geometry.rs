@@ -783,8 +783,11 @@ pub fn isochrone_polygons(
     // seed shift, so `settled` means the same thing in both directions: the
     // cost of the road part of the journey between the snap and the edge's
     // far end. Only the seed edges themselves can sit before the snap
-    // (their true cost is negative, `-part_time`); they clamp to 0 and are
-    // drawn whole, exactly as the depart seed edge is.
+    // (their true cost is negative, `-part_time`): they clamp to 0, i.e.
+    // they are drawn as if the snap were at their head. The deviation is
+    // bounded by that one edge, the same approximation the depart seed edge
+    // carries (it is stamped whole though only its post-snap part is
+    // driven), and the pin stamp covers the centre either way.
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
     for &(rank, dist) in &phast_settled {
         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
