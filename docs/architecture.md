@@ -108,9 +108,10 @@ flowchart LR
   (Brussels–Antwerp went 77 km / 5583 s without relaxation vs the correct
   45 km / 1947 s).
 
-Step 8 optionally applies per-density-class speed factors to the base car
-weights (`--traffic <profile>.traffic.json --bake-as-base`), so the realistic
-friction profile is served directly as `?mode=car` with no separate variant.
+Step 8 emits ONE clean legal-limit weight set per mode. Observed car speeds
+are applied at serve boot instead: the engine recustomizes `?mode=car` in
+memory from a runtime `edge_speeds.parquet` staged next to the data (#454), so
+the built artifact stays provider-clean.
 
 ---
 

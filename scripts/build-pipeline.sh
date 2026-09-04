@@ -38,10 +38,10 @@ fi
 BIN="${BUTTERFLY_BIN:-butterfly-route}"
 MODELS_DIR="${BUTTERFLY_MODELS_DIR:-/opt/butterfly/models}"
 
-# #433: car traffic is no longer baked at build time — the build ships a
+# #433/#454: car traffic is no longer baked at build time — the build ships a
 # provider-clean single legal-limit car and the engine recustomizes it at
-# serve boot from a runtime observed_speeds.parquet (see the step8 section
-# below). The build-time bake (#392) and observed-speeds calibration (#388)
+# serve boot from a runtime edge_speeds.parquet (see the step8 section
+# below). The build-time bake (#392) and the calibration that fed it (#388)
 # are gone, so TRAFFIC_DIR / the per-role profile names are no longer
 # consulted here.
 #
@@ -300,15 +300,15 @@ for m in "${MODES[@]}"; do
       --outdir "$DATA/step8"
 done
 
-# #433: car traffic calibration moved from BUILD-time to SERVE-BOOT, so this
-# pipeline now ships a PROVIDER-CLEAN, single legal-limit car (the step8 loop
-# above is the whole story for car). The build no longer:
-#   - reads BUTTERFLY_OBSERVED_SPEEDS / runs calibrate-traffic (#388),
-#   - bakes a 'realistic' friction profile into base car (#392).
-# Instead, at serve startup the engine fits ONE car profile from a runtime
-# `observed_speeds.parquet` staged on the data volume by a deploy init
-# container, and recustomizes the car CCH weights in memory — see
-# `ServerState::recustomize_car_from_observed`. The artifact carries no
+# #433/#454: car speed calibration moved from BUILD-time to SERVE-BOOT, so
+# this pipeline ships a PROVIDER-CLEAN, single legal-limit car (the step8 loop
+# above is the whole story for car). The build no longer bakes a friction
+# profile into base car (#392), and #582 retired the offline per-way fit that
+# preceded the directed contract.
+# Instead, at serve startup the engine reads a runtime `edge_speeds.parquet`
+# staged on the data volume by a deploy init container and recustomizes the
+# car CCH weights in memory — see
+# `ServerState::recustomize_car_from_edge_speeds`. The artifact carries no
 # provider-derived data; `pack` already ships the step4-7 car inputs
 # (way_attrs / filtered_ebg / node_weights.turn / ebg.nodes / nbg.geo) the boot
 # recustomize re-reads, so this stays a single clean legal-limit build.

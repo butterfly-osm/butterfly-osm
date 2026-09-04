@@ -1,12 +1,14 @@
-//! Traffic profiles — declarative JSON files describing how to scale edge
-//! travel times by [`crate::density::DensityClass`] for traffic-aware
-//! routing.
+//! Traffic profiles — the declarative JSON schema describing how to scale
+//! edge travel times by [`crate::density::DensityClass`].
 //!
-//! ## File layout
-//!
-//! ```text
-//! traffic/<name>.traffic.json
-//! ```
+//! Since #582 the engine only ever READS one: a legacy artifact that ships a
+//! baked traffic-VARIANT weight set carries the profile it was baked from as
+//! a provenance section, and the runtime variant loader re-derives that
+//! variant's per-edge durations from it
+//! (`crate::customization::apply_traffic_to_node_weights_in_memory`). Nothing
+//! writes or fits a profile any more — the build-time `--traffic` bake and the
+//! offline per-way fit that produced them are gone, superseded by the directed
+//! per-edge `edge_speeds.parquet` contract recustomized at serve boot.
 //!
 //! ## Example
 //!
@@ -65,9 +67,8 @@
 //!   per-density `speed_factors` vector, which therefore stays REQUIRED and
 //!   complete — the matrix only overrides cells it specifies. A way whose
 //!   highway code has no matrix row uses the vector as before.
-//! - `matrix` is opt-in: profiles without it behave exactly as today, and
-//!   [`TrafficProfile::to_json_string`] omits the key when no matrix is set,
-//!   so existing files round-trip byte-for-byte.
+//! - `matrix` is opt-in: a profile without it behaves exactly as a pre-#428
+//!   one.
 //!
 //! ## Schema validation
 //!
@@ -81,9 +82,8 @@
 //!   least one density cell.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
 use crate::density::DensityClass;
 
@@ -112,43 +112,19 @@ pub struct TrafficProfile {
     pub matrix: BTreeMap<u16, MatrixRow>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrafficProfileJson {
     name: String,
     base_model: String,
     speed_factors: BTreeMap<String, f32>,
-    /// Optional (highway_class × density) factor matrix. Absent on legacy
-    /// profiles; omitted on output when empty so vector-only profiles
-    /// round-trip byte-for-byte.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional (highway_class × density) factor matrix. Absent on
+    /// pre-#428 profiles.
+    #[serde(default)]
     matrix: Option<BTreeMap<String, BTreeMap<String, f32>>>,
 }
 
 impl TrafficProfile {
-    /// Freeflow profile — every factor = 1.0, equivalent to current behavior.
-    /// Useful as a sanity-check baseline.
-    pub fn freeflow(base_model: &str) -> Self {
-        Self {
-            name: "freeflow".to_string(),
-            base_model: base_model.to_string(),
-            factors: [1.0; 5],
-            matrix: BTreeMap::new(),
-        }
-    }
-
-    /// Returns true iff every factor equals 1.0 within float tolerance —
-    /// including every specified matrix cell.
-    pub fn is_freeflow(&self) -> bool {
-        self.factors.iter().all(|f| (f - 1.0).abs() < 1e-6)
-            && self
-                .matrix
-                .values()
-                .flatten()
-                .flatten()
-                .all(|f| (f - 1.0).abs() < 1e-6)
-    }
-
     /// Lookup factor for a density class (per-density vector only — ignores
     /// the matrix; use [`Self::factor_for_cell`] when the way's highway class
     /// is known).
@@ -174,15 +150,6 @@ impl TrafficProfile {
     #[inline]
     pub fn has_matrix(&self) -> bool {
         !self.matrix.is_empty()
-    }
-
-    /// Load + validate a profile from a JSON file on disk.
-    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read traffic profile {}", path.display()))?;
-        Self::from_json(&raw)
-            .with_context(|| format!("failed to parse traffic profile {}", path.display()))
     }
 
     /// Parse and validate a profile from a JSON string.
@@ -323,66 +290,6 @@ impl TrafficProfile {
             matrix,
         })
     }
-
-    /// Serialize back out (used by lock-file provenance). Deterministic:
-    /// `BTreeMap` ordering throughout (matrix keys sort lexicographically on
-    /// their decimal form). The `matrix` key is omitted entirely when the
-    /// profile has none, so vector-only profiles serialize exactly as before
-    /// #428.
-    pub fn to_json_string(&self) -> Result<String> {
-        let mut speed_factors = BTreeMap::new();
-        for class in DensityClass::ALL {
-            speed_factors.insert(
-                class.as_str().to_string(),
-                self.factors[class.to_u8() as usize],
-            );
-        }
-        let matrix = if self.matrix.is_empty() {
-            None
-        } else {
-            let mut out: BTreeMap<String, BTreeMap<String, f32>> = BTreeMap::new();
-            for (code, row) in &self.matrix {
-                let mut raw_row = BTreeMap::new();
-                for class in DensityClass::ALL {
-                    if let Some(f) = row[class.to_u8() as usize] {
-                        raw_row.insert(class.as_str().to_string(), f);
-                    }
-                }
-                // Rows are non-empty by construction (validation rejects empty
-                // rows on parse; the calibrator omits all-None rows).
-                out.insert(code.to_string(), raw_row);
-            }
-            Some(out)
-        };
-        let payload = TrafficProfileJson {
-            name: self.name.clone(),
-            base_model: self.base_model.clone(),
-            speed_factors,
-            matrix,
-        };
-        Ok(serde_json::to_string_pretty(&payload)?)
-    }
-}
-
-/// Discover `*.traffic.json` files in a directory. Returns an error if the
-/// directory does not exist; an empty Vec if it exists but has no profiles.
-pub fn discover_profiles(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("failed to read traffic dir {}", dir.display()))?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .is_some_and(|n| n.ends_with(".traffic.json"))
-        {
-            out.push(path);
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -410,16 +317,6 @@ mod tests {
         assert_eq!(p.base_model, "car");
         assert!((p.factor_for(DensityClass::UrbanHigh) - 0.55).abs() < 1e-6);
         assert!((p.factor_for(DensityClass::Rural) - 0.95).abs() < 1e-6);
-        assert!(!p.is_freeflow());
-    }
-
-    #[test]
-    fn freeflow_factory_is_freeflow() {
-        let p = TrafficProfile::freeflow("car");
-        assert!(p.is_freeflow());
-        for c in DensityClass::ALL {
-            assert!((p.factor_for(c) - 1.0).abs() < 1e-6);
-        }
     }
 
     #[test]
@@ -474,52 +371,6 @@ mod tests {
         assert!(err.to_string().contains("name"));
     }
 
-    #[test]
-    fn round_trips_through_json() {
-        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
-        let s = p.to_json_string().unwrap();
-        let p2 = TrafficProfile::from_json(&s).unwrap();
-        assert_eq!(p, p2);
-    }
-
-    #[test]
-    fn ships_realistic_profile() {
-        // ONE public car profile: `car_realistic` is baked into base car
-        // (`--bake-as-base`), so it is the only profile shipped in `traffic/`.
-        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let traffic_dir = workspace.parent().unwrap().join("traffic");
-        if !traffic_dir.exists() {
-            return;
-        }
-        let files = discover_profiles(&traffic_dir).unwrap();
-        let names: Vec<String> = files
-            .iter()
-            .map(|p| {
-                p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .trim_end_matches(".traffic.json")
-                    .to_string()
-            })
-            .collect();
-        assert!(
-            names.contains(&"car_realistic".to_string()),
-            "got: {:?}",
-            names
-        );
-
-        for f in &files {
-            let p = TrafficProfile::load(f).expect("ship profile must load");
-            assert!(
-                p.factor_for(DensityClass::UrbanHigh) <= p.factor_for(DensityClass::Rural) + 1e-6
-                    || p.is_freeflow(),
-                "non-monotone factors in {}: {:?}",
-                p.name,
-                p.factors
-            );
-        }
-    }
-
     fn matrix_json() -> &'static str {
         r#"{
           "name": "sample_matrix",
@@ -567,23 +418,6 @@ mod tests {
                 assert_eq!(p.factor_for_cell(code, c), p.factor_for(c));
             }
         }
-    }
-
-    #[test]
-    fn matrix_profile_round_trips_through_json() {
-        let p = TrafficProfile::from_json(matrix_json()).unwrap();
-        let s = p.to_json_string().unwrap();
-        let p2 = TrafficProfile::from_json(&s).unwrap();
-        assert_eq!(p, p2);
-        // Determinism: serializing again yields identical bytes.
-        assert_eq!(s, p2.to_json_string().unwrap());
-    }
-
-    #[test]
-    fn vector_only_profile_serializes_without_matrix_key() {
-        let p = TrafficProfile::from_json(sample_profile_json()).unwrap();
-        let s = p.to_json_string().unwrap();
-        assert!(!s.contains("matrix"), "unexpected matrix key in {s}");
     }
 
     #[test]
@@ -697,29 +531,5 @@ mod tests {
           "matrxi": { "1": { "rural": 0.9 } }
         }"#;
         assert!(TrafficProfile::from_json(s).is_err());
-    }
-
-    #[test]
-    fn is_freeflow_accounts_for_matrix_cells() {
-        let mut p = TrafficProfile::freeflow("car");
-        assert!(p.is_freeflow());
-        p.matrix.insert(1, [None, None, None, None, Some(1.0)]);
-        assert!(p.is_freeflow(), "all-1.0 matrix is still freeflow");
-        p.matrix.insert(12, [Some(0.5), None, None, None, None]);
-        assert!(!p.is_freeflow(), "a non-1.0 cell breaks freeflow");
-    }
-
-    #[test]
-    fn discovers_profile_files() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("sample.traffic.json"),
-            sample_profile_json(),
-        )
-        .unwrap();
-        std::fs::write(tmp.path().join("not_a_profile.json"), "{}").unwrap();
-        let files = discover_profiles(tmp.path()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].to_string_lossy().ends_with("sample.traffic.json"));
     }
 }
