@@ -17,7 +17,7 @@
 //!
 //! # Format version 4 (#151)
 //!
-//! v4 enables the zero-copy reader to mmap a per-mode topology straight
+//! v4 enables the mmap-backed reader to serve a per-mode topology straight
 //! out of `butterfly.dat` without any heap copy of the body arrays. Two
 //! changes vs v3:
 //!
@@ -719,204 +719,6 @@ impl CchTopoFile {
         })
     }
 
-    /// Legacy `'static [u8]` reader — see #147 for the original
-    /// zero-copy design and #296 for the un-leak follow-up.
-    ///
-    /// Historically this constructed a `CchTopo` whose numeric fields
-    /// borrowed from the input bytes via `Cow::Borrowed`. With #296
-    /// the field type is now [`ArcCow`], which only carries an
-    /// `Arc<Mmap>` reference; the `'static` lifetime input has no
-    /// safe way to express the same shape, so the body arrays are
-    /// copied into owned `Vec`s here. The `*_is_shortcut` bitsets
-    /// still borrow the on-disk packed `u64` words directly because
-    /// `BitsetField` keeps its own `Cow<'static, [u64]>` — that's a
-    /// separately-tracked migration.
-    ///
-    /// Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] instead, which is true
-    /// zero-copy and lets the `Arc<Mmap>` drop when the struct does.
-    ///
-    /// CRC is verified before returning. Section start MUST be 8-byte
-    /// aligned (the container writer guarantees this for every section).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchTopo> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
-    /// internal CRC walk over the body bytes.
-    ///
-    /// Caller MUST guarantee the bytes have already been verified — for
-    /// example, the container loader (#160) drives `LazyContainer`
-    /// verification before reaching this entry point. Skipping the
-    /// per-format CRC here avoids paging the body in twice on the
-    /// container load path.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<CchTopo> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<CchTopo> {
-        anyhow::ensure!(
-            bytes.len() >= HEADER_LEN + FOOTER_LEN,
-            "cch.topo too short for header+footer: {} bytes",
-            bytes.len()
-        );
-
-        // The container guarantees that every section starts at an
-        // 8-byte file offset. Combined with the v4 header being 80 bytes
-        // and every variable-length u32 array being padded to a u64
-        // boundary, every body slice we cast to `&[u64]` here is
-        // guaranteed u64-aligned regardless of n_up_edges / n_down_edges
-        // parity. (Same goes for u32 slices, which need 4-byte alignment.)
-        debug_assert_eq!(
-            bytes.as_ptr() as usize % 8,
-            0,
-            "cch.topo bytes must be u64-aligned at section start \
-             (container writer pads sections to 8-byte boundaries)"
-        );
-
-        // ----- Header (80 bytes, v5) -----
-        let (
-            n_nodes,
-            n_shortcuts,
-            n_original_arcs,
-            n_up_edges,
-            n_down_edges,
-            inputs_sha,
-            up_width,
-            down_width,
-            middles_absent,
-        ) = parse_header(bytes)?;
-
-        let n_offsets = (n_nodes as usize) + 1;
-        let n_up_words = n_up_edges.div_ceil(64);
-        let n_down_words = n_down_edges.div_ceil(64);
-        let n_up_pad = u32_pad_to_u64(n_up_edges);
-        let n_down_pad = u32_pad_to_u64(n_down_edges);
-        let n_nodes_pad = u32_pad_to_u64(n_nodes as usize);
-        let upm_data_bytes = if middles_absent {
-            0
-        } else {
-            n_up_edges * up_width.bytes_per_entry()
-        };
-        let upm_pad = middle_pad_to_u64(upm_data_bytes);
-        let dnm_data_bytes = if middles_absent {
-            0
-        } else {
-            n_down_edges * down_width.bytes_per_entry()
-        };
-        let dnm_pad = middle_pad_to_u64(dnm_data_bytes);
-
-        // ----- Layout (#352 v5):
-        //   header(80)
-        // | up_offsets(8 * n_offsets)
-        // | up_targets(4 * n_up + n_up_pad)
-        // | up_bits(8 * n_up_words)
-        // | up_middle(upm_data_bytes + upm_pad)
-        // | down_offsets(8 * n_offsets)
-        // | down_targets(4 * n_down + n_down_pad)
-        // | down_bits(8 * n_down_words)
-        // | down_middle(dnm_data_bytes + dnm_pad)
-        // | rank_to_filtered(4 * n_nodes + n_nodes_pad)
-        // | footer(16)
-        let mut cur = HEADER_LEN;
-
-        let upo_end = cur + 8 * n_offsets;
-        let up_offsets: &'static [u64] = bytemuck::cast_slice(&bytes[cur..upo_end]);
-        cur = upo_end;
-
-        let upt_end = cur + 4 * n_up_edges;
-        let up_targets: &'static [u32] = bytemuck::cast_slice(&bytes[cur..upt_end]);
-        cur = upt_end + n_up_pad;
-
-        let upb_end = cur + 8 * n_up_words;
-        let up_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..upb_end]);
-        cur = upb_end;
-
-        let upm_end = cur + upm_data_bytes;
-        let up_middle_bytes: &'static [u8] = &bytes[cur..upm_end];
-        cur = upm_end + upm_pad;
-
-        let dno_end = cur + 8 * n_offsets;
-        let down_offsets: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dno_end]);
-        cur = dno_end;
-
-        let dnt_end = cur + 4 * n_down_edges;
-        let down_targets: &'static [u32] = bytemuck::cast_slice(&bytes[cur..dnt_end]);
-        cur = dnt_end + n_down_pad;
-
-        let dnb_end = cur + 8 * n_down_words;
-        let down_bits_words: &'static [u64] = bytemuck::cast_slice(&bytes[cur..dnb_end]);
-        cur = dnb_end;
-
-        let dnm_end = cur + dnm_data_bytes;
-        let down_middle_bytes: &'static [u8] = &bytes[cur..dnm_end];
-        cur = dnm_end + dnm_pad;
-
-        let rtf_end = cur + 4 * (n_nodes as usize);
-        let rank_to_filtered: &'static [u32] = bytemuck::cast_slice(&bytes[cur..rtf_end]);
-        cur = rtf_end + n_nodes_pad;
-
-        // ----- CRC verification: all bytes before footer -----
-        anyhow::ensure!(
-            bytes.len() == cur + FOOTER_LEN,
-            "cch.topo length mismatch: declared {}, expected body+footer {}",
-            bytes.len(),
-            cur + FOOTER_LEN
-        );
-        if verify {
-            let body = &bytes[..cur];
-            let computed_crc = {
-                let mut d = crc::Digest::new();
-                d.update(body);
-                d.finalize()
-            };
-            let footer = &bytes[cur..cur + FOOTER_LEN];
-            let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-            anyhow::ensure!(
-                computed_crc == stored_crc,
-                "CRC64 mismatch in cch.topo: computed 0x{:016X}, stored 0x{:016X}",
-                computed_crc,
-                stored_crc
-            );
-        }
-
-        // Test-fixture path: the caller leaked a `Box<[u8]>` so the
-        // `'static` bytes outlive the struct. Production loaders no
-        // longer go through this — they use
-        // [`Self::read_from_mmap_unverified`] which wires the
-        // `Arc<Mmap>` strong-count into the returned `ArcCow` fields
-        // so the mapping drops cleanly on eviction. We copy the body
-        // arrays into owned `Vec`s here so #296 eviction is not
-        // silently subverted by stray `'static` references from
-        // test/legacy callers. The bitset still borrows its packed
-        // words from the leaked `'static` slice; that's a small,
-        // bounded amount of memory and `BitsetField` is the
-        // separate-issue Cow type.
-        Ok(CchTopo {
-            n_nodes,
-            n_shortcuts,
-            n_original_arcs,
-            inputs_sha,
-            up_offsets: ArcCow::from_vec(up_offsets.to_vec()),
-            up_targets: ArcCow::from_vec(up_targets.to_vec()),
-            up_is_shortcut: BitsetField::from_borrowed_words(up_bits_words, n_up_edges),
-            up_middle: if middles_absent {
-                WeightArray::empty()
-            } else {
-                weight_array_from_bytes(up_middle_bytes.to_vec(), n_up_edges, up_width)
-            },
-            down_offsets: ArcCow::from_vec(down_offsets.to_vec()),
-            down_targets: ArcCow::from_vec(down_targets.to_vec()),
-            down_is_shortcut: BitsetField::from_borrowed_words(down_bits_words, n_down_edges),
-            down_middle: if middles_absent {
-                WeightArray::empty()
-            } else {
-                weight_array_from_bytes(down_middle_bytes.to_vec(), n_down_edges, down_width)
-            },
-            rank_to_filtered: ArcCow::from_vec(rank_to_filtered.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). Constructs a `CchTopo`
     /// whose body arrays are zero-copy `ArcCow::Mmap` views over the
     /// supplied `Arc<Mmap>`. Each returned field carries a clone of
@@ -994,7 +796,18 @@ impl CchTopoFile {
         };
         let dnm_pad = middle_pad_to_u64(dnm_data_bytes);
 
-        // Layout (#352 v5) — see `read_from_bytes_zero_copy_inner`.
+        // ----- Layout (#352 v5):
+        //   header(80)
+        // | up_offsets(8 * n_offsets)
+        // | up_targets(4 * n_up + n_up_pad)
+        // | up_bits(8 * n_up_words)
+        // | up_middle(upm_data_bytes + upm_pad)
+        // | down_offsets(8 * n_offsets)
+        // | down_targets(4 * n_down + n_down_pad)
+        // | down_bits(8 * n_down_words)
+        // | down_middle(dnm_data_bytes + dnm_pad)
+        // | rank_to_filtered(4 * n_nodes + n_nodes_pad)
+        // | footer(16)
         let mut cur = HEADER_LEN;
 
         let upo_off = byte_offset + cur;
@@ -1177,36 +990,32 @@ fn parse_header(bytes: &[u8]) -> Result<HeaderFields> {
 #[cfg(test)]
 mod unverified_path_tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     /// Regression for #161 review items 3-4: the `_unverified` reader
     /// MUST skip the format's body CRC walk. We construct a valid
-    /// section, then corrupt the trailing CRC bytes; the verified
-    /// reader rejects, but the unverified reader returns the parsed
-    /// data because the body itself is intact.
+    /// section, then corrupt the trailing CRC bytes; the verifying
+    /// reader rejects, but the unverified mmap reader returns the
+    /// parsed data because the body itself is intact.
     #[test]
-    fn read_from_bytes_zero_copy_unverified_ignores_trailing_crc() {
-        // A minimal v4 header whose declared lengths are zero-sized
-        // arrays — the simplest valid topology for this test.
-        let header_len = HEADER_LEN;
-        let mut bytes = vec![0u8; header_len + FOOTER_LEN];
-        bytes[0..4].copy_from_slice(&MAGIC.to_le_bytes());
-        bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
-        // n_nodes = 1 → one offsets entry (n_nodes + 1 = 2)
-        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
-        // n_shortcuts, n_original_arcs = 0
-        // n_up_edges = 0
-        // n_down_edges = 0
+    fn read_from_mmap_unverified_ignores_trailing_crc() -> Result<()> {
+        // A minimal v5 section whose declared arrays are zero-sized —
+        // the simplest valid topology for this test.
         // Layout: header(80) + 2*u64 up_offsets + 2*u64 down_offsets +
         //         1*u32 rank_to_filtered + 4 pad + footer(16)
+        let header_len = HEADER_LEN;
         let n_offsets = 2;
         let body_len = 8 * n_offsets + 8 * n_offsets + 4 + 4;
         let total = header_len + body_len + FOOTER_LEN;
         let mut bytes = vec![0u8; total];
         bytes[0..4].copy_from_slice(&MAGIC.to_le_bytes());
         bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        // n_nodes = 1 → one offsets entry (n_nodes + 1 = 2)
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // n_shortcuts, n_original_arcs = 0
         // n_up_edges = 0 (header[32..40]), n_down_edges = 0 (header[40..48])
-        // Compute the CRC of the body so the verified path passes too,
+        // Compute the CRC of the body so the verifying path passes too,
         // for the baseline assertion.
         let body = &bytes[..header_len + body_len];
         let mut d = crc::Digest::new();
@@ -1214,28 +1023,32 @@ mod unverified_path_tests {
         let body_crc = d.finalize();
         bytes[header_len + body_len..header_len + body_len + 8]
             .copy_from_slice(&body_crc.to_le_bytes());
-        // Leak so `'static` slice can be constructed.
-        let leaked: &'static [u8] = Box::leak(bytes.clone().into_boxed_slice());
-        // Verified path succeeds.
+
+        // Verifying path accepts a clean section.
         assert!(
-            CchTopoFile::read_from_bytes_zero_copy(leaked).is_ok(),
+            CchTopoFile::read_from_bytes(&bytes).is_ok(),
             "verified path should accept a clean section"
         );
 
-        // Now corrupt the trailing CRC. The verified path must reject;
-        // the unverified path must accept (the body bytes are still
-        // valid; only the trailing CRC is bogus).
+        // Now corrupt the trailing CRC. The verifying path must reject;
+        // the unverified mmap path must accept (the body bytes are
+        // still valid; only the trailing CRC is bogus).
         let mut corrupted = bytes.clone();
         corrupted[header_len + body_len] ^= 0xFF;
-        let leaked2: &'static [u8] = Box::leak(corrupted.into_boxed_slice());
         assert!(
-            CchTopoFile::read_from_bytes_zero_copy(leaked2).is_err(),
+            CchTopoFile::read_from_bytes(&corrupted).is_err(),
             "verified path should reject corrupted CRC"
         );
+
+        let mut tmp = NamedTempFile::new()?;
+        tmp.write_all(&corrupted)?;
+        tmp.flush()?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
         assert!(
-            CchTopoFile::read_from_bytes_zero_copy_unverified(leaked2).is_ok(),
+            CchTopoFile::read_from_mmap_unverified(mmap, 0, corrupted.len()).is_ok(),
             "unverified path should ignore corrupted CRC"
         );
+        Ok(())
     }
 }
 
@@ -1491,34 +1304,15 @@ mod tests {
         Ok(())
     }
 
-    /// Read the file as a leaked `&'static [u8]` and run the zero-copy
-    /// reader over it. This is the path the server actually uses at boot.
-    /// The zero-copy reader requires u64-aligned input — match exactly
-    /// what `butterfly_dat`'s section padding gives us by leaking an
-    /// 8-byte-aligned heap allocation.
-    fn read_file_as_static_aligned(path: &Path) -> &'static [u8] {
-        let raw = std::fs::read(path).expect("read file");
-        // Allocate via Vec<u64> so the start pointer is u64-aligned, then
-        // re-borrow as a u8 slice. Box::leak gives us 'static.
-        let n_words = raw.len().div_ceil(8);
-        let mut words = vec![0u64; n_words];
-        let bytes_per_word = 8;
-        // Safe byte-level copy via from_raw_parts_mut alternative:
-        // iterate by chunks and pack bytes.
-        for (i, chunk) in raw.chunks(bytes_per_word).enumerate() {
-            let mut buf = [0u8; 8];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            words[i] = u64::from_le_bytes(buf);
-        }
-        let leaked: &'static [u64] = Box::leak(words.into_boxed_slice());
-        let bytes: &'static [u8] = bytemuck::cast_slice(leaked);
-        // Truncate to the original byte length (the last u64 may have
-        // trailing padding bytes from the chunked copy).
-        &bytes[..raw.len()]
-    }
-
+    /// Round-trip every `n_up`/`n_down` parity through the production
+    /// mmap reader. Parity controls whether the writer emits a 4-byte
+    /// pad after each variable-length u32 array, so this is the check
+    /// that the reader's offset arithmetic matches the writer's for
+    /// both padded and unpadded shapes. The mmap base pointer is
+    /// page-aligned, matching the 8-byte section alignment the
+    /// container writer guarantees.
     #[test]
-    fn test_v4_zero_copy_all_parities() -> Result<()> {
+    fn test_v4_mmap_all_parities() -> Result<()> {
         for &n_up in &[0usize, 1, 2, 3, 5, 8] {
             for &n_down in &[0usize, 1, 2, 3, 5, 8] {
                 let n_nodes = (n_up.max(n_down) + 2) as u32;
@@ -1526,8 +1320,9 @@ mod tests {
                 let tmp = NamedTempFile::new()?;
                 CchTopoFile::write(tmp.path(), &data)?;
 
-                let static_bytes = read_file_as_static_aligned(tmp.path());
-                let loaded = CchTopoFile::read_from_bytes_zero_copy(static_bytes)?;
+                let byte_len = std::fs::metadata(tmp.path())?.len() as usize;
+                let mmap = super::super::mmap::map_readonly(tmp.path())?;
+                let loaded = CchTopoFile::read_from_mmap_unverified(mmap, 0, byte_len)?;
                 assert_topo_eq(&data, &loaded);
             }
         }

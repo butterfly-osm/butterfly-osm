@@ -36,8 +36,8 @@ pub struct ModWeights {
     pub mode: Mode,
     /// Per-node weights in seconds (#297 unit conversion — was
     /// deciseconds in v1, now seconds in v2).
-    /// `Cow::Borrowed` for mmap-backed container reads (zero-copy);
-    /// `Cow::Owned` for the legacy file-reader path.
+    /// Always `Cow::Owned`: every reader walks the CRC and decodes
+    /// into a fresh `Vec<u32>`.
     pub weights: Cow<'static, [u32]>,
     pub inputs_sha: [u8; 16],
 }
@@ -174,85 +174,6 @@ fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModWeights> {
     })
 }
 
-/// #294: zero-copy read of `w.<mode>.u32` over `'static` mmap bytes.
-/// Returns `ModWeights` with `weights: Cow::Borrowed(&[u32])` directly
-/// over the input slice. Saves ~20 MB per mode on Belgium that the
-/// owning Vec<u32> path would have copied onto the heap.
-///
-/// Skips the per-format CRC walk; caller MUST have verified the bytes
-/// upstream (e.g. via `LazyContainer::verify_now`).
-pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModWeights> {
-    anyhow::ensure!(
-        bytes.len() >= HEADER_SIZE + FOOTER_SIZE,
-        "mod_weights too short: {} bytes",
-        bytes.len()
-    );
-    // Container guarantees 8-byte alignment, but bytemuck::cast_slice
-    // panics on misalignment — validate explicitly so misuse fails
-    // with a typed error instead of an abort.
-    anyhow::ensure!(
-        (bytes.as_ptr() as usize).is_multiple_of(4),
-        "mod_weights section must start 4-byte aligned (got addr 0x{:x})",
-        bytes.as_ptr() as usize
-    );
-
-    let header = &bytes[..HEADER_SIZE];
-    let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
-    anyhow::ensure!(
-        magic == MAGIC,
-        "Invalid magic: expected 0x{:08x}, got 0x{:08x}",
-        MAGIC,
-        magic
-    );
-
-    let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
-    anyhow::ensure!(version == VERSION, "Unsupported version: {}", version);
-
-    let mode_byte = header[6];
-    anyhow::ensure!(
-        (mode_byte as usize) < crate::profile_abi::MAX_MODES,
-        "Invalid mode: {}",
-        mode_byte
-    );
-    let mode = Mode(mode_byte);
-
-    let count = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
-
-    let mut inputs_sha = [0u8; 16];
-    inputs_sha.copy_from_slice(&header[12..28]);
-
-    // PR #319 Copilot review: a malicious/corrupt header `count` could
-    // overflow `count * 4` or the addition, making `body_end` wrap and
-    // potentially be less than `HEADER_SIZE`. Use checked arithmetic so
-    // overflow returns a clean error instead of panicking on the slice.
-    let body_len = count
-        .checked_mul(4)
-        .ok_or_else(|| anyhow::anyhow!("mod_weights count overflows: count={}", count))?;
-    let body_end = HEADER_SIZE
-        .checked_add(body_len)
-        .ok_or_else(|| anyhow::anyhow!("mod_weights body_end overflows: count={}", count))?;
-    let expected_total = body_end
-        .checked_add(FOOTER_SIZE)
-        .ok_or_else(|| anyhow::anyhow!("mod_weights expected_total overflows: count={}", count))?;
-    anyhow::ensure!(
-        bytes.len() == expected_total,
-        "mod_weights size mismatch: got {}, expected {}",
-        bytes.len(),
-        expected_total
-    );
-    // `body_end >= HEADER_SIZE` is implied by `body_end =
-    // HEADER_SIZE.checked_add(body_len)` having succeeded
-    // (body_len is non-negative because it's a usize).
-
-    let weights: &'static [u32] = bytemuck::cast_slice(&bytes[HEADER_SIZE..body_end]);
-
-    Ok(ModWeights {
-        mode,
-        weights: Cow::Borrowed(weights),
-        inputs_sha,
-    })
-}
-
 /// Verify w.<mode>.u32 file structure and checksums
 pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
@@ -277,7 +198,7 @@ pub fn verify<P: AsRef<Path>>(path: P) -> Result<()> {
     let count = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
 
     // Verify file size
-    let expected_size = HEADER_SIZE as u64 + (count as u64 * 4) + 16;
+    let expected_size = HEADER_SIZE as u64 + (count as u64 * 4) + FOOTER_SIZE as u64;
     let actual_size = file.seek(SeekFrom::End(0))?;
 
     if actual_size != expected_size {
@@ -328,70 +249,55 @@ mod tests {
         out
     }
 
-    /// Leak the buffer so its byte slice is `'static`. Tests only.
-    fn leak_static(buf: Vec<u8>) -> &'static [u8] {
-        Box::leak(buf.into_boxed_slice())
-    }
-
     #[test]
-    fn zero_copy_roundtrip_returns_borrowed_view() {
+    fn read_from_bytes_roundtrip() {
         let mode = Mode(0);
         let weights = vec![10u32, 20, 30, 40, 50];
         let inputs_sha = [1u8; 16];
         let bytes = build_bytes(mode, &weights, &inputs_sha);
-        let bytes = leak_static(bytes);
 
-        let parsed = read_from_bytes_zero_copy_unverified(bytes).expect("parse ok");
+        let parsed = read_all_from_bytes(&bytes).expect("parse ok");
         assert_eq!(parsed.mode.0, 0);
         assert_eq!(parsed.inputs_sha, inputs_sha);
         assert_eq!(&parsed.weights[..], weights.as_slice());
-        // Critically: the view must be Cow::Borrowed pointing into our
-        // input bytes, not a fresh Vec copy.
-        match &parsed.weights {
-            std::borrow::Cow::Borrowed(_) => {} // ok
-            std::borrow::Cow::Owned(_) => panic!("expected Cow::Borrowed view"),
-        }
     }
 
     #[test]
-    fn zero_copy_fails_on_bad_magic() {
+    fn read_from_bytes_fails_on_bad_magic() {
         let mode = Mode(0);
         let weights = vec![10u32, 20, 30];
         let inputs_sha = [0u8; 16];
         let mut bytes = build_bytes(mode, &weights, &inputs_sha);
         // Corrupt the magic in-place.
         bytes[0] = 0xAA;
-        let bytes = leak_static(bytes);
 
-        let err = read_from_bytes_zero_copy_unverified(bytes).unwrap_err();
+        let err = read_all_from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("magic"), "unexpected error: {msg}");
     }
 
     #[test]
-    fn zero_copy_fails_on_size_mismatch() {
+    fn read_from_bytes_fails_on_truncated_body() {
         let mode = Mode(0);
         let weights = vec![10u32, 20, 30];
         let inputs_sha = [0u8; 16];
         let mut bytes = build_bytes(mode, &weights, &inputs_sha);
-        // Truncate the footer so file_size != expected.
+        // Truncate the footer so the declared size no longer matches.
         bytes.truncate(bytes.len() - 4);
-        let bytes = leak_static(bytes);
 
-        let err = read_from_bytes_zero_copy_unverified(bytes).unwrap_err();
+        let err = read_all_from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("size mismatch") || msg.contains("too short"),
+            msg.contains("failed to fill whole buffer"),
             "unexpected error: {msg}"
         );
     }
 
     #[test]
-    fn zero_copy_unverified_ignores_corrupted_crc() {
-        // The `_unverified` reader skips CRC validation; callers are
-        // expected to have run LazyContainer's CRC check upstream.
-        // This test asserts that corrupting the body CRC does NOT
-        // cause the reader to fail — that's the documented contract.
+    fn read_from_bytes_rejects_corrupted_crc() {
+        // `read_all_from_bytes` is the only remaining byte-slice
+        // reader and it always walks the CRC — a corrupted body CRC
+        // must be rejected, not silently accepted.
         let mode = Mode(0);
         let weights = vec![10u32, 20, 30];
         let inputs_sha = [0u8; 16];
@@ -401,8 +307,8 @@ mod tests {
         for i in 0..8 {
             bytes[body_end + i] ^= 0xFF;
         }
-        let bytes = leak_static(bytes);
-        let parsed = read_from_bytes_zero_copy_unverified(bytes).expect("ok despite CRC bits");
-        assert_eq!(&parsed.weights[..], weights.as_slice());
+        let err = read_all_from_bytes(&bytes).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CRC64 mismatch"), "unexpected error: {msg}");
     }
 }
