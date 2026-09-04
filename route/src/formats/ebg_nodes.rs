@@ -202,26 +202,6 @@ impl EbgNodesFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures that
-    /// leak a `Box<[u8]>`). Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct.
-    ///
-    /// The caller (the container) guarantees that the section bytes
-    /// start at an 8-byte boundary; combined with the 64-byte header,
-    /// the body slice starts at a 4-byte boundary, which matches
-    /// `align_of::<EbgNode>() == 4`.
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EbgNodes> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
-    /// internal CRC walk. Caller MUST guarantee the bytes are already
-    /// verified upstream (e.g. via the container's lazy CRC layer).
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EbgNodes> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases. Once all clones drop, the
@@ -267,94 +247,10 @@ impl EbgNodesFile {
             nodes,
         })
     }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<EbgNodes> {
-        anyhow::ensure!(
-            bytes.len() >= HEADER_LEN + FOOTER_LEN,
-            "ebg.nodes too short for header+footer: {} bytes",
-            bytes.len()
-        );
-        debug_assert_eq!(
-            bytes.as_ptr() as usize % 8,
-            0,
-            "ebg.nodes section start must be 8-byte aligned"
-        );
-
-        let header = &bytes[..HEADER_LEN];
-        let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        anyhow::ensure!(
-            magic == MAGIC,
-            "Invalid magic in ebg.nodes: expected 0x{:08X}, got 0x{:08X}",
-            MAGIC,
-            magic
-        );
-        let version = u16::from_le_bytes([header[4], header[5]]);
-        anyhow::ensure!(
-            version == VERSION,
-            "Unsupported ebg.nodes version {version}, expected {VERSION}. \
-             v1 files used millimeter precision; re-run step 4 to regenerate as v2 (meters).",
-        );
-
-        let n_nodes = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-        let created_unix = u64::from_le_bytes([
-            header[12], header[13], header[14], header[15], header[16], header[17], header[18],
-            header[19],
-        ]);
-        let mut inputs_sha = [0u8; 32];
-        inputs_sha.copy_from_slice(&header[20..52]);
-
-        let body_len = NODE_RECORD_LEN
-            .checked_mul(n_nodes as usize)
-            .ok_or_else(|| anyhow::anyhow!("ebg.nodes body size overflow for n_nodes={n_nodes}"))?;
-        let body_end = HEADER_LEN
-            .checked_add(body_len)
-            .ok_or_else(|| anyhow::anyhow!("ebg.nodes section size overflow"))?;
-        anyhow::ensure!(
-            bytes.len() == body_end + FOOTER_LEN,
-            "ebg.nodes length mismatch: declared {}, expected body+footer {}",
-            bytes.len(),
-            body_end + FOOTER_LEN
-        );
-
-        let body = &bytes[HEADER_LEN..body_end];
-        let footer = &bytes[body_end..body_end + FOOTER_LEN];
-
-        // CRC over header + body, mirroring the legacy reader.
-        if verify {
-            let mut crc_digest = crc::Digest::new();
-            crc_digest.update(header);
-            crc_digest.update(body);
-            let computed = crc_digest.finalize();
-            let stored = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-            anyhow::ensure!(
-                computed == stored,
-                "CRC64 mismatch in ebg.nodes: computed 0x{:016X}, stored 0x{:016X}",
-                computed,
-                stored
-            );
-        } else {
-            let _ = footer; // unused without CRC walk
-        }
-
-        let nodes_slice: &[EbgNode] = bytemuck::cast_slice(body);
-
-        // Test fixtures use this path — wrap the Vec'd copy in
-        // `ArcCow::Owned`. The `bytes: &'static [u8]` lifetime here
-        // means the caller leaked the buffer (typically `Box::leak`
-        // in a #[cfg(test)] block); we don't carry that leak into
-        // production storage. Production goes through
-        // [`Self::read_from_mmap_unverified`].
-        Ok(EbgNodes {
-            n_nodes,
-            created_unix,
-            inputs_sha,
-            nodes: ArcCow::from_vec(nodes_slice.to_vec()),
-        })
-    }
 }
 
 /// Parse the 64-byte EBG nodes header and return the fixed fields.
-/// Shared by the owned, zero-copy, and mmap-backed readers.
+/// Shared by the owning and mmap-backed readers.
 fn parse_header(bytes: &[u8]) -> Result<(u32, u64, [u8; 32])> {
     anyhow::ensure!(
         bytes.len() >= HEADER_LEN + FOOTER_LEN,

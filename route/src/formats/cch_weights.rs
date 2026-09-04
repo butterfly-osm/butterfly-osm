@@ -422,29 +422,6 @@ impl CchWeightsFile {
         Self::read_from_reader(std::io::Cursor::new(bytes), bytes.len())
     }
 
-    /// Legacy zero-copy reader retained for tests / tools that already
-    /// hold a `'static [u8]` (typically leaked `Box<[u8]>` fixtures).
-    /// Production now wires through [`Self::read_from_mmap_unverified`]
-    /// instead so the `Arc<Mmap>` strong count actually drops when the
-    /// `CchWeights` goes out of scope (#296). This reader copies the
-    /// body into owned `Vec<u32>` slabs — there is no `&'static` view
-    /// stored in the returned struct.
-    ///
-    /// CRC is verified before returning.
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<CchWeights> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the
-    /// internal CRC walk over the body bytes. Caller MUST guarantee
-    /// the bytes have already been verified upstream (e.g. via
-    /// [`crate::formats::lazy_verify::LazyContainer`]). Skipping the
-    /// per-format CRC here avoids paging the body in twice on the
-    /// container load path.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<CchWeights> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
     /// Production mmap-backed reader (#296). Each `ArcCow<u32>` sub-field
     /// holds a clone of the `Arc<Mmap>` covering this container, so when
     /// the returned `CchWeights` drops, every Arc clone drops with it.
@@ -545,106 +522,6 @@ impl CchWeightsFile {
             down,
             up_middle,
             down_middle,
-        })
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<CchWeights> {
-        // ----- Header (32 bytes) -----
-        anyhow::ensure!(
-            bytes.len() >= HEADER_LEN + FOOTER_LEN,
-            "cch.weights too short for header+footer: {} bytes",
-            bytes.len()
-        );
-        anyhow::ensure!(
-            (bytes.as_ptr() as usize).is_multiple_of(4),
-            "cch.weights section must start 4-byte aligned (got addr 0x{:x})",
-            bytes.as_ptr() as usize
-        );
-        let header = &bytes[..HEADER_LEN];
-        let CchWeightsHeader {
-            n_up,
-            n_down,
-            up_width,
-            down_width,
-        } = parse_header(header)?;
-
-        // v4 layout (with optional middles, per-direction body width):
-        //   header(32) | up(width_up·n_up [+0-3 pad]) | down(width_down·n_down [+0-3 pad])
-        //              | [up_middle(4·n_up) | down_middle(4·n_down)]
-        //              | footer(16)
-        // u16/u24 bodies pad up to 4-byte boundary — see `padded_body_bytes`.
-        let up_bytes = up_width.padded_body_bytes(n_up);
-        let down_bytes = down_width.padded_body_bytes(n_down);
-        let no_middle_len = HEADER_LEN + up_bytes + down_bytes + FOOTER_LEN;
-        let with_middle_len = no_middle_len + 4 * (n_up + n_down);
-        let has_middles = match bytes.len() {
-            n if n == no_middle_len => false,
-            n if n == with_middle_len => true,
-            n => anyhow::bail!(
-                "Invalid cch.weights size: got {}, expected {} (no middles) or {} (with middles)",
-                n,
-                no_middle_len,
-                with_middle_len
-            ),
-        };
-
-        let up_off = HEADER_LEN;
-        let up_end = up_off + up_bytes; // includes padding
-        let down_off = up_end;
-        let down_end = down_off + down_bytes;
-
-        // Read only the actual data bytes (skip any 0-2 byte tail pad).
-        let up_data = up_width.bytes_per_entry() * n_up;
-        let down_data = down_width.bytes_per_entry() * n_down;
-        let up_body = &bytes[up_off..up_off + up_data];
-        let down_body = &bytes[down_off..down_off + down_data];
-        let up_vec: Vec<u32> = match up_width {
-            WeightWidth::U16 => decode_u16_to_u32_vec(up_body),
-            WeightWidth::U24 => decode_u24_to_u32_vec(up_body),
-            WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(up_body).to_vec(),
-        };
-        let down_vec: Vec<u32> = match down_width {
-            WeightWidth::U16 => decode_u16_to_u32_vec(down_body),
-            WeightWidth::U24 => decode_u24_to_u32_vec(down_body),
-            WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(down_body).to_vec(),
-        };
-
-        let (up_middle, down_middle, body_end) = if has_middles {
-            let upm_off = down_end;
-            let upm_end = upm_off + 4 * n_up;
-            let dnm_off = upm_end;
-            let dnm_end = dnm_off + 4 * n_down;
-            let upm: &[u32] = bytemuck::cast_slice(&bytes[upm_off..upm_end]);
-            let dnm: &[u32] = bytemuck::cast_slice(&bytes[dnm_off..dnm_end]);
-            (upm.to_vec(), dnm.to_vec(), dnm_end)
-        } else {
-            (Vec::new(), Vec::new(), down_end)
-        };
-
-        if verify {
-            let body = &bytes[..body_end];
-            let computed_crc = {
-                let mut d = crc::Digest::new();
-                d.update(body);
-                d.finalize()
-            };
-            let footer = &bytes[body_end..body_end + FOOTER_LEN];
-            let stored_crc = u64::from_le_bytes(footer[0..8].try_into().unwrap());
-            anyhow::ensure!(
-                computed_crc == stored_crc,
-                "CRC64 mismatch in cch.weights: computed 0x{:016X}, stored 0x{:016X}",
-                computed_crc,
-                stored_crc
-            );
-        }
-
-        // Test-fixture path now also widens u16→u32 if needed; production
-        // load goes through `read_from_mmap_unverified`.
-        Ok(CchWeights {
-            up: WeightArray::from_vec_u32(up_vec),
-            down: WeightArray::from_vec_u32(down_vec),
-            up_middle: ArcCow::from_vec(up_middle),
-            down_middle: ArcCow::from_vec(down_middle),
         })
     }
 
@@ -831,7 +708,7 @@ pub(crate) struct CchWeightsHeader {
 ///   bits 4..8: reserved
 ///
 /// Anything other than v4 is rejected — re-run step 8 to regenerate.
-/// Shared by the owned, zero-copy, and mmap-backed readers.
+/// Shared by the owning and mmap-backed readers.
 fn parse_header(header: &[u8]) -> Result<CchWeightsHeader> {
     anyhow::ensure!(
         header.len() >= HEADER_LEN,

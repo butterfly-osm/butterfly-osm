@@ -50,23 +50,6 @@ impl BitsetField {
         }
     }
 
-    /// Build from a borrowed `&'static [u64]` slice (legacy zero-copy
-    /// path used by test fixtures that leak a `Box<[u64]>`). Production
-    /// loaders should use [`Self::from_mmap_unverified`], which keeps
-    /// the `Arc<Mmap>` strong-count tied to the returned struct so the
-    /// mapping can be dropped on eviction (#296).
-    ///
-    /// Note: the bytes are copied into a `Vec<u64>` to avoid carrying a
-    /// `'static` lifetime through `ArcCow`. Test fixtures use this path
-    /// exclusively; production goes through [`Self::from_mmap_unverified`].
-    pub fn from_borrowed_words(words: &'static [u64], len: usize) -> Self {
-        debug_assert!(len <= words.len() * 64);
-        Self {
-            words: ArcCow::from_vec(words.to_vec()),
-            len,
-        }
-    }
-
     /// Production mmap-backed constructor (#296). Validates that
     /// `mmap[byte_offset..byte_offset + n_words * 8]` is in bounds and
     /// 8-byte aligned for `u64`, then wraps it as an `ArcCow::Mmap`.
@@ -162,12 +145,13 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_borrowed() {
-        // Build a packed bitset, leak it for a 'static borrow (mimics mmap).
+    fn round_trip_from_packed_words() {
+        // Re-wrap an already-packed word array (the shape both the
+        // container reader and the writers hand around), at a logical
+        // length that is not a multiple of 64.
         let pattern: Vec<bool> = (0..200).map(|i| (i * 7) % 5 == 0).collect();
         let owned = BitsetField::from_bools(&pattern);
-        let leaked: &'static [u64] = Box::leak(owned.as_words().to_vec().into_boxed_slice());
-        let view = BitsetField::from_borrowed_words(leaked, pattern.len());
+        let view = BitsetField::from_owned_words(owned.as_words().to_vec(), pattern.len());
         for (i, &b) in pattern.iter().enumerate() {
             assert_eq!(view.bit(i), b);
         }
