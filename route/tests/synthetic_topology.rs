@@ -37,6 +37,7 @@ use butterfly_route::server::edge_geom::EdgeGeometry;
 use butterfly_route::server::geometry::{
     Point, ReachModel, build_isochrone_geometry_sparse, build_route_points_into,
 };
+use butterfly_route::server::phantom::{PhantomEnd, PhantomSeed};
 
 // ---------------------------------------------------------------------
 // The synthetic road network.
@@ -1395,6 +1396,457 @@ fn route_geometry_length_matches_the_reported_distance_on_every_traversal_shape(
             "[{shape}] only {against_stored} of {total_edges} traversed edges run \
              against their stored polyline orientation — this fixture cannot see a \
              builder that appends every edge forward"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
+// #544 — the ARRIVE direction, data-free.
+//
+// A reverse (arrive) field is seeded like a DESTINATION: reaching the
+// seed edge pays its full weight but the journey stops at the snap, so
+// the seed refunds `part_time` as `shift - part_time` and every label
+// comes back as `true cost + shift`. The engine's own many-to-one matrix
+// field (`table_phast_lopsided_reverse`) does exactly this, and /table is
+// the independent truth for what the isochrone may claim to reach.
+// ---------------------------------------------------------------------
+
+/// The arrive snap for these tests: one third along the street, i.e. the
+/// forward twin still owes 2/3 of its weight to its head and the reverse
+/// twin 1/3 of its own.
+const ARRIVE_SNAP_FRAC: f64 = 1.0 / 3.0;
+
+impl Network {
+    /// The two directed twins of the street `seg` belongs to, `seg` first.
+    fn twins_of(&self, seg: u32) -> Vec<u32> {
+        let street = self.segments[seg as usize].street;
+        std::iter::once(seg)
+            .chain(
+                (0..self.n_segments() as u32)
+                    .filter(|&o| o != seg && self.segments[o as usize].street == street),
+            )
+            .collect()
+    }
+
+    /// Independent ground truth for the ARRIVE direction, built from the
+    /// raw edge-based graph in this file: `dist[e]` is the cost from the
+    /// HEAD of segment `e` to the head of `target`, i.e. the sum of
+    /// `w(head) + turn` over the arcs of the best path. It is the mirror of
+    /// `reference_dijkstra`, over the reversed arc list.
+    fn reference_dijkstra_reverse(&self, target: u32) -> Vec<u32> {
+        // Reverse adjacency, built here and nowhere else: the engine has no
+        // target-keyed UP flat, and #544 shows it needs none.
+        let mut preds: Vec<Vec<(u32, u32)>> = vec![Vec::new(); self.n_segments()];
+        for e in 0..self.n_segments() {
+            let (start, end) = (self.offsets[e] as usize, self.offsets[e + 1] as usize);
+            for slot in start..end {
+                let f = self.heads[slot];
+                let w = self.node_weights[f as usize] + self.turn_penalties[slot];
+                preds[f as usize].push((e as u32, w));
+            }
+        }
+        let mut dist = vec![u32::MAX; self.n_segments()];
+        let mut heap: BinaryHeap<std::cmp::Reverse<(u32, u32)>> = BinaryHeap::new();
+        dist[target as usize] = 0;
+        heap.push(std::cmp::Reverse((0, target)));
+        while let Some(std::cmp::Reverse((d, f))) = heap.pop() {
+            if d > dist[f as usize] {
+                continue;
+            }
+            for &(e, w) in &preds[f as usize] {
+                let nd = d + w;
+                if nd < dist[e as usize] {
+                    dist[e as usize] = nd;
+                    heap.push(std::cmp::Reverse((nd, e)));
+                }
+            }
+        }
+        dist
+    }
+
+    /// The arrive phantom for `seg`'s street: both directed twins, each
+    /// with the remainder from the snap to ITS head. Same shape
+    /// `phantom_from_candidates` produces at serve time.
+    fn arrive_phantom(&self, seg: u32) -> PhantomEnd {
+        let twins = self.twins_of(seg);
+        assert_eq!(twins.len(), 2, "the arrive fixture needs a two-way street");
+        let seeds: Vec<PhantomSeed> = twins
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| {
+                // The twin traverses the same geometry backwards, so its own
+                // fraction is 1 - frac.
+                let frac = if i == 0 {
+                    ARRIVE_SNAP_FRAC
+                } else {
+                    1.0 - ARRIVE_SNAP_FRAC
+                };
+                let w = self.node_weights[e as usize] as f64;
+                PhantomSeed {
+                    ebg_id: e,
+                    rank: u32::MAX, // filled in by the caller: ranks need a hierarchy
+                    part_time: ((1.0 - frac) * w).round() as u32,
+                    part_len: 0,
+                    frac,
+                    direct_ok: true,
+                }
+            })
+            .collect();
+        let (lon, lat) = self.segment_start(seg);
+        PhantomEnd {
+            seeds,
+            snapped_lon: lon,
+            snapped_lat: lat,
+            snap_distance_m: 0.0,
+            primary_ebg: seg,
+        }
+    }
+
+    /// TRUE arrive cost per segment: from the HEAD of the segment to the
+    /// snap, from this file's own Dijkstra. Negative on the seed edges
+    /// themselves — their head lies past the snap. `None` = unreachable.
+    fn true_arrive_costs(&self, pe: &PhantomEnd) -> Vec<Option<i64>> {
+        let mut out = vec![None; self.n_segments()];
+        for sd in &pe.seeds {
+            let h = self.reference_dijkstra_reverse(sd.ebg_id);
+            for (x, slot) in out.iter_mut().enumerate() {
+                if h[x] == u32::MAX {
+                    continue;
+                }
+                let c = h[x] as i64 - sd.part_time as i64;
+                *slot = Some(slot.map_or(c, |o: i64| o.min(c)));
+            }
+        }
+        out
+    }
+}
+
+/// `(ebg_id, label)` for an arrive field, exactly as `isochrone_polygons`
+/// hands it to the contour builder: the shift removed, clamped at 0.
+fn arrive_settled(costs: &[Option<i64>], threshold: u32) -> Vec<(u32, u32)> {
+    costs
+        .iter()
+        .enumerate()
+        .filter_map(|(x, c)| match c {
+            Some(c) if *c <= threshold as i64 => Some((x as u32, (*c).max(0) as u32)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The one contour the engine serves for an ARRIVE field at `threshold_s`.
+fn serve_arrive_contour(
+    net: &Network,
+    settled: &[(u32, u32)],
+    target: u32,
+    threshold_s: u32,
+) -> Vec<(f64, f64)> {
+    let anchor = net.segment_start(target);
+    let polys = build_isochrone_geometry_sparse(
+        settled,
+        threshold_s,
+        &net.node_weights,
+        &net.ebg_nodes,
+        &net.edge_geom,
+        "car",
+        Some(anchor),
+        Some(anchor),
+        &ReachModel::Arrive,
+    );
+    assert_eq!(
+        polys.len(),
+        1,
+        "an arrive isochrone is ONE simple polygon too (#497); threshold \
+         {threshold_s} s served {} of them",
+        polys.len()
+    );
+    assert!(
+        polys[0].holes.is_empty(),
+        "threshold {threshold_s} s served {} hole(s)",
+        polys[0].holes.len()
+    );
+    let wkb = encode_polygon_wkb(&ContourResult::from_topology(polys))
+        .expect("the served contour must encode to WKB");
+    let rings = wkb_polygon_rings(&wkb);
+    assert_eq!(rings.len(), 1, "one simple polygon means exactly one ring");
+    rings.into_iter().next().unwrap()
+}
+
+/// Share of the network the arrive polygon fails to cover: every point that
+/// IS reachable within `threshold` — the head of every segment whose cost is
+/// under it, plus the tail of every segment reachable whole — must be inside
+/// the served ring, or within 150 m of it.
+fn arrive_uncovered_pct(
+    net: &Network,
+    costs: &[Option<i64>],
+    ring: &[(f64, f64)],
+    threshold: u32,
+    lat_ref: f64,
+) -> (f64, usize, usize, f64) {
+    let mut outside = 0usize;
+    let mut total = 0usize;
+    let mut worst = 0.0f64;
+    for (x, c) in costs.iter().enumerate() {
+        let Some(c) = *c else { continue };
+        if c >= threshold as i64 {
+            continue;
+        }
+        let seg = &net.segments[x];
+        let w = net.node_weights[x] as i64;
+        // The head is reached at `c`; the tail needs the whole edge on top.
+        let mut points = vec![seg.head];
+        if c + w <= threshold as i64 {
+            points.push(seg.tail);
+        }
+        for node in points {
+            let (lon, lat) = net.coords[node as usize];
+            total += 1;
+            if !point_in_ring(ring, lon, lat) {
+                let d = dist_to_ring_m(ring, lon, lat, lat_ref);
+                worst = worst.max(d);
+                if d > 150.0 {
+                    outside += 1;
+                }
+            }
+        }
+    }
+    (100.0 * outside as f64 / total as f64, outside, total, worst)
+}
+
+/// A COARSE lattice: 400 m blocks at 60 s each. One street is longer than
+/// the 150 m coverage tolerance, so a field that is one seed-edge weight
+/// short is visible in the served polygon — which is the size the #544
+/// defect has on a rural snap onto a fast road. The 200 m / 30 s lattice
+/// hides it: a whole block of under-reach still lands inside the tolerance.
+fn arrive_lattice() -> Network {
+    Lattice {
+        dim: 31,
+        spacing_m: 400.0,
+        edge_cost_s: 60,
+        oneway_row_period: 5,
+        origin_lon: 4.35,
+        origin_lat: 50.85,
+        void_block: None,
+        express: None,
+    }
+    .build()
+}
+
+/// The #544 field, end to end on the real hierarchy: seeds from the
+/// PRODUCTION destination convention, the production seeded reverse PHAST,
+/// the shift removed — against BOTH /table (the engine's independent truth,
+/// a different algorithm on the same hierarchy) and this file's own
+/// Dijkstra.
+#[test]
+fn the_arrive_field_agrees_with_the_table_and_an_independent_dijkstra() {
+    use butterfly_route::matrix::bucket_ch::{
+        DownAdjFlat, DownReverseAdjFlat, UpAdjFlat, table_bucket_full_flat,
+    };
+    use butterfly_route::range::phast_seeded::run_phast_bounded_fast_reverse_seeded;
+    use butterfly_route::server::types::SnapRole;
+
+    let net = hierarchy_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+
+    let up = UpAdjFlat::build(&h.topo, &h.weights);
+    let down_rev = DownReverseAdjFlat::build(&h.topo, &h.weights);
+    let _down = DownAdjFlat::build(&h.topo, &h.weights);
+    let (_, seg_to_rank) = rank_maps(&h, n);
+
+    let target = net.segment_from(6, 6);
+    let mut pe = net.arrive_phantom(target);
+    for sd in pe.seeds.iter_mut() {
+        sd.rank = seg_to_rank[sd.ebg_id as usize];
+    }
+    // The production seeding: `shift - part_time`, shift = max part_time.
+    let (seeds, shift) = pe.query_seeds_and_shift(SnapRole::Dst);
+    assert_eq!(
+        shift,
+        pe.seeds.iter().map(|s| s.part_time).max().unwrap(),
+        "the shift must be the largest suffix"
+    );
+    assert!(
+        pe.seeds.iter().any(|s| s.part_time != shift),
+        "the fixture must have two DIFFERENT suffixes, or the shift is free"
+    );
+
+    let threshold = 240u32;
+    let field = run_phast_bounded_fast_reverse_seeded(
+        &up,
+        &down_rev,
+        &seeds,
+        threshold.saturating_add(shift),
+        Mode(0),
+    );
+    let mut label = vec![u32::MAX; n];
+    for (rank, d) in field {
+        let seg = h.topo.rank_to_filtered[rank as usize] as usize;
+        label[seg] = d.saturating_sub(shift);
+    }
+
+    // Truth 1: /table, many-to-one on the same hierarchy but a different
+    // algorithm (bucket M2M, not PHAST) — `d(x -> seed)` head to head.
+    let all_ranks: Vec<u32> = (0..n as u32).collect();
+    let tgt_ranks: Vec<u32> = pe.seeds.iter().map(|s| s.rank).collect();
+    let (table, _) = table_bucket_full_flat(n, &up, &down_rev, &all_ranks, &tgt_ranks);
+
+    // Truth 2: this file's own reverse Dijkstra.
+    let truth = net.true_arrive_costs(&pe);
+
+    let mut checked = 0usize;
+    let mut partial = 0usize;
+    for seg in 0..n {
+        let rank = seg_to_rank[seg] as usize;
+        let table_cost = pe
+            .seeds
+            .iter()
+            .enumerate()
+            .filter_map(|(j, sd)| {
+                let d = table[rank * tgt_ranks.len() + j];
+                (d != u32::MAX).then(|| d as i64 - sd.part_time as i64)
+            })
+            .min();
+        assert_eq!(
+            table_cost, truth[seg],
+            "segment {seg}: /table and the independent Dijkstra disagree"
+        );
+        let Some(c) = truth[seg] else {
+            assert_eq!(label[seg], u32::MAX, "segment {seg} is not reachable");
+            continue;
+        };
+        if c > threshold as i64 {
+            continue;
+        }
+        checked += 1;
+        assert_eq!(
+            label[seg],
+            c.max(0) as u32,
+            "segment {seg}: the arrive field says {}, the truth is {c}",
+            label[seg]
+        );
+        if c + net.node_weights[seg] as i64 > threshold as i64 {
+            partial += 1;
+        }
+    }
+    assert!(
+        checked > 100,
+        "only {checked} segments inside {threshold} s — the fixture proves nothing"
+    );
+    assert!(
+        partial > 0,
+        "no partially reachable segment at the boundary — the reach rule is \
+         not being exercised"
+    );
+}
+
+/// The residual #544 measures, on the lattice: the pre-#544 seeding
+/// (`w(edge) - part_time`, no shift) inflated every label by a full
+/// seed-edge weight, so reachable road ended up outside the served polygon.
+/// The fixed field covers it; the old one provably does not.
+#[test]
+fn the_served_arrive_contour_covers_the_reachable_network() {
+    let net = arrive_lattice();
+    // Row 15 is one-way (period 5): an arrive phantom needs both twins, so
+    // the target sits on the two-way row next to the lattice centre.
+    let target = net.segment_from(16, 15);
+    let pe = net.arrive_phantom(target);
+    let truth = net.true_arrive_costs(&pe);
+    let (_, olat) = net.segment_start(target);
+
+    for threshold in [300u32, 600] {
+        let settled = arrive_settled(&truth, threshold);
+        assert!(
+            settled.len() > 100,
+            "threshold {threshold} s reached only {} segments",
+            settled.len()
+        );
+        let ring = serve_arrive_contour(&net, &settled, target, threshold);
+        let (pct, outside, total, worst) =
+            arrive_uncovered_pct(&net, &truth, &ring, threshold, olat);
+        assert!(
+            pct <= 1.5,
+            "threshold {threshold} s: {pct:.2} % of the reachable network \
+             ({outside}/{total} points) is more than 150 m outside the served \
+             arrive polygon (worst {worst:.0} m); the budget is 1.5 %"
+        );
+
+        // The other side of the same coin: correcting an under-reach must
+        // not buy coverage by over-reaching. No intersection that is NOT
+        // reachable within T may sit deeper than the 150 m raster slack
+        // inside the served ring.
+        let mut deep = 0usize;
+        let mut unreachable_nodes = 0usize;
+        for (x, c) in truth.iter().enumerate() {
+            if c.is_some_and(|c| c < threshold as i64) {
+                continue;
+            }
+            let (lon, lat) = net.coords[net.segments[x].head as usize];
+            unreachable_nodes += 1;
+            if point_in_ring(&ring, lon, lat) && dist_to_ring_m(&ring, lon, lat, olat) > 150.0 {
+                deep += 1;
+            }
+        }
+        assert_eq!(
+            deep, 0,
+            "threshold {threshold} s: {deep} of {unreachable_nodes} points that \
+             cannot reach the target within T sit more than 150 m INSIDE the \
+             served arrive polygon"
+        );
+
+        // And the fixture must actually pose the problem: rebuild the field
+        // the way it was seeded before #544 — every label one seed-edge
+        // weight too large — and watch the same check fail.
+        let inflate = net.node_weights[pe.seeds[0].ebg_id as usize] as i64;
+        let stale: Vec<Option<i64>> = truth.iter().map(|c| c.map(|c| c + inflate)).collect();
+        let stale_settled = arrive_settled(&stale, threshold);
+        let stale_ring = serve_arrive_contour(&net, &stale_settled, target, threshold);
+        let (stale_pct, _, _, stale_worst) =
+            arrive_uncovered_pct(&net, &truth, &stale_ring, threshold, olat);
+        assert!(
+            stale_pct > 1.5,
+            "threshold {threshold} s: the pre-#544 field left only \
+             {stale_pct:.2} % uncovered (worst {stale_worst:.0} m) — this test \
+             would not have caught the defect"
+        );
+    }
+}
+
+#[test]
+fn the_served_arrive_contour_is_one_simple_ccw_polygon_around_its_target() {
+    let net = geometry_lattice();
+    // Row 20 is one-way (period 5): an arrive phantom needs both twins, so
+    // the target sits on the two-way row next to the lattice centre.
+    let target = net.segment_from(21, 20);
+    let pe = net.arrive_phantom(target);
+    let truth = net.true_arrive_costs(&pe);
+    let (olon, olat) = net.segment_start(target);
+
+    let mut prev_area = 0.0f64;
+    for threshold in [300u32, 600, 1200] {
+        let ring =
+            serve_arrive_contour(&net, &arrive_settled(&truth, threshold), target, threshold);
+        assert!(
+            ring_is_closed(&ring),
+            "threshold {threshold} s: arrive ring is not closed ({} points)",
+            ring.len()
+        );
+        if let Err(why) = ring_is_simple(&ring) {
+            panic!("threshold {threshold} s: arrive ring is not simple — {why}");
+        }
+        let area = signed_area2(&ring);
+        assert!(
+            area > 0.0,
+            "threshold {threshold} s: outer ring must be CCW"
+        );
+        assert!(
+            area > prev_area,
+            "threshold {threshold} s: the arrive contour did not grow"
+        );
+        prev_area = area;
+        assert!(
+            point_in_ring(&ring, olon, olat),
+            "threshold {threshold} s: the arrive target is outside its own isochrone"
         );
     }
 }
