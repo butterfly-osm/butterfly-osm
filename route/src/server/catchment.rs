@@ -53,6 +53,24 @@ pub struct CatchmentParams {
     pub remove_outliers: bool,
 }
 
+/// #564: the ONE percentile validation, shared by the REST handler and the
+/// Flight exchange parser so both transports reject the same inputs with the
+/// same message: every value inside `[0, 100]` (NaN fails the range test),
+/// and at least one value. Error texts are the REST handler's historical
+/// ones. Sorting after this check is what makes `total_cmp` in
+/// [`compute_catchment`] a plain ordering rather than a NaN trap.
+pub(crate) fn validate_percentiles(percentiles: &[f32]) -> Result<(), String> {
+    for &p in percentiles {
+        if !(0.0..=100.0).contains(&p) {
+            return Err(format!("Percentile {} out of range [0, 100]", p));
+        }
+    }
+    if percentiles.is_empty() {
+        return Err("percentiles must not be empty".into());
+    }
+    Ok(())
+}
+
 /// A client with a pre-computed drive time
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -316,7 +334,9 @@ pub fn compute_catchment(
     let coords: Vec<(f64, f64)> = clients.iter().map(|c| (c.lon, c.lat)).collect();
 
     let mut percentiles = params.percentiles.clone();
-    percentiles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Validated on both transports (#564: `validate_percentiles`), so no NaN
+    // reaches this sort; `total_cmp` cannot panic either way.
+    percentiles.sort_by(f32::total_cmp);
 
     let mut results = Vec::new();
 
@@ -555,26 +575,9 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         }
     };
 
-    // Validate percentiles
-    for &p in &req.percentiles {
-        if !(0.0..=100.0).contains(&p) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Percentile {} out of range [0, 100]", p),
-                }),
-            )
-                .into_response();
-        }
-    }
-    if req.percentiles.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "percentiles must not be empty".into(),
-            }),
-        )
-            .into_response();
+    // Validate percentiles (#564: same rule as the Flight exchange path)
+    if let Err(e) = validate_percentiles(&req.percentiles) {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
 
     // Validate stores
@@ -822,9 +825,14 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
 // Flight exchange types
 // ===========================================================================
 
-/// Parse catchment parameters from descriptor cmd JSON
+/// Parse catchment parameters from descriptor cmd JSON.
+///
+/// #564: validated exactly like the REST handler (`validate_percentiles`),
+/// and unknown fields fail loud (`deny_unknown_fields`, the #548 rule the
+/// other Flight param structs already follow) instead of being ignored.
 pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentParams, String> {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct ExchangeParams {
         percentiles: Vec<f32>,
         hull_shape: HullMode,
@@ -834,6 +842,7 @@ pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentParams, String> 
 
     let parsed: ExchangeParams =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid catchment params: {}", e))?;
+    validate_percentiles(&parsed.percentiles)?;
 
     Ok(CatchmentParams {
         percentiles: parsed.percentiles,
@@ -1215,5 +1224,68 @@ mod tests {
     #[ignore] // Requires Belgium data
     fn test_catchment_brussels_store_isochrone() {
         // Integration test: compute isochrone catchment for a store in Brussels
+    }
+
+    // ===== #564: percentile validation shared by REST and Flight =====
+
+    #[test]
+    fn validate_percentiles_rejects_empty_out_of_range_and_nan() {
+        assert_eq!(
+            validate_percentiles(&[]).unwrap_err(),
+            "percentiles must not be empty"
+        );
+        assert_eq!(
+            validate_percentiles(&[50.0, 100.5]).unwrap_err(),
+            "Percentile 100.5 out of range [0, 100]"
+        );
+        assert_eq!(
+            validate_percentiles(&[-1.0]).unwrap_err(),
+            "Percentile -1 out of range [0, 100]"
+        );
+        assert!(
+            validate_percentiles(&[50.0, f32::NAN])
+                .unwrap_err()
+                .contains("out of range"),
+            "NaN must fail the range test, never reach the sort"
+        );
+        assert!(validate_percentiles(&[f32::INFINITY]).is_err());
+        assert!(validate_percentiles(&[50.0, 80.0, 100.0, 0.0]).is_ok());
+    }
+
+    #[test]
+    fn exchange_params_rejected_like_rest() {
+        // Empty list: the REST message, verbatim.
+        let e = parse_exchange_params(r#"{"percentiles":[],"hull_shape":"road"}"#).unwrap_err();
+        assert_eq!(e, "percentiles must not be empty");
+        // Out of range (the old exchange parser accepted ANY float).
+        let e =
+            parse_exchange_params(r#"{"percentiles":[50,250],"hull_shape":"road"}"#).unwrap_err();
+        assert_eq!(e, "Percentile 250 out of range [0, 100]");
+        let e = parse_exchange_params(r#"{"percentiles":[-5],"hull_shape":"convex"}"#).unwrap_err();
+        assert_eq!(e, "Percentile -5 out of range [0, 100]");
+        // Unknown field: fail loud (#548 rule), not silently ignored.
+        let e =
+            parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"road","percentile":[80]}"#)
+                .unwrap_err();
+        assert!(
+            e.contains("unknown field") && e.contains("percentile"),
+            "unexpected error text: {e}"
+        );
+    }
+
+    #[test]
+    fn exchange_params_valid_list_passes() {
+        let p = parse_exchange_params(
+            r#"{"percentiles":[80,50],"hull_shape":"road","remove_outliers":false}"#,
+        )
+        .unwrap();
+        assert_eq!(p.percentiles, vec![80.0, 50.0]);
+        assert_eq!(p.hull_shape, HullMode::Road);
+        assert!(!p.remove_outliers);
+        // `remove_outliers` keeps its REST default (true) when absent.
+        let p = parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"convex"}"#).unwrap();
+        assert!(p.remove_outliers);
+        // The same list is what the REST handler validates.
+        assert!(validate_percentiles(&p.percentiles).is_ok());
     }
 }
