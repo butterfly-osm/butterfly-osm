@@ -18,8 +18,14 @@ docker run -d --name butterfly -p 3001:8080 -p 3002:8081 \
   -v "${PWD}/data/belgium:/data" butterfly-route && curl localhost:3001/health
 ```
 
-`protoc` is a build dependency (`gtfs-rt` runs `prost-build`); the toolchain is
-pinned by `rust-version` in the root `Cargo.toml` (edition 2024). Multi-stage image (`rust:1.95-trixie` → `debian:trixie-slim`, non-root); default
+There is no protobuf build dependency: the GTFS-Realtime bindings are generated
+ahead of time and committed (`route/src/transit/gtfs_realtime.rs`, #574).
+`protoc` is needed only by `scripts/gen-gtfs-rt.sh`, run by hand when the
+(frozen) spec moves. The toolchain is pinned by `rust-version` in the root
+`Cargo.toml` (edition 2024).
+
+Multi-stage image
+(`rust:1.95-trixie` → `debian:trixie-slim`, non-root); default
 `CMD` is `serve --data-dir /data --port 8080 --log-format json` — REST on 8080,
 Arrow Flight on 8081. `serve` flags that matter:
 

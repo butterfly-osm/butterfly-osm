@@ -8,11 +8,15 @@
 //! Malformed or unknown updates are logged and skipped — we never panic.
 
 use anyhow::{Context, Result};
-use gtfs_rt::FeedMessage;
-// gtfs-rt 0.5 is built against prost 0.11; we pull in a renamed
-// `prost_011` alias so `FeedMessage::decode` / `encode` resolves against
-// the matching trait version.
-use prost_011::Message;
+use prost::Message;
+
+// The GTFS-Realtime message types are our own committed prost bindings
+// (`gtfs_realtime.rs`, generated from the vendored `gtfs-realtime.proto`
+// by `scripts/gen-gtfs-rt.sh`, #574). They are generated against the same
+// prost the rest of the crate uses, so `Message::decode`/`encode` resolve
+// without a second protobuf runtime in the graph.
+use super::gtfs_realtime as gtfs_rt;
+use super::gtfs_realtime::FeedMessage;
 
 use super::timetable::{StopTime, Timetable};
 
@@ -489,5 +493,165 @@ mod tests {
         // of column `b_pos`).
         let col_idx_x_b = (col_base + (b_pos as u64) * n_trips) as usize;
         assert_eq!(patched.col_departures[col_idx_x_b], 270);
+    }
+
+    /// The wire-format guard for #574.
+    ///
+    /// `testdata/gtfs_rt_feed.pb` is a recorded `FeedMessage` — a header,
+    /// a `TripUpdate` (three `StopTimeUpdate`s mixing `delay`, absolute
+    /// `time`, `uncertainty` and `SKIPPED`), a `VehiclePosition` (floats,
+    /// `Position`, three enums) and an `Alert` (repeated `TimeRange` /
+    /// `EntitySelector`, `TranslatedString`s, two enums). The bytes were
+    /// produced by the implementation this module replaced (`gtfs-rt` 0.5.0
+    /// on prost 0.11), so they are an INDEPENDENT witness of the wire
+    /// format, not an echo of our own bindings.
+    ///
+    /// If a regeneration of `gtfs_realtime.rs` ever changes a tag, a
+    /// cardinality or a scalar type, decoding these frozen bytes yields
+    /// different values — or fails — and this test says so. A silent
+    /// decoding regression is what it exists to make impossible.
+    #[test]
+    fn recorded_feed_message_round_trips() {
+        const RECORDED: &[u8] = include_bytes!("testdata/gtfs_rt_feed.pb");
+
+        let feed = decode(RECORDED).expect("recorded fixture must decode");
+
+        // --- header ------------------------------------------------------
+        assert_eq!(feed.header.gtfs_realtime_version, "2.0");
+        assert_eq!(
+            feed.header.incrementality(),
+            gtfs_rt::feed_header::Incrementality::FullDataset
+        );
+        assert_eq!(feed.header.timestamp, Some(1_746_500_000));
+        assert_eq!(feed.entity.len(), 3);
+
+        // --- entity 1: TripUpdate ---------------------------------------
+        let e0 = &feed.entity[0];
+        assert_eq!(e0.id, "tu-1");
+        assert_eq!(e0.is_deleted, Some(false));
+        let tu = e0.trip_update.as_ref().expect("trip_update");
+        // `trip` is `required` in the schema — a plain field, not an Option.
+        assert_eq!(tu.trip.trip_id.as_deref(), Some("trip_alpha"));
+        assert_eq!(tu.trip.route_id.as_deref(), Some("route_7"));
+        assert_eq!(tu.trip.direction_id, Some(1));
+        assert_eq!(tu.trip.start_time.as_deref(), Some("08:15:00"));
+        assert_eq!(tu.trip.start_date.as_deref(), Some("20260506"));
+        assert_eq!(
+            tu.trip.schedule_relationship(),
+            gtfs_rt::trip_descriptor::ScheduleRelationship::Scheduled
+        );
+        let veh = tu.vehicle.as_ref().expect("vehicle descriptor");
+        assert_eq!(veh.id.as_deref(), Some("veh-42"));
+        assert_eq!(veh.label.as_deref(), Some("42"));
+        assert_eq!(tu.timestamp, Some(1_746_500_010));
+        assert_eq!(tu.delay, Some(120));
+
+        assert_eq!(tu.stop_time_update.len(), 3);
+        let s0 = &tu.stop_time_update[0];
+        assert_eq!(s0.stop_sequence, Some(1));
+        assert_eq!(s0.stop_id.as_deref(), Some("stop_A"));
+        // Negative sint/int32 must survive: a wrong scalar type here would
+        // read back as a huge positive number.
+        assert_eq!(s0.arrival.as_ref().unwrap().delay, Some(-30));
+        assert_eq!(s0.arrival.as_ref().unwrap().uncertainty, Some(15));
+        assert_eq!(s0.arrival.as_ref().unwrap().time, None);
+        assert_eq!(s0.departure.as_ref().unwrap().delay, Some(0));
+        assert_eq!(s0.departure.as_ref().unwrap().uncertainty, None);
+
+        let s1 = &tu.stop_time_update[1];
+        assert_eq!(s1.stop_sequence, Some(2));
+        assert_eq!(s1.arrival.as_ref().unwrap().time, Some(1_746_503_600));
+        assert_eq!(s1.departure.as_ref().unwrap().time, Some(1_746_503_720));
+        assert_eq!(s1.arrival.as_ref().unwrap().delay, None);
+
+        let s2 = &tu.stop_time_update[2];
+        assert_eq!(s2.stop_sequence, Some(3));
+        assert_eq!(
+            s2.schedule_relationship(),
+            gtfs_rt::trip_update::stop_time_update::ScheduleRelationship::Skipped
+        );
+        assert!(s2.arrival.is_none() && s2.departure.is_none());
+
+        // --- entity 2: VehiclePosition ----------------------------------
+        let e1 = &feed.entity[1];
+        assert_eq!(e1.id, "vp-1");
+        let vp = e1.vehicle.as_ref().expect("vehicle position");
+        assert_eq!(
+            vp.trip.as_ref().unwrap().trip_id.as_deref(),
+            Some("trip_beta")
+        );
+        assert_eq!(
+            vp.trip.as_ref().unwrap().schedule_relationship(),
+            gtfs_rt::trip_descriptor::ScheduleRelationship::Added
+        );
+        let pos = vp.position.as_ref().expect("position");
+        // f32/f64 are fixed-width on the wire: exact equality is correct.
+        assert_eq!(pos.latitude, 50.8503_f32);
+        assert_eq!(pos.longitude, 4.3517_f32);
+        assert_eq!(pos.bearing, Some(271.5_f32));
+        assert_eq!(pos.odometer, Some(123_456.75_f64));
+        assert_eq!(pos.speed, Some(13.4_f32));
+        assert_eq!(vp.current_stop_sequence, Some(4));
+        assert_eq!(vp.stop_id.as_deref(), Some("stop_D"));
+        assert_eq!(
+            vp.current_status(),
+            gtfs_rt::vehicle_position::VehicleStopStatus::StoppedAt
+        );
+        assert_eq!(vp.timestamp, Some(1_746_500_020));
+        assert_eq!(
+            vp.congestion_level(),
+            gtfs_rt::vehicle_position::CongestionLevel::RunningSmoothly
+        );
+        assert_eq!(
+            vp.occupancy_status(),
+            gtfs_rt::vehicle_position::OccupancyStatus::FewSeatsAvailable
+        );
+
+        // --- entity 3: Alert --------------------------------------------
+        let e2 = &feed.entity[2];
+        assert_eq!(e2.id, "al-1");
+        let alert = e2.alert.as_ref().expect("alert");
+        assert_eq!(alert.active_period.len(), 1);
+        assert_eq!(alert.active_period[0].start, Some(1_746_400_000));
+        assert_eq!(alert.active_period[0].end, Some(1_746_600_000));
+        assert_eq!(alert.informed_entity.len(), 1);
+        assert_eq!(
+            alert.informed_entity[0].agency_id.as_deref(),
+            Some("agency_1")
+        );
+        assert_eq!(
+            alert.informed_entity[0].route_id.as_deref(),
+            Some("route_7")
+        );
+        assert_eq!(alert.cause(), gtfs_rt::alert::Cause::Construction);
+        assert_eq!(alert.effect(), gtfs_rt::alert::Effect::Detour);
+        assert_eq!(
+            alert.severity_level(),
+            gtfs_rt::alert::SeverityLevel::Warning
+        );
+        let header_text = alert.header_text.as_ref().expect("header_text");
+        assert_eq!(header_text.translation.len(), 1);
+        assert_eq!(header_text.translation[0].text, "Detour on route 7");
+        assert_eq!(header_text.translation[0].language.as_deref(), Some("en"));
+        assert_eq!(
+            alert.url.as_ref().unwrap().translation[0].text,
+            "https://example.invalid/alert/1"
+        );
+
+        // --- re-encode ---------------------------------------------------
+        // Byte-for-byte: prost writes fields in ascending tag order, so a
+        // full decode/encode cycle must reproduce the recorded blob exactly.
+        // Anything else means a field was dropped, reordered or re-typed.
+        let mut reencoded = Vec::with_capacity(RECORDED.len());
+        feed.encode(&mut reencoded)
+            .expect("re-encoding a decoded feed cannot fail");
+        assert_eq!(
+            reencoded.as_slice(),
+            RECORDED,
+            "re-encoded FeedMessage differs from the recorded bytes"
+        );
+
+        // And the second decode is identical to the first.
+        assert_eq!(decode(&reencoded).unwrap(), feed);
     }
 }
