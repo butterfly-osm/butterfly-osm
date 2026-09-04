@@ -63,8 +63,11 @@ jobs:
       #   upstream-clean · rustfmt --check · clippy (all targets, all features)
       #   · build (workspace) · test --workspace (lib AND route/tests/*.rs; the
       #   Belgium-container tests are env-gated on BT_*_CONTAINER and self-skip,
-      #   so no 24 GB artifact is needed) · py_compile of the post-deploy gate
-      #   · the gate's --list-gates registry smoke.
+      #   so no 24 GB artifact is needed) · test --workspace --all-features
+      #   (#556: the `feature = "bench"`-gated tests) · a count guard proving
+      #   the all-features test list is a strict superset of the default one
+      #   · py_compile of the post-deploy gate · the gate's --list-gates
+      #   registry smoke.
       # Each step is wrapped in a ::group:: so the log stays readable.
       - name: ci steps (fmt, clippy, build, tests, post-deploy gate)
         run: bash scripts/ci-steps.sh
