@@ -1390,56 +1390,6 @@ fn pick_targets_width(a32: &[u32]) -> crate::formats::WeightWidth {
     }
 }
 
-/// #350: decode the offsets array body from disk into a heap `Vec<u64>`.
-/// When the file stored u32 offsets, widen on read; otherwise borrow the
-/// u64 slice via `bytemuck::cast_slice` and copy into the Vec (legacy
-/// byte-slice reader is owned-Vec semantics; mmap path has its own
-/// helper that preserves zero-copy when offsets are u64).
-fn read_offsets_vec(
-    bytes: &[u8],
-    offsets_off: usize,
-    n_nodes: usize,
-    offsets_u32: bool,
-) -> Vec<u64> {
-    let n = n_nodes + 1;
-    if offsets_u32 {
-        let body = &bytes[offsets_off..offsets_off + 4 * n];
-        let view: &[u32] = bytemuck::cast_slice(body);
-        view.iter().map(|&v| v as u64).collect()
-    } else {
-        let body = &bytes[offsets_off..offsets_off + 8 * n];
-        let view: &[u64] = bytemuck::cast_slice(body);
-        view.to_vec()
-    }
-}
-
-/// #351: decode the targets array body from disk into a heap
-/// `Vec<u32>`. When the file stored u32 targets, borrow via
-/// `bytemuck::cast_slice` and copy. When u16/u24, widen on read. The
-/// in-memory `flat.targets` type stays `ArcCow<u32>` for hot-path
-/// simplicity (avoids touching ~174 call sites that do `.targets[i]`).
-fn read_targets_vec(
-    bytes: &[u8],
-    targets_off: usize,
-    n_edges: usize,
-    targets_width: crate::formats::WeightWidth,
-) -> Vec<u32> {
-    use crate::formats::WeightWidth;
-    let body_bytes = targets_width.bytes_per_entry() * n_edges;
-    let body = &bytes[targets_off..targets_off + body_bytes];
-    match targets_width {
-        WeightWidth::U32 => bytemuck::cast_slice::<u8, u32>(body).to_vec(),
-        WeightWidth::U16 => body
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]) as u32)
-            .collect(),
-        WeightWidth::U24 => body
-            .chunks_exact(3)
-            .map(|c| u32::from(c[0]) | (u32::from(c[1]) << 8) | (u32::from(c[2]) << 16))
-            .collect(),
-    }
-}
-
 /// mmap-backed targets loader (#351). u32 keeps zero-copy semantics;
 /// u16/u24 widen to a heap `Vec<u32>` once at load.
 fn load_targets_arccow(
@@ -1602,33 +1552,6 @@ fn write_adj_flat_body_and_footer(
     out.extend_from_slice(&file_crc.to_le_bytes());
 }
 
-fn verify_adj_flat_crcs(bytes: &[u8], body_end: usize) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
-        "adj-flat trailing bytes: file_len={} body_end={}",
-        bytes.len(),
-        body_end
-    );
-    let body = &bytes[ADJ_FLAT_HEADER_SIZE..body_end];
-    let computed_body = super::super::formats::crc::checksum(body);
-    let stored_body = u64::from_le_bytes(bytes[body_end..body_end + 8].try_into().unwrap());
-    anyhow::ensure!(
-        computed_body == stored_body,
-        "adj-flat body CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
-        computed_body,
-        stored_body
-    );
-    let computed_file = super::super::formats::crc::checksum(&bytes[..body_end]);
-    let stored_file = u64::from_le_bytes(bytes[body_end + 8..body_end + 16].try_into().unwrap());
-    anyhow::ensure!(
-        computed_file == stored_file,
-        "adj-flat file CRC mismatch: computed 0x{:016X}, stored 0x{:016X}",
-        computed_file,
-        stored_file
-    );
-    Ok(())
-}
-
 /// Serialiser / deserialiser for `UpAdjFlat`.
 pub struct UpAdjFlatFile;
 
@@ -1688,94 +1611,10 @@ impl UpAdjFlatFile {
         out
     }
 
-    /// Legacy reader over a `'static` byte slice. Verifies both body
-    /// and file CRCs before returning. Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the `Arc<Mmap>`
-    /// strong-count tied to the returned struct (no leak).
-    ///
-    /// Historically the returned slices were `Cow::Borrowed` into the
-    /// `'static` input. After #296, this path copies into owned `Vec`s
-    /// so the returned `UpAdjFlat` does not pin the input bytes; the
-    /// production zero-copy lives on [`Self::read_from_mmap_unverified`].
-    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
-        Self::read_from_bytes_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
-    /// walk over the body. Caller MUST guarantee the bytes have already
-    /// been verified upstream (e.g. via the container's lazy CRC layer).
-    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<UpAdjFlat> {
-        Self::read_from_bytes_inner(bytes, false)
-    }
-
-    fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<UpAdjFlat> {
-        let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
-            parse_adj_flat_header(bytes, UP_ADJ_FLAT_MAGIC)?;
-        let (offsets_off, targets_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes,
-            n_edges,
-            has_topo_idx,
-            width,
-            offsets_u32,
-            targets_width,
-        );
-        anyhow::ensure!(
-            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
-            "adj-flat size mismatch: got {}, expected {}",
-            bytes.len(),
-            body_end + ADJ_FLAT_FOOTER_SIZE
-        );
-        // Alignment guard — bytemuck would panic otherwise.
-        anyhow::ensure!(
-            (bytes.as_ptr() as usize).is_multiple_of(8),
-            "adj-flat section bytes not 8-byte aligned (got pointer 0x{:x})",
-            bytes.as_ptr() as usize
-        );
-        if verify {
-            verify_adj_flat_crcs(bytes, body_end)?;
-        }
-
-        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let targets_vec: Vec<u32> = read_targets_vec(bytes, targets_off, n_edges, targets_width);
-        // v2 (#349): decode the weights body from its native width into
-        // a Vec<u32> so the legacy byte-slice path returns the same
-        // public shape it always did. Compact widths shrink the
-        // on-disk bytes; the in-memory copy widens to u32 here, just
-        // like v1.
-        let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
-        let weights_vec: Vec<u32> = match width {
-            crate::formats::WeightWidth::U32 => {
-                bytemuck::cast_slice::<u8, u32>(weights_bytes).to_vec()
-            }
-            crate::formats::WeightWidth::U16 => {
-                crate::formats::cch_weights::decode_u16_to_u32_vec(weights_bytes)
-            }
-            crate::formats::WeightWidth::U24 => {
-                crate::formats::cch_weights::decode_u24_to_u32_vec(weights_bytes)
-            }
-        };
-        let topo_edge_idx: &[u32] = if has_topo_idx {
-            bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
-        } else {
-            &[]
-        };
-        // Legacy zero-copy path: copy into owned `Vec`s so the on-disk
-        // → in-memory shape matches the post-#296 `ArcCow<T>` field
-        // type. The `Arc<Mmap>`-backed un-leak path is
-        // [`Self::read_from_mmap_unverified`].
-        Ok(UpAdjFlat {
-            offsets: ArcCow::from_vec(offsets_vec),
-            targets: ArcCow::from_vec(targets_vec),
-            weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
-            topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>` clone
     /// for the returned flat's lifetime — when the flat drops, the
     /// strong count decreases. Once every clone drops, the `Mmap`
-    /// drops, `munmap` fires, and the kernel reclaims the pages. This
-    /// is the un-leak counterpart to [`Self::read_from_bytes`].
+    /// drops, `munmap` fires, and the kernel reclaims the pages.
     ///
     /// `byte_offset` and `byte_len` are the position and length of the
     /// section within the container, as recorded in the directory
@@ -1790,6 +1629,17 @@ impl UpAdjFlatFile {
             byte_offset.saturating_add(byte_len) <= mmap.len(),
             "up_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
             mmap.len()
+        );
+        // Section start must be 8-byte aligned: every sub-array is
+        // read through `bytemuck`/`ArcCow` casts that require it, and
+        // a misaligned base would panic inside the cast instead of
+        // reporting a malformed container. The container writer pads
+        // to 8 bytes; this rejects anything that does not.
+        anyhow::ensure!(
+            (mmap.as_ptr() as usize)
+                .wrapping_add(byte_offset)
+                .is_multiple_of(8),
+            "up_adj_flat section bytes not 8-byte aligned (byte_offset={byte_offset})"
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
@@ -1874,58 +1724,6 @@ impl DownAdjFlatFile {
         out
     }
 
-    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
-        Self::read_from_bytes_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
-    /// walk. Caller MUST guarantee the bytes are already verified.
-    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<DownAdjFlat> {
-        Self::read_from_bytes_inner(bytes, false)
-    }
-
-    fn read_from_bytes_inner(bytes: &'static [u8], verify: bool) -> anyhow::Result<DownAdjFlat> {
-        let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
-            parse_adj_flat_header(bytes, DOWN_ADJ_FLAT_MAGIC)?;
-        anyhow::ensure!(
-            !has_topo_idx,
-            "DownAdjFlat must not carry topo_edge_idx (has_topo_idx=1)"
-        );
-        let (offsets_off, targets_off, weights_off, _, body_end) =
-            body_layout(n_nodes, n_edges, false, width, offsets_u32, targets_width);
-        anyhow::ensure!(
-            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
-            "adj-flat size mismatch"
-        );
-        anyhow::ensure!(
-            (bytes.as_ptr() as usize).is_multiple_of(8),
-            "adj-flat section bytes not 8-byte aligned"
-        );
-        if verify {
-            verify_adj_flat_crcs(bytes, body_end)?;
-        }
-        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let targets_vec: Vec<u32> = read_targets_vec(bytes, targets_off, n_edges, targets_width);
-        let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
-        let weights_vec: Vec<u32> = match width {
-            crate::formats::WeightWidth::U32 => {
-                bytemuck::cast_slice::<u8, u32>(weights_bytes).to_vec()
-            }
-            crate::formats::WeightWidth::U16 => {
-                crate::formats::cch_weights::decode_u16_to_u32_vec(weights_bytes)
-            }
-            crate::formats::WeightWidth::U24 => {
-                crate::formats::cch_weights::decode_u24_to_u32_vec(weights_bytes)
-            }
-        };
-        // Legacy zero-copy path now copies into owned Vecs (#296).
-        Ok(DownAdjFlat {
-            offsets: ArcCow::from_vec(offsets_vec),
-            targets: ArcCow::from_vec(targets_vec),
-            weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
-        })
-    }
-
     /// Production mmap-backed reader (#296). See
     /// [`UpAdjFlatFile::read_from_mmap_unverified`] for the un-leak
     /// rationale; identical pattern.
@@ -1938,6 +1736,17 @@ impl DownAdjFlatFile {
             byte_offset.saturating_add(byte_len) <= mmap.len(),
             "down_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
             mmap.len()
+        );
+        // Section start must be 8-byte aligned: every sub-array is
+        // read through `bytemuck`/`ArcCow` casts that require it, and
+        // a misaligned base would panic inside the cast instead of
+        // reporting a malformed container. The container writer pads
+        // to 8 bytes; this rejects anything that does not.
+        anyhow::ensure!(
+            (mmap.as_ptr() as usize)
+                .wrapping_add(byte_offset)
+                .is_multiple_of(8),
+            "down_adj_flat section bytes not 8-byte aligned (byte_offset={byte_offset})"
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
@@ -2025,69 +1834,6 @@ impl DownReverseAdjFlatFile {
         out
     }
 
-    pub fn read_from_bytes(bytes: &'static [u8]) -> anyhow::Result<DownReverseAdjFlat> {
-        Self::read_from_bytes_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes`] but elides the per-format CRC
-    /// walk. Caller MUST guarantee the bytes are already verified.
-    pub fn read_from_bytes_unverified(bytes: &'static [u8]) -> anyhow::Result<DownReverseAdjFlat> {
-        Self::read_from_bytes_inner(bytes, false)
-    }
-
-    fn read_from_bytes_inner(
-        bytes: &'static [u8],
-        verify: bool,
-    ) -> anyhow::Result<DownReverseAdjFlat> {
-        let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
-            parse_adj_flat_header(bytes, DOWN_REV_ADJ_FLAT_MAGIC)?;
-        let (offsets_off, sources_off, weights_off, topo_off, body_end) = body_layout(
-            n_nodes,
-            n_edges,
-            has_topo_idx,
-            width,
-            offsets_u32,
-            targets_width,
-        );
-        anyhow::ensure!(
-            bytes.len() == body_end + ADJ_FLAT_FOOTER_SIZE,
-            "adj-flat size mismatch"
-        );
-        anyhow::ensure!(
-            (bytes.as_ptr() as usize).is_multiple_of(8),
-            "adj-flat section bytes not 8-byte aligned"
-        );
-        if verify {
-            verify_adj_flat_crcs(bytes, body_end)?;
-        }
-        let offsets_vec: Vec<u64> = read_offsets_vec(bytes, offsets_off, n_nodes, offsets_u32);
-        let sources_vec: Vec<u32> = read_targets_vec(bytes, sources_off, n_edges, targets_width);
-        let weights_bytes = &bytes[weights_off..weights_off + width.bytes_per_entry() * n_edges];
-        let weights_vec: Vec<u32> = match width {
-            crate::formats::WeightWidth::U32 => {
-                bytemuck::cast_slice::<u8, u32>(weights_bytes).to_vec()
-            }
-            crate::formats::WeightWidth::U16 => {
-                crate::formats::cch_weights::decode_u16_to_u32_vec(weights_bytes)
-            }
-            crate::formats::WeightWidth::U24 => {
-                crate::formats::cch_weights::decode_u24_to_u32_vec(weights_bytes)
-            }
-        };
-        let topo_edge_idx: &[u32] = if has_topo_idx {
-            bytemuck::cast_slice(&bytes[topo_off..topo_off + 4 * n_edges])
-        } else {
-            &[]
-        };
-        // Legacy zero-copy path now copies into owned Vecs (#296).
-        Ok(DownReverseAdjFlat {
-            offsets: ArcCow::from_vec(offsets_vec),
-            sources: ArcCow::from_vec(sources_vec),
-            weights: crate::formats::WeightArray::from_vec_u32(weights_vec),
-            topo_edge_idx: ArcCow::from_vec(topo_edge_idx.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). See
     /// [`UpAdjFlatFile::read_from_mmap_unverified`] for the un-leak
     /// rationale; identical pattern.
@@ -2100,6 +1846,17 @@ impl DownReverseAdjFlatFile {
             byte_offset.saturating_add(byte_len) <= mmap.len(),
             "down_reverse_adj_flat section out of bounds: off={byte_offset} len={byte_len} mmap_len={}",
             mmap.len()
+        );
+        // Section start must be 8-byte aligned: every sub-array is
+        // read through `bytemuck`/`ArcCow` casts that require it, and
+        // a misaligned base would panic inside the cast instead of
+        // reporting a malformed container. The container writer pads
+        // to 8 bytes; this rejects anything that does not.
+        anyhow::ensure!(
+            (mmap.as_ptr() as usize)
+                .wrapping_add(byte_offset)
+                .is_multiple_of(8),
+            "down_reverse_adj_flat section bytes not 8-byte aligned (byte_offset={byte_offset})"
         );
         let bytes = &mmap[byte_offset..byte_offset + byte_len];
         let (has_topo_idx, width, offsets_u32, targets_width, n_nodes, n_edges) =
@@ -5044,24 +4801,21 @@ mod step_a_tests {
 
     // ----- #150 file format tests --------------------------------------
 
-    /// Leak a buffer to `&'static [u8]` and align its start to 8 bytes
-    /// so `read_from_bytes` can `bytemuck::cast_slice::<u64>` cleanly.
-    /// The container writer guarantees this alignment in production; we
-    /// reproduce it manually here because `Vec<u8>` has only 1-byte
-    /// alignment.
-    fn leak_aligned(bytes: Vec<u8>) -> &'static [u8] {
-        // Allocate `Vec<u64>` (8-byte aligned) of the right capacity and
-        // copy bytes into it, then reinterpret as &[u8].
-        let n_u64 = bytes.len().div_ceil(8);
-        let mut buf: Vec<u64> = vec![0u64; n_u64];
-        // SAFETY: bytemuck::cast_slice_mut on a u64 vec gives a u8 view
-        // that is exactly `n_u64 * 8` bytes long (>= bytes.len()).
-        let view: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..]);
-        view[..bytes.len()].copy_from_slice(&bytes);
-        let leaked: &'static [u64] = Box::leak(buf.into_boxed_slice());
-        let raw: &'static [u8] = bytemuck::cast_slice(leaked);
-        // Trim to exactly the encoded length.
-        &raw[..bytes.len()]
+    /// Write an encoded section to a temp file and map it read-only —
+    /// the same shape the container hands to
+    /// `read_from_mmap_unverified` in production. The mmap base is
+    /// page-aligned, so a section at offset 0 satisfies the reader's
+    /// 8-byte alignment requirement without any manual padding.
+    ///
+    /// The `NamedTempFile` is returned so the caller keeps it alive for
+    /// the duration of the test; the mapping is what the reader holds.
+    fn map_section(bytes: &[u8]) -> (tempfile::NamedTempFile, std::sync::Arc<memmap2::Mmap>) {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("temp file");
+        tmp.write_all(bytes).expect("write section");
+        tmp.flush().expect("flush section");
+        let mmap = crate::formats::mmap::map_readonly(tmp.path()).expect("map section");
+        (tmp, mmap)
     }
 
     #[test]
@@ -5069,8 +4823,9 @@ mod step_a_tests {
         let (topo, w) = make_cch();
         let flat = UpAdjFlat::build_with(&topo, &w, true);
         let encoded = UpAdjFlatFile::encode(&flat);
-        let leaked = leak_aligned(encoded);
-        let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode round-trip");
+        let (_tmp, mmap) = map_section(&encoded);
+        let decoded = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, encoded.len())
+            .expect("decode round-trip");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
         assert_eq!(
@@ -5085,8 +4840,9 @@ mod step_a_tests {
         let (topo, w) = make_cch();
         let flat = UpAdjFlat::build(&topo, &w);
         let encoded = UpAdjFlatFile::encode(&flat);
-        let leaked = leak_aligned(encoded);
-        let decoded = UpAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        let (_tmp, mmap) = map_section(&encoded);
+        let decoded =
+            UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, encoded.len()).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
         assert_eq!(
@@ -5101,8 +4857,9 @@ mod step_a_tests {
         let (topo, w) = make_cch();
         let flat = DownAdjFlat::build(&topo, &w);
         let encoded = DownAdjFlatFile::encode(&flat);
-        let leaked = leak_aligned(encoded);
-        let decoded = DownAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        let (_tmp, mmap) = map_section(&encoded);
+        let decoded =
+            DownAdjFlatFile::read_from_mmap_unverified(mmap, 0, encoded.len()).expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.targets, &*flat.targets);
         assert_eq!(
@@ -5116,8 +4873,9 @@ mod step_a_tests {
         let (topo, w) = make_cch();
         let flat = DownReverseAdjFlat::build_with(&topo, &w, true);
         let encoded = DownReverseAdjFlatFile::encode(&flat);
-        let leaked = leak_aligned(encoded);
-        let decoded = DownReverseAdjFlatFile::read_from_bytes(leaked).expect("decode");
+        let (_tmp, mmap) = map_section(&encoded);
+        let decoded = DownReverseAdjFlatFile::read_from_mmap_unverified(mmap, 0, encoded.len())
+            .expect("decode");
         assert_eq!(&*decoded.offsets, &*flat.offsets);
         assert_eq!(&*decoded.sources, &*flat.sources);
         assert_eq!(
@@ -5127,36 +4885,22 @@ mod step_a_tests {
         assert_eq!(&*decoded.topo_edge_idx, &*flat.topo_edge_idx);
     }
 
-    #[test]
-    fn up_adj_flat_file_detects_corruption() {
-        let (topo, w) = make_cch();
-        let flat = UpAdjFlat::build(&topo, &w);
-        let mut encoded = UpAdjFlatFile::encode(&flat);
-        // Flip a byte in the body region.
-        let body_off = ADJ_FLAT_HEADER_SIZE + 8; // somewhere in offsets array
-        encoded[body_off] ^= 0xFF;
-        let leaked = leak_aligned(encoded);
-        let res = UpAdjFlatFile::read_from_bytes(leaked);
-        assert!(res.is_err(), "corruption should fail CRC check");
-        let msg = res.err().expect("expected error").to_string();
-        assert!(msg.contains("CRC mismatch"), "unexpected error: {}", msg);
-    }
-
+    /// A section whose container offset is not 8-byte aligned must be
+    /// rejected rather than reinterpreted. Without the reader's guard the
+    /// first `bytemuck` cast panics instead of reporting a malformed
+    /// container.
     #[test]
     fn up_adj_flat_file_detects_misalignment() {
         let (topo, w) = make_cch();
         let flat = UpAdjFlat::build(&topo, &w);
         let encoded = UpAdjFlatFile::encode(&flat);
-        // Build a 1-byte misaligned static slice by leaking a buffer with
-        // a leading byte then offsetting into it.
-        let mut padded = vec![0u64; encoded.len().div_ceil(8) + 1];
-        let view: &mut [u8] = bytemuck::cast_slice_mut(&mut padded[..]);
-        view[1..1 + encoded.len()].copy_from_slice(&encoded);
-        let leaked: &'static [u64] = Box::leak(padded.into_boxed_slice());
-        let raw: &'static [u8] = bytemuck::cast_slice(leaked);
-        let misaligned: &'static [u8] = &raw[1..1 + encoded.len()];
-        let res = UpAdjFlatFile::read_from_bytes(misaligned);
-        assert!(res.is_err(), "misaligned input must be rejected");
+        // Place the section one byte into the file. The mmap base is
+        // page-aligned, so offset 1 makes every sub-array odd-addressed.
+        let mut shifted = vec![0u8; 1];
+        shifted.extend_from_slice(&encoded);
+        let (_tmp, mmap) = map_section(&shifted);
+        let res = UpAdjFlatFile::read_from_mmap_unverified(mmap, 1, encoded.len());
+        assert!(res.is_err(), "misaligned section must be rejected");
         let msg = res.err().expect("expected error").to_string();
         assert!(
             msg.contains("not 8-byte aligned"),
@@ -5289,7 +5033,7 @@ mod step_a_tests {
     // Each test builds a small synthetic UpAdjFlat / DownAdjFlat /
     // DownReverseAdjFlat with weights at one specific WeightArray
     // variant, encodes via `*File::encode`, then decodes via
-    // `read_from_bytes` and asserts:
+    // `read_from_mmap_unverified` and asserts:
     //   - n_edges / n_nodes preserved
     //   - the decoded WeightArray reads back the same `get(i)` for
     //     every slot
@@ -5361,8 +5105,8 @@ mod step_a_tests {
         let flat = build_flat_with_width(crate::formats::WeightWidth::U32);
         let bytes = UpAdjFlatFile::encode(&flat);
         assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U32);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.weights.len(), 3);
         for i in 0..3 {
             assert_eq!(back.weights.get(i), flat.weights.get(i));
@@ -5376,8 +5120,8 @@ mod step_a_tests {
         assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U16);
         // n_edges=3 (odd) so u16 body is padded by 2 bytes — round-trip
         // proves the padding is correctly consumed by the reader.
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.weights.len(), 3);
         assert_eq!(back.weights.get(0), 10);
         assert_eq!(
@@ -5394,8 +5138,8 @@ mod step_a_tests {
         let bytes = UpAdjFlatFile::encode(&flat);
         assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U24);
         // n_edges=3 (so 9 bytes of u24 body, padded by 3 to 12).
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.weights.len(), 3);
         assert_eq!(back.weights.get(0), 100_000);
         assert_eq!(
@@ -5426,8 +5170,8 @@ mod step_a_tests {
         flat.weights = WeightArray::from_vec_u16(v16);
         let bytes = DownAdjFlatFile::encode(&flat);
         assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U16);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = DownAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = DownAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         for i in 0..flat.weights.len() {
             assert_eq!(back.weights.get(i), flat.weights.get(i));
         }
@@ -5437,7 +5181,7 @@ mod step_a_tests {
     fn up_adj_flat_v3_picks_u32_offsets_for_small_data() {
         // Synthetic flats have tiny offset counts, so `pick_offsets_u32`
         // selects u32. Header byte 7 bit 2 must be set; the round-trip
-        // through `read_from_bytes` must reconstruct an identical
+        // through `read_from_mmap_unverified` must reconstruct an identical
         // `flat.offsets` Vec.
         let flat = build_flat_with_width(crate::formats::WeightWidth::U32);
         let bytes = UpAdjFlatFile::encode(&flat);
@@ -5445,8 +5189,8 @@ mod step_a_tests {
             bytes[7] & ADJ_FLAT_OFFSETS_U32_BIT != 0,
             "small flats should pack u32 offsets (header byte 7 bit 2 set)"
         );
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         // offsets reconstructed byte-for-byte (widened from u32 → u64)
         assert_eq!(back.offsets.as_slice(), flat.offsets.as_slice());
     }
@@ -5474,8 +5218,8 @@ mod step_a_tests {
             0,
             "large offsets must force the u64 path (header byte 7 bit 2 clear)"
         );
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.offsets.as_slice(), flat.offsets.as_slice());
     }
 
@@ -5490,8 +5234,8 @@ mod step_a_tests {
         let flat = build_flat_with_width(crate::formats::WeightWidth::U32);
         let bytes = UpAdjFlatFile::encode(&flat);
         assert_targets_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U16);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.targets.as_slice(), flat.targets.as_slice());
     }
 
@@ -5509,8 +5253,8 @@ mod step_a_tests {
         };
         let bytes = UpAdjFlatFile::encode(&flat);
         assert_targets_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U24);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.targets.as_slice(), &targets[..]);
     }
 
@@ -5528,8 +5272,8 @@ mod step_a_tests {
         };
         let bytes = UpAdjFlatFile::encode(&flat);
         assert_targets_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U32);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = UpAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = UpAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         assert_eq!(back.targets.as_slice(), &targets[..]);
     }
 
@@ -5551,8 +5295,8 @@ mod step_a_tests {
         flat.weights = WeightArray::from_u24_bytes(bytes24, widened.len());
         let bytes = DownReverseAdjFlatFile::encode(&flat);
         assert_width_code(&bytes, ADJ_FLAT_WIDTH_CODE_U24);
-        let static_bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let back = DownReverseAdjFlatFile::read_from_bytes(static_bytes).unwrap();
+        let (_tmp, mmap) = map_section(&bytes);
+        let back = DownReverseAdjFlatFile::read_from_mmap_unverified(mmap, 0, bytes.len()).unwrap();
         for i in 0..flat.weights.len() {
             assert_eq!(back.weights.get(i), flat.weights.get(i));
         }
