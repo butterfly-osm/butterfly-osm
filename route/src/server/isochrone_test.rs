@@ -1407,3 +1407,52 @@ mod arrive_reach_tests {
         assert_eq!(out.len(), 2, "an unreached edge must not be drawn");
     }
 }
+
+/// #544: the arrive field's seed shift is applied in exactly two places and
+/// removed in exactly one, all three inside `isochrone_polygons` /
+/// `isochrone_center_seeds` — code that only runs with a loaded
+/// `ServerState`, i.e. a built container, i.e. not a unit test. The
+/// arithmetic itself is brute-forced in `arrive_reach_tests` and driven end
+/// to end on a real contraction in `tests/synthetic_topology.rs`; what is
+/// left unguarded is that the PIPELINE still spells it. Pin that on the
+/// pipeline's own source, the way #559 pinned the WKB guard's order.
+mod arrive_shift_source_invariants {
+    const GEOMETRY: &str = include_str!("geometry.rs");
+    const PHANTOM: &str = include_str!("phantom.rs");
+
+    #[test]
+    fn the_arrive_field_is_bounded_and_normalised_by_the_seed_shift() {
+        assert_eq!(
+            GEOMETRY
+                .matches("max_threshold.saturating_add(shift)")
+                .count(),
+            1,
+            "#544: the arrive field — and ONLY it — must be bounded at \
+             T + shift. A state whose true cost is T carries the label \
+             T + shift, so a bound of T alone silently drops the outermost \
+             ring of the answer; the depart field has no shift to add."
+        );
+        assert_eq!(
+            GEOMETRY.matches("dist.saturating_sub(shift)").count(),
+            1,
+            "#544: every label must be normalised by the seed shift exactly \
+             once; without it the polygon serves the T − w(seed edge) \
+             isochrone, with it twice it over-reaches"
+        );
+    }
+
+    #[test]
+    fn an_isochrone_center_is_seeded_by_the_one_shared_convention() {
+        assert!(
+            PHANTOM.contains("pe.query_seeds_and_shift("),
+            "#544: isochrone centers take their seeds from the SAME \
+             convention /route and the many-to-one matrix field use"
+        );
+        assert!(
+            !PHANTOM.contains("node_weights[sd.ebg_id as usize].saturating_sub(sd.part_time)"),
+            "#544: the pre-fix arrive seed (`w(edge) − part_time`, no shift) \
+             is back — that is `shift − part_time` plus a whole seed-edge \
+             weight, and it shifts the ENTIRE field"
+        );
+    }
+}
