@@ -7068,6 +7068,52 @@ fn phast_dir(
 }
 
 #[cfg(test)]
+mod lazy_lex_relax_tests {
+    //! #557: `SearchState2::relax` re-derives the canonical (time, then
+    //! length) tie-break as a LAZY two-branch relaxation — the strictly
+    //! -better branch does a decrease-key, the equal-time-shorter-length
+    //! branch re-pushes an already-settled node. The two branches cannot be
+    //! collapsed into one `lex_better` call without losing that distinction,
+    //! so the equivalence is pinned here instead: on an already-visited node,
+    //! `relax` adopts the label IFF `lex_better` says so, and the label it
+    //! keeps is the lexicographic minimum.
+    use super::*;
+    use crate::matrix::lex_better;
+
+    #[test]
+    fn relax_adopts_iff_lex_better() {
+        let vals = [0u32, 1, 2, 7, u32::MAX - 1];
+        for &cur_t in &vals {
+            for &cur_l in &vals {
+                for &t in &vals {
+                    for &l in &vals {
+                        let mut st = SearchState2::new(1, 4);
+                        st.start_search();
+                        // Seed node 0 with (cur_t, cur_l), then settle it so
+                        // the equal-time branch exercises its re-push path.
+                        assert!(st.relax(0, cur_t, cur_l), "seed must be taken");
+                        let _ = st.pop();
+                        let adopted = st.relax(0, t, l);
+                        assert_eq!(
+                            adopted,
+                            lex_better(t, l, cur_t, cur_l),
+                            "relax({t},{l}) over ({cur_t},{cur_l}) disagrees \
+                             with lex_better"
+                        );
+                        let want = if adopted { (t, l) } else { (cur_t, cur_l) };
+                        assert_eq!(
+                            (st.entries[0].dist, st.lats[0]),
+                            want,
+                            "relax kept a non-lex-minimal label"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod router_cost_cells_tests {
     //! #562 — the shape-aware router's measured cost cells: one set per
     //! channel count, CAS-updated. Hermetic: fresh `CostCells` instances, so
