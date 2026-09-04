@@ -120,6 +120,14 @@ output keyed by OSM node ids, for flow analytics). `DoExchange`: `catchment`,
 `edges_flow` — both take an input table. Call the engine from code over Flight;
 REST is for humans and single queries.
 
+Both matrix surfaces report the plan the shape-aware router (#526/#527)
+actually ran — `bucket`, `phast_fwd`, `phast_rev`, or `mixed` when a tiled
+Flight request straddled two. `/table` sets the `x-butterfly-matrix-plan`
+response header; the Flight `matrix` completeness trailer carries the same
+value under `plan`. The value is a literal inside the engine that ran, threaded
+out untouched, so it is the branch taken and not a re-derivation — which is why
+the post-deploy gate asserts on it instead of on wall clock (#594).
+
 `uncertainty=bands` on `/table`, `/isochrone` and `/trip` adds best and worst
 alongside the typical answer (`durations_best` / `durations_worst`, extra `best`
 / `worst` contour features, `duration_best` / `duration_worst` totals). Car-only,
@@ -180,7 +188,8 @@ Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` — print it with
 `cargo fmt --check`, clippy with warnings as errors (all targets, all features),
 `cargo test --workspace`, `cargo test --workspace --all-features` (#556), a count
 guard proving the all-features test list is a strict superset of the default one,
-and the gate's `py_compile` + `--list-gates` smoke. There is no separate
+the gate's `py_compile` + `--list-gates` smoke, and the gate's own offline unit
+tests (`bench/test_postdeploy_gate.py`). There is no separate
 `cargo build` step: `cargo test --workspace` already links `butterfly-route` and
 `butterfly-dl`, and `butterfly-bench` is a `--all-features` bin (#591).
 `scripts/hooks/install.sh` installs the hook. Skip it with
@@ -197,6 +206,14 @@ against crow-fly distance, plausible mean speed, distance ≡ polyline ≡ Σ
 annotations, `/route` and `/table` agreeing within 3 s, A→B vs B→A symmetry,
 isochrone topology and snapped-origin containment, `edges_batch` sums vs live
 `/route`, matrix completeness and sparse-output consistency.
+
+The suite asserts **no wall-clock number**. Where it once inferred the matrix
+plan from a scaling ratio — flaky on a loaded runner, so it had been downgraded
+to a warning — it now reads the plan the server reports for the very request it
+made, and fails on the wrong one (#594). `BUTTERFLY_MATRIX_ALGO=bucket|phast`
+cannot help here: it is read once at the first matrix call and frozen, so a
+live server cannot be flipped; the gate exercises both branches by SHAPE
+instead (1×N and N×1 must be `phast_*`, a balanced N×N must be `bucket`).
 
 **One invariant per user ticket.** `gate_ticket_invariants` names every
 user-reported failure class and either checks it directly or points at the gate

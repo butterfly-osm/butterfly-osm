@@ -2630,9 +2630,66 @@ impl SortedBuckets {
 // PUBLIC API
 // =============================================================================
 
+/// #594: the plan a many-to-many call actually ran.
+///
+/// The value is set by the engine function that did the work — never
+/// re-derived from the shape or from the cost cells afterwards — so a reader
+/// of [`BucketM2MStats::plan`] is reading the branch that was taken, not a
+/// second opinion about which branch should have been taken. Threaded out to
+/// `/table` (response header) and to the Flight `matrix` completeness trailer
+/// so a client can assert the plan PER REQUEST instead of inferring it from
+/// wall clock.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixPlan {
+    /// Bucket many-to-many: ~(S + T) hierarchy sweeps + join. The
+    /// balanced-shape plan, and the fallback whenever no PHAST context is
+    /// available (custom weights, containers without the forward-down flats).
+    #[default]
+    Bucket,
+    /// #526 sublinear plan: one seeded bounded FORWARD PHAST field per source
+    /// (few sources, many targets).
+    PhastFwd,
+    /// #527 sublinear plan: one seeded bounded REVERSE PHAST field per target
+    /// (many sources, few targets).
+    PhastRev,
+    /// More than one plan ran under a single request — the streamed Flight
+    /// matrix picks a plan per source tile and the tiles disagreed.
+    Mixed,
+}
+
+impl MatrixPlan {
+    /// Wire name — the closed set the API surfaces and clients parse.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatrixPlan::Bucket => "bucket",
+            MatrixPlan::PhastFwd => "phast_fwd",
+            MatrixPlan::PhastRev => "phast_rev",
+            MatrixPlan::Mixed => "mixed",
+        }
+    }
+
+    /// True for the plans whose cost is sublinear in the LONG side of a
+    /// lopsided shape (one field per endpoint of the short side).
+    pub fn is_phast(self) -> bool {
+        matches!(self, MatrixPlan::PhastFwd | MatrixPlan::PhastRev)
+    }
+
+    /// Fold another plan into this one: agreement wins, disagreement is
+    /// [`MatrixPlan::Mixed`]. Used by the tiled Flight producer.
+    pub fn merge(self, other: MatrixPlan) -> MatrixPlan {
+        if self == other {
+            self
+        } else {
+            MatrixPlan::Mixed
+        }
+    }
+}
+
 /// Statistics from bucket many-to-many computation
 #[derive(Debug, Default, Clone)]
 pub struct BucketM2MStats {
+    /// #594: which engine produced this result — set by that engine.
+    pub plan: MatrixPlan,
     pub n_sources: usize,
     pub n_targets: usize,
     pub forward_visited: usize,
@@ -6100,15 +6157,21 @@ mod max_minutes_bound_tests {
         );
     }
 
+    /// The process-wide `COST_1CH.scan` cell is SNAPSHOTTED by
+    /// `two_channel_engines_feed_two_channel_cells`, so no other test may run
+    /// a 1-channel forward PHAST engine (its only writer) at the same time.
+    /// Every test in this module that does takes this lock (#594).
+    static ONE_CH_SCAN_CELL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// #562 wiring: the 2-channel engines feed the 2-channel cell set and
-    /// leave the 1-channel forward-scan cell alone. `COST_1CH.scan` is the
-    /// one cell no other test in this crate feeds (only the 1-channel forward
-    /// lopsided path writes it, and it is reached solely through the routed
-    /// entry with a PHAST context from the server), so the snapshot is stable
-    /// under a parallel test run; the sweep / reverse cells are covered by
-    /// the hermetic `router_cost_cells_tests`.
+    /// leave the 1-channel forward-scan cell alone. `COST_1CH.scan` is written
+    /// only by the 1-channel forward lopsided path, and every test that runs
+    /// it holds `ONE_CH_SCAN_CELL` — so the snapshot is stable under a
+    /// parallel test run; the sweep / reverse cells are covered by the
+    /// hermetic `router_cost_cells_tests`.
     #[test]
     fn two_channel_engines_feed_two_channel_cells() {
+        let _guard = ONE_CH_SCAN_CELL.lock().unwrap_or_else(|e| e.into_inner());
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
         let mode = crate::profile_abi::Mode(0);
         let one_scan_before = COST_1CH.scan.load(std::sync::atomic::Ordering::Relaxed);
@@ -6161,6 +6224,173 @@ mod max_minutes_bound_tests {
                 "2-channel {name} cell not fed"
             );
         }
+    }
+
+    /// #594: the plan a routed matrix call REPORTS is the branch it took.
+    ///
+    /// The selection is driven by cost cells this test OWNS — `CostCells::plan`
+    /// is pure over its cell set — so every shape below is decided
+    /// deterministically instead of racing the process-wide EWMA the rest of
+    /// this binary feeds. Each case pins one dispatch arm on BOTH routed
+    /// entry points; the reported value comes from the engine that ran (it is
+    /// a literal inside each engine function, returned untouched), so a case
+    /// that fails means the dispatch and the report disagree.
+    #[test]
+    fn reported_plan_is_the_dispatched_engine() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _guard = ONE_CH_SCAN_CELL.lock().unwrap_or_else(|e| e.into_inner());
+        let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
+        let mode = crate::profile_abi::Mode(0);
+
+        // One full scan far cheaper than one sweep → PHAST wins every shape.
+        let phast_cheap = CostCells::new();
+        phast_cheap.sweep.store(1_000_000, Relaxed);
+        phast_cheap.scan.store(1, Relaxed);
+        phast_cheap.scan_rev.store(1, Relaxed);
+        // The inverse: one scan costs more than every sweep put together.
+        let bucket_cheap = CostCells::new();
+        bucket_cheap.sweep.store(1, Relaxed);
+        bucket_cheap.scan.store(u32::MAX as u64, Relaxed);
+        bucket_cheap.scan_rev.store(u32::MAX as u64, Relaxed);
+
+        let one = &seeds[..1];
+        let many = &seeds[..];
+        /// (cost cells, sources, targets, expected plan, label)
+        type PlanCase<'a> = (
+            &'a CostCells,
+            &'a [Vec<EngineSeed>],
+            &'a [Vec<EngineSeed>],
+            MatrixPlan,
+            &'static str,
+        );
+        let cases: [PlanCase; 5] = [
+            // Lopsided 1xN: one FORWARD field per source.
+            (
+                &phast_cheap,
+                one,
+                many,
+                MatrixPlan::PhastFwd,
+                "1xN, scan cheap",
+            ),
+            // Lopsided Nx1: one REVERSE field per target (#527).
+            (
+                &phast_cheap,
+                many,
+                one,
+                MatrixPlan::PhastRev,
+                "Nx1, scan cheap",
+            ),
+            // Square: still PHAST when a scan is this cheap — the router is a
+            // cost model, not a shape rule, and the report follows it.
+            (
+                &phast_cheap,
+                many,
+                many,
+                MatrixPlan::PhastFwd,
+                "NxN, scan cheap",
+            ),
+            // The same shapes with the realistic cost ordering: bucket.
+            (
+                &bucket_cheap,
+                one,
+                many,
+                MatrixPlan::Bucket,
+                "1xN, scan dear",
+            ),
+            (
+                &bucket_cheap,
+                many,
+                many,
+                MatrixPlan::Bucket,
+                "NxN, scan dear",
+            ),
+        ];
+        for (cells, s, t, want, label) in cases {
+            let (_m, st) = table_seeded_bounded_routed_with_cells(
+                cells,
+                n_nodes,
+                &up,
+                &down,
+                Some((&dfwd_t, mode)),
+                s,
+                t,
+                u32::MAX,
+            );
+            assert_eq!(st.plan, want, "1-channel {label}");
+            let (_time, _len, st2) = table_seeded_bounded_routed_2ch_with_cells(
+                cells,
+                n_nodes,
+                &up,
+                &down,
+                &up_lat,
+                &dn_lat,
+                Some((&dfwd_t, &dfwd_l, mode)),
+                s,
+                t,
+                u32::MAX,
+            );
+            assert_eq!(st2.plan, want, "2-channel {label}");
+        }
+    }
+
+    /// #594: without a PHAST context there IS no sublinear branch — the most
+    /// lopsided shape and the cheapest imaginable scan still run the bucket,
+    /// and that is what must be reported. Guards against a report derived
+    /// from the shape instead of from the engine.
+    #[test]
+    fn no_phast_context_reports_the_bucket_it_ran() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (n_nodes, up, down, up_lat, dn_lat, _dfwd_t, _dfwd_l, seeds) = broom_full(12);
+        let cells = CostCells::new();
+        cells.sweep.store(1_000_000, Relaxed);
+        cells.scan.store(1, Relaxed);
+        cells.scan_rev.store(1, Relaxed);
+        let one = &seeds[..1];
+        let many = &seeds[..];
+        let (_m, st) = table_seeded_bounded_routed_with_cells(
+            &cells,
+            n_nodes,
+            &up,
+            &down,
+            None,
+            one,
+            many,
+            u32::MAX,
+        );
+        assert_eq!(st.plan, MatrixPlan::Bucket, "1-channel, no PHAST context");
+        let (_time, _len, st2) = table_seeded_bounded_routed_2ch_with_cells(
+            &cells,
+            n_nodes,
+            &up,
+            &down,
+            &up_lat,
+            &dn_lat,
+            None,
+            many,
+            one,
+            u32::MAX,
+        );
+        assert_eq!(st2.plan, MatrixPlan::Bucket, "2-channel, no PHAST context");
+    }
+
+    /// #594: folding plans (the tiled Flight producer). Agreement keeps the
+    /// plan, disagreement is `Mixed` — never last-writer-wins.
+    #[test]
+    fn plan_merge_flags_disagreement() {
+        use MatrixPlan::*;
+        for p in [Bucket, PhastFwd, PhastRev, Mixed] {
+            assert_eq!(p.merge(p), p, "{p:?} merged with itself");
+        }
+        assert_eq!(PhastFwd.merge(Bucket), Mixed);
+        assert_eq!(Bucket.merge(PhastRev), Mixed);
+        assert_eq!(PhastFwd.merge(PhastRev), Mixed);
+        assert!(PhastFwd.is_phast() && PhastRev.is_phast());
+        assert!(!Bucket.is_phast() && !Mixed.is_phast());
+        // Wire names are the closed set clients parse.
+        assert_eq!(
+            [Bucket, PhastFwd, PhastRev, Mixed].map(MatrixPlan::as_str),
+            ["bucket", "phast_fwd", "phast_rev", "mixed"]
+        );
     }
 
     #[test]
@@ -6563,6 +6793,38 @@ pub fn table_seeded_bounded_routed_2ch(
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
 ) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
+    table_seeded_bounded_routed_2ch_with_cells(
+        cost_cells(true),
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        up_adj_flat_len,
+        down_rev_flat_len,
+        phast_ctx,
+        src_seedsets,
+        tgt_seedsets,
+        threshold,
+    )
+}
+
+/// [`table_seeded_bounded_routed_2ch`] with the cost cells the SELECTION reads
+/// given explicitly. Production passes `cost_cells(true)` — the very cells the
+/// 2-channel engines feed (#562). The parameter exists so the shape/plan tests
+/// can pin the dispatch on cells they own, instead of racing the process-wide
+/// EWMA that every other test in this binary also writes.
+#[allow(clippy::too_many_arguments)]
+fn table_seeded_bounded_routed_2ch_with_cells(
+    cells: &CostCells,
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_rev_flat_len: &DownReverseAdjFlat,
+    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::profile_abi::Mode)>,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, Vec<u32>, BucketM2MStats) {
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     if n_sources == 0 || n_targets == 0 {
@@ -6570,7 +6832,7 @@ pub fn table_seeded_bounded_routed_2ch(
         return (empty.clone(), empty, BucketM2MStats::default());
     }
     if let Some((down_fwd_time, down_fwd_len, mode)) = phast_ctx {
-        match phast_dir(mode, n_sources, n_targets, n_nodes, true) {
+        match phast_dir(mode, n_sources, n_targets, n_nodes, cells) {
             Some(FieldDir::Fwd) => {
                 return table_phast_lopsided_2ch(
                     n_nodes,
@@ -6638,6 +6900,8 @@ fn table_phast_lopsided_2ch(
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     let mut stats = BucketM2MStats {
+        // #594: set HERE, by the engine that runs — not re-derived downstream.
+        plan: MatrixPlan::PhastFwd,
         n_sources,
         n_targets,
         ..Default::default()
@@ -6791,6 +7055,33 @@ pub fn table_seeded_bounded_routed(
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
 ) -> (Vec<u32>, BucketM2MStats) {
+    table_seeded_bounded_routed_with_cells(
+        cost_cells(false),
+        n_nodes,
+        up_adj_flat,
+        down_rev_flat,
+        phast_ctx,
+        src_seedsets,
+        tgt_seedsets,
+        threshold,
+    )
+}
+
+/// [`table_seeded_bounded_routed`] with the cost cells the SELECTION reads
+/// given explicitly. Production passes `cost_cells(false)` — the very cells
+/// the 1-channel engines feed (#562). See
+/// [`table_seeded_bounded_routed_2ch_with_cells`] for why the seam exists.
+#[allow(clippy::too_many_arguments)]
+fn table_seeded_bounded_routed_with_cells(
+    cells: &CostCells,
+    n_nodes: usize,
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    phast_ctx: Option<(&DownAdjFlat, crate::profile_abi::Mode)>,
+    src_seedsets: &[Vec<EngineSeed>],
+    tgt_seedsets: &[Vec<EngineSeed>],
+    threshold: u32,
+) -> (Vec<u32>, BucketM2MStats) {
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     if n_sources == 0 || n_targets == 0 {
@@ -6800,7 +7091,7 @@ pub fn table_seeded_bounded_routed(
         );
     }
     if let Some((down_fwd_flat, mode)) = phast_ctx {
-        match phast_dir(mode, n_sources, n_targets, n_nodes, false) {
+        match phast_dir(mode, n_sources, n_targets, n_nodes, cells) {
             Some(FieldDir::Fwd) => {
                 return table_phast_lopsided(
                     n_nodes,
@@ -7032,14 +7323,15 @@ enum FieldDir {
 /// and in which direction? Forward fields cover S ≤ T (one push scan per
 /// source), reverse fields cover S > T (one pull scan per target). The two
 /// scan flavours are costed with SEPARATE measured EWMAs — the reverse pull
-/// scan cannot block-gate and is structurally slower. `two_channel` selects
-/// the cell set fed by the engines of the same channel count (#562).
+/// scan cannot block-gate and is structurally slower. `cells` is the cell set
+/// fed by the engines of the same channel count (#562), supplied by the routed
+/// entry point via [`cost_cells`].
 fn phast_dir(
     _mode: crate::profile_abi::Mode,
     n_sources: usize,
     n_targets: usize,
     n_nodes: usize,
-    two_channel: bool,
+    cells: &CostCells,
 ) -> Option<FieldDir> {
     let dir = if n_sources <= n_targets {
         FieldDir::Fwd
@@ -7060,7 +7352,7 @@ fn phast_dir(
         Some(true) => return Some(dir),
         None => {}
     }
-    if cost_cells(two_channel).plan(dir, n_sources, n_targets, n_nodes) {
+    if cells.plan(dir, n_sources, n_targets, n_nodes) {
         Some(dir)
     } else {
         None
@@ -7281,6 +7573,8 @@ fn table_phast_lopsided(
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     let mut stats = BucketM2MStats {
+        // #594: set HERE, by the engine that runs — not re-derived downstream.
+        plan: MatrixPlan::PhastFwd,
         n_sources,
         n_targets,
         ..Default::default()
@@ -7433,6 +7727,8 @@ fn table_phast_lopsided_reverse(
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     let mut stats = BucketM2MStats {
+        // #594: set HERE, by the engine that runs — not re-derived downstream.
+        plan: MatrixPlan::PhastRev,
         n_sources,
         n_targets,
         ..Default::default()
@@ -7571,6 +7867,8 @@ fn table_phast_lopsided_reverse_2ch(
     let n_sources = src_seedsets.len();
     let n_targets = tgt_seedsets.len();
     let mut stats = BucketM2MStats {
+        // #594: set HERE, by the engine that runs — not re-derived downstream.
+        plan: MatrixPlan::PhastRev,
         n_sources,
         n_targets,
         ..Default::default()
