@@ -194,15 +194,15 @@ fn dispatcher_picks_right_region_for_known_points() {
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
 
     // Brussels-Centraal → BE.
-    let (state, region_id) = regions
-        .dispatch_single_id(4.3567, 50.8453, "car")
+    let (state, region_id, _idx) = regions
+        .dispatch_single(4.3567, 50.8453, "car")
         .expect("Brussels should snap into BE");
     assert_eq!(region_id, "BE", "Brussels should snap to BE");
     assert!(state.mode_lookup.contains_key("car"));
 
     // Luxembourg-Ville → LU.
-    let (state, region_id) = regions
-        .dispatch_single_id(6.1296, 49.6116, "car")
+    let (state, region_id, _idx) = regions
+        .dispatch_single(6.1296, 49.6116, "car")
         .expect("Luxembourg-Ville should snap into LU");
     assert_eq!(region_id, "LU", "Luxembourg-Ville should snap to LU");
     assert!(state.mode_lookup.contains_key("car"));
@@ -218,8 +218,8 @@ fn p2p_dispatch_same_region_be_to_be() {
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
 
     // Brussels-Centraal → Bruges, both in BE.
-    let (_state, region_id) = regions
-        .dispatch_p2p_id(4.3567, 50.8453, 3.2247, 51.2093, "car")
+    let (_state, region_id, _idx) = regions
+        .dispatch_p2p(4.3567, 50.8453, 3.2247, 51.2093, "car")
         .expect("Brussels → Bruges should not 501");
     assert_eq!(region_id, "BE");
 }
@@ -234,8 +234,8 @@ fn p2p_dispatch_same_region_lu_to_lu() {
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
 
     // Luxembourg-Ville → Esch-sur-Alzette, both in LU.
-    let (_state, region_id) = regions
-        .dispatch_p2p_id(6.1296, 49.6116, 5.9806, 49.4955, "car")
+    let (_state, region_id, _idx) = regions
+        .dispatch_p2p(6.1296, 49.6116, 5.9806, 49.4955, "car")
         .expect("LU-City → Esch should not 501");
     assert_eq!(region_id, "LU");
 }
@@ -252,7 +252,7 @@ fn p2p_dispatch_cross_region_returns_501() {
 
     // Brussels (BE) → Luxembourg-Ville (LU) — these clearly snap into
     // different regions.
-    let err = match regions.dispatch_p2p_id(4.3567, 50.8453, 6.1296, 49.6116, "car") {
+    let err = match regions.dispatch_p2p(4.3567, 50.8453, 6.1296, 49.6116, "car") {
         Ok(_) => panic!("expected CrossRegion error, got Ok"),
         Err(e) => e,
     };

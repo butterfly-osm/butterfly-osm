@@ -46,6 +46,7 @@ use crate::range::wkb_stream::encode_polygon_wkb;
 
 use super::geometry::{IsochroneQuery, IsochroneSnapError, Point, isochrone_polygons};
 use super::query::CchQuery;
+use super::query_context::QueryContext;
 use super::state::ServerState;
 
 /// Butterfly Arrow Flight service. Holds an `Arc<RegionsState>` and
@@ -80,23 +81,20 @@ impl ButterflyFlight {
         self.regions.primary()
     }
 
-    /// #336: snap a single coordinate to the right region and return
-    /// `(state, region_id)`. Maps the regions-layer
-    /// [`super::regions::DispatchError`] into a gRPC `Status` so each
-    /// action handler stays a single statement.
+    /// #336: snap a single coordinate to the right region. Maps the
+    /// regions-layer [`super::regions::DispatchError`] into a gRPC
+    /// `Status` so each action handler stays a single statement.
     fn dispatch_for_point(
         &self,
         lon: f64,
         lat: f64,
         profile: &str,
-    ) -> std::result::Result<(Arc<ServerState>, String), Status> {
-        self.regions
-            .dispatch_single_id(lon, lat, profile)
-            .map_err(dispatch_to_status)
+    ) -> std::result::Result<QueryContext, Status> {
+        QueryContext::from_point(&self.regions, lon, lat, profile).map_err(dispatch_to_status)
     }
 
-    /// #336: snap a src/dst pair to the right region. Returns
-    /// `(state, region_id)` when both endpoints share a region, or a
+    /// #336: snap a src/dst pair to the right region. Resolves when
+    /// both endpoints share a region, or yields a
     /// `FAILED_PRECONDITION` status for cross-region pairs (mirrors
     /// the REST 501 with the same wording).
     fn dispatch_for_pair(
@@ -106,16 +104,16 @@ impl ButterflyFlight {
         destination_lon: f64,
         destination_lat: f64,
         profile: &str,
-    ) -> std::result::Result<(Arc<ServerState>, String), Status> {
-        self.regions
-            .dispatch_p2p_id(
-                origin_lon,
-                origin_lat,
-                destination_lon,
-                destination_lat,
-                profile,
-            )
-            .map_err(dispatch_to_status)
+    ) -> std::result::Result<QueryContext, Status> {
+        QueryContext::from_pair(
+            &self.regions,
+            origin_lon,
+            origin_lat,
+            destination_lon,
+            destination_lat,
+            profile,
+        )
+        .map_err(dispatch_to_status)
     }
 }
 
@@ -4404,8 +4402,9 @@ impl FlightService for ButterflyFlight {
                 // the dispatcher returns CrossRegion → 9 (FAILED_PRECONDITION).
                 let [s_lon, s_lat] = params.origins[0];
                 let [d_lon, d_lat] = params.destinations[0];
-                let (state, _region) =
-                    self.dispatch_for_pair(s_lon, s_lat, d_lon, d_lat, &parsed.profile)?;
+                let state = self
+                    .dispatch_for_pair(s_lon, s_lat, d_lon, d_lat, &parsed.profile)?
+                    .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let sparse = params.sparse; // #532: labels the completeness trailer
@@ -4477,8 +4476,9 @@ impl FlightService for ButterflyFlight {
                 // pair; per-pair cross-region in a multi-pair batch is
                 // a known follow-up (see #336).
                 let p0 = params.pairs[0];
-                let (state, _region) =
-                    self.dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?;
+                let state = self
+                    .dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?
+                    .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
@@ -4508,8 +4508,9 @@ impl FlightService for ButterflyFlight {
                     })?;
                 validate_coord(params.lon, params.lat, "origin")?;
 
-                let (state, _region) =
-                    self.dispatch_for_point(params.lon, params.lat, &parsed.profile)?;
+                let state = self
+                    .dispatch_for_point(params.lon, params.lat, &parsed.profile)?
+                    .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
@@ -4572,10 +4573,9 @@ impl FlightService for ButterflyFlight {
                 // to do_edges_batch, where their per-pair snap miss emits
                 // the documented all-null unreachable row.
                 let dispatched = first_dispatchable_pair(&params.pairs, |p| {
-                    self.regions
-                        .dispatch_p2p_id(p[0], p[1], p[2], p[3], &parsed.profile)
+                    QueryContext::from_pair(&self.regions, p[0], p[1], p[2], p[3], &parsed.profile)
                 })?;
-                let Some((state, _region)) = dispatched else {
+                let Some(ctx) = dispatched else {
                     // No pair snapped into any region: every pair is
                     // unreachable. Same per-pair contract, applied to the
                     // whole batch instead of a request-level error.
@@ -4592,6 +4592,7 @@ impl FlightService for ButterflyFlight {
                     );
                     return Ok(Response::new(flight_stream));
                 };
+                let state = ctx.state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let (batch_stream, done) =
@@ -4812,7 +4813,7 @@ impl FlightService for ButterflyFlight {
                     .ok_or_else(|| {
                         Status::invalid_argument("need at least one row with (src_lon, src_lat)")
                     })?;
-                let (state, _region) = self.dispatch_for_point(lon, lat, profile)?;
+                let state = self.dispatch_for_point(lon, lat, profile)?.state;
                 let mode = resolve_mode(profile, &state)?;
                 do_exchange_edges_flow(state, mode, &batches).await
             }
@@ -4829,7 +4830,9 @@ impl FlightService for ButterflyFlight {
                         "no rows in input batches — need at least one (store_lon, store_lat)",
                     )
                 })?;
-                let (state, _region) = self.dispatch_for_point(store_lon, store_lat, profile)?;
+                let state = self
+                    .dispatch_for_point(store_lon, store_lat, profile)?
+                    .state;
                 let mode = resolve_mode(profile, &state)?;
 
                 do_exchange_catchment(state, mode, cp, &batches).await

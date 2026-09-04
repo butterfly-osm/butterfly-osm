@@ -43,6 +43,7 @@ use crate::transit::gtfs::haversine_m;
 use crate::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use crate::transit::timetable::{StopIdx, Timetable};
 
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
 use super::types::ErrorResponse;
@@ -247,28 +248,28 @@ pub async fn transit_handler(
     // destination snap into the same region; otherwise return the
     // canonical 501 cross-region response so the caller knows the
     // request needs a cross-region overlay (future work).
-    let started = std::time::Instant::now();
     let access_mode = req
         .access_mode
         .as_deref()
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "foot".to_string());
-    let (state, region_id) = match regions.dispatch_p2p_id(
+    let ctx = match QueryContext::from_pair(
+        &regions,
         req.origin_lon,
         req.origin_lat,
         req.destination_lon,
         req.destination_lat,
         &access_mode,
     ) {
-        Ok(pair) => pair,
+        Ok(ctx) => ctx,
         Err(err) => {
             let (status, body) = err.into_response_parts();
             return Err((status, Json(body)));
         }
     };
-    let result = compute_transit_journey(state.as_ref(), &req).map(Json);
+    let result = compute_transit_journey(ctx.state.as_ref(), &req).map(Json);
     if result.is_ok() {
-        super::region_metrics::record_query(&region_id, "transit", started.elapsed().as_secs_f64());
+        ctx.record("transit");
     }
     result
 }
@@ -993,7 +994,6 @@ pub async fn transit_bulk_handler(
     // #334: dispatch by the first query's access origin region. Every
     // query in the batch must dispatch to the same region; mixed-region
     // batches return 501 (the existing cross-region semantic).
-    let started = std::time::Instant::now();
     // Soft cap on batch size. 100k is generous for interactive use;
     // operators doing matrix-style work should use the Flight `matrix`
     // action for the road side and Flight `transit_bulk` (up to 500k
@@ -1036,19 +1036,21 @@ pub async fn transit_bulk_handler(
     // before falling back to full snap. On a 100 k same-origin-region
     // batch this drops preflight from ~1 s of full snaps to ~50 ms of
     // bbox comparisons + a handful of border-overlap fallbacks.
-    let (state, region_id, winner_idx) = match regions.dispatch_p2p_with_idx(
+    let ctx = match QueryContext::from_pair(
+        &regions,
         req.queries[0].origin_lon,
         req.queries[0].origin_lat,
         req.queries[0].destination_lon,
         req.queries[0].destination_lat,
         &first_access_mode,
     ) {
-        Ok(triple) => triple,
+        Ok(ctx) => ctx,
         Err(err) => {
             let (status, body) = err.into_response_parts();
             return Err((status, Json(body)));
         }
     };
+    let state = Arc::clone(&ctx.state);
     for (i, q) in req.queries.iter().enumerate().skip(1) {
         let q_mode = q
             .access_mode
@@ -1070,7 +1072,7 @@ pub async fn transit_bulk_handler(
                 crate::server::regions::Endpoint::Destination,
             ),
         ] {
-            match regions.confirm_in_region(winner_idx, lon, lat) {
+            match regions.confirm_in_region(ctx.region_idx, lon, lat) {
                 crate::server::regions::RegionAffinity::In => {}
                 crate::server::regions::RegionAffinity::OutOfBbox => {
                     // Definite cross-region — surface 501 with the
@@ -1086,14 +1088,14 @@ pub async fn transit_bulk_handler(
                             },
                             lon,
                             lat,
-                            region_id
+                            ctx.region_id
                         ),
                     };
                     return Err((StatusCode::NOT_IMPLEMENTED, Json(body)));
                 }
                 crate::server::regions::RegionAffinity::Ambiguous => {
                     // Bbox overlap — must run a full snap to confirm.
-                    if let Err(err) = regions.dispatch_p2p_id(lon, lat, lon, lat, &q_mode) {
+                    if let Err(err) = regions.dispatch_p2p(lon, lat, lon, lat, &q_mode) {
                         let (status, mut body) = err.into_response_parts();
                         body.error = format!("query[{}]: {}", i, body.error);
                         return Err((status, Json(body)));
@@ -1106,7 +1108,10 @@ pub async fn transit_bulk_handler(
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
-                error: format!("transit subsystem is not loaded for region {}", region_id),
+                error: format!(
+                    "transit subsystem is not loaded for region {}",
+                    ctx.region_id
+                ),
             }),
         ));
     }
@@ -1152,7 +1157,7 @@ pub async fn transit_bulk_handler(
                 )
             })?;
 
-    super::region_metrics::record_query(&region_id, "transit", started.elapsed().as_secs_f64());
+    ctx.record("transit");
     Ok(Json(TransitBulkResponse { count, results }))
 }
 
