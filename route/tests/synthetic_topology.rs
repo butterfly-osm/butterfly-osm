@@ -34,7 +34,9 @@ use butterfly_route::formats::{CchTopo, CchWeights, FilteredEbg};
 use butterfly_route::model::types::Mode;
 use butterfly_route::range::{ContourResult, encode_polygon_wkb};
 use butterfly_route::server::edge_geom::EdgeGeometry;
-use butterfly_route::server::geometry::{ReachModel, build_isochrone_geometry_sparse};
+use butterfly_route::server::geometry::{
+    Point, ReachModel, build_isochrone_geometry_sparse, build_route_points_into,
+};
 
 // ---------------------------------------------------------------------
 // The synthetic road network.
@@ -1169,4 +1171,230 @@ fn bounded_cell_fallback_never_recovers_past_the_threshold() {
         past_bound.distance, None,
         "the time bound must gate the DISTANCE channel too"
     );
+}
+
+// ---------------------------------------------------------------------
+// Route geometry — the polyline a caller draws must BE the route the
+// same call reports.
+// ---------------------------------------------------------------------
+
+/// Planar length of a polyline, in metres, under the same flat-earth
+/// constants the fixture used to place its intersections. Nothing here is
+/// under test — this is the ruler.
+fn polyline_length_m(points: &[Point], lat_ref: f64) -> f64 {
+    let m_per_deg_lon = M_PER_DEG_LON * lat_ref.to_radians().cos();
+    points
+        .windows(2)
+        .map(|w| {
+            let dx = (w[1].lon - w[0].lon) * m_per_deg_lon;
+            let dy = (w[1].lat - w[0].lat) * M_PER_DEG_LAT;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum()
+}
+
+/// One lattice per traversal shape. As far as route geometry is
+/// concerned modes differ in exactly ONE thing: how much of the network
+/// is bidirectional. A car network has one-way rows; a bike network has
+/// fewer; a foot network has none at all, so EVERY street is traversed
+/// against its stored polyline orientation by half the routes.
+///
+/// The geometry builder takes no mode — which is precisely why the bug
+/// this test guards presented as "driving is fine, walking is 2x": the
+/// more bidirectional the network, the more traversals run against the
+/// stored orientation, and each one drawn forward anyway is an
+/// out-and-back that adds its own length twice.
+fn traversal_lattice(oneway_row_period: usize) -> Network {
+    Lattice {
+        dim: 13,
+        spacing_m: 200.0,
+        edge_cost_s: 30,
+        oneway_row_period,
+        origin_lon: 4.35,
+        origin_lat: 50.85,
+        void_block: None,
+        express: None,
+    }
+    .build()
+}
+
+/// A polyline whose length is ~2x the distance the same response reports
+/// is what a consumer sees as "the route drawn twice on different
+/// paths"; anything derived from the geometry (a midpoint at
+/// `length / 2`, an overlap ratio) is wrong with it. The engine's own
+/// `distance_m` is the sum of the traversed edges' `length_m`, so the
+/// polyline it emits for that same edge sequence must measure the same.
+///
+/// This drives `build_route_points_into` — the ONE builder behind both
+/// `/route` and the Flight `route_batch` batch surface (`route_batch`'s
+/// per-pair `distance_m` and `geometry_wkb` are this function's return
+/// value and this function's points). Only the endpoint seeding differs
+/// between the two, and seeding picks *which* start rank, not how the
+/// path between them is drawn.
+#[test]
+fn route_geometry_length_matches_the_reported_distance_on_every_traversal_shape() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::query::CchQuery;
+
+    // (label, one-way row period). 0 = every street two-way.
+    for (shape, oneway_row_period) in [("drive", 4usize), ("cycle", 7), ("walk", 0)] {
+        let net = traversal_lattice(oneway_row_period);
+        let h = contract(&net);
+        let n = net.n_segments();
+        // `build_with(.., true)` keeps the topo edge index the parent
+        // chains are recorded in — the unpack needs it.
+        let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+        let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+        let (_, seg_to_rank) = rank_maps(&h, n);
+        let query = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &h.weights);
+        let identity: Vec<u32> = (0..n as u32).collect();
+
+        // Corners, edges and interior, both directions, so long routes
+        // and short ones are both covered.
+        let waypoints = [
+            (0usize, 0usize),
+            (0, 12),
+            (12, 0),
+            (12, 12),
+            (6, 6),
+            (3, 9),
+            (9, 3),
+            (7, 1),
+            (1, 7),
+            (5, 6),
+        ];
+
+        let mut rank_path = Vec::new();
+        let mut ebg_path = Vec::new();
+        let mut points = Vec::new();
+        let mut pairs_checked = 0usize;
+        let mut against_stored = 0usize;
+        let mut total_edges = 0usize;
+
+        for (i, &(sr, sc)) in waypoints.iter().enumerate() {
+            for &(dr, dc) in waypoints.iter().skip(i + 1) {
+                for (src_cell, dst_cell) in [((sr, sc), (dr, dc)), ((dr, dc), (sr, sc))] {
+                    let src = net.segment_from(src_cell.0, src_cell.1);
+                    let dst = net.segment_from(dst_cell.0, dst_cell.1);
+                    if src == dst {
+                        continue;
+                    }
+                    let src_rank = seg_to_rank[src as usize];
+                    let dst_rank = seg_to_rank[dst as usize];
+                    let Some(result) = query.query(src_rank, dst_rank) else {
+                        continue;
+                    };
+
+                    let distance_m = build_route_points_into(
+                        &h.topo,
+                        &h.weights,
+                        &identity,
+                        &net.ebg_nodes,
+                        &net.edge_geom,
+                        &result.forward_parent,
+                        &result.backward_parent,
+                        src_rank,
+                        &mut rank_path,
+                        &mut ebg_path,
+                        &mut points,
+                    );
+                    pairs_checked += 1;
+
+                    let route = format!("[{shape}] {src} -> {dst}");
+
+                    // The reported distance is the path it claims to have
+                    // walked: every street in this fixture is exactly
+                    // `spacing_m` long.
+                    assert_eq!(
+                        distance_m,
+                        ebg_path.len() as f64 * net.lat.spacing_m,
+                        "{route}: reported distance is not the length of the {} \
+                         edges it unpacked",
+                        ebg_path.len()
+                    );
+
+                    // The polyline is that same path, drawn once.
+                    let drawn = polyline_length_m(&points, net.lat.origin_lat);
+                    // Fixed-point coordinates (1e-7 deg ~ 1 cm) are the
+                    // only slack there is; ONE edge drawn against its
+                    // traversal would add 200 m.
+                    let tol = 0.5f64.max(1e-4 * distance_m);
+                    assert!(
+                        (drawn - distance_m).abs() <= tol,
+                        "{route}: polyline measures {drawn:.1} m but the same \
+                         response reports {distance_m:.1} m over {} edges \
+                         (tolerance {tol:.2} m) — the drawn route is not the \
+                         route that was costed",
+                        ebg_path.len()
+                    );
+
+                    // A doubled polyline can also hide as a teleport
+                    // between two consecutive vertices; no step in this
+                    // lattice is ever longer than one street.
+                    for (k, w) in points.windows(2).enumerate() {
+                        let step = polyline_length_m(w, net.lat.origin_lat);
+                        assert!(
+                            step <= net.lat.spacing_m * 1.001,
+                            "{route}: vertex {k} jumps {step:.1} m, longer than the \
+                             {} m streets this network is made of",
+                            net.lat.spacing_m
+                        );
+                    }
+
+                    // It starts where the route starts and ends where it ends.
+                    let head_seg = net.segments[*ebg_path.last().unwrap() as usize];
+                    let start = net.segment_start(ebg_path[0]);
+                    let end = net.coords[head_seg.head as usize];
+                    let first = *points.first().expect("a route has geometry");
+                    let last = *points.last().expect("a route has geometry");
+                    for (which, got, want) in [
+                        ("start", (first.lon, first.lat), start),
+                        ("end", (last.lon, last.lat), end),
+                    ] {
+                        let off = polyline_length_m(
+                            &[
+                                Point {
+                                    lon: got.0,
+                                    lat: got.1,
+                                },
+                                Point {
+                                    lon: want.0,
+                                    lat: want.1,
+                                },
+                            ],
+                            net.lat.origin_lat,
+                        );
+                        assert!(
+                            off <= 0.5,
+                            "{route}: polyline {which} is {off:.1} m from the \
+                             {which} of the path it was built from"
+                        );
+                    }
+
+                    // Teeth: count the traversals that run against the
+                    // stored polyline orientation. Those are the ones a
+                    // forward-only builder draws backwards.
+                    for &e in ebg_path.iter() {
+                        let seg = net.segments[e as usize];
+                        total_edges += 1;
+                        if net.nbg_geo.edges[seg.street as usize].u_node != seg.tail {
+                            against_stored += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            pairs_checked >= 50,
+            "[{shape}] only {pairs_checked} pairs routed — the fixture is not \
+             exercising the geometry builder"
+        );
+        assert!(
+            against_stored * 4 >= total_edges,
+            "[{shape}] only {against_stored} of {total_edges} traversed edges run \
+             against their stored polyline orientation — this fixture cannot see a \
+             builder that appends every edge forward"
+        );
+    }
 }
