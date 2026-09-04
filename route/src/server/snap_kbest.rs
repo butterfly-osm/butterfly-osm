@@ -48,6 +48,13 @@ pub const DEFAULT_MAX_FALLBACK_COMBOS: usize = 400;
 /// Build the `(i+j)`-ordered combo list for K-best fallback. Caps at
 /// `max_combos` so callers don't have to repeat that truncation.
 pub fn combo_order(k_src: usize, k_dst: usize, max_combos: usize) -> Vec<(usize, usize)> {
+    // A zero cap means zero combos. The cap is checked AFTER the push
+    // below, so without this guard the first pair would escape it — the
+    // one input on which this helper disagreed with the push-then-truncate
+    // loops it replaced (#567). No caller passes 0 today; pin it anyway.
+    if max_combos == 0 {
+        return Vec::new();
+    }
     let mut order = Vec::with_capacity((k_src * k_dst).min(max_combos));
     for sum in 0..(k_src + k_dst) {
         for i in 0..k_src {
@@ -294,4 +301,71 @@ pub fn cell_with_kbest_fallback(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::combo_order;
+
+    /// The enumeration the three deleted copies produced (#567): push
+    /// every `(i, j)` in `(i+j)` order, THEN truncate to the cap.
+    /// `combo_order` instead stops as soon as it has `max_combos`, which
+    /// must be the same list — this is the only place the consolidation
+    /// changed how the cap is applied, so it is pinned here rather than
+    /// argued.
+    fn reference_push_then_truncate(
+        k_src: usize,
+        k_dst: usize,
+        max_combos: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut order = Vec::new();
+        for sum in 0..(k_src + k_dst) {
+            for i in 0..k_src {
+                if let Some(j) = sum.checked_sub(i)
+                    && j < k_dst
+                {
+                    order.push((i, j));
+                }
+            }
+        }
+        if order.len() > max_combos {
+            order.truncate(max_combos);
+        }
+        order
+    }
+
+    #[test]
+    fn combo_order_matches_the_push_then_truncate_reference() {
+        for k_src in 0..12 {
+            for k_dst in 0..12 {
+                for &cap in &[0usize, 1, 3, 7, 400] {
+                    assert_eq!(
+                        combo_order(k_src, k_dst, cap),
+                        reference_push_then_truncate(k_src, k_dst, cap),
+                        "combo_order({k_src}, {k_dst}, {cap}) must equal the pre-#567 enumeration"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combo_order_visits_every_pair_once_when_uncapped() {
+        let (k_src, k_dst) = (8, 5);
+        let order = combo_order(k_src, k_dst, usize::MAX);
+        assert_eq!(order.len(), k_src * k_dst, "every pair must be enumerated");
+        let mut seen = order.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), order.len(), "no pair may repeat");
+        // (i+j) ascending, i ascending on ties — the #197 escalation order.
+        assert_eq!(&order[..5], &[(0, 0), (0, 1), (1, 0), (0, 2), (1, 1)]);
+        assert!(
+            order.windows(2).all(|w| {
+                let (a, b) = (w[0], w[1]);
+                (a.0 + a.1, a.0) <= (b.0 + b.1, b.0)
+            }),
+            "the enumeration must be sorted by (i+j, i)"
+        );
+    }
 }
