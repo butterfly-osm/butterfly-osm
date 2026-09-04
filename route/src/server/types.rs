@@ -28,7 +28,8 @@ pub struct ErrorResponse {
     /// Human-readable description of what was refused.
     pub error: String,
     /// Deprecated (#576), `/trip` and `/match` only: the legacy constant
-    /// `"InvalidValue"`. Read `error` instead.
+    /// of that call site (`InvalidValue`, `NoSegment`, `NoMatch`,
+    /// `InternalError`). Read `error` and the HTTP status instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(deprecated)]
     pub code: Option<String>,
@@ -50,10 +51,12 @@ impl ErrorResponse {
     }
 
     /// The same body plus the two legacy fields `/trip` and `/match`
-    /// answered with before #576. Deprecation window only — see the
-    /// type docs.
-    pub fn with_deprecated_fields(mut self) -> Self {
-        self.code = Some("InvalidValue".to_string());
+    /// answered with before #576: `code` is the legacy constant of that
+    /// call site (`InvalidValue`, `NoSegment`, `NoMatch`,
+    /// `InternalError`) and `message` repeats `error` verbatim.
+    /// Deprecation window only — see the type docs.
+    pub fn with_deprecated_fields(mut self, code: &str) -> Self {
+        self.code = Some(code.to_string());
         self.message = Some(self.error.clone());
         self
     }
@@ -231,6 +234,19 @@ pub fn bad_request(error: String) -> (axum::http::StatusCode, Json<ErrorResponse
     )
 }
 
+/// A 400 in the `/trip` and `/match` body of the #576 deprecation
+/// window: the documented `error` field plus the legacy `code` /
+/// `message` pair. Closing the window is deleting this function and
+/// pointing its call sites at [`bad_request`].
+pub fn bad_request_deprecated(
+    error: impl Into<String>,
+) -> (axum::http::StatusCode, Json<ErrorResponse>) {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new(error).with_deprecated_fields("InvalidValue")),
+    )
+}
+
 /// Get the location (lon, lat) of an EBG node
 pub fn get_node_location(state: &super::state::ServerState, node_id: u32) -> [f64; 2] {
     let node = &state.ebg_nodes.nodes[node_id as usize];
@@ -265,7 +281,8 @@ mod error_body_tests {
     #[test]
     fn deprecated_body_carries_the_documented_field_and_the_legacy_pair() {
         let body =
-            serde_json::to_value(ErrorResponse::new("nope").with_deprecated_fields()).unwrap();
+            serde_json::to_value(ErrorResponse::new("nope").with_deprecated_fields("InvalidValue"))
+                .unwrap();
         assert_eq!(
             body,
             serde_json::json!({
