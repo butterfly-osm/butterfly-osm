@@ -347,7 +347,7 @@ mod tests {
         assert_ne!(origin_rank, u32::MAX, "Origin not in filtered graph");
 
         // Compute PHAST distances
-        let phast_settled = crate::server::isochrone_handler::run_phast_bounded_fast(
+        let phast_settled = crate::range::phast_seeded::run_phast_bounded_fast(
             &mode_data.up_adj_flat,
             &mode_data.down_adj_flat,
             origin_rank,

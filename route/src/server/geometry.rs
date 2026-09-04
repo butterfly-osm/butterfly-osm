@@ -681,7 +681,7 @@ pub fn isochrone_polygons(
     // One PHAST run at the MAX threshold; every contour is a slice of it.
     let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
     let phast_settled = if q.reverse {
-        crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded(
+        crate::range::phast_seeded::run_phast_bounded_fast_reverse_seeded(
             up,
             down_rev,
             &seeds,
@@ -689,7 +689,7 @@ pub fn isochrone_polygons(
             mode,
         )
     } else {
-        crate::server::isochrone_handler::run_phast_bounded_fast_seeded(
+        crate::range::phast_seeded::run_phast_bounded_fast_seeded(
             up,
             down_fwd,
             &seeds,

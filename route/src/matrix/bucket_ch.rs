@@ -19,6 +19,12 @@
 
 use crate::formats::{ArcCow, CchTopo, CchWeights};
 use crate::matrix::lex_better;
+// #569: the seeded bounded PHAST scans live in the range module. The
+// lopsided matrix path (#526/#527) and `/isochrone` run the SAME engine,
+// so they cannot disagree; before #569 this import pointed at
+// `server::isochrone_handler`, i.e. the matrix engine depended on an HTTP
+// handler module. `matrix_does_not_import_server` locks that shut.
+use crate::range::phast_seeded::{self, ScanFlats, run_seeded};
 
 // Thread-local `SearchState` scratch buffers for the parallel bucket M2M path.
 //
@@ -7156,18 +7162,13 @@ fn table_phast_lopsided_2ch(
         n_nodes,
         threshold,
         |seeds: &[(u32, [u32; 2])], bound: u32, probe: &[u32], out: &mut [[u32; 2]]| {
-            let phast_seeds: Vec<(u32, u32, u32)> =
-                seeds.iter().map(|&(r, p)| (r, p[0], p[1])).collect();
             let t0 = std::time::Instant::now();
-            crate::server::isochrone_handler::run_phast_bounded_fast_seeded_2ch_with(
-                up_adj_flat,
-                down_fwd_time,
-                up_adj_flat_len,
-                down_fwd_len,
-                &phast_seeds,
+            run_seeded::<2, phast_seeded::Forward>(
+                ScanFlats::with_len(up_adj_flat, down_fwd_time, up_adj_flat_len, down_fwd_len),
+                seeds.iter().copied(),
                 bound,
                 mode,
-                |rank, t, l| probe_write(probe, out, rank, [t, l]),
+                |rank, v| probe_write(probe, out, rank, v),
             );
             // #546: the 2-channel scan (the /table default) never fed the
             // router; #562: it feeds its OWN cell set.
@@ -7736,15 +7737,13 @@ fn table_phast_lopsided(
         n_nodes,
         threshold,
         |seeds: &[(u32, [u32; 1])], bound: u32, probe: &[u32], out: &mut [[u32; 1]]| {
-            let phast_seeds: Vec<(u32, u32)> = seeds.iter().map(|&(r, p)| (r, p[0])).collect();
             let t0 = std::time::Instant::now();
-            crate::server::isochrone_handler::run_phast_bounded_fast_seeded_with(
-                up_adj_flat,
-                down_fwd_flat,
-                &phast_seeds,
+            run_seeded::<1, phast_seeded::Forward>(
+                ScanFlats::time(up_adj_flat, down_fwd_flat),
+                seeds.iter().copied(),
                 bound,
                 mode,
-                |rank, d| probe_write(probe, out, rank, [d]),
+                |rank, v| probe_write(probe, out, rank, v),
             );
             update_cost_ewma(&COST_1CH.scan, t0.elapsed().as_nanos() as u64);
         },
@@ -7794,15 +7793,13 @@ fn table_phast_lopsided_reverse(
         n_nodes,
         threshold,
         |seeds: &[(u32, [u32; 1])], bound: u32, probe: &[u32], out: &mut [[u32; 1]]| {
-            let phast_seeds: Vec<(u32, u32)> = seeds.iter().map(|&(r, p)| (r, p[0])).collect();
             let t0 = std::time::Instant::now();
-            crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded_with(
-                up_adj_flat,
-                down_rev_flat,
-                &phast_seeds,
+            run_seeded::<1, phast_seeded::Reverse>(
+                ScanFlats::time(down_rev_flat, up_adj_flat),
+                seeds.iter().copied(),
                 bound,
                 mode,
-                |rank, d| probe_write(probe, out, rank, [d]),
+                |rank, v| probe_write(probe, out, rank, v),
             );
             update_cost_ewma(&COST_1CH.scan_rev, t0.elapsed().as_nanos() as u64);
         },
@@ -7847,18 +7844,18 @@ fn table_phast_lopsided_reverse_2ch(
         n_nodes,
         threshold,
         |seeds: &[(u32, [u32; 2])], bound: u32, probe: &[u32], out: &mut [[u32; 2]]| {
-            let phast_seeds: Vec<(u32, u32, u32)> =
-                seeds.iter().map(|&(r, p)| (r, p[0], p[1])).collect();
             let t0 = std::time::Instant::now();
-            crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded_2ch_with(
-                up_adj_flat,
-                down_rev_flat,
-                up_adj_flat_len,
-                down_rev_flat_len,
-                &phast_seeds,
+            run_seeded::<2, phast_seeded::Reverse>(
+                ScanFlats::with_len(
+                    down_rev_flat,
+                    up_adj_flat,
+                    down_rev_flat_len,
+                    up_adj_flat_len,
+                ),
+                seeds.iter().copied(),
                 bound,
                 mode,
-                |rank, t, l| probe_write(probe, out, rank, [t, l]),
+                |rank, v| probe_write(probe, out, rank, v),
             );
             update_cost_ewma(&COST_2CH.scan_rev, t0.elapsed().as_nanos() as u64);
         },
