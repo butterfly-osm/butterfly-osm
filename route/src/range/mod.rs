@@ -21,6 +21,11 @@ pub mod phast;
 pub use phast::PhastEngine;
 pub use phast::{BLOCK_SIZE, PhastResult, PhastStats};
 
+/// #569: the seeded bounded PHAST scans — ONE engine over direction and
+/// channel count. They moved here out of `server/isochrone_handler.rs` so the
+/// matrix engine stops importing an HTTP handler module.
+pub mod phast_seeded;
+
 pub mod tree_phast;
 pub use tree_phast::{TreePath, TreeSettle};
 #[cfg(feature = "bench")]

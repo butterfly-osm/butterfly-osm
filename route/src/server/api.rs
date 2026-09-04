@@ -24,7 +24,6 @@ use super::geometry::Point;
 use super::regions::RegionsState;
 
 // Re-export public items so that existing `super::api::` paths still work
-pub use super::isochrone_handler::{run_phast_bounded_fast, run_phast_bounded_fast_reverse};
 pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
 
 /// OpenAPI documentation
