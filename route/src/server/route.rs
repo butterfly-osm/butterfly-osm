@@ -711,9 +711,11 @@ pub async fn route_handler(
     }
 
     // Helper: build route from query result — returns (geometry, duration_s, distance_m, steps, ebg_path)
-    // src_rank / dst_rank are passed in so the closure doesn't bind
-    // them by reference (which would conflict with the #197 fallback
-    // logic that reassigns src_rank / dst_rank on a successful retry).
+    // src_rank is passed in so the closure doesn't bind it by reference
+    // (which would conflict with the #197 fallback logic that reassigns
+    // src_rank / dst_rank on a successful retry). The unpack derives the
+    // whole path from the forward + backward parent chains, so it needs
+    // the source rank only.
     // end_clip = (src_frac, dst_frac) on the path's first/last edge when the
     // route came from the phantom-seeded query (#522): duration_s already
     // pays exact partial-edge costs, so geometry, distance_m, annotations
@@ -723,27 +725,24 @@ pub async fn route_handler(
                        format: GeometryFormat,
                        want_steps: bool,
                        src_rank: u32,
-                       dst_rank: u32,
                        end_clip: Option<(f64, f64)>|
      -> (RouteGeometry, f64, f64, Option<Vec<RouteStep>>, Vec<u32>) {
-        let rank_path = unpack_path(
+        let mut rank_path = Vec::new();
+        let mut ebg_path = Vec::new();
+        let mut pts = Vec::new();
+        let mut distance_m = super::geometry::build_route_points_into(
             &mode_data.cch_topo,
             weights,
+            &mode_data.filtered_to_original,
+            &state.ebg_nodes,
+            &state.edge_geom,
             &result.forward_parent,
             &result.backward_parent,
             src_rank,
-            dst_rank,
-            result.meeting_node,
+            &mut rank_path,
+            &mut ebg_path,
+            &mut pts,
         );
-        let ebg_path: Vec<u32> = rank_path
-            .iter()
-            .map(|&rank| {
-                let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                mode_data.filtered_to_original[filtered_id as usize]
-            })
-            .collect();
-        let (mut pts, mut distance_m) =
-            build_raw_points(&ebg_path, &state.ebg_nodes, &state.edge_geom);
         if let Some((fs, fd)) = end_clip
             && let (Some(&e0), Some(&en)) = (ebg_path.first(), ebg_path.last())
         {
@@ -1081,7 +1080,6 @@ pub async fn route_handler(
         geom_format,
         req.steps,
         src_rank,
-        dst_rank,
         end_clip,
     );
     // Steps bill full first/last edges; trim them by the same partials.
@@ -1249,7 +1247,6 @@ pub async fn route_handler(
                     geom_format,
                     req.steps,
                     src_rank,
-                    dst_rank,
                     None,
                 );
 

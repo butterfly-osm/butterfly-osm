@@ -1939,19 +1939,15 @@ impl Cli {
 
                 let rt = tokio::runtime::Runtime::new()?;
                 let reports = rt.block_on(crate::transit::feeds::fetch_all(&cfg, realtime))?;
-                let mut ok = 0usize;
-                let mut fail = 0usize;
                 for r in &reports {
                     println!("  {}", crate::transit::feeds::format_report(r));
-                    match r.static_outcome {
-                        crate::transit::feeds::FeedFetchOutcome::Failed { .. } => fail += 1,
-                        _ => ok += 1,
-                    }
                 }
-                println!("transit-fetch: {ok} ok, {fail} failed");
-                if fail > 0 && ok == 0 {
-                    anyhow::bail!("every feed failed to download");
-                }
+                // Any feed that failed fails the run, naming the URL and
+                // where to change it — a partially fetched feed set makes a
+                // timetable that is silently missing an operator.
+                let ok =
+                    crate::transit::feeds::fetch_outcome(&reports, &cfg_dir.join("transit.toml"))?;
+                println!("transit-fetch: {ok} ok");
                 Ok(())
             }
             Commands::TransitBuildTransfers {

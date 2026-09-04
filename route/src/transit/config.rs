@@ -8,7 +8,10 @@
 //! re-run `transit-fetch` (usually alongside the PBF refresh cron) and
 //! restart the server. No background pollers. No hot-swapping.
 //!
-//! Example:
+//! With no `transit.toml` the feed list comes from the region index
+//! shipped with the downloader (`dl/regions/<region>.toml`) — the same
+//! list `butterfly-dl <region>` fetches, so a feed URL is written down
+//! in exactly one place. A `transit.toml` overrides it:
 //!
 //! ```toml
 //! max_walk_m        = 2000
@@ -16,20 +19,9 @@
 //! max_access_stops  = 20
 //!
 //! [[feeds]]
-//! id  = "sncb"
-//! url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
-//!
-//! [[feeds]]
-//! id  = "delijn"
-//! url = "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip"
-//!
-//! [[feeds]]
-//! id  = "tec"
-//! url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
-//!
-//! [[feeds]]
-//! id  = "stib"
-//! url = "https://gtfs.irail.be/mivb/mivb-gtfs.zip"
+//! id     = "sncb"
+//! url    = "https://example.org/sncb-gtfs.zip"
+//! format = "gtfs"          # or "netex-epip"
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -152,66 +144,57 @@ impl Default for TransitConfig {
     }
 }
 
-/// Default Belgium feed set used when no `transit.toml` is present.
+/// Default feed set for a region, taken from the region index shipped
+/// with the downloader — the SAME list `butterfly-dl <region>` fetches.
 ///
-/// This currently lists the three GTFS-publishing operators that cover
-/// the vast majority of scheduled public transport in Belgium:
+/// It used to be a second hand-written copy of that list, and the two
+/// drifted: a De Lijn URL fix landed in the index and never reached
+/// here, so a `transit-fetch` run kept asking for a path that had been
+/// gone for months. There is now one list; a URL fix lands once, and
+/// `defaults_match_the_shipped_region_index` fails if a copy reappears.
 ///
-/// * **SNCB** — national rail (~14 MB GTFS, ~2,750 stops, ~3,900 active trips/day)
-/// * **De Lijn** — Flanders bus + tram (~190 MB GTFS, ~30,500 stops)
-/// * **TEC** — Wallonia bus (~85 MB GTFS, ~31,200 stops)
+/// Feeds map to formats by which section of the index they came from:
+/// `[[gtfs]]` entries are [`FeedFormat::Gtfs`], `[[netex_epip]]`
+/// entries are [`FeedFormat::NetexEpip`]. Coverage for Belgium:
 ///
-/// **STIB (Brussels metro/bus/tram) is loaded from NeTEx-EPIP.** STIB
-/// has deprecated GTFS and migrated to NeTEx under EU Delegated
-/// Regulation 2017/1926. Verified 2026-04-14 that no GTFS source
-/// works:
+/// * **SNCB** — national rail (GTFS)
+/// * **De Lijn** — Flanders bus + tram (GTFS)
+/// * **TEC** — Wallonia bus (GTFS)
+/// * **STIB** — Brussels metro/bus/tram, NeTEx-EPIP: STIB deprecated
+///   GTFS under EU Delegated Regulation 2017/1926, and the loader
+///   (`crate::transit::netex_epip`) parses the EPIP publication into
+///   the same [`Timetable`] shape as the GTFS loader, reprojecting
+///   Lambert-93 to WGS84 on the way in.
 ///
-/// * `gtfs.irail.be/mivb/mivb-gtfs.zip` — HTTP 200 with
-///   `content-type: application/zip` but the 188 KB body is an HTML
-///   domain-squat; `feeds::ContentChecks` magic-byte guard catches it.
-/// * `data.stib-mivb.brussels` — redirects to `data.belgianmobility.io`;
-///   no direct GTFS zip, only query-able datasets behind an API key.
-/// * `opendata-api.stib-mivb.be/Files/1.0/Gtfs` — requires a registered
-///   `Authorization: Bearer <key>` and manual signup.
-///
-/// The working path is the NeTEx-EPIP publication on the Belgian
-/// National Access Point:
-/// `https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml`
-/// (~720 MB XML, published monthly). The EPIP loader in
-/// `crate::transit::netex_epip::load_epip_xml` (#101) parses it
-/// directly into a [`Timetable`] with the same shape as the GTFS
-/// loader output. The loader reprojects STIB's Lambert-93 coordinates
-/// to WGS84 via `proj4rs` at load time.
+/// Returns an error for an unknown region, naming the ones that ship.
+pub fn default_feeds(region: &str) -> Result<Vec<FeedConfig>> {
+    let index = butterfly_dl::regions::RegionIndex::load(region)
+        .with_context(|| format!("no shipped feed list for region '{region}'"))?;
+    let gtfs = index.gtfs.iter().map(|e| (&e.id, &e.url, FeedFormat::Gtfs));
+    let epip = index
+        .netex_epip
+        .iter()
+        .map(|e| (&e.id, &e.url, FeedFormat::NetexEpip));
+    Ok(gtfs
+        .chain(epip)
+        .map(|(id, url, format)| FeedConfig {
+            id: id.clone(),
+            url: url.clone(),
+            rt_url: None,
+            format,
+        })
+        .collect())
+}
+
+/// The region whose feed list is used when `transit/` exists but
+/// `transit.toml` does not.
+pub const DEFAULT_REGION: &str = "belgium";
+
+/// [`default_feeds`] for [`DEFAULT_REGION`]. The shipped index is
+/// embedded at compile time and is parsed by a test, so a failure here
+/// would mean the binary was built from a broken index.
 pub fn default_belgium_feeds() -> Vec<FeedConfig> {
-    vec![
-        FeedConfig {
-            id: "sncb".to_string(),
-            url: "https://gtfs.irail.be/nmbs/gtfs/latest.zip".to_string(),
-            rt_url: None,
-            format: FeedFormat::Gtfs,
-        },
-        FeedConfig {
-            id: "delijn".to_string(),
-            url: "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip".to_string(),
-            rt_url: None,
-            format: FeedFormat::Gtfs,
-        },
-        FeedConfig {
-            id: "tec".to_string(),
-            url: "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip".to_string(),
-            rt_url: None,
-            format: FeedFormat::Gtfs,
-        },
-        FeedConfig {
-            id: "stib".to_string(),
-            // Belgian NAP publication (NeTEx-EPIP, ~720 MB XML, refreshed
-            // monthly). Download lands at transit/netex/stib-epip.xml and
-            // is loaded via the NeTEx-EPIP parser in #101.
-            url: "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml".to_string(),
-            rt_url: None,
-            format: FeedFormat::NetexEpip,
-        },
-    ]
+    default_feeds(DEFAULT_REGION).expect("the shipped belgium region index must parse")
 }
 
 /// Load `transit.toml` from the data directory, if present.
@@ -290,6 +273,66 @@ rt_url = "https://example.com/sncb.rt"
     fn returns_none_when_transit_dir_absent() {
         let dir = tempdir().unwrap();
         assert!(load(dir.path()).unwrap().is_none());
+    }
+
+    /// #537: the feed list existed twice — once here, once in the region
+    /// index the downloader fetches — and a URL fix landed in one and not
+    /// the other, so `transit-fetch` kept requesting a path that had been
+    /// dead for months. There is one list now; this fails the moment a
+    /// second copy appears.
+    #[test]
+    fn defaults_match_the_shipped_region_index() {
+        let index = butterfly_dl::regions::RegionIndex::load(DEFAULT_REGION)
+            .expect("the shipped region index must parse");
+        let feeds = default_belgium_feeds();
+
+        let mut expected: Vec<(&str, &str, FeedFormat)> = index
+            .gtfs
+            .iter()
+            .map(|e| (e.id.as_str(), e.url.as_str(), FeedFormat::Gtfs))
+            .collect();
+        expected.extend(
+            index
+                .netex_epip
+                .iter()
+                .map(|e| (e.id.as_str(), e.url.as_str(), FeedFormat::NetexEpip)),
+        );
+        let got: Vec<(&str, &str, FeedFormat)> = feeds
+            .iter()
+            .map(|f| (f.id.as_str(), f.url.as_str(), f.format))
+            .collect();
+        assert_eq!(got, expected, "the defaults are no longer the shipped list");
+
+        // A feed URL that the fetcher cannot resolve is the failure mode
+        // this ticket is about: the region index supports a `*` wildcard
+        // resolved against a directory listing, the transit fetcher does
+        // not, and that mismatch is how the two lists came apart.
+        for f in &feeds {
+            assert!(
+                !f.url.contains('*'),
+                "feed {} has a wildcard URL the transit fetcher cannot resolve: {}",
+                f.id,
+                f.url
+            );
+            assert!(
+                f.url.starts_with("https://"),
+                "feed {} must be fetched over TLS: {}",
+                f.id,
+                f.url
+            );
+        }
+    }
+
+    /// An unknown region names itself rather than silently producing an
+    /// empty feed list (which would boot a server with no transit and no
+    /// explanation).
+    #[test]
+    fn an_unknown_region_has_no_silent_empty_feed_set() {
+        let err = default_feeds("atlantis").expect_err("unknown region must be an error");
+        assert!(
+            format!("{err:#}").contains("atlantis"),
+            "the error must name the region: {err:#}"
+        );
     }
 
     #[test]
