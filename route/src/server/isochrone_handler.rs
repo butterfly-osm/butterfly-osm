@@ -84,9 +84,10 @@ pub struct ContourFeature {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon_points: Option<Vec<Point>>,
     /// Full GeoJSON geometry (`geometries=geojson` only): a `Polygon` with
-    /// holes, or a `MultiPolygon` when the reachable set is disconnected.
-    /// `polygon`/`polygon_geojson`/`polygon_points` stay the primary
-    /// polygon's OUTER ring for backward compatibility.
+    /// exactly one ring — an isochrone is one simple polygon by definition,
+    /// never holed, never a `MultiPolygon` (#535/#542, enforced by type
+    /// since #570). `polygon`/`polygon_geojson`/`polygon_points` carry the
+    /// same ring for backward compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub geometry: Option<serde_json::Value>,
@@ -98,8 +99,10 @@ pub struct ContourFeature {
     pub band: Option<&'static str>,
 }
 
-/// GeoJSON geometry for a full contour topology: `Polygon` (one component)
-/// or `MultiPolygon`, outer rings CCW, holes CW, rings closed, 5 decimals.
+/// GeoJSON geometry of a traced topology: a `Polygon`, ring CCW, closed, 5
+/// decimals. The builder emits at most one polygon and never a hole (#570),
+/// so the multi-component / hole shapes below are unreachable by
+/// construction — they are the encoder's total definition, not a promise.
 pub(crate) fn topology_geojson(polys: &[ContourPolygon]) -> serde_json::Value {
     use crate::range::wkb_stream::{ensure_ccw, ensure_cw};
     let trunc = |v: f64| (v * 1e5).round() / 1e5;
@@ -1303,7 +1306,7 @@ pub async fn isochrone_handler(
         use crate::range::wkb_stream::encode_polygon_wkb;
 
         let contour =
-            ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
+            ContourResult::from_topology(field.topologies.into_iter().next().unwrap_or_default());
         super::region_metrics::record_query(
             &region_id,
             "isochrone",
@@ -1780,7 +1783,7 @@ fn isochrone_bulk_sync(
                 },
             )
             .ok()?;
-            let contour = ContourResult::from_polygons(
+            let contour = ContourResult::from_topology(
                 field.topologies.into_iter().next().unwrap_or_default(),
             );
 

@@ -1840,7 +1840,7 @@ fn run_batched_isochrone_bench(
         let result = phast.query_bounded(origin, threshold_s);
         let segments = extractor.extract_reachable_segments(&result.dist, threshold_s);
         let contour = generate_sparse_contour(&segments, &sparse_config)?;
-        single_vertices += contour.outer_ring.len();
+        single_vertices += contour.ring.len();
 
         if (i + 1) % 10 == 0 || i + 1 == n_origins {
             print!("  Progress: {}/{}\r", i + 1, n_origins);
@@ -1863,7 +1863,7 @@ fn run_batched_isochrone_bench(
     for (batch_idx, chunk) in origins.chunks(K_LANES).enumerate() {
         let result = batched_engine.query_batch(chunk, threshold_s)?;
         for contour in &result.contours {
-            batched_vertices += contour.outer_ring.len();
+            batched_vertices += contour.ring.len();
         }
         n_batches += 1;
 
@@ -3721,7 +3721,7 @@ fn run_e2e_isochrone_bench(
         let contour_results = engine.query_many(&[origin], threshold_s)?;
         let compute_time = compute_start.elapsed();
 
-        if contour_results.is_empty() || contour_results[0].outer_ring.is_empty() {
+        if contour_results.is_empty() || contour_results[0].ring.is_empty() {
             continue;
         }
         let contour = &contour_results[0];
@@ -3741,14 +3741,14 @@ fn run_e2e_isochrone_bench(
         wkb_times_us.push(wkb_time.as_micros() as u64);
         total_times_us.push(total_time.as_micros() as u64);
         wkb_sizes.push(wkb.len());
-        vertex_counts.push(contour.outer_ring.len());
+        vertex_counts.push(contour.ring.len());
 
         // Create record for serialization test
         records.push(IsochroneRecord {
             origin_id: origin,
             threshold_s,
             wkb,
-            n_vertices: contour.outer_ring.len() as u32,
+            n_vertices: contour.ring.len() as u32,
             elapsed_us: total_time.as_micros() as u64,
         });
 
@@ -4192,10 +4192,10 @@ fn run_bulk_pipeline_bench(
 
     for (i, &origin) in origins.iter().enumerate() {
         let results = engine.query_many(&[origin], threshold_s)?;
-        if !results.is_empty() && !results[0].outer_ring.is_empty() {
+        if !results.is_empty() && !results[0].ring.is_empty() {
             let c = &results[0];
             valid += 1;
-            total_verts += c.outer_ring.len();
+            total_verts += c.ring.len();
             if let Some(wkb) = encode_polygon_wkb(c) {
                 total_wkb += wkb.len();
                 if let Some(ref mut w) = writer {
