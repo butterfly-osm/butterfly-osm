@@ -10,6 +10,37 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — A committed GTFS fixture unblocks the static-loader dependency bump (#598)
+
+Every feed-backed transit test needs a real feed staged on disk, so on a bare
+runner they all skip and nothing checked the GTFS static parse at all. That is
+not a safety net, and it had a concrete cost: a dependency clean-up was ready
+and could not be landed, because the same bump moves the hashing and archive
+crates used inside the loader and nothing could prove the parse output was
+unchanged.
+
+- **`route/tests/fixtures/gtfs_mini/`** — an invented six-stop feed, plain CSV,
+  parsed through the real loader in `route/tests/gtfs_static_parse.rs`. No
+  artifact, no network, no licensed feed; the file runs in well under a second.
+  It pins the cases the loader special-cases: id-sorted stop registration (the
+  transfer-graph cache keys on `StopIdx`), a parent station with two platforms,
+  `calendar_dates` deleting the weekday service and adding a never-scheduled one
+  on the same date, stop-times written out of `stop_sequence` order, a trip
+  running past 86400 s, missing arrival/departure fallbacks, a one-stop-time
+  trip that must be dropped, trips re-sorted by first departure, empty route
+  names with a `direction_id` headsign fallback, and a two-feed namespaced
+  merge. Beyond the explicit assertions the compiled timetable is rendered
+  canonically and pinned by digest. The fixture is also zipped at test time
+  (stored entries, fixed timestamps ⇒ reproducible bytes) and parsed through the
+  archive path, with the feed sha256 pinned — so swapping the archive or hashing
+  crate underneath either reproduces exactly or fails loudly.
+- **`gtfs-structures` 0.47 → 0.49** — validated on that fixture: zero source
+  changes, identical timetable digest and identical feed sha256 either side of
+  the bump. `derivative` is gone, so the GTFS static loader no longer pulls
+  syn 1.0; the remaining syn 1.0 edge is the realtime protobuf chain
+  (prost 0.11) alone. 0.50 is deliberately not taken — it swaps chrono for jiff
+  in the public calendar types.
+
 ### 2026-09-04 — Post-deploy gate consolidation + CI runs the integration tests (#550, #555)
 
 The gate (`bench/postdeploy_gate.py`) no longer passes by accident:
