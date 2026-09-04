@@ -23,7 +23,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use super::crc::Digest;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 const MAGIC: u32 = 0x544D4F44; // "TMOD"
 const VERSION: u16 = 2;
@@ -122,7 +122,7 @@ fn read_all_from_reader<R: std::io::Read>(mut file: R) -> Result<ModTurns> {
 
     let mode_byte = header[6];
     anyhow::ensure!(
-        (mode_byte as usize) < crate::profile_abi::MAX_MODES,
+        (mode_byte as usize) < crate::model::types::MAX_MODES,
         "Invalid mode: {}",
         mode_byte
     );

@@ -41,7 +41,7 @@
 
 use crate::evictable::EvictableCell;
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-use crate::profile_abi::{MAX_MODES, Mode};
+use crate::model::types::{MAX_MODES, Mode};
 
 // =============================================================================
 // THREAD-LOCAL PHAST STATE (eliminates 9.6MB memset per query)
@@ -849,7 +849,7 @@ mod phast_2ch_lex_tests {
     use super::run_phast_bounded_fast_seeded_2ch;
     use crate::formats::{ArcCow, WeightArray};
     use crate::matrix::bucket_ch::{DownAdjFlat, UpAdjFlat};
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
 
     fn up_flat(offsets: Vec<u64>, targets: Vec<u32>, weights: Vec<u32>) -> UpAdjFlat {
         UpAdjFlat {

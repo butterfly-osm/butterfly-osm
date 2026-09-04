@@ -24,7 +24,7 @@ use rayon::prelude::*;
 use super::overlay::OverlayCluster;
 use super::query::CchQuery;
 use super::state::ServerState;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Pure combinatorial kernel of [`solve_cross_region`]. Picks the best
 /// `(i, j)` border pair given precomputed access / overlay / egress

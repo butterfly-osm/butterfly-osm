@@ -1592,7 +1592,7 @@ fn cross_region_route_inner(
 /// - the bidirectional search finds no path
 pub fn leg_points_and_distance(
     state: &ServerState,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_rank: u32,
     dst_rank: u32,
 ) -> (Vec<Point>, f64) {
@@ -1983,7 +1983,7 @@ fn get_edge_bearing(
 /// too). Plain path only: bearings/avoid/exclude reject bands upstream.
 pub(crate) fn band_p2p_duration(
     state: &ServerState,
-    band: crate::profile_abi::Mode,
+    band: crate::model::types::Mode,
     o_lon: f64,
     o_lat: f64,
     d_lon: f64,

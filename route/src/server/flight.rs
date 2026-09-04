@@ -40,7 +40,7 @@ use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::matrix::neighbors::{
     RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 

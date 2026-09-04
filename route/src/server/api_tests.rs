@@ -4,7 +4,7 @@ use super::isochrone_handler::{ContourFeature, IsochroneResponse};
 use super::route::{RouteAnnotations, RouteResponse, bearing_diff, classify_turn, compute_bearing};
 use super::types::{parse_mode, validate_coord};
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 // === E4: Bearing computation tests ===
 

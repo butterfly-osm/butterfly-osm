@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::query::CchQuery;
 use super::state::ServerState;

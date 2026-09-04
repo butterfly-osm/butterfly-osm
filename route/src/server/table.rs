@@ -15,7 +15,7 @@ use crate::matrix::MatrixPlan;
 use crate::matrix::neighbors::{
     RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::regions::RegionsState;
 use super::state::ServerState;

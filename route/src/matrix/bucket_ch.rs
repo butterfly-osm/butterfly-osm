@@ -5672,7 +5672,7 @@ mod max_minutes_bound_tests {
     #[test]
     fn seeded_bucket_2ch_equals_phast_2ch() {
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
         for &thr in &[u32::MAX, 200, 55] {
             let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
                 n_nodes, &up, &down, &up_lat, &dn_lat, &seeds, &seeds, thr,
@@ -5739,7 +5739,7 @@ mod max_minutes_bound_tests {
         // forward test (conflict delegation on the diagonal) AND parts-rich
         // multi-seed sets (shift algebra under non-zero partials).
         let (n_nodes, up, down, up_lat, dn_lat, _dfwd_t, _dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
         let (psrc, ptgt) = parts_rich_seeds(12);
         let cases: Vec<SeedPair> = vec![(&seeds, &seeds), (&psrc, &ptgt), (&psrc, &seeds)];
         for (srcs, tgts) in cases {
@@ -5774,7 +5774,7 @@ mod max_minutes_bound_tests {
     #[test]
     fn seeded_reverse_phast_1ch_equals_bucket_1ch() {
         let (n_nodes, up, down, _up_lat, _dn_lat, _dfwd_t, _dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
         let (psrc, ptgt) = parts_rich_seeds(12);
         let cases: Vec<SeedPair> = vec![(&seeds, &seeds), (&psrc, &ptgt)];
         for (srcs, tgts) in cases {
@@ -5806,7 +5806,7 @@ mod max_minutes_bound_tests {
     #[test]
     fn seeded_router_2ch_matches_engines() {
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
         let thr = u32::MAX;
         let (bt, bl, _) = table_bucket_parallel_seeded_len_along_time_bounded(
             n_nodes, &up, &down, &up_lat, &dn_lat, &seeds, &seeds, thr,
@@ -5836,7 +5836,7 @@ mod max_minutes_bound_tests {
     #[test]
     fn phast_2ch_equal_time_seeds_keep_min_length() {
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, _) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
 
         // FORWARD field. Source = leaf 0, pure. Target = seeds on leaves 3
         // and 5: F_t(3) − 0 = 14 = F_t(5) − 2; lengths 28 − 0 vs 32 − 6.
@@ -5923,7 +5923,7 @@ mod max_minutes_bound_tests {
     fn two_channel_engines_feed_two_channel_cells() {
         let _guard = ONE_CH_SCAN_CELL.lock().unwrap_or_else(|e| e.into_inner());
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
         let one_scan_before = COST_1CH.scan.load(std::sync::atomic::Ordering::Relaxed);
         let _ = table_phast_lopsided_2ch(
             n_nodes,
@@ -5990,7 +5990,7 @@ mod max_minutes_bound_tests {
         use std::sync::atomic::Ordering::Relaxed;
         let _guard = ONE_CH_SCAN_CELL.lock().unwrap_or_else(|e| e.into_inner());
         let (n_nodes, up, down, up_lat, dn_lat, dfwd_t, dfwd_l, seeds) = broom_full(12);
-        let mode = crate::profile_abi::Mode(0);
+        let mode = crate::model::types::Mode(0);
 
         // One full scan far cheaper than one sweep → PHAST wins every shape.
         let phast_cheap = CostCells::new();
@@ -6538,7 +6538,7 @@ pub fn table_seeded_bounded_routed_2ch(
     down_rev_flat: &DownReverseAdjFlat,
     up_adj_flat_len: &UpAdjFlat,
     down_rev_flat_len: &DownReverseAdjFlat,
-    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::profile_abi::Mode)>,
+    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::model::types::Mode)>,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -6570,7 +6570,7 @@ fn table_seeded_bounded_routed_2ch_with_cells(
     down_rev_flat: &DownReverseAdjFlat,
     up_adj_flat_len: &UpAdjFlat,
     down_rev_flat_len: &DownReverseAdjFlat,
-    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::profile_abi::Mode)>,
+    phast_ctx: Option<(&DownAdjFlat, &DownAdjFlat, crate::model::types::Mode)>,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -6893,7 +6893,7 @@ fn table_phast_lopsided_2ch(
     up_adj_flat_len: &UpAdjFlat,
     down_rev_flat_len: &DownReverseAdjFlat,
     down_fwd_len: &DownAdjFlat,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -6954,7 +6954,7 @@ pub fn table_seeded_bounded_routed(
     n_nodes: usize,
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
-    phast_ctx: Option<(&DownAdjFlat, crate::profile_abi::Mode)>,
+    phast_ctx: Option<(&DownAdjFlat, crate::model::types::Mode)>,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -6981,7 +6981,7 @@ fn table_seeded_bounded_routed_with_cells(
     n_nodes: usize,
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
-    phast_ctx: Option<(&DownAdjFlat, crate::profile_abi::Mode)>,
+    phast_ctx: Option<(&DownAdjFlat, crate::model::types::Mode)>,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -7231,7 +7231,7 @@ enum FieldDir {
 /// fed by the engines of the same channel count (#562), supplied by the routed
 /// entry point via [`cost_cells`].
 fn phast_dir(
-    _mode: crate::profile_abi::Mode,
+    _mode: crate::model::types::Mode,
     n_sources: usize,
     n_targets: usize,
     n_nodes: usize,
@@ -7468,7 +7468,7 @@ fn table_phast_lopsided(
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
     down_fwd_flat: &DownAdjFlat,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -7524,7 +7524,7 @@ fn table_phast_lopsided_reverse(
     n_nodes: usize,
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,
@@ -7575,7 +7575,7 @@ fn table_phast_lopsided_reverse_2ch(
     down_rev_flat: &DownReverseAdjFlat,
     up_adj_flat_len: &UpAdjFlat,
     down_rev_flat_len: &DownReverseAdjFlat,
-    mode: crate::profile_abi::Mode,
+    mode: crate::model::types::Mode,
     src_seedsets: &[Vec<EngineSeed>],
     tgt_seedsets: &[Vec<EngineSeed>],
     threshold: u32,

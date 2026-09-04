@@ -25,7 +25,7 @@
 //! filter). 200 combos covers `(i+j) ≤ ~19` which empirically matches
 //! /route's hit rate on Belgium random pairs.
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::query::CchQuery;
 use super::state::{ModeData, ServerState};

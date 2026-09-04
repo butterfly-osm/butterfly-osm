@@ -47,7 +47,7 @@ use super::border::BorderCrossing;
 use super::state::ServerState;
 use crate::formats::butterfly_dat::{Container, ContainerWriter, SectionKind};
 use crate::matrix::bucket_ch::table_bucket_parallel;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Region id type. Owned String so the overlay can outlive any borrowed
 /// reference to the road state's region table.

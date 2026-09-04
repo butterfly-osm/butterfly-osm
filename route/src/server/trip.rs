@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::regions::RegionsState;
 use super::state::ServerState;
@@ -1178,7 +1178,7 @@ pub async fn trip_handler(
                 if round_trip && pts.len() > 1 {
                     pairs.push((*pts.last().unwrap(), pts[0]));
                 }
-                let sum_band = |band: crate::profile_abi::Mode| -> Option<f64> {
+                let sum_band = |band: crate::model::types::Mode| -> Option<f64> {
                     let mut total = 0.0;
                     for (a, b) in &pairs {
                         total +=

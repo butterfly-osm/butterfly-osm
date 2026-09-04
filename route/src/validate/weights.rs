@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::formats::*;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 use crate::weights::Step5Result;
 
 #[derive(Debug, Serialize, Deserialize)]
