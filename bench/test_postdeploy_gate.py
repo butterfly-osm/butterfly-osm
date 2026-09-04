@@ -3,19 +3,21 @@
 
 The gate itself can only be judged against a live server. Everything it does
 BEFORE talking to one — threshold derivation, reference-directory resolution,
-the geometry primitives — is pure Python and is checked here, with NO
-environment variables set and no network:
+the geometry primitives, the memoised fetchers and the registry/probe tables —
+is pure Python and is checked here, with NO environment variables set and no
+network:
 
     python3 bench/test_postdeploy_gate.py
     python3 -m unittest bench/test_postdeploy_gate.py
 
-Everything here runs in milliseconds and is the guard the ticket asks for:
-change a threshold literal, a derivation or the reference-directory contract
-and one of these fails before a deploy ever sees it.
+Two of these are parity checks that would otherwise need a deploy to notice:
+`rest_probes()` against the router's own `MOUNTED_PATHS` (#572 drift alarm),
+and `TICKET_GATES` against the gate registry (#572 fold guard).
 """
 
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -23,6 +25,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import postdeploy_gate as g  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ThresholdDerivation(unittest.TestCase):
@@ -163,6 +167,172 @@ class Geometry(unittest.TestCase):
         self.assertAlmostEqual(frac, 0.5)
         self.assertEqual(g.outlier_frac([]), (0, 0.0))
 
+
+class Registry(unittest.TestCase):
+    def test_gate_names_needs_no_env_and_no_server(self):
+        names = g.gate_names()
+        self.assertGreater(len(names), 20)
+        self.assertEqual(len(names), len(set(names)), "duplicate gate name")
+
+    def test_every_ticket_delegates_to_a_registered_gate(self):
+        """#572 fold guard — the same assertion gate_ticket_invariants makes."""
+        names = set(g.gate_names())
+        for ticket, gates in g.TICKET_GATES.items():
+            self.assertIn(ticket, g.TICKET_NOTES, f"{ticket} has no note")
+            for name in gates:
+                self.assertIn(name, names, f"{ticket} delegates to unregistered gate {name}")
+
+    def test_folded_gates_are_gone(self):
+        """#572: isochrone containment and matrix completeness were absorbed."""
+        names = set(g.gate_names())
+        self.assertNotIn("isochrone_containment", names)
+        self.assertNotIn("matrix_completeness", names)
+        self.assertIn("isochrone_topology", names)
+        self.assertIn("flight_completeness", names)
+
+    def test_quick_drops_only_the_reference_trip_gates(self):
+        import argparse
+        full = set(g.gate_names())
+        quick_args = argparse.Namespace(**dict(g.GATE_ARGS_DEFAULTS, quick=True))
+        quick = set(g.gate_names(quick_args))
+        self.assertEqual(full - quick, {"ground_truth_duration", "ground_truth_distance"})
+
+
+class RestProbeParity(unittest.TestCase):
+    """#572: the probe table must cover exactly the router's mounted paths.
+    Offline mirror of the live `openapi paths == probe table` drift alarm."""
+
+    def mounted_paths(self):
+        src = os.path.join(REPO, "route", "src", "server", "api.rs")
+        if not os.path.exists(src):
+            self.skipTest(f"{src} not present")
+        with open(src) as f:
+            text = f.read()
+        m = re.search(r"MOUNTED_PATHS:\s*&\[&str\]\s*=\s*&\[(.*?)\];", text, re.S)
+        self.assertIsNotNone(m, "MOUNTED_PATHS not found in api.rs")
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def test_probe_table_matches_mounted_paths(self):
+        self.assertEqual(set(g.rest_probes()), self.mounted_paths())
+
+    def test_probe_specs_are_well_formed(self):
+        for path, (method, target, body) in g.rest_probes().items():
+            self.assertIn(method, ("GET", "POST"), path)
+            self.assertTrue(target.startswith(path), f"{path}: probe targets {target}")
+            if method == "GET":
+                self.assertIsNone(body, f"{path}: GET probe must not carry a body")
+            else:
+                self.assertIsInstance(body, dict, f"{path}: POST probe needs a JSON body")
+                json.dumps(body)  # must be serialisable
+
+    def test_only_documented_optional_surfaces_may_skip(self):
+        probes = g.rest_probes()
+        for path, skips in g.REST_PROBE_SKIPS.items():
+            self.assertIn(path, probes, f"skip rule for unprobed path {path}")
+            for status, reason in skips.items():
+                self.assertIn(status, (404, 503), f"{path}: {status} is not an optional-surface status")
+                self.assertTrue(reason.strip(), f"{path}: skip {status} needs a reason")
+
+
+class FakeBatch:
+    def __init__(self, cols):
+        self.cols = cols
+        self.num_rows = len(next(iter(cols.values()))) if cols else 0
+
+    def column(self, name):
+        class _C:
+            def __init__(self, v):
+                self.v = v
+
+            def to_pylist(self):
+                return list(self.v)
+        return _C(self.cols[name])
+
+
+class FakeChunk:
+    def __init__(self, data=None, app_metadata=None):
+        self.data = data
+        self.app_metadata = app_metadata
+
+
+class StreamedMatrixMemo(unittest.TestCase):
+    """#572: ONE decoded pass per (base, mode, params); a FAILURE is memoised
+    too and re-raised, so the second consumer still fails."""
+
+    def setUp(self):
+        self.saved = g.flight_reader
+        g._STREAMED_MATRIX.clear()
+        self.calls = []
+
+    def tearDown(self):
+        g.flight_reader = self.saved
+        g._STREAMED_MATRIX.clear()
+
+    def params(self):
+        pts = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
+        return {"origins": pts, "destinations": pts, "radius_km": 6, "sparse": True}
+
+    def test_single_pass_shared_by_consumers(self):
+        batch = FakeBatch({"duration_ms": [100, g.MAX_U32, 300],
+                           "distance_m": [10, 20, g.MAX_U32],
+                           "source_idx": [0, 1, 2], "target_idx": [1, 2, 0]})
+        trailer = json.dumps({"complete": True, "total_rows": 3, "contract": "sparse"}).encode()
+
+        def fake(base, action, mode, params):
+            self.calls.append((base, action, mode))
+            return [FakeChunk(batch), FakeChunk(FakeBatch({"duration_ms": [], "distance_m": [],
+                                                           "source_idx": [], "target_idx": []})),
+                    FakeChunk(None, trailer)]
+
+        g.flight_reader = fake
+        rec = g.streamed_matrix("http://x", "car", self.params())
+        again = g.streamed_matrix("http://x", "car", self.params())
+        self.assertIs(rec, again)
+        self.assertEqual(len(self.calls), 1, "the 1.1M-cell pass must run ONCE")
+        self.assertEqual(rec.batches, 2)
+        self.assertEqual(rec.empties, 1)
+        self.assertEqual(rec.rows, 3)
+        self.assertEqual(rec.sentinels, 1)
+        self.assertEqual(rec.dist_max, 1)
+        self.assertEqual(rec.dist_sample, (2, 0))
+        self.assertEqual(rec.cells_total, 9)
+        self.assertEqual(rec.trailer["contract"], "sparse")
+
+    def test_other_mode_is_a_separate_pass(self):
+        def fake(base, action, mode, params):
+            self.calls.append(mode)
+            return [FakeChunk(FakeBatch({"duration_ms": [1], "distance_m": [1],
+                                         "source_idx": [0], "target_idx": [0]}))]
+
+        g.flight_reader = fake
+        g.streamed_matrix("http://x", "car", self.params())
+        g.streamed_matrix("http://x", "foot", self.params())
+        g.streamed_matrix("http://x", "car", self.params())
+        self.assertEqual(self.calls, ["car", "foot"])
+
+    def test_failure_is_memoised_and_reraised_to_every_consumer(self):
+        def boom(base, action, mode, params):
+            self.calls.append(mode)
+            raise RuntimeError("flight down")
+
+        g.flight_reader = boom
+        for _ in range(3):
+            with self.assertRaises(RuntimeError):
+                g.streamed_matrix("http://x", "car", self.params())
+        self.assertEqual(len(self.calls), 1, "a memoised failure must not be retried")
+
+
+class StreamingShape(unittest.TestCase):
+    def test_grid_exceeds_the_bucket_threshold(self):
+        grid = g._streaming_grid()
+        self.assertEqual(len(grid), 1054)
+        self.assertGreater(len(grid) ** 2, 1_000_000)
+
+    def test_streaming_params_are_stable_and_json_keyable(self):
+        a, b = g.streaming_params(), g.streaming_params()
+        self.assertEqual(json.dumps(a, sort_keys=True), json.dumps(b, sort_keys=True))
+        self.assertTrue(a["sparse"])
+        self.assertEqual(len(a["origins"]), len(a["destinations"]))
 
 
 if __name__ == "__main__":
