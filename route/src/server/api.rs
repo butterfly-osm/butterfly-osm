@@ -218,6 +218,96 @@ pub const MOUNTED_PATHS: &[&str] = &[
     "/height",
 ];
 
+/// REST paths that once existed and were REMOVED — `/table/stream`, the
+/// pre-Flight Arrow-over-HTTP exception, went in #547. The docs may mention
+/// them only as history (a line that says `removed` / `not mounted` /
+/// `historical`); `docs_parity` below fails the build otherwise (#588).
+pub const REMOVED_PATHS: &[&str] = &["/table/stream"];
+
+#[cfg(test)]
+mod docs_parity {
+    use super::*;
+
+    /// The public prose describing the REST surface, embedded at compile time
+    /// so a stale mention fails `cargo test` instead of misleading a reader
+    /// (#588 — `/table/stream` survived its removal in four places).
+    const DOCS: &[(&str, &str)] = &[
+        ("README.md", include_str!("../../../README.md")),
+        (
+            "docs/ENGINEERING.md",
+            include_str!("../../../docs/ENGINEERING.md"),
+        ),
+        ("docs/api.md", include_str!("../../../docs/api.md")),
+        (
+            "docs/troubleshooting.md",
+            include_str!("../../../docs/troubleshooting.md"),
+        ),
+        (
+            "competitive_landscape.md",
+            include_str!("../../../competitive_landscape.md"),
+        ),
+    ];
+
+    /// A line may name a removed path only while saying that it is gone.
+    fn marked_historical(line: &str) -> bool {
+        let l = line.to_ascii_lowercase();
+        l.contains("removed") || l.contains("not mounted") || l.contains("historical")
+    }
+
+    #[test]
+    fn every_mounted_path_is_documented() {
+        // docs/api.md is THE REST reference: every mounted path must be there.
+        let (_, api_md) = DOCS
+            .iter()
+            .find(|(name, _)| *name == "docs/api.md")
+            .expect("docs/api.md embedded");
+        let missing_in_reference: Vec<&str> = MOUNTED_PATHS
+            .iter()
+            .copied()
+            .filter(|p| !api_md.contains(p))
+            .collect();
+        assert!(
+            missing_in_reference.is_empty(),
+            "mounted but absent from docs/api.md: {missing_in_reference:?}"
+        );
+        let missing_everywhere: Vec<&str> = MOUNTED_PATHS
+            .iter()
+            .copied()
+            .filter(|p| !DOCS.iter().any(|(_, doc)| doc.contains(p)))
+            .collect();
+        assert!(
+            missing_everywhere.is_empty(),
+            "mounted but documented nowhere: {missing_everywhere:?}"
+        );
+    }
+
+    #[test]
+    fn removed_paths_are_history_not_endpoints() {
+        for p in REMOVED_PATHS {
+            assert!(
+                !MOUNTED_PATHS.contains(p),
+                "{p} is listed both as mounted and as removed"
+            );
+        }
+        let mut stale = Vec::new();
+        for (name, doc) in DOCS {
+            for (i, line) in doc.lines().enumerate() {
+                for p in REMOVED_PATHS {
+                    if line.contains(p) && !marked_historical(line) {
+                        stale.push(format!("{name}:{}: {}", i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "removed REST paths still documented as live — say `removed`, \
+             `not mounted` or `historical` on the line, or drop the mention:\n{}",
+            stale.join("\n")
+        );
+    }
+}
+
 #[cfg(test)]
 mod openapi_parity {
     use super::*;

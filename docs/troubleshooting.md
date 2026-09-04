@@ -82,17 +82,17 @@ There is no design path where a small polygon takes 30 s on current code. If you
 
 ---
 
-## Symptom: `/table/stream` takes minutes for 50k × 50k
+## Symptom: Flight `matrix` takes minutes for 50k × 50k
 
 **Diagnosis**
 
-That's the design. On Belgium the May-22 bench measured 9.61 min wall for a 50 000 × 50 000 matrix on `/table/stream`. This is parity with the pre-Flight `/table/stream` numbers documented in CLAUDE.md ("Arrow Streaming - Large Scale"). The bench result is 4.4M distances/sec sustained at this scale.
+That's the design. On Belgium the May-22 bench measured 9.61 min wall for a 50 000 × 50 000 matrix — parity with the historical REST `/table/stream` numbers (that endpoint was removed in #547). The bench result is 4.4M distances/sec sustained at this scale.
 
 A 50k × 50k matrix is 2.5 billion cells. At the documented throughput, anything below ~10 minutes would imply a regression somewhere else.
 
 **Fix**
 
-- Use the gRPC Flight `matrix` action instead of REST `/table/stream` if you are building bulk pipelines. Same algorithm, lower transport overhead (no JSON envelope, no HTTP/1 chunking). See [API reference](api.md) for the ticket shape.
+- Bulk pipelines belong on the gRPC Flight `matrix` action; there is no REST Arrow endpoint any more (`/table/stream` was removed in #547). Same algorithm, lower transport overhead (no JSON envelope, no HTTP/1 chunking). See [API reference](api.md) for the ticket shape.
 - If wall time is materially worse than 10 min for 50k × 50k Belgium, profile RSS — eviction-thrashing during the streaming write is the usual culprit. The matrix algorithm itself is L3-tiled (#190); transport buffering is the only knob left.
 
 ---

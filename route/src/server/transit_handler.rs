@@ -995,8 +995,9 @@ pub async fn transit_bulk_handler(
     // batches return 501 (the existing cross-region semantic).
     let started = std::time::Instant::now();
     // Soft cap on batch size. 100k is generous for interactive use;
-    // operators doing matrix-style work should look at `/table/stream`
-    // for the road side and batch transit in chunks of ~10k.
+    // operators doing matrix-style work should use the Flight `matrix`
+    // action for the road side and Flight `transit_bulk` (up to 500k
+    // queries/call) for transit.
     const MAX_BATCH: usize = 100_000;
     if req.queries.len() > MAX_BATCH {
         return Err((
