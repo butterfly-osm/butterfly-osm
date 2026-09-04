@@ -51,6 +51,8 @@ pub use bucket_ch::{
     BucketM2MStats,
     // Data structures
     DownReverseAdjFlat,
+    // #594: the plan a matrix call actually ran
+    MatrixPlan,
     SourceBuckets,
     UpAdjFlat,
     backward_join_with_buckets,
