@@ -681,12 +681,12 @@ mod depart_frontier_tests {
     use crate::server::state::ModeData;
 
     /// Edge weights `w(e)` by ORIGINAL EBG id. `e0` is the origin edge.
-    const W: [u32; 6] = [10, 40, 100, 30, 50, 200];
+    pub(super) const W: [u32; 6] = [10, 40, 100, 30, 50, 200];
 
     /// Original CCH arcs `(from, to, w_arc = w(to) + turn)` by original id:
     ///   e0→e1 turn 5, e0→e2 turn 0, e1→e3 turn 10, e1→e4 turn 0,
     ///   e1→e5 turn 60, e2→e4 turn 20, e2→e5 turn 0, e3→e5 turn 0.
-    const ARCS: [(u32, u32, u32); 8] = [
+    pub(super) const ARCS: [(u32, u32, u32); 8] = [
         (0, 1, 45),
         (0, 2, 100),
         (1, 3, 40),
@@ -701,7 +701,7 @@ mod depart_frontier_tests {
     /// edge past the snap), head arrivals:
     ///   e1 = 6+45 = 51, e2 = 6+100 = 106, e3 = 51+40 = 91,
     ///   e4 = min(51+50, 106+70) = 101, e5 = min(91+200, 51+260, 106+200) = 291.
-    const LABEL: [u32; 6] = [6, 51, 106, 91, 101, 291];
+    pub(super) const LABEL: [u32; 6] = [6, 51, 106, 91, 101, 291];
 
     /// rank → filtered → original. Deliberately NON-identity and
     /// non-involutive so a swapped lookup cannot pass by coincidence. The
@@ -710,7 +710,7 @@ mod depart_frontier_tests {
     const RANK_TO_FILTERED: [u32; 6] = [1, 5, 4, 2, 3, 0];
     const FILTERED_TO_ORIGINAL: [u32; 6] = [2, 0, 5, 1, 4, 3];
 
-    fn rank_of(orig: u32) -> u32 {
+    pub(super) fn rank_of(orig: u32) -> u32 {
         (0..6u32)
             .find(|&r| FILTERED_TO_ORIGINAL[RANK_TO_FILTERED[r as usize] as usize] == orig)
             .expect("every original id has a rank")
@@ -736,7 +736,7 @@ mod depart_frontier_tests {
     /// builders from a `CchTopo` + `CchWeights`, so the test exercises the
     /// same rank-indexed UP / forward-DOWN adjacency `depart_frontier` scans
     /// in serve.
-    fn fixture() -> ModeData {
+    pub(super) fn fixture() -> ModeData {
         let mut up_edges = Vec::new();
         let mut down_edges = Vec::new();
         for &(a, b, w) in &ARCS {
@@ -946,16 +946,15 @@ mod depart_frontier_tests {
         }
     }
 
-    /// Same fixture through `reachable_polylines` (the sole caller's
-    /// consumer): whole reached edges, then the frontier edges cut at the
-    /// served fraction — from their TRUE start (an endpoint of a reached
-    /// edge), even when the stored polyline runs the other way.
-    #[test]
-    fn reachable_polylines_cuts_the_frontier_edge_at_the_served_fraction() {
-        const LON0: i32 = 40_000_000;
-        const LAT0: i32 = 500_000_000;
-        // Stored polylines `(lon_e7, lat_e7)` by original id. e2 is stored
-        // REVERSED (its last point is e0's head); everything else forward.
+    /// The six edges' stored polylines `(lon_e7, lat_e7)` by original id.
+    /// e2 is stored REVERSED (its last point is e0's head); everything else
+    /// forward — so a consumer that cuts blindly "from index 0" is caught.
+    pub(super) const LON0: i32 = 40_000_000;
+    pub(super) const LAT0: i32 = 500_000_000;
+
+    /// `(EbgNodes, EdgeGeometry)` for the six-edge fixture, shared by the
+    /// depart and arrive `reachable_polylines` tests.
+    pub(super) fn polyline_fixture() -> (EbgNodes, EdgeGeometry) {
         let polylines: [[(i32, i32); 2]; 6] = [
             [(LON0, LAT0), (LON0 + 100, LAT0)],
             [(LON0 + 100, LAT0), (LON0 + 200, LAT0)],
@@ -1004,6 +1003,16 @@ mod depart_frontier_tests {
                     .collect(),
             ),
         };
+        (ebg, geom)
+    }
+
+    /// Same fixture through `reachable_polylines` (the sole caller's
+    /// consumer): whole reached edges, then the frontier edges cut at the
+    /// served fraction — from their TRUE start (an endpoint of a reached
+    /// edge), even when the stored polyline runs the other way.
+    #[test]
+    fn reachable_polylines_cuts_the_frontier_edge_at_the_served_fraction() {
+        let (ebg, geom) = polyline_fixture();
 
         let md = fixture();
         // T = 56: whole e0 (6), e1 (51); frontier e2 at (56−6)/100 = 0.5
@@ -1035,5 +1044,415 @@ mod depart_frontier_tests {
             ]
         );
         assert_eq!(anchor, Some((LAT0, LON0)), "start of the min-label edge");
+    }
+}
+
+/// #544: the ARRIVE direction's reach, brute-forced on the same six-edge
+/// fixture the depart frontier is pinned on.
+///
+/// The two directions are duals, not copies:
+/// * depart labels are arrivals at the HEAD, so a settled edge was driven
+///   whole and the partial edges are the UNREACHED successors — they have
+///   no label and must be enumerated by scanning arcs (`depart_frontier`);
+/// * arrive labels are the cost FROM the head to the snap, so an edge is
+///   entered from its tail at `label + w` and the partial edges are the
+///   SETTLED ones — every edge with a reachable point already has a label.
+///
+/// That is why the arrive direction needs no predecessor scan and no
+/// reverse-UP adjacency: `arrive_reach` is the whole rule. The tests below
+/// prove it by brute force over the arc list — including the completeness
+/// clause, which is what a missing frontier would break.
+mod arrive_reach_tests {
+    use super::depart_frontier_tests::{ARCS, W, fixture, rank_of};
+    use crate::formats::{ArcCow, EbgNode, EbgNodes, EdgeGeomOffsets, EdgeGeomPoints};
+    use crate::server::edge_geom::EdgeGeometry;
+    use crate::server::geometry::{ReachModel, arrive_reach, reachable_polylines};
+
+    /// The arrive centre (#506 multi-seed phantom): the snap projects onto
+    /// e5 with 120 s left to its head and onto the parallel candidate e4
+    /// with 20 s left to its head. `part_time` = remainder snap → head.
+    const SEEDS: [(u32, u32); 2] = [(5, 120), (4, 20)];
+
+    /// The production seed shift: `max part_time`, so `shift − part` is
+    /// non-negative for every seed (`PhantomEnd::query_seeds_and_shift`).
+    fn shift() -> u32 {
+        SEEDS.iter().map(|&(_, p)| p).max().unwrap()
+    }
+
+    /// Independent all-to-one Dijkstra over `ARCS`, written here and not
+    /// taken from any engine structure: `h[x]` = cost from the HEAD of `x`
+    /// to the HEAD of `target`, i.e. the sum of `w(head) + turn` over the
+    /// arcs of the best path. `i64::MAX` = unreachable.
+    fn head_to_head(target: u32) -> Vec<i64> {
+        let mut dist = vec![i64::MAX; W.len()];
+        dist[target as usize] = 0;
+        // Bellman-Ford: six nodes, eight arcs — no heap, no doubt.
+        for _ in 0..W.len() {
+            for &(a, b, w) in &ARCS {
+                if dist[b as usize] == i64::MAX {
+                    continue;
+                }
+                let cand = dist[b as usize] + w as i64;
+                if cand < dist[a as usize] {
+                    dist[a as usize] = cand;
+                }
+            }
+        }
+        dist
+    }
+
+    /// TRUE arrive cost per edge: from the head of `x` to the SNAP.
+    /// Reaching a seed edge pays its full weight but the journey stops at
+    /// the snap, so the seed refunds `part_time`; the head of a seed edge
+    /// lies PAST the snap, which is why these are negative there.
+    fn true_arrive_cost() -> Vec<i64> {
+        let mut out = vec![i64::MAX; W.len()];
+        for &(t, part) in &SEEDS {
+            let h = head_to_head(t);
+            for x in 0..W.len() {
+                if h[x] != i64::MAX {
+                    out[x] = out[x].min(h[x] - part as i64);
+                }
+            }
+        }
+        out
+    }
+
+    /// The label the pipeline hands the reach rule: the reverse field's
+    /// value (`true + shift`) with the shift removed, clamped into `u32`.
+    fn normalised_labels() -> Vec<u32> {
+        true_arrive_cost()
+            .into_iter()
+            .map(|c| {
+                if c == i64::MAX {
+                    u32::MAX
+                } else {
+                    c.max(0) as u32
+                }
+            })
+            .collect()
+    }
+
+    /// The settled set at `threshold`: exactly what
+    /// `isochrone_polygons` builds for an arrive field.
+    fn settled(threshold: u32) -> Vec<(u32, u32)> {
+        normalised_labels()
+            .into_iter()
+            .enumerate()
+            .filter(|&(_, d)| d <= threshold)
+            .map(|(i, d)| (i as u32, d))
+            .collect()
+    }
+
+    #[test]
+    fn the_arrive_field_is_the_true_cost_plus_the_seed_shift() {
+        // Hand-checked against the arc list: e4 is reached from e1 at 50 and
+        // from e2 at 70; e5 from e3 at 200, from e2 at 200, from e1 at 260.
+        assert_eq!(true_arrive_cost(), vec![75, 30, 50, 80, -20, -120]);
+        // The field the seeded reverse PHAST computes, seeded `shift − part`:
+        // non-negative everywhere, and exactly `true + shift`.
+        let shift = shift();
+        assert_eq!(shift, 120);
+        for (x, &c) in true_arrive_cost().iter().enumerate() {
+            assert!(
+                c + shift as i64 >= 0,
+                "e{x}: the shift must keep every label representable"
+            );
+        }
+        assert_eq!(normalised_labels(), vec![75, 30, 50, 80, 0, 0]);
+    }
+
+    /// The defect #544 was opened for, pinned so it cannot come back: the
+    /// pre-#544 arrive seed was `w(edge) − part_time` with NO shift, which
+    /// is `shift − part_time` plus `w(edge)`. Every label came out one full
+    /// seed-edge weight too large, so the served polygon was the
+    /// `T − w(seed edge)` isochrone — up to 200 s on this fixture.
+    #[test]
+    fn the_pre_544_seeding_inflated_every_label_by_a_seed_edge_weight() {
+        let mut old = vec![i64::MAX; W.len()];
+        for &(t, part) in &SEEDS {
+            let h = head_to_head(t);
+            let seed_cost = W[t as usize] as i64 - part as i64;
+            for x in 0..W.len() {
+                if h[x] != i64::MAX {
+                    old[x] = old[x].min(h[x] + seed_cost);
+                }
+            }
+        }
+        assert_eq!(old, vec![125, 80, 100, 280, 30, 80]);
+        // Every edge is inflated by the weight of the seed edge its best
+        // path ends on — 50 s via e4, 200 s via e5. Never a refund.
+        for (x, (&o, &t)) in old.iter().zip(true_arrive_cost().iter()).enumerate() {
+            let inflation = o - t;
+            assert!(
+                inflation == W[4] as i64 || inflation == W[5] as i64,
+                "e{x}: inflation {inflation} is not a seed-edge weight"
+            );
+        }
+        // What that costs at the surface: at T = 80 the fixed field reaches
+        // all six edges, the old one reached three — half the network.
+        let now = settled(80).len();
+        let then = old.iter().filter(|&&d| d != i64::MAX && d <= 80).count();
+        assert_eq!((now, then), (6, 3));
+    }
+
+    #[test]
+    fn arrive_reach_is_the_head_side_fraction_of_the_remaining_budget() {
+        // Whole edge: the budget past the label covers the traversal.
+        assert_eq!(arrive_reach(50, 30, 100), Some(1.0));
+        assert_eq!(arrive_reach(70, 30, 100), Some(1.0));
+        // Partial: the head-side (T − label)/w.
+        assert_eq!(arrive_reach(80, 40, 100), Some(0.5));
+        assert_eq!(arrive_reach(90, 100, 100), Some(0.1));
+        // Nothing: the head itself is not reached before T.
+        assert_eq!(arrive_reach(100, 30, 100), None);
+        assert_eq!(arrive_reach(101, 30, 100), None);
+        // Degenerate weights never divide by zero.
+        assert_eq!(arrive_reach(0, 0, 100), None);
+    }
+
+    /// The #544 invariant, brute-forced for every threshold: a point at
+    /// fraction `φ` of edge `x` reaches the snap in `(1 − φ)·w(x) + cost(x)`,
+    /// so the served part of `x` is its head-side `(T − cost)/w`, capped at
+    /// the whole edge and empty once `cost ≥ T`.
+    #[test]
+    fn arrive_reach_matches_a_brute_force_reference_for_every_threshold() {
+        let truth = true_arrive_cost();
+        let labels = normalised_labels();
+        for t in 0..=350u32 {
+            let served: Vec<(u32, Option<f32>)> = settled(t)
+                .into_iter()
+                .map(|(x, d)| (x, arrive_reach(d, W[x as usize], t)))
+                .collect();
+            for &(x, got) in &served {
+                let c = truth[x as usize];
+                // The reference, from the true (possibly negative) cost.
+                let want = if c >= t as i64 {
+                    None
+                } else {
+                    let budget = t as i64 - c;
+                    Some((budget as f32 / W[x as usize] as f32).min(1.0))
+                };
+                if c >= 0 {
+                    assert_eq!(got, want, "T = {t}, e{x}: cost {c}");
+                } else {
+                    // Only a seed edge can sit before the snap. Its head is
+                    // PAST the snap, so neither the clamped label nor the
+                    // formula describes it exactly; the served part stays
+                    // inside the edge and never exceeds the reference. The
+                    // whole deviation is bounded by that one edge (#544).
+                    assert!(
+                        SEEDS.iter().any(|&(s, _)| s == x),
+                        "T = {t}: e{x} has a negative cost but is not a seed"
+                    );
+                    let g = got.unwrap_or(0.0);
+                    assert!(
+                        (0.0..=1.0).contains(&g) && g <= want.unwrap_or(1.0),
+                        "T = {t}, e{x}: served {g:?} vs reference {want:?}"
+                    );
+                }
+            }
+            // Nothing outside the settled set may have a reachable point:
+            // that is the clause a missing frontier would break.
+            for x in 0..W.len() as u32 {
+                let reachable = truth[x as usize] != i64::MAX && truth[x as usize] < t as i64;
+                let is_settled = labels[x as usize] != u32::MAX && labels[x as usize] <= t;
+                assert!(
+                    !reachable || is_settled,
+                    "T = {t}: e{x} has a reachable part (cost {}) but is not \
+                     settled — the arrive direction WOULD need a predecessor \
+                     scan",
+                    truth[x as usize]
+                );
+            }
+        }
+    }
+
+    /// The contrast that makes the asymmetry concrete: at the same
+    /// threshold the DEPART field's partial edges are outside its settled
+    /// set (hence `depart_frontier`), while the ARRIVE field's are inside it.
+    #[test]
+    fn the_depart_frontier_is_unsettled_and_the_arrive_partials_are_settled() {
+        let md = fixture();
+        let settled_ranks: Vec<(u32, u32)> = (0..6u32)
+            .map(|o| (rank_of(o), super::depart_frontier_tests::LABEL[o as usize]))
+            .collect();
+        let front = crate::server::isochrone_handler::depart_frontier(
+            &settled_ranks,
+            95,
+            &md.up_adj_flat,
+            &md.down_adj_flat,
+            &md,
+            &md.node_weights,
+        );
+        assert!(!front.is_empty(), "the depart fixture must have a frontier");
+        for &(o, _) in &front {
+            assert!(
+                super::depart_frontier_tests::LABEL[o as usize] > 95,
+                "a depart frontier edge is by definition NOT settled"
+            );
+        }
+        // Arrive at the same threshold: every partial edge carries a label.
+        let labels = normalised_labels();
+        let partials: Vec<u32> = (0..W.len() as u32)
+            .filter(|&x| {
+                labels[x as usize] != u32::MAX
+                    && matches!(arrive_reach(labels[x as usize], W[x as usize], 95), Some(f) if f < 1.0)
+            })
+            .collect();
+        assert!(
+            !partials.is_empty(),
+            "the arrive fixture must have partial edges at T = 95"
+        );
+        for x in partials {
+            assert!(
+                labels[x as usize] <= 95,
+                "e{x} is partially reachable and MUST already be settled"
+            );
+        }
+    }
+
+    /// A three-edge chain with consistent geometry: `x0 → x1 → x2`, the
+    /// arrive snap on `x2`. The partial edge must be cut from its HEAD (the
+    /// end it is left by), which is the endpoint it shares with a whole
+    /// edge — the same rule the depart fragments are placed by.
+    #[test]
+    fn reachable_polylines_cuts_the_arrive_edge_from_its_head() {
+        const LON0: i32 = 40_000_000;
+        const LAT0: i32 = 500_000_000;
+        // A(0) → B(100) → C(200) → D(300), all on the same latitude.
+        let pts: [[(i32, i32); 2]; 3] = [
+            [(LON0, LAT0), (LON0 + 100, LAT0)],
+            [(LON0 + 100, LAT0), (LON0 + 200, LAT0)],
+            [(LON0 + 200, LAT0), (LON0 + 300, LAT0)],
+        ];
+        let mut flat = Vec::new();
+        for pl in &pts {
+            for &(lon, lat) in pl {
+                flat.push(lon);
+                flat.push(lat);
+            }
+        }
+        let geom = EdgeGeometry::from_sections(
+            EdgeGeomOffsets {
+                n_edges: 3,
+                n_points: 6,
+                offsets: ArcCow::from_vec((0..=3u32).map(|i| i * 2).collect()),
+            },
+            EdgeGeomPoints {
+                n_points: 6,
+                bbox_min_lon: LON0,
+                bbox_min_lat: LAT0,
+                bbox_max_lon: LON0 + 300,
+                bbox_max_lat: LAT0,
+                points: ArcCow::from_vec(flat),
+            },
+        )
+        .unwrap();
+        let ebg = EbgNodes {
+            n_nodes: 3,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(
+                (0..3u32)
+                    .map(|i| EbgNode {
+                        tail_nbg: i,
+                        head_nbg: i + 1,
+                        geom_idx: i,
+                        length_m: 100,
+                        class_bits: 0,
+                        primary_way: 0,
+                    })
+                    .collect(),
+            ),
+        };
+
+        let weights = [30u32, 30, 30];
+        // Arrive labels: x2 is the seed edge (0), the snap is 20 s along it
+        // from C, so x1's head (C) is 20 s from the snap and x0's head (B)
+        // is 20 + w(x1) = 50 s from it.
+        let settled = vec![(0u32, 50u32), (1, 20), (2, 0)];
+        // T = 60: x2 and x1 are driven whole, x0 only over its last
+        // (60 − 50)/30 = 1/3 — the third that ENDS at B.
+        let (out, _) = reachable_polylines(
+            &settled,
+            60,
+            &weights,
+            &ebg,
+            &geom,
+            &ReachModel::Arrive,
+            false,
+        );
+        assert_eq!(
+            out,
+            vec![
+                vec![(LAT0, LON0 + 100), (LAT0, LON0 + 200)],
+                vec![(LAT0, LON0 + 200), (LAT0, LON0 + 300)],
+                // x0 cut from B (its head) back towards A, not from A.
+                vec![(LAT0, LON0 + 100), (LAT0, LON0 + 100 - 33)],
+            ],
+            "the arrive fragment must hang off the head of its edge"
+        );
+        // T = 49: x0's head is not reached before T at all, so nothing of
+        // it is drawn — no zero-length confetti.
+        let (out, _) = reachable_polylines(
+            &settled,
+            49,
+            &weights,
+            &ebg,
+            &geom,
+            &ReachModel::Arrive,
+            false,
+        );
+        assert_eq!(out.len(), 2, "an unreached edge must not be drawn");
+    }
+}
+
+/// #544: the arrive field's seed shift is applied in exactly two places and
+/// removed in exactly one, all three inside `isochrone_polygons` /
+/// `isochrone_center_seeds` — code that only runs with a loaded
+/// `ServerState`, i.e. a built container, i.e. not a unit test. The
+/// arithmetic itself is brute-forced in `arrive_reach_tests` and driven end
+/// to end on a real contraction in `tests/synthetic_topology.rs`; what is
+/// left unguarded is that the PIPELINE still spells it. Pin that on the
+/// pipeline's own source, the way #559 pinned the WKB guard's order.
+mod arrive_shift_source_invariants {
+    const GEOMETRY: &str = include_str!("geometry.rs");
+    const PHANTOM: &str = include_str!("phantom.rs");
+
+    #[test]
+    fn the_arrive_field_is_bounded_and_normalised_by_the_seed_shift() {
+        assert_eq!(
+            GEOMETRY
+                .matches("max_threshold.saturating_add(shift)")
+                .count(),
+            1,
+            "#544: the arrive field — and ONLY it — must be bounded at \
+             T + shift. A state whose true cost is T carries the label \
+             T + shift, so a bound of T alone silently drops the outermost \
+             ring of the answer; the depart field has no shift to add."
+        );
+        assert_eq!(
+            GEOMETRY.matches("dist.saturating_sub(shift)").count(),
+            1,
+            "#544: every label must be normalised by the seed shift exactly \
+             once; without it the polygon serves the T − w(seed edge) \
+             isochrone, with it twice it over-reaches"
+        );
+    }
+
+    #[test]
+    fn an_isochrone_center_is_seeded_by_the_one_shared_convention() {
+        assert!(
+            PHANTOM.contains("pe.query_seeds_and_shift("),
+            "#544: isochrone centers take their seeds from the SAME \
+             convention /route and the many-to-one matrix field use"
+        );
+        assert!(
+            !PHANTOM.contains("node_weights[sd.ebg_id as usize].saturating_sub(sd.part_time)"),
+            "#544: the pre-fix arrive seed (`w(edge) − part_time`, no shift) \
+             is back — that is `shift − part_time` plus a whole seed-edge \
+             weight, and it shifts the ENTIRE field"
+        );
     }
 }
