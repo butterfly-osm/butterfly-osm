@@ -35,6 +35,7 @@ use futures::stream;
 use serde::Deserialize;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::matrix::MatrixPlan;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::matrix::neighbors::{
     RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
@@ -715,11 +716,37 @@ fn chain_bands(plan: BandPlan, run: Arc<BandRun>, done_all: Arc<AtomicBool>) -> 
     }))
 }
 
+/// #594: the plan(s) the matrix producer actually ran, shared with the
+/// completeness trailer. The small branch records once; the streamed branch
+/// folds one record per source tile, so disagreeing tiles report
+/// [`MatrixPlan::Mixed`] rather than whichever tile happened to be last. A
+/// plain mutex: it is touched once per engine call (never per row), so the
+/// hot path cannot notice it.
+#[derive(Default)]
+pub struct PlanCell(std::sync::Mutex<Option<MatrixPlan>>);
+
+impl PlanCell {
+    /// Fold in the plan of one engine call.
+    fn record(&self, plan: MatrixPlan) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = Some(match *g {
+            None => plan,
+            Some(prev) => prev.merge(plan),
+        });
+    }
+
+    /// The folded plan, or `None` if no engine call recorded one.
+    fn get(&self) -> Option<MatrixPlan> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// Execute the matrix Flight action.
 fn do_matrix(
     state: &Arc<ServerState>,
     mode: Mode,
     params: MatrixParams,
+    plan_cell: &Arc<PlanCell>,
 ) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     // #533: the returned `done` flag is set true IFF the producer emitted the
     // complete result (every tile). The do_get wrapper turns a stream that
@@ -960,7 +987,7 @@ fn do_matrix(
         // #509: seeds go INTO the bucket engine (super-source forward,
         // shift-trick backward, pure-meet guard) — S×T cells, replacing the
         // #502 API-layer SeedExpansion (~(avg seeds)^2 engine cells).
-        let (mut matrix, mut lat_matrix_opt, _stats) = if let Some((up_lat, dn_lat)) = lat_flats {
+        let (mut matrix, mut lat_matrix_opt, stats) = if let Some((up_lat, dn_lat)) = lat_flats {
             let (m, lm, st) = {
                 // #527: 2-channel shape-aware router (plain weights).
                 let phast_ctx2 = mode_data
@@ -992,6 +1019,12 @@ fn do_matrix(
             );
             (m, None, st)
         };
+        // #594: the plan the engine reported for this (single-shot) request.
+        // The #538 radius rescue and the K-best per-cell fallback below are
+        // repair passes over individual cells, not the plan that produced the
+        // grid — deliberately NOT folded in, so a handful of rescued cells
+        // cannot relabel a PHAST-served matrix as `mixed`.
+        plan_cell.record(stats.plan);
 
         // #538 rescue: the radius cap is a heuristic COMPUTE bound, not an
         // output contract — any in-radius cell it cut (MAX under
@@ -1226,6 +1259,7 @@ fn do_matrix(
         let cancelled_bg = cancelled.clone();
         let done = Arc::new(AtomicBool::new(false)); // #533: all-tiles-emitted flag
         let done_bg = done.clone();
+        let plan_cell_bg = plan_cell.clone(); // #594: per-tile plan, folded
 
         let up_adj = mode_data.up_adj_flat.clone();
         let down_rev = mode_data.down_rev_flat.clone();
@@ -1366,6 +1400,11 @@ fn do_matrix(
                         "matrix tile came back 100% unreachable with valid seeds — retrying in place (#534)"
                     );
                 };
+
+                // #594: fold this tile's plan in. Tiles that disagree (the last
+                // tile is shorter, so its shape can route differently) report
+                // `mixed` — never whichever tile finished last.
+                plan_cell_bg.record(st.plan);
 
                 if !tgt_seedsets.is_empty() && tile_matrix.iter().all(|&v| v == u32::MAX) {
                     // Persistent after retries — fail closed (retryable) rather
@@ -3864,11 +3903,18 @@ const DO_GET_ACTIONS: &[&str] = &[
 /// distinguish a legitimately-empty response (`total_rows:0, complete:true`)
 /// from a truncated one, which matters once radius/sparse pruning removes the
 /// `rows == expected` check (#532).
+///
+/// `plan` (#594) is the matrix action's chosen-plan cell: when the producer
+/// recorded one, the trailer gains `"plan":"bucket"|"phast_fwd"|"phast_rev"|
+/// "mixed"` — the branch the engine actually took, not a re-derivation. The
+/// cell is read AFTER the stream drains, so the streamed (tiled) producer has
+/// folded every tile's plan into it by then.
 fn completed_flight_stream(
     schema: SchemaRef,
     batch_stream: BatchStream,
     done: Arc<AtomicBool>,
     extra: &'static str,
+    plan: Option<Arc<PlanCell>>,
 ) -> FlightDataStream {
     let rows = Arc::new(AtomicU64::new(0));
     let counted = count_rows_into(batch_stream, rows.clone());
@@ -3877,7 +3923,11 @@ fn completed_flight_stream(
     let trailer = futures::stream::once(async move {
         if done.load(Ordering::Acquire) {
             let n = rows.load(Ordering::Relaxed);
-            let json = format!("{{\"complete\":true,\"total_rows\":{n}{extra}}}");
+            let plan = plan
+                .and_then(|c| c.get())
+                .map(|p| format!(",\"plan\":\"{}\"", p.as_str()))
+                .unwrap_or_default();
+            let json = format!("{{\"complete\":true,\"total_rows\":{n}{extra}{plan}}}");
             Ok(FlightData {
                 app_metadata: json.into_bytes().into(),
                 ..Default::default()
@@ -4385,7 +4435,7 @@ async fn do_exchange_catchment(
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
     // #533: completeness trailer or non-OK error on truncation.
-    let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
+    let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
     Ok(Response::new(flight_stream))
 }
 
@@ -4473,21 +4523,30 @@ impl FlightService for ButterflyFlight {
                 } else {
                     ",\"contract\":\"dense\""
                 };
-                let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
-                let (schema, batch_stream, done) = if let Some(plan) = plan {
+                // #594: the producer records the plan it ran here; the trailer
+                // reads it once the stream has drained.
+                let plan_cell = Arc::new(PlanCell::default());
+                let bands =
+                    band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
+                let (schema, batch_stream, done) = if let Some(bands) = bands {
                     let done_all = Arc::new(AtomicBool::new(false));
                     let st = state.clone();
-                    let run: Arc<BandRun> = Arc::new(move |m| do_matrix(&st, m, params.clone()));
+                    let pc = plan_cell.clone();
+                    let run: Arc<BandRun> =
+                        Arc::new(move |m| do_matrix(&st, m, params.clone(), &pc));
                     (
                         Arc::new(banded_schema(matrix_schema())),
-                        chain_bands(plan, run, done_all.clone()),
+                        chain_bands(bands, run, done_all.clone()),
                         done_all,
                     )
                 } else {
-                    let (bs, done) = off_runtime(move || do_matrix(&state, mode, params)).await?;
+                    let pc = plan_cell.clone();
+                    let (bs, done) =
+                        off_runtime(move || do_matrix(&state, mode, params, &pc)).await?;
                     (Arc::new(matrix_schema()), bs, done)
                 };
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, extra);
+                let flight_stream =
+                    completed_flight_stream(schema, batch_stream, done, extra, Some(plan_cell));
                 Ok(Response::new(flight_stream))
             }
             "route_batch" => {
@@ -4545,7 +4604,7 @@ impl FlightService for ButterflyFlight {
                     (Arc::new(route_batch_schema()), bs, done)
                 };
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "isochrone" => {
@@ -4576,7 +4635,9 @@ impl FlightService for ButterflyFlight {
                 };
                 // #533/#560: completeness trailer or non-OK error on truncation —
                 // isochrone was the one do_get action still shipping without it.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
+                // No plan cell: the matrix action is the only one whose result
+                // comes from the shape-aware router (#594).
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "transit_bulk" => {
@@ -4596,7 +4657,7 @@ impl FlightService for ButterflyFlight {
                     off_runtime(move || do_transit_bulk(&state, params)).await?;
                 let schema = Arc::new(transit_bulk_schema());
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "edges_batch" => {
@@ -4633,6 +4694,7 @@ impl FlightService for ButterflyFlight {
                         batch_stream,
                         Arc::new(AtomicBool::new(true)),
                         "",
+                        None,
                     );
                     return Ok(Response::new(flight_stream));
                 };
@@ -4642,7 +4704,7 @@ impl FlightService for ButterflyFlight {
                     off_runtime(move || do_edges_batch(&state, mode, params)).await?;
                 let schema = Arc::new(edges_batch_schema());
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "");
+                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             other => Err(Status::invalid_argument(format!(
@@ -5721,7 +5783,7 @@ mod matrix_sparse_tests {
 /// matrix, `""` for edges_batch / transit_bulk / route_batch.
 #[cfg(test)]
 mod flight_completeness_tests {
-    use super::{BatchStream, DO_GET_ACTIONS, completed_flight_stream, matrix_schema};
+    use super::{BatchStream, DO_GET_ACTIONS, MatrixPlan, completed_flight_stream, matrix_schema};
     use arrow::array::{ArrayRef, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use arrow_flight::FlightData;
@@ -5743,6 +5805,15 @@ mod flight_completeness_tests {
         done: bool,
         extra: &'static str,
     ) -> Vec<std::result::Result<FlightData, tonic::Status>> {
+        drive_with_plan(batches, done, extra, None)
+    }
+
+    fn drive_with_plan(
+        batches: Vec<RecordBatch>,
+        done: bool,
+        extra: &'static str,
+        plan: Option<Arc<super::PlanCell>>,
+    ) -> Vec<std::result::Result<FlightData, tonic::Status>> {
         let bs: BatchStream =
             Box::pin(futures::stream::iter(batches).map(Ok::<RecordBatch, tonic::Status>));
         let stream = completed_flight_stream(
@@ -5750,6 +5821,7 @@ mod flight_completeness_tests {
             bs,
             Arc::new(AtomicBool::new(done)),
             extra,
+            plan,
         );
         futures::executor::block_on(stream.collect())
     }
@@ -5836,6 +5908,46 @@ mod flight_completeness_tests {
         assert!(meta.contains("\"complete\":true"), "meta: {meta}");
         assert!(meta.contains("\"total_rows\":7"), "meta: {meta}");
         assert!(!meta.contains("contract"), "no contract field: {meta}");
+        // #594: no plan cell (only the matrix action has one) → no plan key.
+        assert!(!meta.contains("plan"), "no plan field: {meta}");
+    }
+
+    /// #594: the matrix trailer reports the plan the producer RECORDED, and
+    /// the JSON stays parseable alongside the `contract` field. Tiles that
+    /// disagree report `mixed` — the fold, not the last writer.
+    #[test]
+    fn trailer_reports_the_recorded_plan() {
+        for (recorded, want) in [
+            (vec![MatrixPlan::PhastFwd], "phast_fwd"),
+            (vec![MatrixPlan::PhastRev], "phast_rev"),
+            (vec![MatrixPlan::Bucket, MatrixPlan::Bucket], "bucket"),
+            (vec![MatrixPlan::PhastFwd, MatrixPlan::Bucket], "mixed"),
+        ] {
+            let cell = Arc::new(super::PlanCell::default());
+            for p in &recorded {
+                cell.record(*p);
+            }
+            let items = drive_with_plan(vec![batch(3)], true, DENSE, Some(cell));
+            let meta = trailer_meta(&items);
+            let v: serde_json::Value = serde_json::from_str(&meta).expect("trailer is JSON");
+            assert_eq!(v["plan"], want, "meta: {meta}");
+            assert_eq!(v["contract"], "dense", "meta: {meta}");
+            assert_eq!(v["total_rows"], 3, "meta: {meta}");
+        }
+    }
+
+    /// #594: a plan cell nothing recorded into emits NO plan key — the client
+    /// sees "not reported", never a fabricated default.
+    #[test]
+    fn trailer_omits_an_unrecorded_plan() {
+        let items = drive_with_plan(
+            vec![batch(1)],
+            true,
+            DENSE,
+            Some(Arc::new(super::PlanCell::default())),
+        );
+        let meta = trailer_meta(&items);
+        assert!(!meta.contains("plan"), "meta: {meta}");
     }
 
     /// Trailer JSON is well-formed for every action variant (parses back).
