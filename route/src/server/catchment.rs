@@ -1198,22 +1198,11 @@ mod tests {
         assert!((threshold - 300.0).abs() < 0.01);
     }
 
-    #[test]
-    #[ignore] // Requires Belgium data and running ServerState
-    fn test_catchment_isochrone_mode_returns_polygon() {
-        // This test would require loading ServerState from Belgium data.
-        // Kept as an integration test marker.
-    }
-
-    #[test]
-    #[ignore] // Requires Belgium data
-    fn test_catchment_brussels_store_convex() {
-        // Integration test: compute convex catchment for a store in Brussels
-    }
-
-    #[test]
-    #[ignore] // Requires Belgium data
-    fn test_catchment_brussels_store_isochrone() {
-        // Integration test: compute isochrone catchment for a store in Brussels
-    }
+    // #587: three `#[ignore]`d tests used to sit here with EMPTY bodies
+    // ("kept as an integration test marker"). They asserted nothing, so
+    // they proved nothing whether they ran or not. The shape they claimed
+    // to cover — the road-mode catchment hull is exactly the threshold
+    // isochrone, i.e. ONE simple polygon containing its store — is now
+    // asserted for real, and data-free, in
+    // `route/tests/synthetic_topology.rs`.
 }
