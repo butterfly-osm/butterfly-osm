@@ -232,26 +232,13 @@ fn resolve_mode(profile: &str, state: &ServerState) -> std::result::Result<Mode,
     }
 }
 
+/// The REST validator, wrapped in the gRPC status this transport
+/// answers with (#576). Flight carried a third copy of the same three
+/// bounds checks whose only difference was the wording it refused with;
+/// a coordinate REST calls out-of-range is now out-of-range here, in the
+/// same words.
 fn validate_coord(lon: f64, lat: f64, label: &str) -> std::result::Result<(), Status> {
-    if !(-180.0..=180.0).contains(&lon) {
-        return Err(Status::invalid_argument(format!(
-            "{} longitude {} outside [-180, 180]",
-            label, lon
-        )));
-    }
-    if !(-90.0..=90.0).contains(&lat) {
-        return Err(Status::invalid_argument(format!(
-            "{} latitude {} outside [-90, 90]",
-            label, lat
-        )));
-    }
-    if lon.is_nan() || lat.is_nan() {
-        return Err(Status::invalid_argument(format!(
-            "{} coordinates contain NaN",
-            label
-        )));
-    }
-    Ok(())
+    super::types::validate_coord(lon, lat, label).map_err(Status::invalid_argument)
 }
 
 // =============================================================================
