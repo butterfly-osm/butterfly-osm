@@ -18,14 +18,15 @@
 //!    replaced with something else and the #101 loader needs to be
 //!    re-validated against the new shape.
 //!
-//! Both variants of this test are `#[ignore]`'d by default because
-//! the file is 720 MB and not something CI should fetch. Run
-//! manually:
+//! The two on-disk variants SELF-SKIP (#587) when the file is absent —
+//! it is 720 MB and not something CI should carry. The network variant
+//! stays `#[ignore]`d: no data directory can make a live fetch
+//! acceptable in CI.
 //!
 //! ```
 //! # Local file (after downloading once to this path).
-//! cargo test --test stib_epip_availability -- --ignored \
-//!     stib_epip_local_file
+//! BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test \
+//!     --test stib_epip_availability stib_epip_local_file
 //!
 //! # Network fetch (hits the Belgian NAP). Slow.
 //! STIB_EPIP_NETWORK=1 cargo test --test stib_epip_availability -- \
@@ -36,6 +37,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::time::Instant;
+
+use butterfly_route::testutil;
 
 const EPIP_NETEX_URL: &str =
     "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml";
@@ -147,6 +150,9 @@ fn assert_in_range(name: &str, actual: usize, (lo, hi): (usize, usize)) {
     );
 }
 
+/// One skip line for this whole file (#587).
+const SCOPE: &str = "stib_epip_availability";
+
 fn local_epip_path() -> Option<PathBuf> {
     // Env override wins.
     if let Ok(p) = std::env::var("STIB_EPIP_PATH") {
@@ -155,13 +161,12 @@ fn local_epip_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    // Default location under the Belgium data dir, mirroring the
-    // `gtfs/` sibling that the other feeds use.
-    let default = PathBuf::from("../data/belgium/transit/netex/stib-epip.xml");
-    if default.is_file() {
-        return Some(default);
+    // Default location under the region data dir, mirroring the `gtfs/`
+    // sibling that the other feeds use.
+    match testutil::asset("transit/netex/stib-epip.xml") {
+        Some(p) => Some(p),
+        None => testutil::skip(SCOPE, "transit/netex/stib-epip.xml (or STIB_EPIP_PATH)"),
     }
-    None
 }
 
 fn assert_is_netex_root(path: &std::path::Path) {
@@ -185,17 +190,9 @@ fn assert_is_netex_root(path: &std::path::Path) {
 }
 
 #[test]
-#[ignore = "requires the ~720 MB STIB NeTEx-EPIP file on disk — \
-            set STIB_EPIP_PATH or place at data/belgium/transit/netex/stib-epip.xml"]
 fn stib_epip_local_file() {
     let Some(path) = local_epip_path() else {
-        panic!(
-            "STIB NeTEx-EPIP file not found. Download once:\n  \
-             mkdir -p data/belgium/transit/netex\n  \
-             curl -sSL -o data/belgium/transit/netex/stib-epip.xml \\\n    \
-             '{EPIP_NETEX_URL}'\n\
-             Or set STIB_EPIP_PATH to a local copy."
-        );
+        return;
     };
     eprintln!("using STIB EPIP at {}", path.display());
 
@@ -244,15 +241,11 @@ fn stib_epip_local_file() {
 /// we expect. This exercises `butterfly_route::transit::netex_epip::load_epip_xml`
 /// in its first real deployment target.
 #[test]
-#[ignore = "parses the 720 MB STIB NeTEx-EPIP file (~30 s) — \
-            set STIB_EPIP_PATH or place at data/belgium/transit/netex/stib-epip.xml"]
 fn stib_epip_loader_produces_timetable() {
     use butterfly_route::transit::netex_epip::load_epip_xml;
 
     let Some(path) = local_epip_path() else {
-        panic!(
-            "STIB NeTEx-EPIP file not found — see stib_epip_local_file for the download command"
-        );
+        return;
     };
     eprintln!("parsing STIB EPIP from {}", path.display());
 

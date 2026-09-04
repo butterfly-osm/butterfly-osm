@@ -6,8 +6,13 @@
 //! - Route duration must EXACTLY match table duration
 //! - Route unreachability must match table null entries
 //! - Isochrone must be consistent with route times
+//!
+//! #587: these tests SELF-SKIP when the Belgium artifact is absent
+//! (`testutil::belgium_state`) instead of being `#[ignore]`d, so a
+//! data-full runner executes them under a plain `cargo test` and a bare
+//! runner prints ONE skip line for the whole file. The state is loaded
+//! once per test binary and shared.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::matrix::bucket_ch::table_bucket_full_flat;
@@ -37,21 +42,11 @@ const TEST_PAIRS: &[((f64, f64), (f64, f64))] = &[
     ((4.3517, 50.8503), (4.3840, 50.7147)),
 ];
 
-fn load_state() -> Arc<ServerState> {
-    // Try multiple paths: project root, workspace root, or crate-relative
-    let candidates = [
-        Path::new("./data/belgium"),
-        Path::new("../../data/belgium"),
-        Path::new("/home/snape/projects/butterfly-osm/data/belgium"),
-    ];
-    for data_dir in &candidates {
-        if data_dir.join("step5").exists() {
-            return Arc::new(
-                ServerState::load(data_dir, None).expect("Failed to load server state"),
-            );
-        }
-    }
-    panic!("Belgium data not found — tried {:?}", candidates);
+/// One skip line for this whole file (#587).
+const SCOPE: &str = "consistency_test";
+
+fn load_state() -> Option<Arc<ServerState>> {
+    crate::testutil::belgium_state(SCOPE)
 }
 
 /// Return all discovered modes as (name, Mode) pairs from the loaded ServerState.
@@ -89,9 +84,10 @@ fn snap_to_rank(state: &ServerState, mode: Mode, lon: f64, lat: f64) -> Option<(
 /// must be identical to the bucket M2M table distance. Both use the
 /// same CCH hierarchy and weights — any discrepancy is a bug.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_table_duration_consistency() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
@@ -189,9 +185,10 @@ fn test_route_table_duration_consistency() {
 /// The bucket M2M algorithm with distance adjacency must produce
 /// identical results to a P2P query with distance weights.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_table_distance_consistency() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
@@ -296,9 +293,10 @@ fn test_route_table_distance_consistency() {
 /// For any node within the isochrone's PHAST distance field with dist <= threshold,
 /// a P2P route query from the same origin should also find a route with dist <= threshold.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_isochrone_route_consistency() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
     let threshold_s = 300; // 5 minutes (weights are seconds post-#297, no conversion needed)
@@ -399,9 +397,10 @@ fn test_isochrone_route_consistency() {
 /// After unpacking, every consecutive pair of EBG nodes should be
 /// connected in the original EBG graph.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_path_validity() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let discovered = all_modes(&state);
     let mut total_tests = 0;
     let mut passed = 0;
@@ -510,9 +509,10 @@ fn test_route_path_validity() {
 ///
 /// Validates that every unpacked rank hop maps to a real arc in the SCC-filtered EBG.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -522,11 +522,25 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     // Load FilteredEbg from disk for raw CSR introspection (#153
     // dropped it from ServerState's ModeData on the serve path).
     // Test-only side-load; never reached from production code.
+    //
+    // #587: this needs the UNPACKED `stepN/` tree. A packed `.butterfly`
+    // container sets `data_dir` to the container file itself and carries
+    // no `step5/`, so the side-load is a second, narrower data
+    // precondition — skip on it rather than fail, exactly as for the
+    // missing artifact.
     let mode_name = state.mode_names[mode.index()].clone();
     let step5_dir = std::path::Path::new(&state.data_dir).join("step5");
     let filtered_ebg_path = step5_dir.join(format!("filtered.{}.ebg", mode_name));
+    if !filtered_ebg_path.is_file() {
+        let _: Option<()> = crate::testutil::skip(
+            "consistency_test::filtered_ebg",
+            "an unpacked step5/filtered.<mode>.ebg (this test introspects the raw \
+             CSR; a packed container does not carry it)",
+        );
+        return;
+    }
     let filtered_ebg = crate::formats::FilteredEbgFile::read(&filtered_ebg_path)
-        .expect("test requires step5/filtered.<mode>.ebg on disk");
+        .expect("step5/filtered.<mode>.ebg is present but unreadable");
 
     let query = CchQuery::new(&mode_data);
     let result = query
@@ -725,9 +739,10 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
 
 /// TEST: Alternative routes produce different geometries
 #[test]
-#[ignore] // Requires Belgium data
 fn test_alternative_routes_differ() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -794,9 +809,10 @@ fn test_alternative_routes_differ() {
 
 /// TEST: Route geometry produces valid polyline6 that round-trips correctly
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_geometry_polyline6_round_trips() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -927,9 +943,10 @@ fn test_route_geometry_polyline6_round_trips() {
 
 /// TEST: Nearest returns valid results within Belgium
 #[test]
-#[ignore] // Requires Belgium data
 fn test_nearest_returns_valid_results() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let discovered = all_modes(&state);
     let locations = [
         (4.3517, 50.8503), // Brussels center
@@ -979,9 +996,10 @@ fn test_nearest_returns_valid_results() {
 
 /// TEST: Nearest with k>1 returns results ordered by increasing distance
 #[test]
-#[ignore] // Requires Belgium data
 fn test_nearest_results_ordered_by_distance() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let _mode_data = state.get_mode(mode);
 
@@ -1030,9 +1048,10 @@ fn test_nearest_results_ordered_by_distance() {
 
 /// TEST: Nearest with no road nearby returns empty
 #[test]
-#[ignore] // Requires Belgium data
 fn test_nearest_in_ocean_returns_empty() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let _mode_data = state.get_mode(mode);
 
@@ -1052,11 +1071,12 @@ fn test_nearest_in_ocean_returns_empty() {
 
 /// TEST: Route with steps has depart and arrive maneuvers
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_steps_have_depart_and_arrive() {
     use super::route::build_steps;
 
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -1170,11 +1190,12 @@ fn test_route_steps_have_depart_and_arrive() {
 
 /// TEST: Step distances sum to approximately total route distance
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_steps_distances_sum_to_total() {
     use super::route::build_steps;
 
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -1253,11 +1274,12 @@ fn test_route_steps_distances_sum_to_total() {
 
 /// TEST: Step maneuver locations are on the route geometry
 #[test]
-#[ignore] // Requires Belgium data
 fn test_route_step_locations_on_route() {
     use super::route::build_steps;
 
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -1322,9 +1344,10 @@ fn test_route_step_locations_on_route() {
 
 /// TEST: Alternative routes work for all modes and multiple OD pairs
 #[test]
-#[ignore] // Requires Belgium data
 fn test_alternative_routes_all_modes() {
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let discovered = all_modes(&state);
     let mut total = 0;
     let mut with_alt = 0;
@@ -1430,12 +1453,13 @@ fn test_alternative_routes_all_modes() {
 /// (OSRM and Butterfly disagree on details), but it must be in the
 /// right ballpark and routable both ways.
 #[test]
-#[ignore] // Requires Belgium data
 fn test_197_directional_snap_asymmetry_reproducer() {
     use super::query::CchQuery;
     use super::types::SnapRole;
 
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 
@@ -1521,12 +1545,13 @@ fn test_197_directional_snap_asymmetry_reproducer() {
 /// (filter where butterfly_distance_m is null and osrm_distance_m
 /// is not null).
 #[test]
-#[ignore] // Requires Belgium data
 fn test_197_unfiltered_snap_still_demonstrates_bug() {
     use super::query::CchQuery;
     use super::types::SnapRole;
 
-    let state = load_state();
+    let Some(state) = load_state() else {
+        return;
+    };
     let mode = lookup_mode(&state, "car");
     let mode_data = state.get_mode(mode);
 

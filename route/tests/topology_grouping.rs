@@ -7,43 +7,26 @@
 //!    `manifest_bundles` parser through their public APIs. These tests
 //!    have no external data dependency.
 //!
-//! 2. **Belgium real-data tests (`#[ignore]`).** Run the analysis tool
+//! 2. **Belgium real-data tests (self-skipping, #587).** Run the analysis tool
 //!    against `data/belgium/baseline.butterfly` and assert that the
 //!    measured Jaccard / disk-acceptance numbers match the expected
 //!    range documented in `route/docs/146-empirical-sharing.md`. CI does
-//!    not ship Belgium so these are gated; run locally with:
+//!    not ship Belgium, so they skip themselves there; run locally with:
 //!
 //!    ```bash
-//!    cargo test -p butterfly-route --release --test topology_grouping -- --ignored
+//!    BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test -p butterfly-route \
+//!        --release --test topology_grouping
 //!    ```
 
+use butterfly_route::formats::butterfly_dat::Container;
 use butterfly_route::pack::{manifest_bundles, topology_diff};
+use butterfly_route::testutil;
 use std::path::PathBuf;
 
-/// Resolve `data/belgium/baseline.butterfly` against the locations where
-/// it commonly lives: package root (`./data/...`) when run via `cargo
-/// test -p`, workspace root (`../data/...`) when run from the package
-/// directory, and an opt-in `BUTTERFLY_TEST_DATA_DIR=/abs/path` for
-/// out-of-tree datasets. Mirrors the convention in `multi_region.rs`.
+/// Locate the Belgium container through the shared #587 data probe,
+/// printing one skip line for this file when it is absent.
 fn locate_belgium_container() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from("data/belgium/baseline.butterfly"),
-        PathBuf::from("../data/belgium/baseline.butterfly"),
-    ];
-    for c in &candidates {
-        if c.exists() {
-            return Some(c.clone());
-        }
-    }
-    if let Ok(base) = std::env::var("BUTTERFLY_TEST_DATA_DIR") {
-        let p = PathBuf::from(base)
-            .join("belgium")
-            .join("baseline.butterfly");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    testutil::require_container("topology_grouping")
 }
 
 #[test]
@@ -101,32 +84,47 @@ fn manifest_bundles_round_trips_multi_mode_layout() {
 
 // ---------------------------------------------------------------------
 // Belgium-real-data tests. These require `data/belgium/baseline.butterfly`
-// and are `#[ignore]`-gated.
+// and self-skip without the container.
 // ---------------------------------------------------------------------
 
 #[test]
-#[ignore = "requires data/belgium/baseline.butterfly"]
 fn topology_diff_belgium_runs_clean() {
     // The full all-modes diff must succeed without errors against the
     // shipped Belgium container. This is the live regression for the
     // `topology-diff` subcommand: any container-format change (e.g. a
     // new section kind) that breaks section resolution surfaces here.
     let Some(path) = locate_belgium_container() else {
-        eprintln!("skipping: data/belgium/baseline.butterfly not found");
         return;
     };
     topology_diff(&path, None).expect("topology-diff against Belgium container");
 }
 
 #[test]
-#[ignore = "requires data/belgium/baseline.butterfly"]
 fn topology_diff_belgium_explicit_pair() {
     // The car+truck pair is the candidate this PR specifically calls
     // out as "predicted to pass". The tool must accept the explicit
     // mode list and produce a single comparison.
+    //
+    // #587: `truck` is a DEFERRED profile (P5) — no shipped container has
+    // a `mode/truck/topo` section, so this test could not have passed on
+    // any current artifact. Running it at all is new; the missing mode is
+    // a data-content precondition, so it skips rather than failing, and
+    // the pair is worth repointing at two modes that actually ship.
     let Some(path) = locate_belgium_container() else {
-        eprintln!("skipping: data/belgium/baseline.butterfly not found");
         return;
     };
+    if path.is_file() {
+        let container = Container::open(&path).expect("open container");
+        let modes = container.list_modes();
+        for want in ["car", "truck"] {
+            if !modes.iter().any(|m| m == want) {
+                let _: Option<()> = testutil::skip(
+                    "topology_grouping::explicit_pair",
+                    &format!("a container carrying the '{want}' mode (has {modes:?})"),
+                );
+                return;
+            }
+        }
+    }
     topology_diff(&path, Some("car,truck")).expect("topology-diff car,truck");
 }

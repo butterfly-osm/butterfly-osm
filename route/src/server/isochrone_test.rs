@@ -91,7 +91,6 @@ pub fn polygon_bbox_with_buffer(points: &[IsoPoint], buffer_factor: f64) -> (f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     /// Per-violation diagnostic captured by the consistency suite.
     /// Stores only the fields actually consulted by the eprintln /
@@ -313,39 +312,19 @@ mod tests {
         assert!(points_to_polygon(&points).is_none());
     }
 
-    /// Integration test: Isochrone consistency with drive times
+    /// Integration test: Isochrone consistency with drive times.
     ///
-    /// Requires Belgium data
-    /// Run with: cargo test -p butterfly-route test_isochrone_consistency -- --ignored --nocapture
+    /// Self-skips (#587) without the Belgium artifact; runs under a plain
+    /// `cargo test` on a data-full runner:
+    /// `BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test -p butterfly-route \
+    ///     test_isochrone_consistency -- --nocapture`
     #[test]
-    #[ignore] // Run manually with --ignored flag
     fn test_isochrone_consistency_brussels() {
-        // Try multiple possible data locations
-        let possible_paths = [
-            "./data/belgium",
-            "../data/belgium",
-            "../../data/belgium",
-            "data/belgium",
-        ];
-
-        let data_dir = possible_paths.iter().map(Path::new).find(|p| p.exists());
-
-        let data_dir = match data_dir {
-            Some(p) => p,
-            None => {
-                eprintln!(
-                    "Skipping: Belgium data not found in any of {:?}",
-                    possible_paths
-                );
-                return;
-            }
-        };
-
         use crate::server::query::CchQuery;
-        use crate::server::state::ServerState;
 
-        // Load server state
-        let state = ServerState::load(data_dir, None).expect("Failed to load server state");
+        let Some(state) = crate::testutil::belgium_state("isochrone_test") else {
+            return;
+        };
         let mode_name = "car";
         let mode_idx = *state
             .mode_lookup
