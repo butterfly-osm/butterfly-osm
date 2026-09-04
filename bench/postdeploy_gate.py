@@ -1824,14 +1824,18 @@ def _distance_channel_vs_route(base, mode):
     """Shared #528 probe: build a 1x200 /table with the 2-channel distance
     (length-along-time) annotation for `mode`, then compare 30 sampled cells
     against /route distance_m for the same OD pair on the SAME mode. Returns
-    (checked, mism, worst) or None if the mode is not served (unknown-mode
-    400s are a SKIP, not a FAIL — variants are deploy-dependent)."""
+    (checked, mism, worst, plan) or None if the mode is not served
+    (unknown-mode 400s are a SKIP, not a FAIL — variants are deploy-dependent).
+
+    #594: `plan` is the plan the server reported for the probe. It is REPORTED,
+    not asserted — this gate is about the distance channel, and which plan it
+    happens to exercise is a fact worth printing rather than a bound."""
     rng = random.Random(528)
     o = (4.3517, 50.8503)
     dests = [(o[0] + rng.uniform(-0.3, 0.3), o[1] + rng.uniform(-0.2, 0.2)) for _ in range(200)]
     try:
-        tab = table(base, [list(o)], [list(d) for d in dests], mode=mode, timeout=200,
-            annotations="duration,distance")
+        tab, plan = table_with_plan(base, [list(o)], [list(d) for d in dests], mode=mode,
+            timeout=200, annotations="duration,distance")
     except urllib.error.HTTPError as e:
         if e.code in (400, 404):
             return None  # mode not served — skip
@@ -1854,7 +1858,7 @@ def _distance_channel_vs_route(base, mode):
         worst = max(worst, rel)
         if rel > cell_tol:
             mism += 1
-    return checked, mism, worst
+    return checked, mism, worst, plan
 
 
 def gate_recustomized_distance(base):
@@ -1871,14 +1875,13 @@ def gate_recustomized_distance(base):
     #529/#530: `car_nodir` (one-way-agnostic) is the canonical equal-DURATION
     tie mode — forward/backward arcs cost the same, so many OD pairs have
     several equal-time paths of DIFFERENT length. The 2-channel distance must
-    still equal /route distance_m under those ties. This probe exercises the
-    default /table BUCKET path (SearchState2 lazy-lex, #529). The PHAST
-    2-channel path (#530) is only taken when `phast_wins()` routes a lopsided
-    matrix through `table_phast_lopsided_2ch`; the live server picks the plan
-    itself and its env cannot be set from the gate, so forcing PHAST here is
-    not feasible — that surface is locked by the Rust unit test
-    `phast_2ch_lex_tests` and can be re-verified live with a dedicated serve
-    run under a matrix-algo override."""
+    still equal /route distance_m under those ties, on WHICHEVER 2-channel
+    plan the router picks for the probe's 1x200 shape — the plan is printed
+    (#594) rather than assumed: `BUTTERFLY_MATRIX_ALGO` is read once at the
+    first matrix call and frozen for the life of the process, so this gate
+    cannot pin one side. Which shape takes which plan is gate_lopsided's
+    assertion; the 2-channel PHAST lex semantics (#530) are locked by the
+    Rust unit test `phast_2ch_lex_tests`."""
     print("== recustomized-mode 2-channel distance==route (#528/#529) ==")
     passed = True
     for mode in ("car", "car_nodir"):
@@ -1886,11 +1889,11 @@ def gate_recustomized_distance(base):
         if res is None:
             print(f"  [SKIP] {mode} 2-channel distance==route: mode not served")
             continue
-        checked, mism, worst = res
+        checked, mism, worst, plan = res
         # `car` is always present (hard requirement); a served variant must
         # also hold. checked>=20 guards against a probe that snapped nothing.
         passed &= check(f"{mode} 2-channel distance==route", mism == 0 and checked >= 20,
-            f"{checked} cells, {mism} mismatches, worst {worst * 100:.2f}%")
+            f"{checked} cells, {mism} mismatches, worst {worst * 100:.2f}%, plan {plan}")
     return passed
 
 
