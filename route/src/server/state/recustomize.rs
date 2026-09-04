@@ -37,15 +37,26 @@ use crate::profile_abi::Mode;
 /// Per-way (#433) cache algo version — bump on ANY change to the
 /// calibration or customization algorithm so stale caches self-invalidate.
 /// v2: #552 (one-file section format + narrowed weight storage).
-const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v2";
+/// v3: #563 (sections additionally guarded by the CRC of the base weights
+/// the pass ran against — see [`SectionKey`]).
+const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v3";
 
 /// Per-edge (#450/#454/#521) cache algo version. BUMP THIS TAG whenever the
 /// served weights OR the len-along-time derivation changes: a stale cache
 /// serves the OLD derivation on HIT (prod's v3 cache-hit served pre-#528
 /// stale lat while the fresh miss-path was correct — that is exactly this
 /// class of miss). v6: #552 (one file / one key / three sections, parquet
-/// CRC instead of the raw bytes, narrowed weight storage).
-const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v6";
+/// CRC instead of the raw bytes, narrowed weight storage). v7: #563 (the
+/// key derivation gained the base-weights CRC — see [`SectionKey`]).
+const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v7";
+
+/// Test-only: how many times the heavy shared inputs were actually built
+/// (parquet body parsed, turn table read, filtered EBG mapped). A WARM boot
+/// must build them zero times — that is what "the second run hit the cache"
+/// means at pipeline level (#563), and nothing else observable distinguishes
+/// a hit from a recompute that happens to agree.
+#[cfg(test)]
+static EDGE_INPUTS_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Single cache file for the three per-edge passes.
 const EDGE_CACHE_FILE: &str = "recustomize_cache.car.bin";
@@ -421,7 +432,15 @@ impl ServerState {
         let cache_key = observed_cache_key(
             observed_path,
             self.derivation_sections_crc(OBSERVED_DERIVATION_SECTIONS),
-        );
+        )
+        .map(|file| SectionKey {
+            file,
+            // #563: the base this pass runs against. The container's
+            // node_weights CRC is already in `file`, but the RESIDENT base
+            // can have been recustomized in-process since — only the array
+            // itself tells the truth.
+            base: base_weights_crc(&base.node_weights),
+        });
         let cached = cache_key.and_then(|k| cache_load_section(&cache_path, k, 0));
 
         let (profile, new_weights, adjusted_node_weights) = if let Some(hit) = cached {
@@ -517,6 +536,8 @@ impl ServerState {
         if let Some(i) = &prep.inputs {
             return Ok(Arc::clone(i));
         }
+        #[cfg(test)]
+        EDGE_INPUTS_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let t0 = std::time::Instant::now();
 
         // 1. Read the table + build the directed lookup, one lane per column.
@@ -617,7 +638,15 @@ impl ServerState {
         prep: &mut EdgeRecustomizePrep,
         column: EdgeTableColumn,
     ) -> Result<(usize, CchWeights, Vec<u32>)> {
-        let cache_key = prep.cache_key(self.derivation_sections_crc(EDGE_DERIVATION_SECTIONS));
+        let cache_key = prep
+            .cache_key(self.derivation_sections_crc(EDGE_DERIVATION_SECTIONS))
+            .map(|file| SectionKey {
+                file,
+                // #563: which base this pass ran against — `car` for the
+                // typical pass, `car_freeflow` for the bands, and something
+                // else entirely if a per-way pass swapped the slot first.
+                base: base_weights_crc(&base.node_weights),
+            });
         let cache_path = prep.cache_path.clone();
         if let Some(hit) =
             cache_key.and_then(|k| cache_load_section(&cache_path, k, column.section_id()))
@@ -977,6 +1006,37 @@ fn observed_cache_key(observed_path: &Path, sections_crc: u64) -> Option<u64> {
     Some(d.finalize())
 }
 
+/// What one cached section is keyed by.
+///
+/// `file` is the whole-file key (algo tag ⊕ the runtime table's CRC ⊕ the
+/// container-section provenance ⊕ the level anchors) — it stamps the header,
+/// so a change to any of it invalidates every section at once.
+///
+/// `base` (#563) is a CRC of the BASE per-EBG-node weights the pass actually
+/// ran against. It CANNOT live in the file key: the three per-edge passes
+/// share ONE file and do NOT share one base (the typical pass recustomizes
+/// the `car` slot, the bands recustomize `car_freeflow`), so a base-dependent
+/// header key would make each pass wipe the others' sections. It seeds the
+/// PER-SECTION CRC instead, which is strictly stronger: a section is served
+/// only to a pass whose base is byte-identical to the one it was customized
+/// on. Without it, a pass that ran on an already-calibrated base (per-way
+/// fallback first, per-edge second) stored a compounded weight set under a
+/// key indistinguishable from the clean one — permanent, prod-only poison.
+/// A base mismatch reads exactly like a corrupt section: recompute + append.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SectionKey {
+    file: u64,
+    base: u64,
+}
+
+/// crc64 of a base weight array — one pass over an array that already exists.
+fn base_weights_crc(node_weights: &[u32]) -> u64 {
+    let mut d = crate::formats::crc::Digest::new();
+    d.update(&(node_weights.len() as u64).to_le_bytes());
+    d.update(bytemuck::cast_slice(node_weights));
+    d.finalize()
+}
+
 /// One cached weight set, borrowed for writing.
 struct CachedPass<'a> {
     /// Free-form provenance: the fitted profile JSON on the per-way path,
@@ -1202,15 +1262,15 @@ fn cache_scan_frames(path: &Path) -> (usize, u64) {
 
 /// Append one section, creating the file (header only, atomically) when it
 /// does not yet exist or belongs to a different key.
-fn cache_store_section(path: &Path, key: u64, id: u8, pass: &CachedPass<'_>) -> Result<()> {
+fn cache_store_section(path: &Path, key: SectionKey, id: u8, pass: &CachedPass<'_>) -> Result<()> {
     use std::io::Write;
     let (frames, intact_end) = cache_scan_frames(path);
-    if !cache_header_matches(path, key) || frames >= MAX_SECTIONS {
+    if !cache_header_matches(path, key.file) || frames >= MAX_SECTIONS {
         // A distinct temp name per process: two boots sharing the volume
         // must never write the same scratch file.
         let tmp = path.with_extension(format!("bin.tmp.{}", std::process::id()));
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&cache_header_bytes(key))?;
+        f.write_all(&cache_header_bytes(key.file))?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)?;
     } else if intact_end < std::fs::metadata(path)?.len() {
@@ -1226,8 +1286,10 @@ fn cache_store_section(path: &Path, key: u64, id: u8, pass: &CachedPass<'_>) -> 
     let f = std::fs::OpenOptions::new().append(true).open(path)?;
     let mut w = std::io::BufWriter::new(f);
     let mut d = crate::formats::crc::Digest::new();
-    // Domain-separate the section CRC with the file key (see the reader).
-    d.update(&key.to_le_bytes());
+    // Domain-separate the section CRC with the file key AND the base-weights
+    // CRC (#563) — see the reader.
+    d.update(&key.file.to_le_bytes());
+    d.update(&key.base.to_le_bytes());
 
     let mut frame = [0u8; 16];
     frame[0] = id;
@@ -1254,7 +1316,7 @@ fn cache_store_section(path: &Path, key: u64, id: u8, pass: &CachedPass<'_>) -> 
 
 /// Load section `id` from the cache, or `None` (recompute path) on ANY
 /// problem — key mismatch, magic, per-section CRC, truncation.
-fn cache_load_section(path: &Path, key: u64, id: u8) -> Option<LoadedPass> {
+fn cache_load_section(path: &Path, key: SectionKey, id: u8) -> Option<LoadedPass> {
     use std::io::{Read, Seek, SeekFrom};
     let inner = || -> Result<Option<LoadedPass>> {
         let f = std::fs::File::open(path)?;
@@ -1262,7 +1324,7 @@ fn cache_load_section(path: &Path, key: u64, id: u8) -> Option<LoadedPass> {
         let mut hdr = [0u8; CACHE_HEADER_LEN];
         r.read_exact(&mut hdr)?;
         anyhow::ensure!(&hdr[0..4] == CACHE_MAGIC, "bad magic");
-        anyhow::ensure!(hdr == cache_header_bytes(key), "key/version mismatch");
+        anyhow::ensure!(hdr == cache_header_bytes(key.file), "key/version mismatch");
 
         loop {
             let mut frame = [0u8; 16];
@@ -1279,11 +1341,14 @@ fn cache_load_section(path: &Path, key: u64, id: u8) -> Option<LoadedPass> {
                 r.seek(SeekFrom::Start(payload_start + len + 8))?;
                 continue;
             }
-            // The section CRC is seeded with the file key, so a section
-            // written under another key (a concurrent boot that replaced the
-            // header between our check and our append) can never verify here.
+            // The section CRC is seeded with the file key AND the base
+            // weights the pass ran against, so a section written under
+            // another key (a concurrent boot that replaced the header between
+            // our check and our append) or against a DIFFERENT base (#563)
+            // can never verify here.
             let mut d = crate::formats::crc::Digest::new();
-            d.update(&key.to_le_bytes());
+            d.update(&key.file.to_le_bytes());
+            d.update(&key.base.to_le_bytes());
             d.update(&frame);
             let section = {
                 let mut payload = (&mut r).take(len);
@@ -1365,6 +1430,12 @@ fn read_section_payload(
 mod tests {
     use super::*;
 
+    /// A file key with no base-weights component — the pure round-trip
+    /// tests below do not model a base (#563 adds a dedicated test).
+    fn k(file: u64) -> SectionKey {
+        SectionKey { file, base: 0 }
+    }
+
     fn tiny_weights() -> CchWeights {
         CchWeights {
             up: WeightArray::from_vec_u32_narrowed(vec![1, 2, u32::MAX, 65_534]),
@@ -1397,19 +1468,19 @@ mod tests {
                 weights: &w,
                 node_weights: &nw,
             };
-            cache_store_section(&path, 77, id, &pass).unwrap();
+            cache_store_section(&path, k(77), id, &pass).unwrap();
         }
 
         for id in [0u8, 2] {
-            let got = cache_load_section(&path, 77, id).expect("section present");
+            let got = cache_load_section(&path, k(77), id).expect("section present");
             assert_eq!(got.matched, 40 + id as u64);
             assert_eq!(got.node_weights, nw);
             assert_same(&got.weights, &w);
         }
         // A section that was never written is simply absent...
-        assert!(cache_load_section(&path, 77, 1).is_none());
+        assert!(cache_load_section(&path, k(77), 1).is_none());
         // ...and a different key invalidates the whole file.
-        assert!(cache_load_section(&path, 78, 0).is_none());
+        assert!(cache_load_section(&path, k(78), 0).is_none());
     }
 
     #[test]
@@ -1424,15 +1495,15 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, 1, 0, &pass(1)).unwrap();
+        cache_store_section(&path, k(1), 0, &pass(1)).unwrap();
         let after_first = std::fs::metadata(&path).unwrap().len();
-        cache_store_section(&path, 1, 1, &pass(2)).unwrap();
+        cache_store_section(&path, k(1), 1, &pass(2)).unwrap();
         assert!(
             std::fs::metadata(&path).unwrap().len() > after_first,
             "second section must be appended, not rewrite the file"
         );
-        assert_eq!(cache_load_section(&path, 1, 0).unwrap().matched, 1);
-        assert_eq!(cache_load_section(&path, 1, 1).unwrap().matched, 2);
+        assert_eq!(cache_load_section(&path, k(1), 0).unwrap().matched, 1);
+        assert_eq!(cache_load_section(&path, k(1), 1).unwrap().matched, 2);
     }
 
     #[test]
@@ -1447,9 +1518,9 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, 5, 0, &pass(11)).unwrap();
+        cache_store_section(&path, k(5), 0, &pass(11)).unwrap();
         let end_of_first = std::fs::metadata(&path).unwrap().len() as usize;
-        cache_store_section(&path, 5, 1, &pass(22)).unwrap();
+        cache_store_section(&path, k(5), 1, &pass(22)).unwrap();
 
         // Flip one byte inside the FIRST section's payload.
         let mut bytes = std::fs::read(&path).unwrap();
@@ -1458,11 +1529,11 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         assert!(
-            cache_load_section(&path, 5, 0).is_none(),
+            cache_load_section(&path, k(5), 0).is_none(),
             "the corrupted section must be recomputed"
         );
         assert_eq!(
-            cache_load_section(&path, 5, 1).unwrap().matched,
+            cache_load_section(&path, k(5), 1).unwrap().matched,
             22,
             "the intact section must still load"
         );
@@ -1476,7 +1547,7 @@ mod tests {
         let nw = vec![3u32, 4];
         cache_store_section(
             &path,
-            9,
+            k(9),
             0,
             &CachedPass {
                 provenance: "prof".into(),
@@ -1488,7 +1559,7 @@ mod tests {
         .unwrap();
         let full = std::fs::read(&path).unwrap();
         std::fs::write(&path, &full[..full.len() - 9]).unwrap();
-        assert!(cache_load_section(&path, 9, 0).is_none());
+        assert!(cache_load_section(&path, k(9), 0).is_none());
     }
 
     #[test]
@@ -1505,13 +1576,13 @@ mod tests {
         };
         // Same key, far more appends than the three real passes ever make.
         for i in 0..(MAX_SECTIONS as u64 + 4) {
-            cache_store_section(&path, 42, 0, &pass(i)).unwrap();
+            cache_store_section(&path, k(42), 0, &pass(i)).unwrap();
             assert!(cache_scan_frames(&path).0 <= MAX_SECTIONS);
         }
         // Compaction never leaves the file unreadable: a section still
         // loads, and every section under one key holds the same derivation
         // anyway (the key pins it), so which copy wins does not matter.
-        assert!(cache_load_section(&path, 42, 0).is_some());
+        assert!(cache_load_section(&path, k(42), 0).is_some());
     }
 
     /// #552 hardening: a section body is CRC'd together with the file key,
@@ -1530,8 +1601,8 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&a, 111, 0, &pass).unwrap();
-        cache_store_section(&b, 222, 0, &pass).unwrap();
+        cache_store_section(&a, k(111), 0, &pass).unwrap();
+        cache_store_section(&b, k(222), 0, &pass).unwrap();
 
         // Graft B's header (key 222) onto A's body — what a racing writer
         // would leave behind if the section CRC did not bind the key.
@@ -1541,7 +1612,7 @@ mod tests {
         std::fs::write(&a, &bytes).unwrap();
 
         assert!(
-            cache_load_section(&a, 222, 0).is_none(),
+            cache_load_section(&a, k(222), 0).is_none(),
             "a section derived under another key must never be served"
         );
     }
@@ -1558,10 +1629,10 @@ mod tests {
             weights: &w,
             node_weights: &nw,
         };
-        cache_store_section(&path, 1, 0, &pass(1)).unwrap();
-        cache_store_section(&path, 2, 0, &pass(2)).unwrap();
-        assert!(cache_load_section(&path, 1, 0).is_none());
-        assert_eq!(cache_load_section(&path, 2, 0).unwrap().matched, 2);
+        cache_store_section(&path, k(1), 0, &pass(1)).unwrap();
+        cache_store_section(&path, k(2), 0, &pass(2)).unwrap();
+        assert!(cache_load_section(&path, k(1), 0).is_none());
+        assert_eq!(cache_load_section(&path, k(2), 0).unwrap().matched, 2);
     }
 
     #[test]
@@ -1572,7 +1643,7 @@ mod tests {
         let nw = vec![3u32];
         cache_store_section(
             &path,
-            3,
+            k(3),
             0,
             &CachedPass {
                 provenance: "{\"name\":\"x\"}".into(),
@@ -1583,8 +1654,536 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            cache_load_section(&path, 3, 0).unwrap().provenance,
+            cache_load_section(&path, k(3), 0).unwrap().provenance,
             "{\"name\":\"x\"}"
+        );
+    }
+}
+
+/// Pipeline-level tests for the per-edge serve-boot recustomization, on a
+/// hand-built 4-state CCH and a REAL synthetic `edge_speeds` parquet +
+/// `.butterfly` container — no Belgium artifact, no server.
+///
+/// The graph is one bidirectional two-segment street:
+///
+/// ```text
+///   NBG nodes    A(osm 1000) --e0-- B(osm 1001) --e1-- C(osm 1002)
+///   EBG states   s0: A->B   s1: B->C   s2: C->B   s3: B->A
+///   transitions  arc0: s0->s1 (turn 5 s)   arc1: s2->s3 (turn 7 s)
+///   CCH ranks    rank0=s0, rank1=s3, rank2=s2, rank3=s1
+///                => UP   edge: rank0 -> rank3   (s0 -> s1)
+///                => DOWN edge: rank2 -> rank1   (s2 -> s3)
+/// ```
+///
+/// The rank permutation is what makes the fixture cover BOTH CCH channels:
+/// a chain with identity ranks would produce an empty DOWN graph.
+#[cfg(test)]
+mod pipeline_tests {
+    use super::*;
+    use crate::formats::butterfly_dat::{ContainerWriter, SectionKind};
+    use crate::formats::ebg_nodes::EbgNode;
+    use crate::formats::lazy_verify::LazyContainer;
+    use crate::formats::{
+        ArcCow, BitsetField, CchTopo, EbgCsr, EbgNodes, FilteredEbg, FilteredEbgFile, WeightArray,
+    };
+    use crate::profile_abi::Mode;
+    use std::sync::atomic::Ordering;
+
+    /// The passes below read a process-global build counter, so they must not
+    /// interleave with each other.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const OSM_A: i64 = 1000;
+    const OSM_B: i64 = 1001;
+    const OSM_C: i64 = 1002;
+
+    /// Clean base per-state times, seconds. Index = EBG state id.
+    const BASE_TIMES: [u32; 4] = [100, 60, 60, 100];
+    /// Turn penalties, seconds. Index = EBG CSR arc id.
+    const TURNS: [u32; 2] = [5, 7];
+
+    // ---------------------------------------------------------------
+    // Fixture construction
+    // ---------------------------------------------------------------
+
+    fn ebg_nodes() -> EbgNodes {
+        let node = |tail: u32, head: u32, geom: u32| EbgNode {
+            tail_nbg: tail,
+            head_nbg: head,
+            geom_idx: geom,
+            length_m: 1000,
+            class_bits: 0,
+            primary_way: 0,
+        };
+        EbgNodes {
+            n_nodes: 4,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(vec![
+                node(0, 1, 0), // s0: A->B
+                node(1, 2, 1), // s1: B->C
+                node(2, 1, 1), // s2: C->B
+                node(1, 0, 0), // s3: B->A
+            ]),
+        }
+    }
+
+    /// Transitions between states: s0->s1 (arc 0), s2->s3 (arc 1).
+    fn ebg_csr() -> EbgCsr {
+        EbgCsr {
+            n_nodes: 4,
+            n_arcs: 2,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            offsets: ArcCow::from_vec(vec![0u64, 1, 1, 2, 2]),
+            heads: ArcCow::from_vec(vec![1u32, 3]),
+            turn_idx: ArcCow::from_vec(vec![0u32, 1]),
+        }
+    }
+
+    /// Identity original <-> filtered; same arc order as the EBG CSR.
+    fn filtered_ebg() -> FilteredEbg {
+        FilteredEbg {
+            mode: Mode(0),
+            n_filtered_nodes: 4,
+            n_filtered_arcs: 2,
+            n_original_nodes: 4,
+            inputs_sha: [0u8; 32],
+            offsets: ArcCow::from_vec(vec![0u64, 1, 1, 2, 2]),
+            heads: ArcCow::from_vec(vec![1u32, 3]),
+            original_arc_idx: ArcCow::from_vec(vec![0u32, 1]),
+            filtered_to_original: ArcCow::from_vec(vec![0u32, 1, 2, 3]),
+            original_to_filtered: ArcCow::from_vec(vec![0u32, 1, 2, 3]),
+        }
+    }
+
+    /// rank -> filtered id. See the module diagram: one UP edge, one DOWN.
+    const RANK_TO_FILTERED: [u32; 4] = [0, 3, 2, 1];
+
+    fn cch_topo() -> CchTopo {
+        CchTopo {
+            n_nodes: 4,
+            n_shortcuts: 0,
+            n_original_arcs: 2,
+            inputs_sha: [0u8; 32],
+            // rank0 -> rank3 (s0 -> s1)
+            up_offsets: ArcCow::from_vec(vec![0u64, 1, 1, 1, 1]),
+            up_targets: ArcCow::from_vec(vec![3u32]),
+            up_is_shortcut: BitsetField::from_bools(&[false]),
+            up_middle: WeightArray::from_vec_u32(vec![u32::MAX]),
+            // rank2 -> rank1 (s2 -> s3)
+            down_offsets: ArcCow::from_vec(vec![0u64, 0, 0, 1, 1]),
+            down_targets: ArcCow::from_vec(vec![1u32]),
+            down_is_shortcut: BitsetField::from_bools(&[false]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX]),
+            rank_to_filtered: ArcCow::from_vec(RANK_TO_FILTERED.to_vec()),
+        }
+    }
+
+    /// Write the container sections the per-edge derivation reads from the
+    /// artifact: the turn table and the filtered EBG.
+    fn write_container(path: &Path) {
+        let turns_file = tempfile::NamedTempFile::new().unwrap();
+        crate::formats::mod_turns::write(
+            turns_file.path(),
+            &crate::formats::mod_turns::ModTurns {
+                mode: Mode(0),
+                penalties: TURNS.to_vec(),
+                inputs_sha: [0u8; 16],
+            },
+        )
+        .unwrap();
+        let fe_file = tempfile::NamedTempFile::new().unwrap();
+        FilteredEbgFile::write(fe_file.path(), &filtered_ebg()).unwrap();
+
+        let mut w = ContainerWriter::create(path).unwrap();
+        w.append_file(
+            SectionKind::NodeWeightsTurn,
+            "mode/car/node_weights.turn",
+            turns_file.path(),
+        )
+        .unwrap();
+        w.append_file(
+            SectionKind::FilteredEbg,
+            "mode/car/filtered_ebg",
+            fe_file.path(),
+        )
+        .unwrap();
+        w.finalize().unwrap();
+    }
+
+    /// A real `edge_speeds.parquet`: the three SPEED-domain ratio columns and
+    /// the three #524 level anchors as KV metadata. Ratios are ordered
+    /// best >= typical >= worst (faster speed = smaller time), anchors the
+    /// other way round.
+    fn write_edge_table(path: &Path) {
+        use arrow::array::{Float32Array, Int64Array};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::metadata::KeyValue;
+        use parquet::file::properties::WriterProperties;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("osm_node_from", DataType::Int64, false),
+            Field::new("osm_node_to", DataType::Int64, false),
+            Field::new("speed_ratio", DataType::Float32, false),
+            Field::new("speed_ratio_best", DataType::Float32, false),
+            Field::new("speed_ratio_worst", DataType::Float32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![OSM_A, OSM_B, OSM_C, OSM_B])),
+                Arc::new(Int64Array::from(vec![OSM_B, OSM_C, OSM_B, OSM_A])),
+                Arc::new(Float32Array::from(vec![0.5f32, 0.8, 0.7, 0.6])),
+                Arc::new(Float32Array::from(vec![0.9f32, 1.0, 0.95, 0.85])),
+                Arc::new(Float32Array::from(vec![0.3f32, 0.6, 0.4, 0.45])),
+            ],
+        )
+        .unwrap();
+
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(vec![
+                KeyValue::new("time_scale".to_string(), "1.05".to_string()),
+                KeyValue::new("time_scale_best".to_string(), "1.0".to_string()),
+                KeyValue::new("time_scale_worst".to_string(), "1.1".to_string()),
+            ]))
+            .build();
+        let file = std::fs::File::create(path).unwrap();
+        let mut w = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+    }
+
+    /// The clean base car mode: weights customized from `BASE_TIMES`, i.e.
+    /// exactly what a cold artifact serves before any recustomization.
+    fn base_mode(state: &ServerState, node_weights: Vec<u32>) -> ModeData {
+        let topo = cch_topo();
+        let fe = filtered_ebg();
+        let (cch_weights, adjusted) = crate::customization::customize_cch_time_in_memory(
+            &topo,
+            &fe,
+            &node_weights,
+            &TURNS,
+            &state.ebg_nodes,
+            None,
+        )
+        .unwrap();
+        let up = UpAdjFlat::build_with(&topo, &cch_weights, true);
+        let down_rev = DownReverseAdjFlat::build_with(&topo, &cch_weights, true);
+        let down = DownAdjFlat::build(&topo, &cch_weights);
+        let up_dist = UpAdjFlat::build_with(&topo, &cch_weights, true);
+        let down_rev_dist = DownReverseAdjFlat::build_with(&topo, &cch_weights, true);
+        ModeData {
+            mode: Mode(0),
+            cch_topo: topo,
+            cch_weights: cch_weights.clone(),
+            cch_weights_dist: cch_weights,
+            cch_weights_len_along_time: None,
+            orig_to_rank: ArcCow::from_vec(vec![0u32, 3, 2, 1]),
+            filtered_to_original: ArcCow::from_vec(vec![0u32, 1, 2, 3]),
+            n_filtered_nodes: 4,
+            n_original_nodes: 4,
+            node_weights: std::borrow::Cow::Owned(adjusted),
+            mask: vec![0u64],
+            has_outbound: vec![0u64],
+            has_inbound: vec![0u64],
+            up_adj_flat: up,
+            down_rev_flat: down_rev,
+            down_adj_flat: down,
+            up_adj_flat_dist: up_dist,
+            down_rev_flat_dist: down_rev_dist,
+            up_adj_flat_len_along_time: None,
+            down_rev_flat_len_along_time: None,
+            down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
+            exclude_cache: crate::server::exclude::ExcludeWeightCache::default(),
+        }
+    }
+
+    /// A `ServerState` carrying exactly what the per-edge derivation reads:
+    /// the EBG, the OSM node map, and the container the turn table + filtered
+    /// EBG come from. Everything else is empty.
+    fn server_state(container: &Path) -> ServerState {
+        let lazy = Arc::new(LazyContainer::open_lazy(container).unwrap());
+        let mmap = Arc::clone(lazy.mmap_arc());
+        let nbg_geo = crate::formats::NbgGeo {
+            n_edges_und: 0,
+            edges: Vec::new(),
+            polylines: Vec::new(),
+        };
+        ServerState {
+            edge_geom: crate::server::edge_geom::EdgeGeometry::from_legacy_polylines(&nbg_geo),
+            ebg_nodes: ebg_nodes(),
+            ebg_csr: ebg_csr(),
+            nbg_geo,
+            edge_osm: crate::server::edge_osm::EdgeOsmChains::empty(),
+            nbg_node_to_osm: vec![OSM_A, OSM_B, OSM_C],
+            modes: Vec::new(),
+            band_worst_idx: None,
+            band_best_idx: None,
+            car_freeflow_idx: None,
+            mode_names: Vec::new(),
+            mode_lookup: HashMap::new(),
+            snap_index: crate::server::snap_index::PackedSnapIndex {
+                points: crate::formats::snap_index::SnapPoints {
+                    n_points: 0,
+                    bbox_min_lon: 0,
+                    bbox_min_lat: 0,
+                    bbox_max_lon: 0,
+                    bbox_max_lat: 0,
+                    cell_log2: 0,
+                    points: ArcCow::from_vec(Vec::new()),
+                },
+                grid: crate::formats::snap_index::SnapGrid {
+                    n_cells_x: 0,
+                    n_cells_y: 0,
+                    origin_x: 0,
+                    origin_y: 0,
+                    cell_log2: 0,
+                    offsets: ArcCow::from_vec(vec![0u32]),
+                },
+                masks: Vec::new(),
+            },
+            elevation: None,
+            way_names: crate::server::state::WayNames::Heap(HashMap::new()),
+            node_weights_dist: vec![0; 4],
+            edge_exclude_flags: vec![0; 4],
+            avoid_cache: crate::server::avoid::AvoidWeightCache::default(),
+            transit: None,
+            started_at: std::time::Instant::now(),
+            data_dir: String::new(),
+            _mmap_arc: Some(mmap),
+            lazy: Some(lazy),
+        }
+    }
+
+    /// Everything one test needs, rooted in a temp dir whose lifetime the
+    /// caller holds (the recustomize cache lands next to the parquet).
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        parquet: PathBuf,
+        state: ServerState,
+    }
+
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let container = dir.path().join("belgium.butterfly");
+        let parquet = dir.path().join("edge_speeds.parquet");
+        write_container(&container);
+        write_edge_table(&parquet);
+        let state = server_state(&container);
+        Fixture {
+            _dir: dir,
+            parquet,
+            state,
+        }
+    }
+
+    fn weights_u32(w: &CchWeights) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+        (
+            w.up.to_vec_u32(),
+            w.down.to_vec_u32(),
+            w.up_middle.as_slice().to_vec(),
+            w.down_middle.as_slice().to_vec(),
+        )
+    }
+
+    // ---------------------------------------------------------------
+    // #563: cold boot == warm boot, and the base is part of the key
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn cold_and_warm_boot_serve_bit_identical_weights() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let fx = fixture();
+        let base = base_mode(&fx.state, BASE_TIMES.to_vec());
+
+        // Cold: no cache file yet -> the inputs are built once.
+        let before = EDGE_INPUTS_BUILDS.load(Ordering::Relaxed);
+        let mut prep = EdgeRecustomizePrep::new(&fx.parquet);
+        let (m_cold, w_cold, nw_cold) = fx
+            .state
+            .recustomized_weights_from_edge_table(&base, &mut prep, EdgeTableColumn::Median)
+            .expect("cold pass");
+        assert_eq!(
+            EDGE_INPUTS_BUILDS.load(Ordering::Relaxed) - before,
+            1,
+            "the cold pass must actually do the work"
+        );
+        assert!(m_cold > 0, "the fixture must match the graph");
+
+        // Warm: a FRESH prep, as a second boot has — same parquet, same
+        // container, same base.
+        let mut prep2 = EdgeRecustomizePrep::new(&fx.parquet);
+        let (m_warm, w_warm, nw_warm) = fx
+            .state
+            .recustomized_weights_from_edge_table(&base, &mut prep2, EdgeTableColumn::Median)
+            .expect("warm pass");
+        assert_eq!(
+            EDGE_INPUTS_BUILDS.load(Ordering::Relaxed) - before,
+            1,
+            "the warm boot must be served from the cache, not recomputed"
+        );
+        assert_eq!(m_warm, m_cold, "matched count must survive the cache");
+        assert_eq!(nw_warm, nw_cold, "node weights must be bit-identical");
+        assert_eq!(
+            weights_u32(&w_warm),
+            weights_u32(&w_cold),
+            "CCH weights must be bit-identical on cold and warm boot"
+        );
+
+        // #563: the SAME inputs against a DIFFERENT base must never be
+        // served the cached section. Before the base CRC entered the key,
+        // this returned the weights customized on `BASE_TIMES` — a
+        // permanently poisoned cache the moment any pass ran on an
+        // already-calibrated base.
+        let other_times: Vec<u32> = BASE_TIMES.iter().map(|w| w * 2).collect();
+        let other_base = base_mode(&fx.state, other_times);
+        let mut prep3 = EdgeRecustomizePrep::new(&fx.parquet);
+        let (_, w_other, nw_other) = fx
+            .state
+            .recustomized_weights_from_edge_table(&other_base, &mut prep3, EdgeTableColumn::Median)
+            .expect("other-base pass");
+        assert_eq!(
+            EDGE_INPUTS_BUILDS.load(Ordering::Relaxed) - before,
+            2,
+            "a pass on a different base must recompute, never hit the cache"
+        );
+        assert_ne!(
+            nw_other, nw_cold,
+            "a different base must produce different weights"
+        );
+
+        // ...and it must itself be cacheable, keyed on ITS base.
+        let mut prep4 = EdgeRecustomizePrep::new(&fx.parquet);
+        let (_, w_other2, nw_other2) = fx
+            .state
+            .recustomized_weights_from_edge_table(&other_base, &mut prep4, EdgeTableColumn::Median)
+            .expect("other-base warm pass");
+        assert_eq!(
+            EDGE_INPUTS_BUILDS.load(Ordering::Relaxed) - before,
+            2,
+            "the second pass on the other base must hit its own section"
+        );
+        assert_eq!(nw_other2, nw_other);
+        assert_eq!(weights_u32(&w_other2), weights_u32(&w_other));
+
+        // The first base's section is still intact next to it.
+        let mut prep5 = EdgeRecustomizePrep::new(&fx.parquet);
+        let (_, w_again, nw_again) = fx
+            .state
+            .recustomized_weights_from_edge_table(&base, &mut prep5, EdgeTableColumn::Median)
+            .expect("original-base warm pass");
+        assert_eq!(nw_again, nw_cold);
+        assert_eq!(weights_u32(&w_again), weights_u32(&w_cold));
+    }
+
+    // ---------------------------------------------------------------
+    // #590: best <= typical <= worst, per link weight AND per turn
+    // ---------------------------------------------------------------
+
+    /// The turn charge each CCH original edge carries: `weight - w(head)`.
+    /// The customization builds an original edge's weight as
+    /// `node_weight(head) + turn(arc)`, so subtracting the head's link
+    /// weight recovers the scaled turn penalty element by element.
+    fn turn_charges(w: &CchWeights, node_weights: &[u32]) -> Vec<u32> {
+        let topo = cch_topo();
+        let head_weight = |rank: usize| -> u32 {
+            let filtered = RANK_TO_FILTERED[rank] as usize;
+            node_weights[filtered] // identity filtered -> original
+        };
+        let mut out = Vec::new();
+        for (i, &target) in topo.up_targets.iter().enumerate() {
+            out.push(w.up.get(i) - head_weight(target as usize));
+        }
+        for (i, &target) in topo.down_targets.iter().enumerate() {
+            out.push(w.down.get(i) - head_weight(target as usize));
+        }
+        out
+    }
+
+    #[test]
+    fn bands_are_ordered_best_le_typical_le_worst() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let fx = fixture();
+        let base = base_mode(&fx.state, BASE_TIMES.to_vec());
+        // ONE prep for the three passes — the shape production uses.
+        let mut prep = EdgeRecustomizePrep::new(&fx.parquet);
+        let run = |prep: &mut EdgeRecustomizePrep, column| {
+            fx.state
+                .recustomized_weights_from_edge_table(&base, prep, column)
+                .unwrap_or_else(|e| panic!("{column:?} pass: {e}"))
+        };
+        let (_, w_typ, nw_typ) = run(&mut prep, EdgeTableColumn::Median);
+        let (_, w_best, nw_best) = run(&mut prep, EdgeTableColumn::Best);
+        let (_, w_worst, nw_worst) = run(&mut prep, EdgeTableColumn::Worst);
+
+        // 1. Link weights, per EBG state.
+        assert_eq!(nw_typ.len(), BASE_TIMES.len());
+        for i in 0..nw_typ.len() {
+            assert!(
+                nw_best[i] <= nw_typ[i] && nw_typ[i] <= nw_worst[i],
+                "state {i}: link weights out of band order: \
+                 best {} / typical {} / worst {}",
+                nw_best[i],
+                nw_typ[i],
+                nw_worst[i]
+            );
+        }
+        assert!(
+            (0..nw_typ.len()).any(|i| nw_best[i] < nw_worst[i]),
+            "the fixture must produce a non-degenerate band spread"
+        );
+
+        // 2. Customized CCH weights, per edge and per channel.
+        for (label, best, typ, worst) in [
+            (
+                "up",
+                w_best.up.to_vec_u32(),
+                w_typ.up.to_vec_u32(),
+                w_worst.up.to_vec_u32(),
+            ),
+            (
+                "down",
+                w_best.down.to_vec_u32(),
+                w_typ.down.to_vec_u32(),
+                w_worst.down.to_vec_u32(),
+            ),
+        ] {
+            assert_eq!(best.len(), typ.len());
+            assert_eq!(typ.len(), worst.len());
+            for i in 0..typ.len() {
+                assert!(
+                    best[i] <= typ[i] && typ[i] <= worst[i],
+                    "{label}[{i}]: CCH weights out of band order: \
+                     best {} / typical {} / worst {}",
+                    best[i],
+                    typ[i],
+                    worst[i]
+                );
+            }
+        }
+
+        // 3. Turn penalties: the #524 level anchor scales them alongside the
+        //    link weights, so they must respect the same order.
+        let t_best = turn_charges(&w_best, &nw_best);
+        let t_typ = turn_charges(&w_typ, &nw_typ);
+        let t_worst = turn_charges(&w_worst, &nw_worst);
+        assert_eq!(t_typ.len(), 2, "one up edge + one down edge");
+        for i in 0..t_typ.len() {
+            assert!(
+                t_best[i] <= t_typ[i] && t_typ[i] <= t_worst[i],
+                "turn charge {i} out of band order: \
+                 best {} / typical {} / worst {}",
+                t_best[i],
+                t_typ[i],
+                t_worst[i]
+            );
+        }
+        assert!(
+            t_typ.iter().any(|&t| t > 0),
+            "the fixture must actually charge turns"
         );
     }
 }
