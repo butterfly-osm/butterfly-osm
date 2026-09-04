@@ -73,6 +73,29 @@ import urllib.request
 # historic times); the old od.csv (1 000 long trips, no hour) is free-flow
 # and let a free-flow engine pass at p50 1.0.
 REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR", "/data/reference-trips")
+
+
+def _apply_windows_config():
+    """One source of truth for the level tolerances (2026-09-04): when the
+    deploy tooling stages `windows.json` beside the reference sets, its
+    `never_fast` / `tol` / `match_tol` override the defaults in THRESHOLDS —
+    the same numbers the speed pipeline and the weekly window report use."""
+    path = os.path.join(REFS_DIR, "windows.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            w = json.load(f)
+    except Exception as ex:  # a broken config must not silently loosen the gate
+        raise SystemExit(f"windows.json at {path} is unreadable: {ex}")
+    lo = float(w.get("never_fast", THRESHOLDS["band_level"][0]))
+    tol = float(w.get("tol", THRESHOLDS["band_level"][1] - 1.03))
+    THRESHOLDS["band_level"] = (lo, round(1.0 + tol + 0.03, 3))
+    THRESHOLDS["band_regional"] = (lo, round(1.0 + tol + 0.06, 3))
+    THRESHOLDS["dur_p50"] = (lo, THRESHOLDS["dur_p50"][1])
+    THRESHOLDS["like_for_like_km_tol"] = float(w.get("match_tol", THRESHOLDS["like_for_like_km_tol"]))
+    print(f"[windows] {path}: never_fast {lo}, tol {tol}, match_tol {THRESHOLDS['like_for_like_km_tol']}")
+
 DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
 # Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
 # free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
@@ -136,6 +159,8 @@ THRESHOLDS = {
     "lopsided_scaling_max": 6.0,  # 1×800 vs 1×50 wall ratio (linear bucket ~×16)
     "catchment_min_vertices": 50,  # the retired sector lasso capped at 18 extremes
 }
+
+_apply_windows_config()
 
 MAX_U32 = 4294967295
 
