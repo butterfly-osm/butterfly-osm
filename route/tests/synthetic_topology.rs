@@ -889,8 +889,6 @@ fn contract(net: &Network) -> Hierarchy {
         &filtered,
         &net.node_weights,
         &net.turn_penalties,
-        &net.ebg_nodes,
-        None,
     )
     .expect("step 8 customization");
 

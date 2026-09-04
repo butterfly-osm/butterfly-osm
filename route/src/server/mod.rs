@@ -545,18 +545,17 @@ pub async fn serve(
         );
     }
 
-    // ---- Serve-boot car traffic recustomization (#433) -------------
+    // ---- Serve-boot car speed recustomization (#450/#454) ----------
     //
-    // If a generic observed-speeds table is staged next to the data —
-    // `<data_dir>/<region>/observed_speeds.parquet`, or the global
-    // `<data_dir>/observed_speeds.parquet` for the primary region — fit
-    // ONE car traffic profile from it and recustomize the car CCH
-    // weights in memory, then hot-swap them in. The artifact stays
-    // provider-clean: the parquet is a pure runtime input that a deploy
-    // init container drops on the data volume; the engine only ever
-    // reads a generic `(way_id, observed_avg_speed_kmh, sample_count)`
-    // table. Failure at any step is non-fatal — the clean legal-limit
-    // base car keeps serving.
+    // If a generic DIRECTED per-edge speeds table is staged next to the
+    // data — `<data_dir>/<region>/edge_speeds.parquet`, or the global
+    // `<data_dir>/edge_speeds.parquet` for the primary region —
+    // recustomize the car CCH weights from it in memory, then hot-swap
+    // them in. The artifact stays provider-clean: the parquet is a pure
+    // runtime input that a deploy init container drops on the data
+    // volume; the engine only ever reads generic `(osm_node_from,
+    // osm_node_to, <value>)` rows. Failure at any step is non-fatal —
+    // the clean legal-limit base car keeps serving.
     //
     // Synchronous (not backgrounded): butterfly is an always-on engine,
     // not a scale-to-zero dashboard, and boot is already dominated by
@@ -568,25 +567,9 @@ pub async fn serve(
     // later drop the calibrated weights and reload the clean base.
     for idx in 0..n_regions {
         let region_id_lower = regions_state.regions[idx].id.to_lowercase();
-        let per_region = data_dir_for_transit
-            .join(&region_id_lower)
-            .join("observed_speeds.parquet");
-        let global = data_dir_for_transit.join("observed_speeds.parquet");
-        let observed = if per_region.exists() {
-            Some(per_region)
-        } else if idx == 0 && global.exists() {
-            Some(global)
-        } else {
-            None
-        };
-        // #454: the DIRECTED per-edge contract (edge_speeds.parquet) takes
-        // precedence over the per-way table — it's the validated flow-loop
-        // output and carries direction. EITHER table triggers the block.
-        let edge_speeds = {
-            let per_region = data_dir_for_transit
-                .join(regions_state.regions[idx].id.to_lowercase())
-                .join("edge_speeds.parquet");
-            let global = data_dir_for_transit.join("edge_speeds.parquet");
+        let pick = |name: &str| {
+            let per_region = data_dir_for_transit.join(&region_id_lower).join(name);
+            let global = data_dir_for_transit.join(name);
             if per_region.exists() {
                 Some(per_region)
             } else if idx == 0 && global.exists() {
@@ -595,9 +578,25 @@ pub async fn serve(
                 None
             }
         };
-        if observed.is_none() && edge_speeds.is_none() {
-            continue;
+        let edge_speeds = pick("edge_speeds.parquet");
+        // #582: the retired per-way 3-column table is no longer read. A
+        // deployment still staging one and NOT staging edge_speeds.parquet
+        // silently loses its calibration and serves clean legal-limit car —
+        // say so loudly rather than let the level drift unexplained.
+        if edge_speeds.is_none()
+            && let Some(stale) = pick("observed_speeds.parquet")
+        {
+            tracing::error!(
+                region = %regions_state.regions[idx].id,
+                path = %stale.display(),
+                "a retired per-way observed_speeds.parquet is staged but no \
+                 edge_speeds.parquet — the per-way calibration path was removed \
+                 (#582) and car will serve UNCALIBRATED legal-limit weights"
+            );
         }
+        let Some(edge_path) = edge_speeds else {
+            continue;
+        };
         if !recustomize_enabled {
             continue;
         }
@@ -607,61 +606,41 @@ pub async fn serve(
             if !state_owned.mode_lookup.contains_key("car") {
                 tracing::warn!(
                     region = %region_id,
-                    "observed/edge speeds present but car mode not loaded; skipping recustomization"
+                    "edge speeds present but car mode not loaded; skipping recustomization"
                 );
                 return;
             }
-            if let Some(edge_path) = &edge_speeds {
-                // #552: the typical pass and the two band passes share ONE
-                // preparation of the table (parquet CRC, level anchors,
-                // directed lookup, turn table, filtered EBG) and ONE cache
-                // file. `prep` is local to this closure, so everything it
-                // holds is released as soon as the last pass is done.
-                let mut prep = crate::server::state::EdgeRecustomizePrep::new(edge_path);
-                match state_owned.recustomize_car_from_edge_speeds(&mut prep) {
-                    Ok(matched) => {
-                        tracing::info!(
-                            region = %region_id,
-                            path = %edge_path.display(),
-                            matched,
-                            "car recustomized from DIRECTED per-edge speeds (#454)"
-                        );
-                        // #521: ONE public car profile = the demand-weighted
-                        // survey median. Distributional friction is the opt-in
-                        // uncertainty bands (uncertainty=bands) — hidden weight
-                        // sets from the optional best/worst columns of the SAME
-                        // table. Non-fatal: median car keeps serving without
-                        // bands.
-                        if let Err(e) = state_owned.register_car_bands_from_edge_speeds(&mut prep) {
-                            tracing::warn!(
-                                region = %region_id,
-                                error = %e,
-                                "uncertainty-band registration failed (non-fatal)"
-                            );
-                        }
-                        return; // edge contract wins; skip the per-way path
-                    }
-                    Err(e) => tracing::warn!(
+            // #552: the typical pass and the two band passes share ONE
+            // preparation of the table (parquet CRC, level anchors, directed
+            // lookup, turn table, filtered EBG) and ONE cache file. `prep` is
+            // local to this closure, so everything it holds is released as
+            // soon as the last pass is done.
+            let mut prep = crate::server::state::EdgeRecustomizePrep::new(&edge_path);
+            match state_owned.recustomize_car_from_edge_speeds(&mut prep) {
+                Ok(matched) => {
+                    tracing::info!(
                         region = %region_id,
                         path = %edge_path.display(),
-                        error = %e,
-                        "edge-speeds recustomization failed; falling through to the per-way table"
-                    ),
+                        matched,
+                        "car recustomized from DIRECTED per-edge speeds (#454)"
+                    );
+                    // #521: ONE public car profile = the demand-weighted
+                    // survey median. Distributional friction is the opt-in
+                    // uncertainty bands (uncertainty=bands) — hidden weight
+                    // sets from the optional best/worst columns of the SAME
+                    // table. Non-fatal: median car keeps serving without
+                    // bands.
+                    if let Err(e) = state_owned.register_car_bands_from_edge_speeds(&mut prep) {
+                        tracing::warn!(
+                            region = %region_id,
+                            error = %e,
+                            "uncertainty-band registration failed (non-fatal)"
+                        );
+                    }
                 }
-            }
-            let Some(observed) = &observed else {
-                return; // edge-only deployment; per-way path not configured
-            };
-            match state_owned.recustomize_car_from_observed(observed) {
-                Ok(profile) => tracing::info!(
-                    region = %region_id,
-                    path = %observed.display(),
-                    profile = profile.name.as_str(),
-                    "car recustomized from observed speeds (#433)"
-                ),
                 Err(e) => tracing::warn!(
                     region = %region_id,
-                    path = %observed.display(),
+                    path = %edge_path.display(),
                     error = %e,
                     "car recustomization failed; serving clean base car"
                 ),

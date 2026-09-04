@@ -1,5 +1,5 @@
-//! Serve-boot car recustomization (#433 per-way, #450/#454 per-edge, #521
-//! uncertainty bands) and its on-disk weight cache (#444).
+//! Serve-boot car recustomization from the directed per-edge speeds table
+//! (#450/#454, #521 uncertainty bands) and its on-disk weight cache (#444).
 //!
 //! Split out of `state.rs` by #552, which also made the three per-edge passes
 //! (typical / best / worst) share ONE preparation of their inputs and ONE
@@ -34,13 +34,6 @@ use crate::profile_abi::Mode;
 // Cache algorithm tags (#444)
 // =====================================================================
 
-/// Per-way (#433) cache algo version — bump on ANY change to the
-/// calibration or customization algorithm so stale caches self-invalidate.
-/// v2: #552 (one-file section format + narrowed weight storage).
-/// v3: #563 (sections additionally guarded by the CRC of the base weights
-/// the pass ran against — see [`SectionKey`]).
-const RECUSTOMIZE_CACHE_VERSION: &[u8] = b"recustomize-car-v3";
-
 /// Per-edge (#450/#454/#521) cache algo version. BUMP THIS TAG whenever the
 /// served weights OR the len-along-time derivation changes: a stale cache
 /// serves the OLD derivation on HIT (prod's v3 cache-hit served pre-#528
@@ -60,8 +53,6 @@ static EDGE_INPUTS_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 
 /// Single cache file for the three per-edge passes.
 const EDGE_CACHE_FILE: &str = "recustomize_cache.car.bin";
-/// Cache file for the legacy per-way (#433) path.
-const OBSERVED_CACHE_FILE: &str = "recustomize_cache.car.v1.bin";
 
 /// Which value column of the edge_speeds table to recustomize from (#521):
 /// the median (contract base) or one of the optional SPEED-domain band
@@ -279,19 +270,6 @@ const EDGE_DERIVATION_SECTIONS: &[&str] = &[
     "shared/edge_osm_ids",
 ];
 
-/// Same, for the PER-WAY (#433) derivation: no OSM chains, but the way
-/// attributes and the NBG geometry the profile is applied through.
-const OBSERVED_DERIVATION_SECTIONS: &[&str] = &[
-    "mode/car/weights.time",
-    "mode/car/node_weights.time",
-    "mode/car/node_weights.turn",
-    "mode/car/topo",
-    "mode/car/filtered_ebg",
-    "mode/car/way_attrs",
-    "shared/ebg.nodes",
-    "shared/nbg.geo",
-];
-
 impl ServerState {
     /// Provenance digest over the container sections a derivation consumes:
     /// crc64 of (section name, section CRC) pairs, in the listed order. The
@@ -370,163 +348,6 @@ impl ServerState {
         );
         lazy.verify_now(&name)?;
         Ok((Arc::clone(mmap), off, len))
-    }
-
-    /// #433: serve-boot car traffic recustomization from a runtime
-    /// `observed_speeds.parquet`.
-    ///
-    /// Re-reads the raw step4-7 car inputs that `pack` ships as container
-    /// sections (`mode/car/{way_attrs,filtered_ebg,node_weights.turn}` plus the
-    /// shared `ebg.nodes` / `nbg.geo` already resident in `ServerState` and the
-    /// base car's `cch_topo` + `node_weights`), calibrates ONE car traffic
-    /// profile from the observations, re-runs the TIME-only step8 customization
-    /// in memory ([`crate::customization::customize_cch_time_in_memory`]),
-    /// builds fresh TIME flats, and **hot-swaps** the car `ModeSlot` to the
-    /// calibrated weights. In-flight queries finish on their previously-cloned
-    /// `Arc<ModeData>`; new queries see the calibrated car. The slot is then
-    /// pinned non-evictable so the #402 idle compactor can't drop the
-    /// recustomized weights and silently lazy-reload the clean base car.
-    ///
-    /// Requires the container path (`_mmap_arc` + `lazy` populated). This keeps
-    /// the engine provider-clean: `observed_path` is a generic
-    /// `(way_id, observed_avg_speed_kmh, sample_count)` table — the provider
-    /// never crosses into the artifact. Returns the fitted profile on success.
-    /// EVERY failure mode (parquet absent/bad, zero observations, customization
-    /// error) is the CALLER's to treat as non-fatal — the clean base car keeps
-    /// serving unchanged because the swap only happens on the success path.
-    pub fn recustomize_car_from_observed(
-        &self,
-        observed_path: &Path,
-    ) -> Result<crate::traffic::TrafficProfile> {
-        let t0 = std::time::Instant::now();
-
-        let car_idx = *self
-            .mode_lookup
-            .get("car")
-            .ok_or_else(|| anyhow::anyhow!("recustomize: no 'car' mode loaded"))?
-            as usize;
-
-        // Clone-base: the currently-resident car ModeData. At boot (well within
-        // the compactor's grace window) car is resident; if it was somehow
-        // evicted we bail (non-fatal — the next query lazy-reloads clean base).
-        let base: Arc<ModeData> = self.modes[car_idx]
-            .state
-            .read()
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(|| anyhow::anyhow!("recustomize: car slot not resident at boot"))?;
-
-        // #444: PVC-cached recustomization. The ~5-min calibrate+customize is
-        // pure recompute when neither the observed table nor the artifact
-        // changed — key the cached weights on crc64(algo version ⊕ parquet ⊕
-        // the container's car TIME-weights section CRC) and skip straight to
-        // the flats on a hit. Cache failures are non-fatal in both directions.
-        // BUTTERFLY_RECUSTOMIZE_CACHE_DIR overrides the cache location for
-        // deployments where the data volume is mounted read-only and a
-        // separate writable directory is provided (generic env knob — no
-        // deploy-specific conventions). Default: next to the parquet.
-        let cache_path = match std::env::var_os("BUTTERFLY_RECUSTOMIZE_CACHE_DIR") {
-            Some(dir) => PathBuf::from(dir).join(OBSERVED_CACHE_FILE),
-            None => observed_path.with_file_name(OBSERVED_CACHE_FILE),
-        };
-        let cache_key = observed_cache_key(
-            observed_path,
-            self.derivation_sections_crc(OBSERVED_DERIVATION_SECTIONS),
-        )
-        .map(|file| SectionKey {
-            file,
-            // #563: the base this pass runs against. The container's
-            // node_weights CRC is already in `file`, but the RESIDENT base
-            // can have been recustomized in-process since — only the array
-            // itself tells the truth.
-            base: base_weights_crc(&base.node_weights),
-        });
-        let cached = cache_key.and_then(|k| cache_load_section(&cache_path, k, 0));
-
-        let (profile, new_weights, adjusted_node_weights) = if let Some(hit) = cached {
-            tracing::info!(
-                path = %cache_path.display(),
-                "recustomize: cache HIT — skipping calibration + customization (#444)"
-            );
-            let profile = crate::traffic::TrafficProfile::from_json(&hit.provenance)?;
-            (profile, hit.weights, hit.node_weights)
-        } else {
-            // 1. Raw inputs from the container.
-            let way_attrs_vec = crate::formats::way_attrs::read_all_from_bytes(
-                self.car_section_bytes("way_attrs")?,
-            )?;
-            let turns = crate::formats::mod_turns::read_all_from_bytes(
-                self.car_section_bytes("node_weights.turn")?,
-            )?;
-            let (fe_mmap, fe_off, fe_len) = self.car_section_mmap("filtered_ebg")?;
-            let filtered_ebg = crate::formats::FilteredEbgFile::read_from_mmap_unverified(
-                fe_mmap, fe_off, fe_len,
-            )?;
-
-            // 2. Calibrate ONE car profile from the observed speeds.
-            let observations = crate::calibrate::read_observations(observed_path)?;
-            anyhow::ensure!(
-                !observations.is_empty(),
-                "recustomize: 0 observations in {}",
-                observed_path.display()
-            );
-            let way_index = crate::calibrate::index_ways(&way_attrs_vec);
-            let params = crate::calibrate::CalibrationParams::default();
-            let result = crate::calibrate::fit(&observations, &way_index, &params)?;
-            let profile = result.profile;
-            tracing::info!(
-                profile = profile.name.as_str(),
-                observations = observations.len(),
-                "recustomize: calibrated car profile"
-            );
-
-            // 3. Re-run TIME-only customization in memory (triangle-relax always on).
-            // Codex audit (#438): also take the traffic-ADJUSTED per-node time
-            // weights — edges_batch derives per-edge durations from
-            // ModeData.node_weights, so cloning the base (legal-limit) weights
-            // here would emit wrong durations along calibrated paths.
-            let (new_weights, adjusted_node_weights) =
-                crate::customization::customize_cch_time_in_memory(
-                    &base.cch_topo,
-                    &filtered_ebg,
-                    &base.node_weights,
-                    &turns.penalties,
-                    &self.ebg_nodes,
-                    Some((&profile, &way_attrs_vec, &self.nbg_geo)),
-                )?;
-
-            if let Some(k) = cache_key {
-                let pass = CachedPass {
-                    provenance: profile.to_json_string()?,
-                    matched: 0,
-                    weights: &new_weights,
-                    node_weights: &adjusted_node_weights,
-                };
-                if let Err(e) = cache_store_section(&cache_path, k, 0, &pass) {
-                    tracing::warn!(error = %e, "recustomize: cache write failed (non-fatal)");
-                } else {
-                    tracing::info!(path = %cache_path.display(), "recustomize: cache written (#444)");
-                }
-            }
-            (profile, new_weights, adjusted_node_weights)
-        };
-
-        // 4. Fresh TIME flats + #528 len-along-time refresh, then hot-swap.
-        let new_car =
-            rebuild_car_family_mode(&base, &self.ebg_nodes, new_weights, adjusted_node_weights);
-        let slot = &self.modes[car_idx];
-        {
-            let mut w = slot.state.write();
-            *w = Some(Arc::new(new_car));
-        }
-        slot.evictable
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-
-        tracing::info!(
-            elapsed_s = t0.elapsed().as_secs_f64(),
-            "recustomize: hot-swapped + pinned calibrated car"
-        );
-        Ok(profile)
     }
 
     /// Build (or load from cache) the heavy per-edge inputs shared by the
@@ -782,13 +603,10 @@ impl ServerState {
             &inputs.filtered_ebg,
             &weights,
             turn_penalties,
-            &self.ebg_nodes,
-            None,
         )?;
 
         if let Some(k) = cache_key {
             let pass = CachedPass {
-                provenance: String::new(),
                 matched: matched as u64,
                 weights: &new_weights,
                 node_weights: &adjusted,
@@ -982,7 +800,11 @@ fn rebuild_car_family_mode(
 // whole file is treated as absent — never fatal.
 
 const CACHE_MAGIC: &[u8; 4] = b"RCW2";
-const CACHE_FORMAT_VERSION: u32 = 1;
+/// v2 (#582): the per-pass payload lost its leading provenance string, which
+/// only the retired per-way path ever filled. The framing is part of the
+/// header key, so a v1 file is rejected wholesale and recomputed rather than
+/// misparsed under the new layout.
+const CACHE_FORMAT_VERSION: u32 = 2;
 const CACHE_HEADER_LEN: usize = 24;
 /// Sanity bound on a section payload (Belgium's is ~0.5 GB).
 const MAX_SECTION_BYTES: u64 = 64 << 30;
@@ -993,18 +815,6 @@ const MAX_SECTION_BYTES: u64 = 64 << 30;
 /// failing writer (torn appends, two boots sharing the volume) can never
 /// grow the cache without limit — it just recomputes.
 const MAX_SECTIONS: usize = 6;
-
-/// Provenance key for the legacy per-way (#433) cache: crc64 over (algo
-/// version ⊕ the observed parquet's CRC ⊕ the CRCs of every container
-/// section the derivation consumes). `None` (unreadable parquet) disables
-/// the cache for this boot.
-fn observed_cache_key(observed_path: &Path, sections_crc: u64) -> Option<u64> {
-    let mut d = crate::formats::crc::Digest::new();
-    d.update(RECUSTOMIZE_CACHE_VERSION);
-    d.update(&crc_of_file(observed_path)?.to_le_bytes());
-    d.update(&sections_crc.to_le_bytes());
-    Some(d.finalize())
-}
 
 /// What one cached section is keyed by.
 ///
@@ -1039,10 +849,7 @@ fn base_weights_crc(node_weights: &[u32]) -> u64 {
 
 /// One cached weight set, borrowed for writing.
 struct CachedPass<'a> {
-    /// Free-form provenance: the fitted profile JSON on the per-way path,
-    /// empty on the per-edge path.
-    provenance: String,
-    /// Rows matched onto the graph (per-edge path; 0 elsewhere).
+    /// Rows matched onto the graph.
     matched: u64,
     weights: &'a CchWeights,
     node_weights: &'a [u32],
@@ -1050,7 +857,6 @@ struct CachedPass<'a> {
 
 /// One cached weight set, owned, as returned by the reader.
 struct LoadedPass {
-    provenance: String,
     matched: u64,
     weights: CchWeights,
     node_weights: Vec<u32>,
@@ -1084,9 +890,7 @@ fn u32_array_bytes(n: usize) -> u64 {
 }
 
 fn payload_len(p: &CachedPass<'_>) -> u64 {
-    4 + p.provenance.len() as u64
-        + 8
-        + weight_array_bytes(&p.weights.up)
+    8 + weight_array_bytes(&p.weights.up)
         + weight_array_bytes(&p.weights.down)
         + u32_array_bytes(p.weights.up_middle.len())
         + u32_array_bytes(p.weights.down_middle.len())
@@ -1296,12 +1100,6 @@ fn cache_store_section(path: &Path, key: SectionKey, id: u8, pass: &CachedPass<'
     frame[8..16].copy_from_slice(&payload_len(pass).to_le_bytes());
     write_all(&mut w, &mut d, &frame)?;
 
-    write_all(
-        &mut w,
-        &mut d,
-        &(pass.provenance.len() as u32).to_le_bytes(),
-    )?;
-    write_all(&mut w, &mut d, pass.provenance.as_bytes())?;
     write_all(&mut w, &mut d, &pass.matched.to_le_bytes())?;
     write_weight_array(&mut w, &mut d, &pass.weights.up)?;
     write_weight_array(&mut w, &mut d, &pass.weights.down)?;
@@ -1393,15 +1191,6 @@ fn read_section_payload(
     d: &mut crate::formats::crc::Digest,
 ) -> Result<LoadedPass> {
     use std::io::Read;
-    let mut pl = [0u8; 4];
-    r.read_exact(&mut pl)?;
-    d.update(&pl);
-    let plen = ensure_fits(r, u32::from_le_bytes(pl) as u64, 1)?;
-    let mut pj = vec![0u8; plen];
-    r.read_exact(&mut pj)?;
-    d.update(&pj);
-    let provenance = String::from_utf8(pj)?;
-
     let mut mb = [0u8; 8];
     r.read_exact(&mut mb)?;
     d.update(&mb);
@@ -1414,7 +1203,6 @@ fn read_section_payload(
     let nw = read_u32s(r, d)?;
 
     Ok(LoadedPass {
-        provenance,
         matched,
         weights: CchWeights {
             up,
@@ -1463,7 +1251,6 @@ mod tests {
 
         for id in [0u8, 2] {
             let pass = CachedPass {
-                provenance: String::new(),
                 matched: 40 + id as u64,
                 weights: &w,
                 node_weights: &nw,
@@ -1490,7 +1277,6 @@ mod tests {
         let w = tiny_weights();
         let nw = vec![1u32];
         let pass = |m: u64| CachedPass {
-            provenance: String::new(),
             matched: m,
             weights: &w,
             node_weights: &nw,
@@ -1513,7 +1299,6 @@ mod tests {
         let w = tiny_weights();
         let nw = vec![3u32, 4];
         let pass = |m: u64| CachedPass {
-            provenance: String::new(),
             matched: m,
             weights: &w,
             node_weights: &nw,
@@ -1550,7 +1335,6 @@ mod tests {
             k(9),
             0,
             &CachedPass {
-                provenance: "prof".into(),
                 matched: 1,
                 weights: &w,
                 node_weights: &nw,
@@ -1569,7 +1353,6 @@ mod tests {
         let w = tiny_weights();
         let nw = vec![3u32];
         let pass = |m: u64| CachedPass {
-            provenance: String::new(),
             matched: m,
             weights: &w,
             node_weights: &nw,
@@ -1596,7 +1379,6 @@ mod tests {
         let w = tiny_weights();
         let nw = vec![3u32, 4];
         let pass = CachedPass {
-            provenance: String::new(),
             matched: 7,
             weights: &w,
             node_weights: &nw,
@@ -1624,7 +1406,6 @@ mod tests {
         let w = tiny_weights();
         let nw = vec![3u32];
         let pass = |m: u64| CachedPass {
-            provenance: String::new(),
             matched: m,
             weights: &w,
             node_weights: &nw,
@@ -1633,30 +1414,6 @@ mod tests {
         cache_store_section(&path, k(2), 0, &pass(2)).unwrap();
         assert!(cache_load_section(&path, k(1), 0).is_none());
         assert_eq!(cache_load_section(&path, k(2), 0).unwrap().matched, 2);
-    }
-
-    #[test]
-    fn provenance_round_trips_for_the_per_way_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("c.bin");
-        let w = tiny_weights();
-        let nw = vec![3u32];
-        cache_store_section(
-            &path,
-            k(3),
-            0,
-            &CachedPass {
-                provenance: "{\"name\":\"x\"}".into(),
-                matched: 0,
-                weights: &w,
-                node_weights: &nw,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            cache_load_section(&path, k(3), 0).unwrap().provenance,
-            "{\"name\":\"x\"}"
-        );
     }
 }
 
@@ -1858,18 +1615,12 @@ mod pipeline_tests {
 
     /// The clean base car mode: weights customized from `BASE_TIMES`, i.e.
     /// exactly what a cold artifact serves before any recustomization.
-    fn base_mode(state: &ServerState, node_weights: Vec<u32>) -> ModeData {
+    fn base_mode(node_weights: Vec<u32>) -> ModeData {
         let topo = cch_topo();
         let fe = filtered_ebg();
-        let (cch_weights, adjusted) = crate::customization::customize_cch_time_in_memory(
-            &topo,
-            &fe,
-            &node_weights,
-            &TURNS,
-            &state.ebg_nodes,
-            None,
-        )
-        .unwrap();
+        let (cch_weights, adjusted) =
+            crate::customization::customize_cch_time_in_memory(&topo, &fe, &node_weights, &TURNS)
+                .unwrap();
         let up = UpAdjFlat::build_with(&topo, &cch_weights, true);
         let down_rev = DownReverseAdjFlat::build_with(&topo, &cch_weights, true);
         let down = DownAdjFlat::build(&topo, &cch_weights);
@@ -1997,7 +1748,7 @@ mod pipeline_tests {
     fn cold_and_warm_boot_serve_bit_identical_weights() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let fx = fixture();
-        let base = base_mode(&fx.state, BASE_TIMES.to_vec());
+        let base = base_mode(BASE_TIMES.to_vec());
 
         // Cold: no cache file yet -> the inputs are built once.
         let before = EDGE_INPUTS_BUILDS.load(Ordering::Relaxed);
@@ -2039,7 +1790,7 @@ mod pipeline_tests {
         // permanently poisoned cache the moment any pass ran on an
         // already-calibrated base.
         let other_times: Vec<u32> = BASE_TIMES.iter().map(|w| w * 2).collect();
-        let other_base = base_mode(&fx.state, other_times);
+        let other_base = base_mode(other_times);
         let mut prep3 = EdgeRecustomizePrep::new(&fx.parquet);
         let (_, w_other, nw_other) = fx
             .state
@@ -2107,7 +1858,7 @@ mod pipeline_tests {
     fn bands_are_ordered_best_le_typical_le_worst() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let fx = fixture();
-        let base = base_mode(&fx.state, BASE_TIMES.to_vec());
+        let base = base_mode(BASE_TIMES.to_vec());
         // ONE prep for the three passes — the shape production uses.
         let mut prep = EdgeRecustomizePrep::new(&fx.parquet);
         let run = |prep: &mut EdgeRecustomizePrep, column| {

@@ -37,8 +37,8 @@ pub struct RouteRequest {
     #[schema(example = "car")]
     mode: String,
     /// Optional traffic profile name. If set, the server routes against
-    /// the synthetic mode `<mode>_<profile>`, which must have been built
-    /// by `step8-customize --traffic ...` at pipeline time.
+    /// the synthetic mode `<mode>_<profile>`, which the loaded artifact must
+    /// carry as a baked traffic variant.
     #[serde(default)]
     traffic: Option<String>,
     /// Geometry encoding: polyline6 (default), geojson, points
@@ -278,10 +278,10 @@ pub async fn route_handler(
     };
 
     // Resolve the effective mode name. If `traffic=<v>` is set, synthesize
-    // `<mode>_<v>` and look that up — produced at pipeline time by
-    // `step8-customize --traffic ...`. Falling back to the base mode is
-    // intentionally disabled: a 400 is preferable to silently routing on
-    // freeflow weights when the caller asked for traffic.
+    // `<mode>_<v>` and look that up — a baked variant the loaded artifact
+    // carries. Falling back to the base mode is intentionally disabled: a 400
+    // is preferable to silently routing on freeflow weights when the caller
+    // asked for traffic.
     let effective_mode_name = match &req.traffic {
         Some(v) if !v.trim().is_empty() => format!("{}_{}", req.mode, v.trim()),
         _ => req.mode.clone(),
@@ -293,7 +293,7 @@ pub async fn route_handler(
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: format!(
-                        "Unknown traffic variant '{}' for mode '{}'. Build it with `step8-customize --traffic`.",
+                        "Unknown traffic variant '{}' for mode '{}': the loaded artifact carries no such baked variant.",
                         req.traffic.as_deref().unwrap_or(""),
                         req.mode
                     ),
