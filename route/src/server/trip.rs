@@ -14,6 +14,7 @@ use utoipa::ToSchema;
 
 use crate::model::types::Mode;
 
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
 
@@ -501,23 +502,15 @@ pub async fn trip_handler(
         )
             .into_response();
     }
-    let started_dispatch = std::time::Instant::now();
     let coords_iter = req.points.iter().map(|&[lon, lat]| (lon, lat));
-    let (state, region_id): (Arc<ServerState>, String) =
-        match regions.dispatch_many(coords_iter, &req.mode) {
-            Ok(pair) => pair,
-            Err(e) => {
-                let (code, body) = e.into_response_parts();
-                return (
-                    code,
-                    Json(serde_json::json!({
-                        "code": "InvalidValue",
-                        "message": body.error,
-                    })),
-                )
-                    .into_response();
-            }
-        };
+    let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            let (code, body) = e.into_code_message_parts();
+            return (code, Json(body)).into_response();
+        }
+    };
+    let state: Arc<ServerState> = Arc::clone(&ctx.state);
 
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
@@ -1174,11 +1167,7 @@ pub async fn trip_handler(
         )
             .into_response(),
     };
-    super::region_metrics::record_query(
-        &region_id,
-        "trip",
-        started_dispatch.elapsed().as_secs_f64(),
-    );
+    ctx.record("trip");
     resp
 }
 

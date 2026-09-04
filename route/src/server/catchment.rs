@@ -561,6 +561,7 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use std::sync::Arc;
 
+use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::types::{ErrorResponse, parse_mode, validate_coord};
 
@@ -588,27 +589,26 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         // Fall through to existing validation below — empty stores
         // will be caught and rejected with a clear message.
     }
-    let started_dispatch = std::time::Instant::now();
     let coords_iter = req
         .stores
         .iter()
         .map(|s| (s.lon, s.lat))
         .chain(req.clients.iter().map(|c| (c.lon, c.lat)));
-    let (state, region_id): (Arc<ServerState>, String) =
-        if !req.stores.is_empty() && !req.clients.is_empty() {
-            match regions.dispatch_many(coords_iter, &req.mode) {
-                Ok(pair) => pair,
-                Err(e) => {
-                    let (code, body) = e.into_response_parts();
-                    return (code, Json(body)).into_response();
-                }
+    let ctx = if !req.stores.is_empty() && !req.clients.is_empty() {
+        match QueryContext::from_points(&regions, coords_iter, &req.mode) {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                let (code, body) = e.into_response_parts();
+                return (code, Json(body)).into_response();
             }
-        } else {
-            // Catchment with empty stores/clients hits the validation
-            // path below; fall back to primary so the validation error
-            // fires. Region label is the primary's id.
-            (regions.primary(), regions.regions[0].id.clone())
-        };
+        }
+    } else {
+        // Catchment with empty stores/clients hits the validation
+        // path below; fall back to primary so the validation error
+        // fires. Region label is the primary's id.
+        QueryContext::primary(&regions)
+    };
+    let state: Arc<ServerState> = Arc::clone(&ctx.state);
 
     // Validate mode
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
@@ -834,11 +834,7 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         }
     }
 
-    super::region_metrics::record_query(
-        &region_id,
-        "catchment",
-        started_dispatch.elapsed().as_secs_f64(),
-    );
+    ctx.record("catchment");
     (
         StatusCode::OK,
         Json(CatchmentResponse {
