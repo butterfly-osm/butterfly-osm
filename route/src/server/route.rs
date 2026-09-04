@@ -241,10 +241,10 @@ pub async fn route_handler(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.origin_lon, req.origin_lat, "source") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
     if let Err(e) = validate_coord(req.destination_lon, req.destination_lat, "destination") {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
     // #599: `traffic=<v>` selected a baked traffic variant. Nothing has
     // produced one since #582 removed the profile writers, and no packed
@@ -254,12 +254,11 @@ pub async fn route_handler(
     if req.traffic.as_deref().is_some_and(|v| !v.trim().is_empty()) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "the `traffic` parameter is retired (#599): baked traffic variants no \
+            Json(ErrorResponse::new(
+                "the `traffic` parameter is retired (#599): baked traffic variants no \
                         longer exist. Use `mode` (one public car profile) and, for spread, \
-                        `uncertainty=bands`."
-                    .into(),
-            }),
+                        `uncertainty=bands`.",
+            )),
         )
             .into_response();
     }
@@ -298,14 +297,14 @@ pub async fn route_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -326,12 +325,10 @@ pub async fn route_handler(
                     other => {
                         return (
                             StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse {
-                                error: format!(
-                                    "Unknown annotation '{}'. Valid: duration, distance, speed, nodes",
-                                    other
-                                ),
-                            }),
+                            Json(ErrorResponse::new(format!(
+                                "Unknown annotation '{}'. Valid: duration, distance, speed, nodes",
+                                other
+                            ))),
                         )
                             .into_response();
                     }
@@ -356,12 +353,10 @@ pub async fn route_handler(
             if tokens.len() != 2 {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!(
-                            "Invalid bearing format '{}'. Expected 'angle,range'.",
-                            part
-                        ),
-                    }),
+                    Json(ErrorResponse::new(format!(
+                        "Invalid bearing format '{}'. Expected 'angle,range'.",
+                        part
+                    ))),
                 )
                     .into_response();
             }
@@ -370,9 +365,10 @@ pub async fn route_handler(
                 _ => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("Invalid bearing angle: '{}'", tokens[0]),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "Invalid bearing angle: '{}'",
+                            tokens[0]
+                        ))),
                     )
                         .into_response();
                 }
@@ -382,9 +378,10 @@ pub async fn route_handler(
                 _ => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: format!("Invalid bearing range: '{}'", tokens[1]),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "Invalid bearing range: '{}'",
+                            tokens[1]
+                        ))),
                     )
                         .into_response();
                 }
@@ -394,12 +391,10 @@ pub async fn route_handler(
         if hints.len() > 2 {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "bearings has {} pairs, expected at most 2 (source;destination)",
-                        hints.len()
-                    ),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "bearings has {} pairs, expected at most 2 (source;destination)",
+                    hints.len()
+                ))),
             )
                 .into_response();
         }
@@ -412,7 +407,7 @@ pub async fn route_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -420,7 +415,7 @@ pub async fn route_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -438,18 +433,14 @@ pub async fn route_handler(
             {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "uncertainty=bands is car-only and incompatible with avoid_polygons/exclude/bearings".into(),
-                    }),
+                    Json(ErrorResponse::new("uncertainty=bands is car-only and incompatible with avoid_polygons/exclude/bearings")),
                 )
                     .into_response();
             }
             let Some((pess, opt)) = state.band_modes() else {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".into(),
-                    }),
+                    Json(ErrorResponse::new("uncertainty bands not available: the loaded edge_speeds table has no best/worst columns")),
                 )
                     .into_response();
             };
@@ -478,9 +469,9 @@ pub async fn route_handler(
         Some(other) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "unknown uncertainty value '{other}' (expected 'bands')"
+                ))),
             )
                 .into_response();
         }
@@ -500,7 +491,7 @@ pub async fn route_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
     let snap_mask: &[u64] = &weight_plan.snap_mask;
@@ -575,9 +566,9 @@ pub async fn route_handler(
     if src_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Could not snap source to road network".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Could not snap source to road network".to_string(),
+            )),
         )
             .into_response();
     }
@@ -597,9 +588,9 @@ pub async fn route_handler(
     if dst_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Could not snap destination to road network".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Could not snap destination to road network".to_string(),
+            )),
         )
             .into_response();
     }
@@ -642,9 +633,9 @@ pub async fn route_handler(
     if src_rank_candidates.is_empty() || dst_rank_candidates.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Snapped node not accessible for this mode".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Snapped node not accessible for this mode".to_string(),
+            )),
         )
             .into_response();
     }
@@ -1059,9 +1050,7 @@ pub async fn route_handler(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "No route found".to_string(),
-                }),
+                Json(ErrorResponse::new("No route found".to_string())),
             )
                 .into_response();
         }
@@ -1336,13 +1325,13 @@ fn cross_region_route_inner(
     let src_mode = match parse_mode(&req.mode, &src_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
     let dst_mode = match parse_mode(&req.mode, &dst_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -1365,9 +1354,10 @@ fn cross_region_route_inner(
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Could not snap source in region {}", src_region),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Could not snap source in region {}",
+                    src_region
+                ))),
             )
                 .into_response();
         }
@@ -1384,9 +1374,10 @@ fn cross_region_route_inner(
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("Could not snap destination in region {}", dst_region),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Could not snap destination in region {}",
+                    dst_region
+                ))),
             )
                 .into_response();
         }
@@ -1397,9 +1388,9 @@ fn cross_region_route_inner(
     if src_rank == u32::MAX || dst_rank == u32::MAX {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Snapped node not accessible for this mode".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "Snapped node not accessible for this mode".to_string(),
+            )),
         )
             .into_response();
     }
@@ -1418,12 +1409,10 @@ fn cross_region_route_inner(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!(
-                        "No cross-region route found from {} to {}",
-                        src_region, dst_region
-                    ),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "No cross-region route found from {} to {}",
+                    src_region, dst_region
+                ))),
             )
                 .into_response();
         }
@@ -1435,7 +1424,7 @@ fn cross_region_route_inner(
     let geom_format = match GeometryFormat::parse(&req.geometries) {
         Ok(f) => f,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -1456,12 +1445,10 @@ fn cross_region_route_inner(
         // returning a degenerate straight-line polyline.
         return (
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!(
-                    "Cross-region border {}↔{} not accessible for mode '{}'",
-                    src_region, dst_region, req.mode
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "Cross-region border {}↔{} not accessible for mode '{}'",
+                src_region, dst_region, req.mode
+            ))),
         )
             .into_response();
     }

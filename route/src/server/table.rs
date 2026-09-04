@@ -167,12 +167,12 @@ pub async fn table_post_handler(
 ) -> impl IntoResponse {
     for (i, [lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
     for (i, [lon, lat]) in req.destinations.iter().enumerate() {
         if let Err(e) = validate_coord(*lon, *lat, &format!("destination[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
 
@@ -197,16 +197,14 @@ pub async fn table_post_handler(
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
     if req.origins.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "sources cannot be empty".into(),
-            }),
+            Json(ErrorResponse::new("sources cannot be empty")),
         )
             .into_response();
     }
@@ -223,14 +221,12 @@ pub async fn table_post_handler(
                 )
             });
     if let Err(error) = size_check {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(error))).into_response();
     }
     if req.destinations.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "destinations cannot be empty".into(),
-            }),
+            Json(ErrorResponse::new("destinations cannot be empty")),
         )
             .into_response();
     }
@@ -241,12 +237,10 @@ pub async fn table_post_handler(
         if !a.is_empty() && a != "duration" && a != "distance" {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
-                        a
-                    ),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "Invalid annotation: '{}'. Use 'duration', 'distance', or 'duration,distance'.",
+                    a
+                ))),
             )
                 .into_response();
         }
@@ -258,7 +252,7 @@ pub async fn table_post_handler(
     let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -266,7 +260,7 @@ pub async fn table_post_handler(
     let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -286,7 +280,7 @@ pub async fn table_post_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
     let snap_mask: &[u64] = &weight_plan.snap_mask;
@@ -300,13 +294,11 @@ pub async fn table_post_handler(
     {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "radius_km array length {} must equal origins length {}",
-                    radii.len(),
-                    req.origins.len()
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "radius_km array length {} must equal origins length {}",
+                radii.len(),
+                req.origins.len()
+            ))),
         )
             .into_response();
     }
@@ -314,7 +306,7 @@ pub async fn table_post_handler(
     let threshold_s = match parse_max_minutes(req.max_minutes) {
         Ok(t) => t,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
@@ -345,18 +337,14 @@ pub async fn table_post_handler(
             if req.mode != "car" || req.exclude.is_some() || req.avoid_polygons.is_some() {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "uncertainty=bands is car-only and incompatible with exclude/avoid_polygons".into(),
-                    }),
+                    Json(ErrorResponse::new("uncertainty=bands is car-only and incompatible with exclude/avoid_polygons")),
                 )
                     .into_response();
             }
             let Some((pess, opt)) = state.band_modes() else {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".into(),
-                    }),
+                    Json(ErrorResponse::new("uncertainty bands not available: the loaded edge_speeds table has no best/worst columns")),
                 )
                     .into_response();
             };
@@ -382,9 +370,7 @@ pub async fn table_post_handler(
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse {
-                                error: format!("band matrix pass failed: {e}"),
-                            }),
+                            Json(ErrorResponse::new(format!("band matrix pass failed: {e}"))),
                         )
                             .into_response();
                     }
@@ -394,9 +380,9 @@ pub async fn table_post_handler(
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse {
-                                error: format!("band matrix pass returned non-JSON: {e}"),
-                            }),
+                            Json(ErrorResponse::new(format!(
+                                "band matrix pass returned non-JSON: {e}"
+                            ))),
                         )
                             .into_response();
                     }
@@ -416,9 +402,9 @@ pub async fn table_post_handler(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse {
-                            error: format!("median matrix pass failed: {e}"),
-                        }),
+                        Json(ErrorResponse::new(format!(
+                            "median matrix pass failed: {e}"
+                        ))),
                     )
                         .into_response();
                 }
@@ -443,9 +429,9 @@ pub async fn table_post_handler(
                 Err(_) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "table computation failed before band merge".into(),
-                        }),
+                        Json(ErrorResponse::new(
+                            "table computation failed before band merge",
+                        )),
                     )
                         .into_response();
                 }
@@ -454,9 +440,9 @@ pub async fn table_post_handler(
         Some(other) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!("unknown uncertainty value '{other}' (expected 'bands')"),
-                }),
+                Json(ErrorResponse::new(format!(
+                    "unknown uncertainty value '{other}' (expected 'bands')"
+                ))),
             )
                 .into_response();
         }
@@ -628,7 +614,7 @@ pub fn compute_table_bucket_m2m(
         // Over the neighbour budget: refuse, rather than allocate a mask
         // that would take the process down.
         Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(error))).into_response();
         }
     };
 

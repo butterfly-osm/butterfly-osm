@@ -40,10 +40,9 @@ pub async fn height_handler(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Elevation data not loaded. Place SRTM .hgt files in data/srtm/"
-                        .to_string(),
-                }),
+                Json(ErrorResponse::new(
+                    "Elevation data not loaded. Place SRTM .hgt files in data/srtm/".to_string(),
+                )),
             )
                 .into_response();
         }
@@ -51,6 +50,6 @@ pub async fn height_handler(
 
     match super::elevation::handle_height_request(elevation, &req) {
         Ok(resp) => Json(resp).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response(),
     }
 }
