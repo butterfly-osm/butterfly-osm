@@ -799,7 +799,7 @@ pub fn depart_frontier(
     request_body(content = BulkIsochroneRequest, description = "Origins, time limit, and mode"),
     responses(
         (status = 200, description = "Binary WKB stream", content_type = "application/octet-stream"),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
 pub async fn isochrone_bulk_handler(

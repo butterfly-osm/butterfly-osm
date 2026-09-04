@@ -570,7 +570,8 @@ use super::types::{ErrorResponse, parse_mode, validate_coord};
     description = "Per-store catchment polygons: the road-following hull (the threshold isochrone) or a convex hull, at the requested client percentiles. \
 `radius_km` (number, \"auto\" or null) is an optional per-store Euclidean pre-filter; clients beyond it are excluded from that store's matrix and catchment entirely. \
 The Flight `catchment` DoExchange action takes the SAME parameter set (#596) — only the mode (ticket profile) and the stores/clients (input columns) travel differently.",
-    responses((status = 200, description = "Catchments per store"), (status = 400, description = "Invalid request")))]
+    responses((status = 200, description = "Catchments per store"),
+        (status = 400, description = "Invalid request", body = ErrorResponse)))]
 /// POST /catchment handler
 pub async fn catchment_handler(
     State(regions): State<Arc<RegionsState>>,
