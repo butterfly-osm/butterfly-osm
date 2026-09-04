@@ -12,7 +12,7 @@ One `Dockerfile`, three stages, two shippable targets (#573). A shared `builder`
 FROM rust:1.95-trixie AS builder
 # ... RUN --mount=type=cache,... cargo build --release -p butterfly-dl -p butterfly-route
 FROM debian:trixie-slim AS tools
-# ... butterfly-dl + butterfly-route + models/ + traffic/ + build-pipeline.sh
+# ... butterfly-dl + butterfly-route + models/ + build-pipeline.sh
 FROM debian:trixie-slim AS runtime
 COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
 USER butterfly

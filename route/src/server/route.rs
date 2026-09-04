@@ -36,9 +36,10 @@ pub struct RouteRequest {
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
-    /// Optional traffic profile name. If set, the server routes against
-    /// the synthetic mode `<mode>_<profile>`, which the loaded artifact must
-    /// carry as a baked traffic variant.
+    /// RETIRED (#599). Baked traffic variants no longer exist: #582 removed
+    /// every producer of a traffic profile, and no container ever shipped
+    /// one. The parameter is kept only to answer 400 instead of silently
+    /// serving the base mode's weights to a caller who asked for a variant.
     #[serde(default)]
     traffic: Option<String>,
     /// Geometry encoding: polyline6 (default), geojson, points
@@ -245,6 +246,23 @@ pub async fn route_handler(
     if let Err(e) = validate_coord(req.destination_lon, req.destination_lat, "destination") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
     }
+    // #599: `traffic=<v>` selected a baked traffic variant. Nothing has
+    // produced one since #582 removed the profile writers, and no packed
+    // container ever carried one, so this could only ever 400. It still
+    // does — silently serving the base mode instead would hand the caller
+    // different weights than they asked for.
+    if req.traffic.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "the `traffic` parameter is retired (#599): baked traffic variants no \
+                        longer exist. Use `mode` (one public car profile) and, for spread, \
+                        `uncertainty=bands`."
+                    .into(),
+            }),
+        )
+            .into_response();
+    }
 
     // Region dispatch (#91 Phase 2): when an overlay is loaded, hand
     // cross-region queries off to the cross-region coordinator instead
@@ -277,30 +295,8 @@ pub async fn route_handler(
         }
     };
 
-    // Resolve the effective mode name. If `traffic=<v>` is set, synthesize
-    // `<mode>_<v>` and look that up — a baked variant the loaded artifact
-    // carries. Falling back to the base mode is intentionally disabled: a 400
-    // is preferable to silently routing on freeflow weights when the caller
-    // asked for traffic.
-    let effective_mode_name = match &req.traffic {
-        Some(v) if !v.trim().is_empty() => format!("{}_{}", req.mode, v.trim()),
-        _ => req.mode.clone(),
-    };
-    let mode = match parse_mode(&effective_mode_name, &state.mode_lookup) {
+    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
-        Err(_) if req.traffic.is_some() => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "Unknown traffic variant '{}' for mode '{}': the loaded artifact carries no such baked variant.",
-                        req.traffic.as_deref().unwrap_or(""),
-                        req.mode
-                    ),
-                }),
-            )
-                .into_response();
-        }
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
@@ -436,7 +432,6 @@ pub async fn route_handler(
         None => None,
         Some("bands") => {
             if req.mode != "car"
-                || req.traffic.is_some()
                 || req.avoid_polygons.is_some()
                 || req.exclude.is_some()
                 || req.bearings.is_some()
@@ -444,7 +439,7 @@ pub async fn route_handler(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "uncertainty=bands is car-only and incompatible with traffic/avoid_polygons/exclude/bearings".into(),
+                        error: "uncertainty=bands is car-only and incompatible with avoid_polygons/exclude/bearings".into(),
                     }),
                 )
                     .into_response();
@@ -1338,17 +1333,13 @@ fn cross_region_route_inner(
 ) -> axum::response::Response {
     use super::cross_region::solve_cross_region;
 
-    let effective_mode_name = match &req.traffic {
-        Some(v) if !v.trim().is_empty() => format!("{}_{}", req.mode, v.trim()),
-        _ => req.mode.clone(),
-    };
-    let src_mode = match parse_mode(&effective_mode_name, &src_state.mode_lookup) {
+    let src_mode = match parse_mode(&req.mode, &src_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
     };
-    let dst_mode = match parse_mode(&effective_mode_name, &dst_state.mode_lookup) {
+    let dst_mode = match parse_mode(&req.mode, &dst_state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();

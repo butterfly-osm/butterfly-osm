@@ -35,7 +35,6 @@ pub mod server;
 /// Test-support helpers shared by unit and integration tests (#587).
 #[doc(hidden)]
 pub mod testutil;
-pub mod traffic;
 pub mod transit;
 pub mod validate;
 pub mod weights;

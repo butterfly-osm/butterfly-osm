@@ -246,12 +246,12 @@ pub struct ModeSlot {
     /// `get_mode(...)` that found this slot resident. Drives idle
     /// eviction.
     pub last_used_ms: std::sync::atomic::AtomicU64,
-    /// #402: traffic-variant modes (e.g. `car_freeflow`) have a
-    /// different load shape — rebuilt by cloning the base mode's
-    /// topology + reading a recustomised `cch.w` section.
-    /// `load_mode_data_from_bundle` doesn't handle that yet. For v1
-    /// the compactor skips variants. Base modes (the heavy ones —
-    /// 1-4 GB each) are the eviction target.
+    /// #402: synthetic modes (`car_freeflow`, the #521 uncertainty
+    /// bands) have no container bundle behind them — they are built by
+    /// cloning a base mode's topology and swapping weights, which
+    /// `load_mode_data_from_bundle` cannot redo. The compactor skips
+    /// them. Base modes (the heavy ones — 1-4 GB each) are the
+    /// eviction target.
     ///
     /// Atomic so the #433 serve-boot car recustomization can pin the
     /// slot AFTER it hot-swaps the calibrated car in: if it stayed
@@ -497,10 +497,6 @@ impl ServerState {
 
         crate::server::rss::checkpoint("load.shared");
 
-        // Track each base mode's index in `tables` so we can later
-        // synthesize traffic variants from the same in-memory topology.
-        let mut base_mode_idx: HashMap<String, usize> = HashMap::new();
-
         for (mode_index, mode_name) in discovered_modes.iter().enumerate() {
             // Use GLOBAL index (from full alphabetical discovery) — must match step 4/5 indexing
             let mode = Mode(global_index[mode_name]);
@@ -518,60 +514,7 @@ impl ServerState {
             // has no container to reload from, but eviction is not armed
             // there either — see the slot comment below.
             tables.push(mode_name.clone(), mode_data, true);
-            base_mode_idx.insert(mode_name.clone(), mode_index);
             crate::server::rss::checkpoint(&format!("load.mode.{}", mode_name));
-        }
-
-        // ---- Traffic variants (#84) ---------------------------------
-        // Auto-discover `cch.w.<base>_<variant>.u32` weight files in step8
-        // and register each as a synthetic mode `<base>_<variant>` that
-        // shares topology with `<base>` but uses the variant weights.
-        match discover_traffic_variants(&step8_dir, &discovered_modes) {
-            Ok(variants) if !variants.is_empty() => {
-                tracing::info!(n_variants = variants.len(), "registering traffic variants");
-                for (base, variant) in &variants {
-                    let synthetic = format!("{}_{}", base, variant);
-                    if tables.lookup.contains_key(&synthetic) {
-                        tracing::warn!(
-                            mode = synthetic.as_str(),
-                            "skipping traffic variant: a base mode with the same name already exists"
-                        );
-                        continue;
-                    }
-                    let base_idx = match base_mode_idx.get(base) {
-                        Some(i) => *i,
-                        None => {
-                            tracing::warn!(
-                                base = base.as_str(),
-                                variant = variant.as_str(),
-                                "skipping traffic variant: base mode not loaded"
-                            );
-                            continue;
-                        }
-                    };
-                    let base_data = tables.data_at(base_idx);
-                    let variant_data = load_traffic_variant_mode_data(
-                        base_data, variant, base, &step8_dir, &step2_dir, &ebg_nodes, &nbg_geo,
-                    )?;
-                    // Variants are pinned: their load shape differs
-                    // from a base mode's bundle (#578).
-                    let new_index = tables.push(synthetic.clone(), variant_data, false);
-                    tracing::info!(
-                        base = base.as_str(),
-                        variant = variant.as_str(),
-                        synthetic = synthetic.as_str(),
-                        index = new_index,
-                        "registered traffic variant"
-                    );
-                    crate::server::rss::checkpoint(&format!("load.mode.{}", synthetic));
-                }
-            }
-            Ok(_) => {
-                tracing::info!("no traffic variants found in step8 directory");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "traffic variant discovery failed; ignoring");
-            }
         }
 
         // ---- Packed snap index (#154) -------------------------------
@@ -817,24 +760,8 @@ impl ServerState {
         // ---- Per-mode bundle load -----------------------------------
         let mut tables = modes::load_bundles(&sec, &discovered_modes, &global_index)?;
 
-        // Traffic-variant discovery — list now, register AFTER the
-        // snap-index build below. Variants share topology + snap mask
-        // with their base; adding them to the snap builder corrupts
-        // mode-byte indexing (the builder keys per-mode masks by
-        // `mode_byte`, which a variant copies from its base).
-        let container_variants = container.list_traffic_variants();
-
         // ---- Packed snap index (#154) -------------------------------
         let mut snap_index = snap::load_or_build(&sec, &graph, &tables)?;
-
-        // ---- Container traffic variants (#84) -----------------------
-        modes::register_container_variants(
-            &sec,
-            &container_variants,
-            &graph,
-            &mut tables,
-            &mut snap_index.masks,
-        )?;
 
         // ---- Cold per-mode sections ---------------------------------
         modes::evict_cold_mode_sections(&sec, &discovered_modes);
@@ -962,9 +889,9 @@ impl ServerState {
     pub fn try_evict_mode_if_idle(&self, mode_idx: usize, threshold_ms: u64) -> bool {
         let slot = &self.modes[mode_idx];
         if !slot.evictable.load(std::sync::atomic::Ordering::Relaxed) {
-            // #402: variants have a different load shape; can't safely
-            // reload via load_mode_data_from_bundle. Skip. (#433: the
-            // serve-boot recustomized car is also pinned here.)
+            // #402: a synthetic mode has no bundle to reload via
+            // load_mode_data_from_bundle. Skip. (#433: the serve-boot
+            // recustomized car is also pinned here.)
             return false;
         }
         let now = self.started_at.elapsed().as_millis() as u64;
@@ -1109,189 +1036,6 @@ fn discover_modes(step5_dir: &Path) -> Result<Vec<String>> {
     mode_names.dedup();
 
     Ok(mode_names)
-}
-
-/// Discover traffic variants by scanning step8 for `cch.w.<base>_<variant>.u32`
-/// files where `<base>` matches a known base mode and a sibling
-/// `cch.w.<base>_<variant>.traffic.json` exists for provenance.
-///
-/// Returns `(base_mode, variant)` pairs sorted by `(base, variant)`. Files
-/// without the sibling provenance JSON are skipped with a warning.
-pub(crate) fn discover_traffic_variants(
-    step8_dir: &Path,
-    base_modes: &[String],
-) -> Result<Vec<(String, String)>> {
-    let mut variants: Vec<(String, String)> = Vec::new();
-
-    // Sort longest-first so a base mode like "car" matches before "ca" when
-    // scanning a synthetic name like "car_freeflow".
-    let mut bases_sorted: Vec<&str> = base_modes.iter().map(String::as_str).collect();
-    bases_sorted.sort_by_key(|s| std::cmp::Reverse(s.len()));
-
-    for entry in std::fs::read_dir(step8_dir)
-        .with_context(|| format!("Failed to read {}", step8_dir.display()))?
-    {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        // Pattern: cch.w.{base}_{variant}.u32
-        let stem = match name_str
-            .strip_prefix("cch.w.")
-            .and_then(|s| s.strip_suffix(".u32"))
-        {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Try to split <base>_<variant> by trying every known base mode as a prefix.
-        let mut matched: Option<(String, String)> = None;
-        for base in &bases_sorted {
-            if let Some(rest) = stem.strip_prefix(*base)
-                && let Some(variant) = rest.strip_prefix('_')
-                && !variant.is_empty()
-            {
-                matched = Some(((*base).to_string(), variant.to_string()));
-                break;
-            }
-        }
-        let (base, variant) = match matched {
-            Some(t) => t,
-            None => continue, // Plain `cch.w.<base>.u32` — handled by base modes.
-        };
-
-        // Provenance check: refuse to expose a variant without its sibling
-        // .traffic.json so a stray weight file from a previous experiment
-        // can't accidentally pollute the live mode set.
-        let provenance = step8_dir.join(format!("cch.w.{}_{}.traffic.json", base, variant));
-        if !provenance.exists() {
-            tracing::warn!(
-                base = base.as_str(),
-                variant = variant.as_str(),
-                provenance = %provenance.display(),
-                "skipping traffic variant: missing sibling .traffic.json"
-            );
-            continue;
-        }
-
-        variants.push((base, variant));
-    }
-
-    variants.sort();
-    variants.dedup();
-    Ok(variants)
-}
-
-/// Build a synthetic `ModeData` for a traffic variant by reusing the base
-/// mode's topology + distance structures and loading just the variant
-/// `cch.w.<base>_<variant>.u32` file.
-///
-/// This is the runtime side of the step-8 traffic recustomization: weights
-/// change but topology, distance, masks, accessibility, and adjacency
-/// structure are all identical to the base mode.
-/// #440: traffic-ADJUSTED per-node time weights for a variant, derived at
-/// load time from the variant's provenance profile JSON. The baked builds
-/// only persist the customized CCH weights; per-edge durations (edges_batch)
-/// read `ModeData.node_weights`, so cloning the base legal-limit vector gives
-/// wrong durations along variant paths. Returns `None` (caller falls back to
-/// the base clone — today's behaviour) on any parse/shape failure.
-fn variant_adjusted_node_weights(
-    base: &ModeData,
-    profile_json: &str,
-    way_attrs_vec: &[crate::formats::way_attrs::WayAttr],
-    nbg_geo: &crate::formats::NbgGeo,
-    ebg_nodes: &crate::formats::EbgNodes,
-) -> Option<Vec<u32>> {
-    let profile = match crate::traffic::TrafficProfile::from_json(profile_json) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "variant provenance profile unparseable; per-edge durations stay base (#440)");
-            return None;
-        }
-    };
-    let mut weights: Vec<u32> = base.node_weights.to_vec();
-    if weights.len() != ebg_nodes.nodes.len() {
-        tracing::warn!("weights/EBG length mismatch; per-edge durations stay base (#440)");
-        return None;
-    }
-    match crate::customization::apply_traffic_to_node_weights_in_memory(
-        &mut weights,
-        ebg_nodes,
-        &profile,
-        way_attrs_vec,
-        nbg_geo,
-    ) {
-        Ok(()) => Some(weights),
-        Err(e) => {
-            tracing::warn!(error = %e, "variant node-weight scaling failed; per-edge durations stay base (#440)");
-            None
-        }
-    }
-}
-
-fn load_traffic_variant_mode_data(
-    base: &ModeData,
-    variant_name: &str,
-    base_mode_name: &str,
-    step8_dir: &Path,
-    step2_dir: &Path,
-    ebg_nodes: &crate::formats::EbgNodes,
-    nbg_geo: &crate::formats::NbgGeo,
-) -> Result<ModeData> {
-    let weights_path = step8_dir.join(format!("cch.w.{}_{}.u32", base_mode_name, variant_name));
-    let cch_weights = CchWeightsFile::read(&weights_path)
-        .with_context(|| format!("loading traffic variant weights {}", weights_path.display()))?;
-
-    // #440: scale the per-node time weights by the variant's provenance
-    // profile so edges_batch per-edge durations match the variant's paths
-    // (the baked artifact only persists the customized CCH weights).
-    let adjusted = std::fs::read_to_string(step8_dir.join(format!(
-        "cch.w.{}_{}.traffic.json",
-        base_mode_name, variant_name
-    )))
-    .ok()
-    .and_then(|json| {
-        let attrs = crate::formats::way_attrs::read_all(
-            step2_dir.join(format!("way_attrs.{}.bin", base_mode_name)),
-        )
-        .ok()?;
-        variant_adjusted_node_weights(base, &json, &attrs, nbg_geo, ebg_nodes)
-    });
-
-    // Rebuild the TIME flats against the new weights — they're the only
-    // thing that depends on cch_weights. Distance flats and topology are
-    // shared with the base by clone (Cow::clone is cheap for borrowed
-    // sections; for owned Vecs it duplicates, see comment above).
-    let up_adj_flat = UpAdjFlat::build_with(&base.cch_topo, &cch_weights, true);
-    let down_rev_flat = DownReverseAdjFlat::build_with(&base.cch_topo, &cch_weights, true);
-    let down_adj_flat = DownAdjFlat::build(&base.cch_topo, &cch_weights);
-
-    Ok(ModeData {
-        mode: base.mode,
-        cch_topo: base.cch_topo.clone(),
-        cch_weights,
-        cch_weights_dist: base.cch_weights_dist.clone(),
-        cch_weights_len_along_time: base.cch_weights_len_along_time.clone(),
-        orig_to_rank: base.orig_to_rank.clone(),
-        filtered_to_original: base.filtered_to_original.clone(),
-        n_filtered_nodes: base.n_filtered_nodes,
-        n_original_nodes: base.n_original_nodes,
-        node_weights: adjusted
-            .map(std::borrow::Cow::Owned)
-            .unwrap_or_else(|| base.node_weights.clone()),
-        mask: base.mask.clone(),
-        has_outbound: base.has_outbound.clone(),
-        has_inbound: base.has_inbound.clone(),
-        up_adj_flat,
-        down_rev_flat,
-        down_adj_flat,
-        up_adj_flat_dist: base.up_adj_flat_dist.clone(),
-        down_rev_flat_dist: base.down_rev_flat_dist.clone(),
-        up_adj_flat_len_along_time: base.up_adj_flat_len_along_time.clone(),
-        down_rev_flat_len_along_time: base.down_rev_flat_len_along_time.clone(),
-        down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
-        exclude_cache: super::exclude::ExcludeWeightCache::default(),
-    })
 }
 
 /// Load per-mode data (CCH topo, ordering, weights, filtered EBG)
