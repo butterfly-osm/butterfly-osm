@@ -2489,3 +2489,37 @@ mod len_along_time_middle_tests {
         assert_eq!(a_mid, b_mid, "elected middles must be reproducible");
     }
 }
+
+#[cfg(test)]
+mod pack_tl_order_tests {
+    //! #557: `pack_tl` is the SAME (time, then length) tie-break as the
+    //! canonical [`crate::matrix::lex_better`], expressed as a bit-packing so
+    //! it can ride an atomic `fetch_min`. It is deliberately NOT rewritten to
+    //! call the comparator — a `fetch_min` needs a total order in one u64,
+    //! not a boolean — so this test pins the equivalence instead.
+    use super::{pack_tl, tl_len, tl_time};
+    use crate::matrix::lex_better;
+
+    #[test]
+    fn packed_order_equals_lex_better() {
+        // Boundary-heavy values: 0, 1, and both u32 halves at their extremes,
+        // so a sign/shift mistake in the packing cannot hide.
+        let vals = [0u32, 1, 2, 0x7FFF_FFFF, 0x8000_0000, u32::MAX - 1, u32::MAX];
+        for &t in &vals {
+            for &l in &vals {
+                assert_eq!(tl_time(pack_tl(t, l)), t, "time round-trip");
+                assert_eq!(tl_len(pack_tl(t, l)), l, "length round-trip");
+                for &bt in &vals {
+                    for &bl in &vals {
+                        assert_eq!(
+                            pack_tl(t, l) < pack_tl(bt, bl),
+                            lex_better(t, l, bt, bl),
+                            "packed order disagrees with lex_better at \
+                             ({t},{l}) vs ({bt},{bl})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
