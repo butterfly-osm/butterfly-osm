@@ -843,7 +843,9 @@ fn test_trip_leg_unreachable_serializes_as_null() {
     use super::trip::TripLeg;
     let unreachable_leg = TripLeg {
         duration: None,
+        duration_s: None,
         distance: None,
+        distance_m: None,
         summary: String::new(),
     };
     let json = serde_json::to_value(&unreachable_leg).unwrap();
@@ -852,7 +854,9 @@ fn test_trip_leg_unreachable_serializes_as_null() {
 
     let reachable_leg = TripLeg {
         duration: Some(123.4),
+        duration_s: Some(123.4),
         distance: Some(5678.9),
+        distance_m: Some(5678.9),
         summary: "test".to_string(),
     };
     let json = serde_json::to_value(&reachable_leg).unwrap();

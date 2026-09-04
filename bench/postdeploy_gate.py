@@ -2077,7 +2077,7 @@ def gate_all_endpoints_smoke(base):
     passed &= do_get_ok("matrix", {"origins": [list(o)], "destinations": [list(d)]})
     passed &= do_get_ok("route_batch", {"pairs": pairs})
     passed &= do_get_ok("edges_batch", {"pairs": pairs})
-    passed &= do_get_ok("isochrone", {"lon": o[0], "lat": o[1], "intervals": [300], "interval_type": "time"})
+    passed &= do_get_ok("isochrone", {"lon": o[0], "lat": o[1], "intervals": [300]})
     # transit_bulk — optional (needs transit subsystem)
     try:
         flight_table(base, "transit_bulk", "transit", {"queries": [
