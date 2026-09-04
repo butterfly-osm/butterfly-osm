@@ -10,6 +10,40 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — Post-deploy gate consolidation + CI runs the integration tests (#550, #555)
+
+The gate (`bench/postdeploy_gate.py`) no longer passes by accident:
+
+- **Fail-loud preflight**: pyarrow/pandas missing is a FAIL, not eleven silent
+  `except ImportError: return True` skips; `--no-flight` is the explicit opt-out
+  (Flight gates then print SKIP). An unreachable Flight endpoint is a FAIL too.
+- **One `flight_client(base)`** (REST port + 1, `--flight-base` override) for
+  every Flight gate — `gate_bands` used to derive the port by string-replacing
+  a port number, so it silently probed the wrong instance.
+- **One shared helper block** (haversine, point-in-ring, ring area, WKB
+  polygon/multipolygon, polyline6, distance-to-ring); the dead `_pip` and the
+  subset `_wkb_polygon_rings` are gone.
+- **`iso_bundle(...)`** memoises each isochrone origin's WKB / JSON contours /
+  `include=network` / GeoJSON / snap, shared by the five isochrone gates, and
+  the reference trips are routed ONCE for both `gate_bands` and
+  `gate_ground_truth`.
+- **`gate_consistency` merged into one route≡table agreement gate** with a
+  uniform and a close-pair sampler, both run on a 16-way thread pool; symmetry,
+  graph-holes and one-way routability are parallel too.
+- **Errors are counted, not skipped**: more than `max_errors` transport failures
+  fails the gate (an HTTP 400/404 "no route" is counted separately).
+- **One `THRESHOLDS` table** for every tolerance, and `--list-gates` prints the
+  gate registry (CI smoke).
+- Product rule unchanged: an isochrone is ONE simple polygon — no MultiPolygon,
+  no holes.
+
+CI (`.github/workflows/ci.yml`) and `scripts/hooks/pre-push` now run the SAME
+step list, `scripts/ci-steps.sh`: `cargo test --workspace` (route/tests/*.rs ran
+nowhere before) plus `py_compile` and `--list-gates` on the gate. Dead
+benchmark scripts that posted to the streaming table endpoint, and a frozen
+parity output file, were removed; the duplicated `geo` dev-dependency in
+`route/Cargo.toml` (already a normal dependency, same version) was dropped.
+
 ### 2026-07-23 — Uncertainty bands: single car profile + opt-in Q1/Q3 (#521, dev)
 
 ONE public car profile (the demand-weighted median). `uncertainty=bands` on
