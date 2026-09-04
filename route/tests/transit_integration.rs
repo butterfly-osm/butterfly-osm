@@ -1,8 +1,13 @@
 //! End-to-end transit integration test.
 //!
 //! Loads the SNCB GTFS feed (already on disk under
-//! `data/belgium/transit/gtfs/sncb.zip` — downloaded out-of-band to
+//! `<region>/transit/gtfs/sncb.zip` — downloaded out-of-band to
 //! respect the sandbox) and runs a pure-RAPTOR query against it.
+//!
+//! #587: these tests self-skip on the data probe
+//! (`butterfly_route::testutil`) instead of being `#[ignore]`d. A runner
+//! that has the feeds staged runs all of them with a plain `cargo test`;
+//! a bare runner prints ONE skip line for the whole file.
 //!
 //! This test does NOT exercise the foot-CCH transfer precompute, which
 //! takes tens of seconds on Belgium — see the Docker smoke test for that
@@ -18,20 +23,17 @@ use butterfly_route::server::state::ServerState;
 use butterfly_route::server::transit_handler::{
     TransitBulkResult, TransitRequest, compute_transit_journey, run_bulk,
 };
+use butterfly_route::testutil;
 use butterfly_route::transit::gtfs::{FeedSource, ServiceFilter, load_many, load_zip};
 use butterfly_route::transit::raptor::{RaptorLeg, RaptorQuery, run_raptor};
 use butterfly_route::transit::transfers::TransferGraph;
 use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate, Weekday};
 
-fn belgium_data_root() -> PathBuf {
-    // Integration tests run from the package directory, so `../data/...`
-    // is the workspace-relative path.
-    PathBuf::from("../data/belgium")
-}
+/// Skip scope: one skip line for this whole file (#587).
+const SCOPE: &str = "transit_integration";
 
 fn gtfs_zip_path() -> Option<PathBuf> {
-    let p = belgium_data_root().join("transit/gtfs/sncb.zip");
-    if p.exists() { Some(p) } else { None }
+    testutil::require_asset(SCOPE, "transit/gtfs/sncb.zip")
 }
 
 /// Return (feed_id, path) for every Belgian GTFS zip present on disk.
@@ -39,8 +41,7 @@ fn present_feeds() -> Vec<(&'static str, PathBuf)> {
     let ids = ["sncb", "delijn", "tec", "stib"];
     let mut out = Vec::new();
     for id in ids {
-        let p = belgium_data_root().join(format!("transit/gtfs/{id}.zip"));
-        if p.exists() {
+        if let Some(p) = testutil::asset(&format!("transit/gtfs/{id}.zip")) {
             out.push((id, p));
         }
     }
@@ -58,10 +59,9 @@ fn next_weekday(mut date: NaiveDate) -> NaiveDate {
 }
 
 #[test]
-#[ignore = "requires SNCB GTFS zip under data/belgium/transit/gtfs/sncb.zip"]
 fn sncb_raptor_brussels_to_ghent() {
     let Some(zip) = gtfs_zip_path() else {
-        panic!("SNCB GTFS zip missing: download from https://gtfs.irail.be/nmbs/gtfs/latest.zip");
+        return;
     };
 
     // Use a weekday so normal IC services are running.
@@ -225,12 +225,15 @@ fn sncb_raptor_brussels_to_ghent() {
 /// increase with each feed, feed-id namespacing keeps ids collision-free,
 /// and the merged stop_routes relation stays well-formed.
 ///
-/// `--ignored` because it requires every feed to be fetched beforehand
-/// via `butterfly-route transit-fetch --data-dir data/belgium`.
+/// Self-skips unless at least two feeds were fetched beforehand via
+/// `butterfly-route transit-fetch --data-dir <region>`.
 #[test]
-#[ignore = "requires every Belgian GTFS zip under data/belgium/transit/gtfs/"]
 fn belgium_multi_feed_merge() {
     let feeds = present_feeds();
+    if feeds.len() < 2 {
+        let _: Option<()> = testutil::skip(SCOPE, "two or more GTFS zips under transit/gtfs/");
+        return;
+    }
     assert!(
         feeds.len() >= 2,
         "need at least two Belgian feeds on disk; found {}",
@@ -333,30 +336,6 @@ fn leak(s: &str) -> &'static str {
 
 static SERVER_STATE: OnceLock<Arc<ServerState>> = OnceLock::new();
 
-fn belgium_has_transit() -> bool {
-    let root = belgium_data_root();
-    // Transit GTFS plus at least one step4 variant (which carries
-    // `ebg.nodes` / `ebg.csr`). The exact step4 directory name
-    // varies (`step4`, `step4-turnpen`, `step4-roadclass`, …) and
-    // `ServerState::load` resolves it via `find_step_dir`, so we
-    // just verify the gtfs feed and the overall data_dir shape.
-    if !root.is_dir() {
-        return false;
-    }
-    if !root.join("transit/gtfs/sncb.zip").is_file() {
-        return false;
-    }
-    // Any step4-* or step4 directory containing ebg.nodes is enough
-    // for ServerState::load to succeed.
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return false;
-    };
-    entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("step4"))
-        .any(|e| e.path().join("ebg.nodes").is_file())
-}
-
 /// Load (or return the cached) Belgium ServerState with the transit
 /// subsystem installed. `ServerState::load` produces a road-only
 /// state; transit is normally installed asynchronously by the
@@ -366,25 +345,28 @@ fn belgium_has_transit() -> bool {
 ///
 /// Returns None when the data dir is not provisioned — callers skip.
 fn belgium_server_state() -> Option<Arc<ServerState>> {
-    if !belgium_has_transit() {
-        eprintln!(
-            "belgium data dir at {} is not provisioned — skipping",
-            belgium_data_root().display()
-        );
-        return None;
+    // Transit needs BOTH the routing artifact and the staged feeds; a
+    // routing-only data dir must skip, not fail.
+    let artifact = testutil::require_container(SCOPE)?;
+    let root = testutil::region_root()?;
+    if testutil::asset("transit/gtfs/sncb.zip").is_none() {
+        return testutil::skip(SCOPE, "transit/gtfs/sncb.zip");
     }
     let state = SERVER_STATE.get_or_init(|| {
-        let dir = belgium_data_root();
         eprintln!(
             "loading ServerState from {} (~50 s road-only + transit)",
-            dir.display()
+            artifact.display()
         );
         let t0 = std::time::Instant::now();
-        let mut state = ServerState::load(&dir, None)
-            .expect("ServerState::load must succeed on a provisioned Belgium data dir");
+        let mut state = if artifact.is_dir() {
+            ServerState::load(&artifact, None)
+        } else {
+            ServerState::load_from_container(&artifact, None)
+        }
+        .expect("ServerState load must succeed on a provisioned Belgium artifact");
 
         // Install transit: mirrors the async bootstrap in `server::mod::run`.
-        let cfg = butterfly_route::transit::config::load(&dir)
+        let cfg = butterfly_route::transit::config::load(&root)
             .expect("transit config load")
             .expect("transit dir must exist");
         let foot_idx = *state
@@ -423,7 +405,6 @@ fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_transfer_graph_is_well_formed() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -518,7 +499,6 @@ fn belgium_transfer_graph_is_well_formed() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_same_station_transfers_are_wired() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -620,7 +600,6 @@ fn belgium_same_station_transfers_are_wired() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_cross_feed_bridges_are_wired() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -735,7 +714,6 @@ fn base_req(origin: (f64, f64), dest: (f64, f64)) -> TransitRequest {
 }
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_compute_transit_journey_brussels_antwerp() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -799,7 +777,6 @@ fn belgium_compute_transit_journey_brussels_antwerp() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_compute_transit_journey_is_deterministic() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -826,7 +803,6 @@ fn belgium_compute_transit_journey_is_deterministic() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_varied_transit_journeys_are_plausible() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -876,7 +852,6 @@ fn belgium_varied_transit_journeys_are_plausible() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_geometry_full_adds_polylines_without_changing_duration() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -938,7 +913,6 @@ fn belgium_geometry_full_adds_polylines_without_changing_duration() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_geometry_full_covers_middle_walks() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -1025,7 +999,6 @@ fn belgium_geometry_full_covers_middle_walks() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_transit_rejects_bad_inputs() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -1086,7 +1059,6 @@ fn bulk_access_leg(r: &TransitBulkResult) -> serde_json::Value {
 /// shares the AccessContext across both, so the access walk distance,
 /// duration, and (if requested) geometry must all match exactly.
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_bulk_same_origin_shares_access_leg() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -1125,7 +1097,6 @@ fn belgium_bulk_same_origin_shares_access_leg() {
 /// different access contexts. Each access leg must reflect its own
 /// origin coordinate (`from` ≈ origin) and not leak across groups.
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_bulk_distinct_origins_get_distinct_access() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -1176,7 +1147,6 @@ fn belgium_bulk_distinct_origins_get_distinct_access() {
 /// `compute_transit_journey` calls. Anything less means the access
 /// context isn't being shared.
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_bulk_same_origin_grouping_speedup() {
     let Some(state) = belgium_server_state() else {
         return;
@@ -1266,7 +1236,6 @@ fn belgium_bulk_same_origin_grouping_speedup() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_flight_transit_bulk_roundtrip() {
     use butterfly_route::server::flight::{
         TransitBulkParams, do_transit_bulk, transit_bulk_schema,
@@ -1428,7 +1397,6 @@ fn belgium_flight_transit_bulk_roundtrip() {
 }
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_flight_transit_bulk_chunks_large_batches() {
     // The Flight handler emits one RecordBatch per CHUNK (1024). For
     // a batch larger than CHUNK we should see multiple batches and
@@ -1509,7 +1477,6 @@ fn belgium_flight_transit_bulk_chunks_large_batches() {
 // =====================================================================
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_flight_edges_batch_continuity_and_nulls() {
     use butterfly_route::server::flight::{EdgesBatchParams, do_edges_batch};
     use futures::StreamExt;
@@ -1722,7 +1689,6 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
 }
 
 #[test]
-#[ignore = "loads the full Belgium ServerState (~50 s)"]
 fn belgium_flight_edges_batch_totals_match_matrix() {
     // Acceptance criterion from #125: sum(duration_ms along path) must
     // equal the matrix duration for the same (source, target) pair,

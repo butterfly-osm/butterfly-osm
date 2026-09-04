@@ -5,13 +5,13 @@
 //! that [`map_match_multi_region`] produces a connected matched path
 //! that spans both regions.
 //!
-//! The test is `#[ignore]` because it requires the prebuilt
-//! Belgium / Luxembourg containers and the prebuilt
-//! `be-lu-overlay.butterfly`. CI does not ship these data files. Run
-//! locally with:
+//! The test SELF-SKIPS (#587) without the prebuilt Belgium / Luxembourg
+//! containers and the prebuilt `be-lu-overlay.butterfly`. CI ships none
+//! of them. Run locally with:
 //!
 //! ```bash
-//! cargo test -p butterfly-route --release --test map_match_cross_region -- --ignored --nocapture
+//! BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test -p butterfly-route \
+//!     --release --test map_match_cross_region -- --nocapture
 //! ```
 //!
 //! The trace is hand-crafted to span Arlon (BE) → Pétange (LU) along
@@ -25,6 +25,7 @@ use std::sync::Arc;
 use butterfly_route::server::map_match::map_match_multi_region;
 use butterfly_route::server::overlay::OverlayCluster;
 use butterfly_route::server::regions::RegionsState;
+use butterfly_route::testutil;
 
 const BE_CONTAINER: &str = "data/belgium/baseline.butterfly";
 const LU_CONTAINER: &str = "data/luxembourg/luxembourg.butterfly";
@@ -96,10 +97,12 @@ fn arlon_to_petange_trace() -> Vec<(f64, f64)> {
 }
 
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg + data/be-lu-overlay"]
 fn cross_region_trace_matches_with_overlay() {
     let Some((be, lu, ov)) = fixture_paths() else {
-        eprintln!("skipping: BE + LU + overlay fixtures not on disk");
+        let _: Option<()> = testutil::skip(
+            "map_match_cross_region",
+            "Belgium + Luxembourg containers and the BE-LU overlay",
+        );
         return;
     };
     let regions = load_regions_with_overlay(&be, &lu, &ov);
@@ -184,10 +187,12 @@ fn cross_region_trace_matches_with_overlay() {
 /// matching has region_idx 0 (BE), result mirrors what the single-
 /// region `map_match` would have produced.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg + data/be-lu-overlay"]
 fn pure_belgian_trace_uses_single_region_fastpath() {
     let Some((be, lu, ov)) = fixture_paths() else {
-        eprintln!("skipping: BE + LU + overlay fixtures not on disk");
+        let _: Option<()> = testutil::skip(
+            "map_match_cross_region",
+            "Belgium + Luxembourg containers and the BE-LU overlay",
+        );
         return;
     };
     let regions = load_regions_with_overlay(&be, &lu, &ov);

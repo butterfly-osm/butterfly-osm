@@ -563,17 +563,17 @@ fn stitch_cross_region_dedupes_border_overlap_with_leg_endpoints() {
 // `cross_region_route_inner` returns a degenerate `[src, dst]` line
 // even though distance/duration are correct.
 //
-// `#[ignore]` because:
+// Self-skips (#587) because:
 //   - Belgium + Luxembourg containers (~28 GB combined) are not in CI
 //   - Loading the full state takes ~15 s
 //
 // Run locally with:
-//   cargo test -p butterfly-route --test cross_region_synthetic \
-//       --release -- --ignored e2e_be_to_lu_polyline_has_road_geometry
+//   BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test -p butterfly-route \
+//       --test cross_region_synthetic --release \
+//       e2e_be_to_lu_polyline_has_road_geometry
 // ===========================================================================
 
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg + data/be-lu-overlay.butterfly"]
 fn e2e_be_to_lu_polyline_has_road_geometry() {
     use butterfly_route::server::overlay::OverlayCluster;
     use butterfly_route::server::regions::{P2pPlan, RegionsState};
@@ -604,7 +604,10 @@ fn e2e_be_to_lu_polyline_has_road_geometry() {
         match found {
             Some(t) => t,
             None => {
-                eprintln!("skipping: BE/LU containers + overlay not on disk");
+                let _: Option<()> = butterfly_route::testutil::skip(
+                    "cross_region_synthetic",
+                    "Belgium + Luxembourg containers and the BE-LU overlay",
+                );
                 return;
             }
         }
