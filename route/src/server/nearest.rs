@@ -152,8 +152,10 @@ pub async fn nearest_handler(
     );
 
     if results.is_empty() {
+        // #554: a well-formed query over the sea is "nothing here" (404), as
+        // /route and Flight answer, not a malformed request (400).
         return (
-            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "No road found within snap distance".to_string(),
             }),

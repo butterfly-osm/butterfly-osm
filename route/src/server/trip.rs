@@ -421,6 +421,12 @@ pub struct Trip {
     /// Total trip distance in meters (if distance annotation requested, else 0)
     #[schema(example = 45678.0)]
     pub distance: f64,
+    /// #554: unit-suffixed twins of `duration` / `distance` (REST convention:
+    /// `_s` / `_m`); the bare names are kept for one release.
+    #[schema(example = 1234.5)]
+    pub duration_s: f64,
+    #[schema(example = 45678.0)]
+    pub distance_m: f64,
     /// Optimization weight (same as duration)
     pub weight: f64,
     /// Weight metric name
@@ -435,6 +441,11 @@ pub struct Trip {
     /// Pessimistic total (worst band: weekday peaks) — only with uncertainty=bands
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_worst: Option<f64>,
+    /// #554 unit-suffixed twins of the band totals
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_best_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_worst_s: Option<f64>,
 }
 
 /// A leg connecting two consecutive waypoints in the trip
@@ -446,6 +457,9 @@ pub struct TripLeg {
     /// Leg distance in meters (null if unreachable)
     #[schema(example = 12345.0)]
     pub distance: Option<f64>,
+    /// #554 unit-suffixed twins (`_s` / `_m`)
+    pub duration_s: Option<f64>,
+    pub distance_m: Option<f64>,
     /// Summary (empty for now)
     pub summary: String,
 }
@@ -1131,7 +1145,9 @@ pub async fn trip_handler(
 
             legs.push(TripLeg {
                 duration: dur_s,
+                duration_s: dur_s,
                 distance: dist_m,
+                distance_m: dist_m,
                 summary: String::new(),
             });
         }
@@ -1155,13 +1171,17 @@ pub async fn trip_handler(
         let trip = Trip {
             legs,
             duration: total_duration_s as f64,
+            duration_s: total_duration_s as f64,
             distance: total_distance_m as f64,
+            distance_m: total_distance_m as f64,
             weight: total_duration_s as f64,
             weight_name: "duration".to_string(),
             improvement_pct: tsp_result.improvement_pct,
 
             duration_best: None,
+            duration_best_s: None,
             duration_worst: None,
+            duration_worst_s: None,
         };
 
         Ok(TripResponse {
@@ -1206,6 +1226,8 @@ pub async fn trip_handler(
                 };
                 trip.duration_best = sum_band(opt);
                 trip.duration_worst = sum_band(pess);
+                trip.duration_best_s = trip.duration_best;
+                trip.duration_worst_s = trip.duration_worst;
             }
             Json(response).into_response()
         }

@@ -236,6 +236,8 @@ fn road_leg(
     }
 }
 
+#[utoipa::path(get, path = "/transit", tag = "Transit", summary = "Single multimodal transit journey",
+    responses((status = 200, description = "Journey legs"), (status = 404, description = "No journey"), (status = 503, description = "Transit not loaded")))]
 pub async fn transit_handler(
     State(regions): State<Arc<RegionsState>>,
     Query(req): Query<TransitRequest>,
@@ -956,6 +958,9 @@ impl OriginGroupKey {
     }
 }
 
+#[utoipa::path(post, path = "/transit/bulk", tag = "Transit", summary = "Batch multimodal transit journeys",
+    request_body(content = serde_json::Value, description = "{queries:[TransitRequest], defaults}"),
+    responses((status = 200, description = "Per-query journeys"), (status = 503, description = "Transit not loaded")))]
 /// `POST /transit/bulk` — batch multimodal routing.
 ///
 /// Runs every query in the batch in parallel via Rayon. Two performance
