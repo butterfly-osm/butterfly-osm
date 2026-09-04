@@ -48,6 +48,12 @@ STEPS=(
   # no server is running).
   "post-deploy gate compiles|python3 -m py_compile bench/postdeploy_gate.py"
   "post-deploy gate registry|python3 bench/postdeploy_gate.py --list-gates"
+  # #594: the gate's own offline unit tests — threshold derivation, refs
+  # resolution, geometry, the memoised fetchers, the registry/probe parity
+  # tables and the matrix-plan parsing (a missing or wrong reported plan must
+  # FAIL). They existed but no runner executed them, so a break in the gate's
+  # own logic reached a deploy before anyone looked.
+  "post-deploy gate unit tests|python3 bench/test_postdeploy_gate.py"
 )
 
 if [[ "${1:-}" == "--list" ]]; then
