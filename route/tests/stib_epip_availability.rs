@@ -40,8 +40,17 @@ use std::time::Instant;
 
 use butterfly_route::testutil;
 
-const EPIP_NETEX_URL: &str =
-    "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml";
+/// The URL the binary would actually fetch, read from the shipped region
+/// index rather than copied — a live-endpoint check against a hard-coded
+/// copy proves nothing about what `transit-fetch` requests (#537).
+fn epip_netex_url() -> String {
+    let feeds = butterfly_route::transit::config::default_belgium_feeds();
+    feeds
+        .into_iter()
+        .find(|f| f.id == "stib")
+        .expect("the shipped Belgium feed list must carry a stib feed")
+        .url
+}
 
 /// Expected element count ranges (min, max). These are order-of-
 /// magnitude sanity bounds, not exact numbers — STIB publishes the
@@ -344,7 +353,7 @@ fn stib_epip_network_availability() {
             "Range: bytes=0-8191",
             "--max-time",
             "30",
-            EPIP_NETEX_URL,
+            &epip_netex_url(),
         ])
         .output()
         .expect("curl invocation");

@@ -25,9 +25,11 @@
 //!
 //! Failures on individual feeds are recorded in the report and do
 //! NOT abort the overall run — the scraper is expected to be
-//! resilient to a single dead mirror.
+//! resilient to a single dead mirror — but the RUN is not: see
+//! [`fetch_outcome`], which turns any failed feed into a failed
+//! command so a rotted URL cannot sit unnoticed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use butterfly_dl::verified::{Outcome, VerifiedOptions, download_verified};
@@ -45,7 +47,8 @@ pub enum FeedFetchOutcome {
     Unchanged,
     /// Content differs from previous sidecar — rewritten.
     Updated { sha: [u8; 32], bytes: usize },
-    /// Fetch failed — error is logged, never fatal for the whole run.
+    /// Fetch failed. Reported per feed, and fatal for the run — see
+    /// [`fetch_outcome`].
     Failed { error: String },
 }
 
@@ -78,8 +81,59 @@ impl FeedFetchOutcome {
 #[derive(Debug, Clone)]
 pub struct FeedFetchReport {
     pub feed_id: String,
+    /// The URL that was requested. Carried on the report so a failure can
+    /// name it — a 404 whose message omits the URL tells the operator
+    /// nothing about which of several config sources is wrong.
+    pub url: String,
     pub static_outcome: FeedFetchOutcome,
     pub rt_outcome: Option<FeedFetchOutcome>,
+}
+
+/// Turn a completed run into a process outcome, returning how many feeds
+/// downloaded.
+///
+/// A feed that 404s used to be printed, counted, and then ignored: the
+/// command exited 0 as long as one other feed had worked. So a default
+/// URL could rot for months while every rebuild quietly produced a
+/// timetable one operator short, and nothing downstream said so — the
+/// server logs a warning for a feed that is not on disk and serves the
+/// rest. A failed fetch is now a failed run, naming every feed that
+/// failed, the URL it asked for, and the file that decides that URL.
+///
+/// Real-time snapshots are deliberately not fatal: `rt_url` is an
+/// optional one-shot blob the loader is documented to skip when it is
+/// missing or unreadable, and the schedule does not depend on it. Its
+/// failures are still printed per feed.
+pub fn fetch_outcome(reports: &[FeedFetchReport], config_path: &Path) -> anyhow::Result<usize> {
+    let failed: Vec<&FeedFetchReport> = reports
+        .iter()
+        .filter(|r| matches!(r.static_outcome, FeedFetchOutcome::Failed { .. }))
+        .collect();
+    if failed.is_empty() {
+        return Ok(reports.len());
+    }
+
+    let mut msg = format!(
+        "{} of {} transit feed(s) failed to download:",
+        failed.len(),
+        reports.len()
+    );
+    for r in &failed {
+        let FeedFetchOutcome::Failed { error } = &r.static_outcome else {
+            unreachable!("filtered to failures");
+        };
+        msg.push_str(&format!("\n  {} {} — {}", r.feed_id, r.url, error));
+    }
+    msg.push_str(&format!(
+        "\nFix or remove the feed in {}{}",
+        config_path.display(),
+        if config_path.is_file() {
+            "."
+        } else {
+            " (create it to override the shipped region feed list)."
+        }
+    ));
+    anyhow::bail!(msg)
 }
 
 /// Download every feed listed in `config` into the transit directory
@@ -138,6 +192,7 @@ pub async fn fetch_all(
         };
         FeedFetchReport {
             feed_id: w.feed_id,
+            url: w.static_url,
             static_outcome,
             rt_outcome,
         }
@@ -215,6 +270,92 @@ pub fn hash_file_if_exists(path: &std::path::Path) -> Option<[u8; 32]> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// #537: a feed that 404s must be REPORTED, not swallowed. The run
+    /// used to exit 0 whenever at least one other feed worked, which is
+    /// how two dead default URLs survived unnoticed until a calendar ran
+    /// out. The failure has to carry what the operator needs to act:
+    /// which feed, which URL, and which file decides that URL.
+    #[test]
+    fn a_failed_feed_fails_the_run_and_says_where_to_fix_it() {
+        use std::path::Path;
+
+        let report = |id: &str, url: &str, outcome: FeedFetchOutcome| FeedFetchReport {
+            feed_id: id.to_string(),
+            url: url.to_string(),
+            static_outcome: outcome,
+            rt_outcome: None,
+        };
+        let ok = |id: &str| {
+            report(
+                id,
+                "https://example.org/ok.zip",
+                FeedFetchOutcome::Unchanged,
+            )
+        };
+        let dead = |id: &str, url: &str| {
+            report(
+                id,
+                url,
+                FeedFetchOutcome::Failed {
+                    error: "GET returned HTTP 404 Not Found".to_string(),
+                },
+            )
+        };
+        let toml = Path::new("/data/transit/transit.toml");
+
+        assert_eq!(
+            fetch_outcome(&[ok("sncb"), ok("tec")], toml).expect("all fetched"),
+            2
+        );
+
+        // One dead feed among three that worked is still a failed run.
+        let err = fetch_outcome(
+            &[
+                ok("sncb"),
+                dead("delijn", "https://example.org/gone/delijn.zip"),
+                ok("tec"),
+            ],
+            toml,
+        )
+        .expect_err("a dead feed must not pass as success");
+        let msg = format!("{err:#}");
+        for needle in [
+            "delijn",
+            "https://example.org/gone/delijn.zip",
+            "404",
+            "transit.toml",
+        ] {
+            assert!(msg.contains(needle), "{msg} must mention {needle}");
+        }
+        assert!(
+            !msg.contains("sncb") && !msg.contains("tec"),
+            "only the failures belong in the message: {msg}"
+        );
+
+        // Every feed dead: all of them are named, not just the first.
+        let err = fetch_outcome(
+            &[
+                dead("delijn", "https://example.org/a.zip"),
+                dead("stib", "https://example.org/b.xml"),
+            ],
+            toml,
+        )
+        .expect_err("every feed dead is a failed run");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("delijn") && msg.contains("stib"), "{msg}");
+
+        // A real-time snapshot is optional by contract; its failure is
+        // printed but does not fail the run.
+        let mut rt_only = ok("sncb");
+        rt_only.rt_outcome = Some(FeedFetchOutcome::Failed {
+            error: "GET returned HTTP 503".to_string(),
+        });
+        assert_eq!(
+            fetch_outcome(&[rt_only], toml).expect("an rt blob is not the schedule"),
+            1
+        );
+    }
 
     #[test]
     fn hash_file_works() {
