@@ -1235,7 +1235,21 @@ pub async fn isochrone_handler(
         IsoMetric::Time(s) => vec![(*s, Some(*s))],
         IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s))).collect(),
     };
-    // WKB serves ONE contour (guarded below) — the others would be computed
+    // #559: the WKB guards depend only on parsed input — reject BEFORE the
+    // seeded PHAST + topology pipeline. An unauthenticated
+    // `Accept: application/octet-stream` + `contours=a,b` (or
+    // `uncertainty=bands`) used to pay for a full isochrone it was never
+    // going to receive.
+    if let Some(err) = wkb_request_rejection(wants_wkb, thresholds.len(), bands_requested) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response();
+    }
+    // WKB serves ONE contour (guarded above) — the others would be computed
     // only to be discarded.
     let requested: Vec<u32> = if wants_wkb {
         thresholds.iter().take(1).map(|&(t, _)| t).collect()
@@ -1282,31 +1296,12 @@ pub async fn isochrone_handler(
         }
     };
 
-    // WKB path (content negotiation)
+    // WKB path (content negotiation). One contour, no bands: guaranteed by
+    // `wkb_request_rejection` above, before any PHAST work (#559).
     if wants_wkb {
-        if bands_requested {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error:
-                        "uncertainty=bands requires the JSON response (Accept: application/json)"
-                            .to_string(),
-                }),
-            )
-                .into_response();
-        }
         use crate::range::contour::ContourResult;
         use crate::range::wkb_stream::encode_polygon_wkb;
 
-        if thresholds.len() > 1 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "WKB only supports single contour. Use JSON for multiple.".to_string(),
-                }),
-            )
-                .into_response();
-        }
         let contour =
             ContourResult::from_polygons(field.topologies.into_iter().next().unwrap_or_default());
         super::region_metrics::record_query(
@@ -1492,6 +1487,28 @@ pub fn build_network_geometry(
             .collect()
     })
     .collect()
+}
+
+/// #559: why a WKB (`Accept: application/octet-stream` / `application/wkb`)
+/// isochrone request cannot be served, decided from PARSED INPUT ALONE so
+/// the handler rejects it before the seeded PHAST + topology pipeline runs.
+/// `None` = serveable. The WKB branch relies on this having run: it serves
+/// exactly one contour and never a band.
+pub(crate) fn wkb_request_rejection(
+    wants_wkb: bool,
+    n_thresholds: usize,
+    bands_requested: bool,
+) -> Option<&'static str> {
+    if !wants_wkb {
+        return None;
+    }
+    if bands_requested {
+        return Some("uncertainty=bands requires the JSON response (Accept: application/json)");
+    }
+    if n_thresholds > 1 {
+        return Some("WKB only supports single contour. Use JSON for multiple.");
+    }
+    None
 }
 
 /// Depart-field frontier (2026-09-03): PHAST labels are HEAD arrivals, so the

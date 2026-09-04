@@ -620,3 +620,441 @@ mod tests {
         Some(result.distance)
     }
 }
+
+/// #559: the WKB guards must be decidable from parsed input alone so the
+/// handler can reject before any PHAST work. This pins the pure guard the
+/// handler calls ABOVE `isochrone_polygons`.
+mod wkb_guard_tests {
+    use crate::server::isochrone_handler::wkb_request_rejection;
+
+    #[test]
+    fn wkb_request_rejection_is_decided_from_parsed_input_alone() {
+        // JSON never rejects here, whatever the contours / bands.
+        assert_eq!(wkb_request_rejection(false, 1, false), None);
+        assert_eq!(wkb_request_rejection(false, 3, true), None);
+        // WKB: one contour, no bands → serveable.
+        assert_eq!(wkb_request_rejection(true, 1, false), None);
+        // WKB + several contours → 400, message unchanged.
+        assert_eq!(
+            wkb_request_rejection(true, 2, false),
+            Some("WKB only supports single contour. Use JSON for multiple.")
+        );
+        // WKB + bands → 400 (bands win over the contour count, as before).
+        assert_eq!(
+            wkb_request_rejection(true, 1, true),
+            Some("uncertainty=bands requires the JSON response (Accept: application/json)")
+        );
+        assert_eq!(
+            wkb_request_rejection(true, 2, true),
+            Some("uncertainty=bands requires the JSON response (Accept: application/json)")
+        );
+    }
+
+    /// #559 is an ORDER defect, not a logic one: before the hoist the two
+    /// guards sat inside the `if wants_wkb` block AFTER `isochrone_polygons`,
+    /// so an unauthenticated 400 still paid a full seeded PHAST + contour
+    /// topology. Only the handler's own source can witness that order without
+    /// a loaded `ServerState` (which needs a built Belgium container, i.e. not
+    /// a unit test): assert the guard call precedes the pipeline call. Move
+    /// the guard back down and this fails.
+    #[test]
+    fn wkb_guard_runs_before_the_phast_pipeline() {
+        const HANDLER: &str = include_str!("isochrone_handler.rs");
+        let guard = HANDLER
+            .find("if let Some(err) = wkb_request_rejection(")
+            .expect("isochrone_handler calls wkb_request_rejection");
+        let pipeline = HANDLER
+            .find("let field = match isochrone_polygons(")
+            .expect("isochrone_handler runs the isochrone_polygons pipeline");
+        assert!(
+            guard < pipeline,
+            "#559: the WKB guard (byte {guard}) must run BEFORE the seeded \
+             PHAST + topology pipeline (byte {pipeline})"
+        );
+        assert_eq!(
+            HANDLER.matches("wkb_request_rejection(").count(),
+            2,
+            "exactly one definition and one call site — no second copy"
+        );
+    }
+}
+
+/// #558: `depart_frontier` is the ONE definition of "which unreached edge is
+/// entered before T, and how far" for the polygon stamp, `include=network`,
+/// `/isochrone/bulk`, Flight `isochrone` and the catchment hull. A synthetic
+/// 6-edge CCH with hand-computed labels pins its arithmetic and invariants.
+///
+/// Reach model (`geometry.rs::ReachModel`): a PHAST label is the arrival at
+/// the HEAD of the directed edge; an original CCH arc `e→f` weighs
+/// `w(f) + turn(e,f)`; so `f` is entered at `label(e) + w_arc − w(f)`.
+mod depart_frontier_tests {
+    use std::borrow::Cow;
+
+    use crate::formats::{
+        ArcCow, BitsetField, CchTopo, CchWeights, EbgNode, EbgNodes, EdgeGeomOffsets,
+        EdgeGeomPoints, WeightArray,
+    };
+    use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
+    use crate::profile_abi::Mode;
+    use crate::server::edge_geom::EdgeGeometry;
+    use crate::server::geometry::{ReachModel, reachable_polylines};
+    use crate::server::isochrone_handler::depart_frontier;
+    use crate::server::state::ModeData;
+
+    /// Edge weights `w(e)` by ORIGINAL EBG id. `e0` is the origin edge.
+    const W: [u32; 6] = [10, 40, 100, 30, 50, 200];
+
+    /// Original CCH arcs `(from, to, w_arc = w(to) + turn)` by original id:
+    ///   e0→e1 turn 5, e0→e2 turn 0, e1→e3 turn 10, e1→e4 turn 0,
+    ///   e1→e5 turn 60, e2→e4 turn 20, e2→e5 turn 0, e3→e5 turn 0.
+    const ARCS: [(u32, u32, u32); 8] = [
+        (0, 1, 45),
+        (0, 2, 100),
+        (1, 3, 40),
+        (1, 4, 50),
+        (1, 5, 260),
+        (2, 4, 70),
+        (2, 5, 200),
+        (3, 5, 200),
+    ];
+
+    /// Depart field seeded with `label(e0) = 6` (remainder of the origin
+    /// edge past the snap), head arrivals:
+    ///   e1 = 6+45 = 51, e2 = 6+100 = 106, e3 = 51+40 = 91,
+    ///   e4 = min(51+50, 106+70) = 101, e5 = min(91+200, 51+260, 106+200) = 291.
+    const LABEL: [u32; 6] = [6, 51, 106, 91, 101, 291];
+
+    /// rank → filtered → original. Deliberately NON-identity and
+    /// non-involutive so a swapped lookup cannot pass by coincidence. The
+    /// resulting ranks: e0=0, e3=1, e4=2, e5=3, e1=4, e2=5 — so e0→e1 and
+    /// e0→e2 are UP arcs, e1→e3 / e1→e4 / e2→e4 are DOWN arcs.
+    const RANK_TO_FILTERED: [u32; 6] = [1, 5, 4, 2, 3, 0];
+    const FILTERED_TO_ORIGINAL: [u32; 6] = [2, 0, 5, 1, 4, 3];
+
+    fn rank_of(orig: u32) -> u32 {
+        (0..6u32)
+            .find(|&r| FILTERED_TO_ORIGINAL[RANK_TO_FILTERED[r as usize] as usize] == orig)
+            .expect("every original id has a rank")
+    }
+
+    /// CSR over `edges = (source rank, target rank, weight)`.
+    fn csr(edges: &[(u32, u32, u32)]) -> (Vec<u64>, Vec<u32>, Vec<u32>) {
+        let mut sorted = edges.to_vec();
+        sorted.sort_unstable();
+        let mut offsets = vec![0u64; 7];
+        for &(s, _, _) in &sorted {
+            offsets[s as usize + 1] += 1;
+        }
+        for i in 0..6 {
+            offsets[i + 1] += offsets[i];
+        }
+        let targets = sorted.iter().map(|&(_, t, _)| t).collect();
+        let weights = sorted.iter().map(|&(_, _, w)| w).collect();
+        (offsets, targets, weights)
+    }
+
+    /// The fixture as a real `ModeData`: flats built by the production
+    /// builders from a `CchTopo` + `CchWeights`, so the test exercises the
+    /// same rank-indexed UP / forward-DOWN adjacency `depart_frontier` scans
+    /// in serve.
+    fn fixture() -> ModeData {
+        let mut up_edges = Vec::new();
+        let mut down_edges = Vec::new();
+        for &(a, b, w) in &ARCS {
+            let (ra, rb) = (rank_of(a), rank_of(b));
+            if rb > ra {
+                up_edges.push((ra, rb, w));
+            } else {
+                down_edges.push((ra, rb, w));
+            }
+        }
+        assert_eq!(up_edges.len(), 3, "fixture has 3 UP arcs");
+        assert_eq!(down_edges.len(), 5, "fixture has 5 DOWN arcs");
+        let (up_off, up_tg, up_w) = csr(&up_edges);
+        let (dn_off, dn_tg, dn_w) = csr(&down_edges);
+        let topo = CchTopo {
+            n_nodes: 6,
+            n_shortcuts: 0,
+            n_original_arcs: ARCS.len() as u64,
+            inputs_sha: [0u8; 32],
+            up_offsets: up_off.into(),
+            up_targets: up_tg.clone().into(),
+            up_is_shortcut: BitsetField::from_bools(&vec![false; up_tg.len()]),
+            up_middle: vec![u32::MAX; up_tg.len()].into(),
+            down_offsets: dn_off.into(),
+            down_targets: dn_tg.clone().into(),
+            down_is_shortcut: BitsetField::from_bools(&vec![false; dn_tg.len()]),
+            down_middle: vec![u32::MAX; dn_tg.len()].into(),
+            rank_to_filtered: RANK_TO_FILTERED.to_vec().into(),
+        };
+        let weights = CchWeights {
+            up: WeightArray::from_vec_u32(up_w),
+            down: WeightArray::from_vec_u32(dn_w),
+            up_middle: ArcCow::from_vec(Vec::new()),
+            down_middle: ArcCow::from_vec(Vec::new()),
+        };
+        let up_adj_flat = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat = DownReverseAdjFlat::build(&topo, &weights);
+        let down_adj_flat = DownAdjFlat::build(&topo, &weights);
+        let up_adj_flat_dist = UpAdjFlat::build(&topo, &weights);
+        let down_rev_flat_dist = DownReverseAdjFlat::build(&topo, &weights);
+        let orig_to_rank: Vec<u32> = (0..6u32).map(rank_of).collect();
+        ModeData {
+            mode: Mode::from_u8(0),
+            cch_topo: topo,
+            cch_weights: weights.clone(),
+            cch_weights_dist: weights,
+            cch_weights_len_along_time: None,
+            orig_to_rank: ArcCow::from_vec(orig_to_rank),
+            filtered_to_original: ArcCow::from_vec(FILTERED_TO_ORIGINAL.to_vec()),
+            n_filtered_nodes: 6,
+            n_original_nodes: 6,
+            node_weights: Cow::Owned(W.to_vec()),
+            mask: vec![0b11_1111],
+            has_outbound: vec![0b11_1111],
+            has_inbound: vec![0b11_1111],
+            up_adj_flat,
+            down_rev_flat,
+            down_adj_flat,
+            up_adj_flat_dist,
+            down_rev_flat_dist,
+            up_adj_flat_len_along_time: None,
+            down_rev_flat_len_along_time: None,
+            down_adj_flat_len_along_time_lazy: std::sync::OnceLock::new(),
+            exclude_cache: crate::server::exclude::ExcludeWeightCache::default(),
+        }
+    }
+
+    /// The PHAST output shape: `(rank, label)` for every settled node, in a
+    /// deliberately scrambled order (the frontier must not depend on it).
+    fn settled_ranks() -> Vec<(u32, u32)> {
+        [4u32, 0, 5, 2, 1, 3]
+            .iter()
+            .map(|&o| (rank_of(o), LABEL[o as usize]))
+            .collect()
+    }
+
+    fn frontier(md: &ModeData, threshold: u32) -> Vec<(u32, f32)> {
+        depart_frontier(
+            &settled_ranks(),
+            threshold,
+            &md.up_adj_flat,
+            &md.down_adj_flat,
+            md,
+            &md.node_weights,
+        )
+    }
+
+    /// The served fraction, computed exactly as the engine does.
+    fn frac(threshold: u32, entry: u32, wf: u32) -> f32 {
+        (threshold - entry) as f32 / wf as f32
+    }
+
+    #[test]
+    fn depart_frontier_entry_is_label_plus_arc_minus_edge_weight_for_up_and_down_arcs() {
+        let md = fixture();
+        // T = 95: reached e0 (6), e1 (51), e3 (91). Unreached successors:
+        //   e2 via the UP arc e0→e2:   entry = 6 + 100 − 100 = 6
+        //   e4 via the DOWN arc e1→e4: entry = 51 + 50 − 50 = 51
+        //   e5 via the UP arc e3→e5:   entry = 91 + 200 − 200 = 91
+        //   (e1→e5 would enter at 51 + 60 = 111 > T: not a candidate)
+        assert_eq!(
+            frontier(&md, 95),
+            vec![
+                (2, frac(95, 6, 100)),
+                (4, frac(95, 51, 50)),
+                (5, frac(95, 91, 200)),
+            ]
+        );
+        // Turn penalties are part of the entry: T = 90 leaves e3 (91)
+        // unreached, entered from e1 at 51 + 10 = 61 (NOT 51).
+        assert_eq!(
+            frontier(&md, 90),
+            vec![
+                (2, frac(90, 6, 100)),
+                (3, frac(90, 61, 30)),
+                (4, frac(90, 51, 50)),
+            ]
+        );
+    }
+
+    #[test]
+    fn depart_frontier_excludes_arcs_entered_at_or_after_the_budget() {
+        let md = fixture();
+        // T = 91: e5 is entered at 91 from e3 (== T) and at 111 from e1
+        // (> T): zero metres driven before T — not a frontier edge.
+        let f = frontier(&md, 91);
+        assert!(
+            f.iter().all(|&(o, _)| o != 5),
+            "e5 entered at/after T must be absent: {f:?}"
+        );
+        assert_eq!(f, vec![(2, frac(91, 6, 100)), (4, frac(91, 51, 50))]);
+        // T = 56: e3's only reached predecessor enters it at 61 > 56.
+        let f = frontier(&md, 56);
+        assert_eq!(f, vec![(2, frac(56, 6, 100)), (4, frac(56, 51, 50))]);
+    }
+
+    #[test]
+    fn depart_frontier_never_reports_a_reached_successor() {
+        let md = fixture();
+        // T = 300: everything is reached (e5 at 291). The arc e2→e5 alone
+        // would say "arrives 306 > T, entered at 106 < T" — but e5 IS
+        // reached through e3, so it is a whole edge, not a frontier edge.
+        assert_eq!(frontier(&md, 300), Vec::<(u32, f32)>::new());
+        // T = 95: e1 and e3 are reached successors of e0 / e1.
+        let f = frontier(&md, 95);
+        assert!(
+            f.iter().all(|&(o, _)| o != 0 && o != 1 && o != 3),
+            "reached edges must never be frontier: {f:?}"
+        );
+    }
+
+    #[test]
+    fn depart_frontier_takes_the_minimum_entry_over_reached_predecessors() {
+        let md = fixture();
+        // T = 150: e5 (291) is unreached with THREE reached predecessors —
+        // e1 (entry 111, DOWN arc), e2 (entry 106, DOWN arc), e3 (entry 91,
+        // UP arc). The earliest entry wins, whatever the scan order.
+        assert_eq!(frontier(&md, 150), vec![(5, frac(150, 91, 200))]);
+        let mut reversed = settled_ranks();
+        reversed.reverse();
+        let f = depart_frontier(
+            &reversed,
+            150,
+            &md.up_adj_flat,
+            &md.down_adj_flat,
+            &md,
+            &md.node_weights,
+        );
+        assert_eq!(f, vec![(5, frac(150, 91, 200))]);
+    }
+
+    /// Issue #558 invariant, brute-forced from the arc list for every
+    /// threshold: for each reported `(f, fraction)`, `label(f) > T`,
+    /// `0 < fraction < 1`, and the entry is the minimum over reached
+    /// predecessors `e` of `label(e) + w_arc(e→f) − w(f)`, kept only if `< T`.
+    #[test]
+    fn depart_frontier_matches_a_brute_force_reference_for_every_threshold() {
+        let md = fixture();
+        for t in 0..=320u32 {
+            let reached = |o: u32| LABEL[o as usize] <= t;
+            let mut best: std::collections::BTreeMap<u32, u32> = Default::default();
+            for &(a, b, w) in &ARCS {
+                if !reached(a) || reached(b) {
+                    continue;
+                }
+                let entry = LABEL[a as usize] + w - W[b as usize];
+                if entry >= t {
+                    continue;
+                }
+                best.entry(b)
+                    .and_modify(|e| *e = (*e).min(entry))
+                    .or_insert(entry);
+            }
+            let expected: Vec<(u32, f32)> = best
+                .iter()
+                .map(|(&b, &entry)| (b, frac(t, entry, W[b as usize])))
+                .collect();
+            let got = frontier(&md, t);
+            assert_eq!(got, expected, "T = {t}");
+            for &(f, fraction) in &got {
+                assert!(LABEL[f as usize] > t, "T = {t}: e{f} is reached");
+                assert!(
+                    fraction > 0.0 && fraction < 1.0,
+                    "T = {t}: e{f} fraction {fraction}"
+                );
+            }
+        }
+    }
+
+    /// Same fixture through `reachable_polylines` (the sole caller's
+    /// consumer): whole reached edges, then the frontier edges cut at the
+    /// served fraction — from their TRUE start (an endpoint of a reached
+    /// edge), even when the stored polyline runs the other way.
+    #[test]
+    fn reachable_polylines_cuts_the_frontier_edge_at_the_served_fraction() {
+        const LON0: i32 = 40_000_000;
+        const LAT0: i32 = 500_000_000;
+        // Stored polylines `(lon_e7, lat_e7)` by original id. e2 is stored
+        // REVERSED (its last point is e0's head); everything else forward.
+        let polylines: [[(i32, i32); 2]; 6] = [
+            [(LON0, LAT0), (LON0 + 100, LAT0)],
+            [(LON0 + 100, LAT0), (LON0 + 200, LAT0)],
+            [(LON0 + 100, LAT0 + 1000), (LON0 + 100, LAT0)],
+            [(LON0 + 200, LAT0), (LON0 + 300, LAT0)],
+            [(LON0 + 200, LAT0), (LON0 + 200, LAT0 + 1000)],
+            [(LON0 + 300, LAT0), (LON0 + 300, LAT0 + 1000)],
+        ];
+        let mut flat = Vec::new();
+        for pl in &polylines {
+            for &(lon, lat) in pl {
+                flat.push(lon);
+                flat.push(lat);
+            }
+        }
+        let geom = EdgeGeometry::from_sections(
+            EdgeGeomOffsets {
+                n_edges: 6,
+                n_points: 12,
+                offsets: ArcCow::from_vec((0..=6u32).map(|i| i * 2).collect()),
+            },
+            EdgeGeomPoints {
+                n_points: 12,
+                bbox_min_lon: LON0,
+                bbox_min_lat: LAT0,
+                bbox_max_lon: LON0 + 300,
+                bbox_max_lat: LAT0 + 1000,
+                points: ArcCow::from_vec(flat),
+            },
+        )
+        .unwrap();
+        let ebg = EbgNodes {
+            n_nodes: 6,
+            created_unix: 0,
+            inputs_sha: [0u8; 32],
+            nodes: ArcCow::from_vec(
+                (0..6u32)
+                    .map(|i| EbgNode {
+                        tail_nbg: i,
+                        head_nbg: i + 1,
+                        geom_idx: i,
+                        length_m: 1,
+                        class_bits: 0,
+                        primary_way: 0,
+                    })
+                    .collect(),
+            ),
+        };
+
+        let md = fixture();
+        // T = 56: whole e0 (6), e1 (51); frontier e2 at (56−6)/100 = 0.5
+        // and e4 at (56−51)/50 = 0.1; e3 (entry 61) and e5 are out.
+        let front = frontier(&md, 56);
+        assert_eq!(front, vec![(2, 0.5), (4, frac(56, 51, 50))]);
+
+        let settled_orig: Vec<(u32, u32)> = (0..6u32).map(|o| (o, LABEL[o as usize])).collect();
+        let (out, anchor) = reachable_polylines(
+            &settled_orig,
+            56,
+            &W,
+            &ebg,
+            &geom,
+            &ReachModel::Depart { frontier: &front },
+            true,
+        );
+        // Lat-first e7, whole edges first (settled order), then the frontier
+        // fragments (frontier order).
+        assert_eq!(
+            out,
+            vec![
+                vec![(LAT0, LON0), (LAT0, LON0 + 100)],
+                vec![(LAT0, LON0 + 100), (LAT0, LON0 + 200)],
+                // e2: reversed to start at e0's head, then cut at 0.5
+                vec![(LAT0, LON0 + 100), (LAT0 + 500, LON0 + 100)],
+                // e4: stored forward from e1's head, cut at 0.1
+                vec![(LAT0, LON0 + 200), (LAT0 + 100, LON0 + 200)],
+            ]
+        );
+        assert_eq!(anchor, Some((LAT0, LON0)), "start of the min-label edge");
+    }
+}
