@@ -169,45 +169,6 @@ impl ModeIndexFile {
         })
     }
 
-    /// Zero-copy reader for `'static` byte slices (test fixtures that
-    /// leak a `Box<[u8]>`). Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct.
-    ///
-    /// CRCs are verified before returning.
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<ModeIndex> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee bytes have already
-    /// been verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<ModeIndex> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
-    fn read_from_bytes_zero_copy_inner(bytes: &'static [u8], verify: bool) -> Result<ModeIndex> {
-        let (kind, mode, inputs_sha, _count, body) = parse_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            body.as_ptr() as usize % 4,
-            0,
-            "ModeIndex body must be 4-byte aligned"
-        );
-        // Test fixtures use this path — copy the body into a `Vec<u32>`
-        // and wrap it in `ArcCow::Owned`. The `bytes: &'static [u8]`
-        // lifetime here means the caller leaked the buffer (typically
-        // `Box::leak` in a `#[cfg(test)]` block); we don't carry that
-        // leak into production storage. Production goes through
-        // [`Self::read_from_mmap_unverified`].
-        let data_slice: &[u32] = bytemuck::cast_slice(body);
-        Ok(ModeIndex {
-            kind,
-            mode,
-            inputs_sha,
-            data: ArcCow::from_vec(data_slice.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>` clone
     /// for the returned struct's lifetime — when the struct drops, the
     /// strong count decreases. Once all clones drop, the `Mmap` drops,
@@ -416,25 +377,6 @@ mod tests {
         let res = ModeIndexFile::read_from_bytes(&bytes);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("Invalid magic"));
-    }
-
-    #[test]
-    fn zero_copy_matches_owned() {
-        let original = ModeIndex {
-            kind: ModeIndexKind::FilteredToOriginal,
-            mode: 3,
-            inputs_sha: [0xDE; 16],
-            data: ArcCow::from_vec((0..256u32).map(|x| x.wrapping_mul(7)).collect()),
-        };
-        let bytes = ModeIndexFile::encode(&original);
-        // Leak to get 'static lifetime for zero-copy reader.
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let owned = ModeIndexFile::read_from_bytes(leaked).expect("read owned");
-        let zerocopy = ModeIndexFile::read_from_bytes_zero_copy(leaked).expect("read zero-copy");
-        assert_eq!(owned.kind, zerocopy.kind);
-        assert_eq!(owned.mode, zerocopy.mode);
-        assert_eq!(owned.inputs_sha, zerocopy.inputs_sha);
-        assert_eq!(owned.data.as_slice(), zerocopy.data.as_slice());
     }
 
     #[test]

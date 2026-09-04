@@ -136,48 +136,6 @@ impl EdgeGeomOffsetsFile {
         })
     }
 
-    /// Legacy zero-copy reader for a `'static` byte slice. Test fixtures
-    /// that leak a `Box<[u8]>` still use this path; it now copies the
-    /// body into a `Vec<u32>` and wraps it in `ArcCow::Owned`.
-    /// Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomOffsets> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee the bytes are
-    /// already verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EdgeGeomOffsets> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
-    fn read_from_bytes_zero_copy_inner(
-        bytes: &'static [u8],
-        verify: bool,
-    ) -> Result<EdgeGeomOffsets> {
-        let parsed = parse_offsets_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            parsed.body.as_ptr() as usize % 4,
-            0,
-            "edge_geom_offsets body must be 4-byte aligned for &[u32]"
-        );
-        // Cast the borrowed body bytes to `&[u32]`, then copy into a
-        // Vec wrapped in `ArcCow::Owned`. The legacy zero-copy entry
-        // point is now Owned because the `'static` lifetime came from a
-        // `Box::leak` in test fixtures — we don't carry that leak into
-        // production storage. Production goes through
-        // [`Self::read_from_mmap_unverified`].
-        let off_slice: &[u32] = bytemuck::cast_slice(parsed.body);
-        sanity_check_offsets(off_slice, parsed.n_points)?;
-        Ok(EdgeGeomOffsets {
-            n_edges: parsed.n_edges,
-            n_points: parsed.n_points,
-            offsets: ArcCow::from_vec(off_slice.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases. Once all clones drop, the
@@ -392,44 +350,6 @@ impl EdgeGeomPointsFile {
         })
     }
 
-    /// Legacy zero-copy reader for a `'static` byte slice. Test
-    /// fixtures that leak a `Box<[u8]>` still use this path; it now
-    /// copies the body into a `Vec<i32>` and wraps it in
-    /// `ArcCow::Owned`. Production loaders should use
-    /// [`Self::read_from_mmap_unverified`] which keeps the
-    /// `Arc<Mmap>` strong-count tied to the returned struct (#296).
-    pub fn read_from_bytes_zero_copy(bytes: &'static [u8]) -> Result<EdgeGeomPoints> {
-        Self::read_from_bytes_zero_copy_inner(bytes, true)
-    }
-
-    /// Same as [`Self::read_from_bytes_zero_copy`] but elides the CRC
-    /// walk over the body. Caller MUST guarantee the bytes are
-    /// already verified upstream.
-    pub fn read_from_bytes_zero_copy_unverified(bytes: &'static [u8]) -> Result<EdgeGeomPoints> {
-        Self::read_from_bytes_zero_copy_inner(bytes, false)
-    }
-
-    fn read_from_bytes_zero_copy_inner(
-        bytes: &'static [u8],
-        verify: bool,
-    ) -> Result<EdgeGeomPoints> {
-        let parsed = parse_points_header_and_check(bytes, verify)?;
-        debug_assert_eq!(
-            parsed.body.as_ptr() as usize % 4,
-            0,
-            "edge_geom_points body must be 4-byte aligned for &[i32]"
-        );
-        let pts: &[i32] = bytemuck::cast_slice(parsed.body);
-        Ok(EdgeGeomPoints {
-            n_points: parsed.n_points,
-            bbox_min_lon: parsed.bbox_min_lon,
-            bbox_min_lat: parsed.bbox_min_lat,
-            bbox_max_lon: parsed.bbox_max_lon,
-            bbox_max_lat: parsed.bbox_max_lat,
-            points: ArcCow::from_vec(pts.to_vec()),
-        })
-    }
-
     /// Production mmap-backed reader (#296). Holds an `Arc<Mmap>`
     /// clone for the returned struct's lifetime — when the struct
     /// drops, the strong count decreases. Once all clones drop, the
@@ -616,13 +536,27 @@ mod tests {
     }
 
     #[test]
-    fn offsets_zero_copy_matches_owned() {
+    fn offsets_mmap_matches_owned() -> Result<()> {
         let original = sample_offsets();
         let bytes = EdgeGeomOffsetsFile::encode(&original);
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let owned = EdgeGeomOffsetsFile::read_from_bytes(leaked).expect("owned");
-        let zc = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.offsets.as_slice(), zc.offsets.as_slice());
+        let owned = EdgeGeomOffsetsFile::read_from_bytes(&bytes).expect("owned");
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let mapped =
+            EdgeGeomOffsetsFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        assert_eq!(owned.offsets.as_slice(), mapped.offsets.as_slice());
+        assert_eq!(owned.n_edges, mapped.n_edges);
+        assert_eq!(owned.n_points, mapped.n_points);
+        // The production reader is genuinely zero-copy and keeps the
+        // mapping alive for exactly as long as the struct lives.
+        assert!(matches!(mapped.offsets, ArcCow::Mmap { .. }));
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        drop(mapped);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
     }
 
     #[test]
@@ -646,18 +580,21 @@ mod tests {
     }
 
     #[test]
-    fn offsets_bad_magic_rejected_zero_copy_path() {
+    fn offsets_bad_magic_rejected_mmap_path() -> Result<()> {
         let original = sample_offsets();
         let mut bytes = EdgeGeomOffsetsFile::encode(&original);
         bytes[0] ^= 0xFF;
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let r = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(leaked);
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let r = EdgeGeomOffsetsFile::read_from_mmap_unverified(mmap, 0, bytes.len());
         assert!(r.is_err());
         assert!(r.unwrap_err().to_string().contains("Invalid magic"));
+        Ok(())
     }
 
     #[test]
-    fn offsets_bad_version_rejected_both_paths() {
+    fn offsets_bad_version_rejected_both_paths() -> Result<()> {
         let original = sample_offsets();
         let mut bytes = EdgeGeomOffsetsFile::encode(&original);
         // Stomp version (bytes 4..6).
@@ -671,15 +608,18 @@ mod tests {
                 .to_string()
                 .contains("Unsupported edge_geom_offsets version")
         );
-        // Zero-copy
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let r = EdgeGeomOffsetsFile::read_from_bytes_zero_copy(leaked);
+        // Mmap
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let r = EdgeGeomOffsetsFile::read_from_mmap_unverified(mmap, 0, bytes.len());
         assert!(r.is_err());
         assert!(
             r.unwrap_err()
                 .to_string()
                 .contains("Unsupported edge_geom_offsets version")
         );
+        Ok(())
     }
 
     #[test]
@@ -736,13 +676,26 @@ mod tests {
     }
 
     #[test]
-    fn points_zero_copy_matches_owned() {
+    fn points_mmap_matches_owned() -> Result<()> {
         let original = sample_points();
         let bytes = EdgeGeomPointsFile::encode(&original);
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let owned = EdgeGeomPointsFile::read_from_bytes(leaked).expect("owned");
-        let zc = EdgeGeomPointsFile::read_from_bytes_zero_copy(leaked).expect("zc");
-        assert_eq!(owned.points.as_slice(), zc.points.as_slice());
+        let owned = EdgeGeomPointsFile::read_from_bytes(&bytes).expect("owned");
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let strong_before = Arc::strong_count(&mmap);
+        let mapped =
+            EdgeGeomPointsFile::read_from_mmap_unverified(Arc::clone(&mmap), 0, bytes.len())?;
+        assert_eq!(owned.points.as_slice(), mapped.points.as_slice());
+        assert_eq!(owned.n_points, mapped.n_points);
+        assert_eq!(owned.bbox_min_lon, mapped.bbox_min_lon);
+        assert_eq!(owned.bbox_max_lat, mapped.bbox_max_lat);
+        assert!(matches!(mapped.points, ArcCow::Mmap { .. }));
+        assert!(Arc::strong_count(&mmap) > strong_before);
+        drop(mapped);
+        assert_eq!(Arc::strong_count(&mmap), strong_before);
+        Ok(())
     }
 
     #[test]
@@ -756,21 +709,24 @@ mod tests {
     }
 
     #[test]
-    fn points_bad_magic_rejected_both_paths() {
+    fn points_bad_magic_rejected_both_paths() -> Result<()> {
         let original = sample_points();
         let mut bytes = EdgeGeomPointsFile::encode(&original);
         bytes[0] ^= 0xFF;
         let r = EdgeGeomPointsFile::read_from_bytes(&bytes);
         assert!(r.is_err());
         assert!(r.unwrap_err().to_string().contains("Invalid magic"));
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let r = EdgeGeomPointsFile::read_from_bytes_zero_copy(leaked);
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let r = EdgeGeomPointsFile::read_from_mmap_unverified(mmap, 0, bytes.len());
         assert!(r.is_err());
         assert!(r.unwrap_err().to_string().contains("Invalid magic"));
+        Ok(())
     }
 
     #[test]
-    fn points_bad_version_rejected_both_paths() {
+    fn points_bad_version_rejected_both_paths() -> Result<()> {
         let original = sample_points();
         let mut bytes = EdgeGeomPointsFile::encode(&original);
         bytes[4] = 99;
@@ -782,14 +738,17 @@ mod tests {
                 .to_string()
                 .contains("Unsupported edge_geom_points version")
         );
-        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let r = EdgeGeomPointsFile::read_from_bytes_zero_copy(leaked);
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), &bytes)?;
+        let mmap = super::super::mmap::map_readonly(tmp.path())?;
+        let r = EdgeGeomPointsFile::read_from_mmap_unverified(mmap, 0, bytes.len());
         assert!(r.is_err());
         assert!(
             r.unwrap_err()
                 .to_string()
                 .contains("Unsupported edge_geom_points version")
         );
+        Ok(())
     }
 
     #[test]
