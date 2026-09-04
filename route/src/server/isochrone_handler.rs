@@ -392,16 +392,20 @@ pub async fn isochrone_handler(
 
     let mode_data = state.get_mode(mode);
 
-    // Compute avoid weights (includes exclude if both present)
-    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-            }
+    // #566: one resolution of exclude + avoid_polygons — the cached avoid
+    // weights, the snap mask (BORROWED when neither option is present)
+    // and the avoid-over-exclude priority.
+    let weight_plan = match super::avoid::resolve_weights(
+        &state,
+        &mode_data,
+        mode,
+        exclude_mask,
+        avoid_json.as_deref(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
-    } else {
-        None
     };
 
     // Parse include parameter
@@ -418,44 +422,16 @@ pub async fn isochrone_handler(
         .map(|s| s.contains("application/octet-stream") || s.contains("application/wkb"))
         .unwrap_or(false);
 
-    // Build snap mask (with optional avoid/exclude filtering)
-    let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
-        std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
-            &mode_data.mask,
-            &entry.flags,
-            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
-        ))
-    } else if let Some(exc) = exclude_mask {
-        std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
-            &mode_data.mask,
-            &state.edge_exclude_flags,
-            exc,
-        ))
-    } else {
-        std::borrow::Cow::Borrowed(&mode_data.mask)
-    };
+    let snap_mask: &[u64] = &weight_plan.snap_mask;
 
-    // Recustomized weights (avoid takes priority, then exclude). `Some`
+    // Recustomized flats (avoid takes priority, then exclude). `Some`
     // also selects the LEGACY single seed inside the core: phantom partial
     // costs assume base weights.
-    let exclude_weights = if avoid_entry.is_none() {
-        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
-    } else {
-        None
-    };
-    let flats = if let Some(ref entry) = avoid_entry {
-        Some(IsochroneFlats {
-            up: &entry.weights.time_up_flat,
-            down_fwd: &entry.weights.time_down_fwd_flat,
-            down_rev: &entry.weights.time_down_flat,
-        })
-    } else {
-        exclude_weights.as_ref().map(|ew| IsochroneFlats {
-            up: &ew.time_up_flat,
-            down_fwd: &ew.time_down_fwd_flat,
-            down_rev: &ew.time_down_flat,
-        })
-    };
+    let flats = weight_plan.weights().map(|w| IsochroneFlats {
+        up: &w.time_up_flat,
+        down_fwd: &w.time_down_fwd_flat,
+        down_rev: &w.time_down_flat,
+    });
 
     // Build list of thresholds with their labels. All time-based after #371.
     let thresholds: Vec<(u32, Option<u32>)> = match &metric {
@@ -497,7 +473,7 @@ pub async fn isochrone_handler(
             thresholds: &requested,
             reverse,
             mode_name: &req.mode,
-            snap_mask: Some(&snap_mask),
+            snap_mask: Some(snap_mask),
             flats,
             include_network: include_network && !wants_wkb,
         },
@@ -929,55 +905,32 @@ fn isochrone_bulk_sync(
     // Weights and thresholds are both seconds (post-#297).
     let time_s = req.time_s;
 
-    // Compute avoid weights (includes exclude if both present)
-    let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-        match super::avoid::compute_avoid_weights(&state, &mode_data, avoid_str, exclude_mask) {
-            Ok(entry) => Some(entry),
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
-            }
+    // #566: one resolution of exclude + avoid_polygons. #561: the snap
+    // mask is BORROWED when neither option is present — /isochrone/bulk
+    // used to clone the whole edge bitset on every request.
+    let weight_plan = match super::avoid::resolve_weights(
+        &state,
+        &mode_data,
+        mode,
+        exclude_mask,
+        avoid_json.as_deref(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
         }
-    } else {
-        None
     };
-
-    // Get exclude weights if only exclude (no avoid)
-    let exclude_weights = if avoid_entry.is_none() {
-        exclude_mask.map(|exc| state.get_exclude_weights(mode, exc))
-    } else {
-        None
-    };
-
-    // Build snap mask
-    let snap_mask: Vec<u64> = if let Some(ref entry) = avoid_entry {
-        super::avoid::build_avoid_mask(
-            &mode_data.mask,
-            &entry.flags,
-            exclude_mask.map(|exc| (state.edge_exclude_flags.as_slice(), exc)),
-        )
-    } else if let Some(exc) = exclude_mask {
-        super::exclude::build_exclude_mask(&mode_data.mask, &state.edge_exclude_flags, exc)
-    } else {
-        mode_data.mask.clone()
-    };
+    let snap_mask: &[u64] = &weight_plan.snap_mask;
 
     // Recustomized flats (avoid > exclude). `Some` also selects the legacy
     // single seed inside the core — phantom partials assume base weights.
     // Bulk is depart-only, so `down_rev` is never read; it is carried so the
     // one query shape serves every surface.
-    let flats = if let Some(ref entry) = avoid_entry {
-        Some(IsochroneFlats {
-            up: &entry.weights.time_up_flat,
-            down_fwd: &entry.weights.time_down_fwd_flat,
-            down_rev: &entry.weights.time_down_flat,
-        })
-    } else {
-        exclude_weights.as_ref().map(|ew| IsochroneFlats {
-            up: &ew.time_up_flat,
-            down_fwd: &ew.time_down_fwd_flat,
-            down_rev: &ew.time_down_flat,
-        })
-    };
+    let flats = weight_plan.weights().map(|w| IsochroneFlats {
+        up: &w.time_up_flat,
+        down_fwd: &w.time_down_fwd_flat,
+        down_rev: &w.time_down_flat,
+    });
 
     // Bulk isochrones are depart-only (no `direction` field), so origins
     // act as sources.
@@ -1001,7 +954,7 @@ fn isochrone_bulk_sync(
                     thresholds: &thresholds,
                     reverse: false,
                     mode_name: &req.mode,
-                    snap_mask: Some(&snap_mask),
+                    snap_mask: Some(snap_mask),
                     flats,
                     include_network: false,
                 },

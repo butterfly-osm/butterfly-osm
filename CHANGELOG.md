@@ -10,6 +10,45 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-04 — One weight plan for the six query surfaces (#566, #561)
+
+`/route`, `/table`, `/trip`, `/isochrone`, `/isochrone/bulk` and `/match` each
+carried a copy of the same four steps: compute (or cache-fetch) the
+`avoid_polygons` recustomization, build the snap mask, pick the `exclude=`
+weight set when avoid is absent, then re-derive the avoid-over-exclude priority
+at every use site. Six copies, and they had drifted.
+
+- **#566 — one `avoid::resolve_weights()`.** It returns a `WeightPlan` holding
+  the four answers, and `WeightPlan::weights()` is the single place the
+  priority rule (avoid wins, because its recustomization already folds the
+  exclude flags in) lives. `build_avoid_mask` and `compute_avoid_weights` are
+  now private to `avoid.rs` and `compute_avoid_weights_time_only` — a pure
+  alias — is gone, so the compiler, not a reviewer, is what stops a seventh
+  copy. 335 lines of handler for 229 in one place.
+- **#561 — the 99 % path stops copying the edge bitset.** `WeightPlan.snap_mask`
+  is `Cow::Borrowed(&mode_data.mask)` when neither option is present. `/table`
+  and `/isochrone/bulk` cloned the whole mask on every request — one bit per
+  EBG node, 80 639 words = **630 KiB** on Belgium's 5 160 848 — on the two
+  highest-throughput REST surfaces, while `/route` already borrowed it. (The
+  ticket estimated ~1.5 MB; measured against the artifact it is 630 KiB, and
+  the 1.5 MB section is the snap index's own per-mode mask, not this one.)
+- **Two divergences found between the copies, kept rather than traded away.**
+  `/trip` and `/match` resolve their polygon with a bare `.ok()` inside
+  `spawn_blocking`, so an avoid polygon that covers no edge degrades to a plain
+  query there while the other four answer `400 no edges found inside avoid
+  polygon(s)`; `resolve_weights_lenient_avoid()` keeps that and names it. And
+  `/route` resolved its exclude weights ~400 lines below the mask, after
+  several early returns, so a cold-cache recustomization never ran on those
+  paths — the plan resolves them on FIRST USE (`OnceLock`), which keeps
+  `/route` exactly as lazy as it was and makes the other five lazy too.
+- **Guards.** `snap_mask_is_borrowed_only_when_no_option_filters_it` covers all
+  four option combinations without the artifact;
+  `weight_plan_borrows_the_mode_mask_on_the_common_path` asserts pointer
+  identity with `mode_data.mask`; `every_surface_resolves_the_same_plan` drives
+  the six surfaces as table rows across four parameter combinations; and
+  `only_trip_and_match_ignore_an_unusable_avoid_polygon` pins the divergence
+  above, error string included.
+
 ### 2026-09-04 — Build, images and the dependency graph (#565, #573, #574, #586)
 
 Four KISS-audit tickets that all landed on the same surface: what it costs to
