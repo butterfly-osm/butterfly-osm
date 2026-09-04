@@ -101,10 +101,18 @@ pub fn asset(rel: &str) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// The Belgium routing artifact: a `*.butterfly` container, or the
-/// region directory itself when it holds an unpacked `stepN/` tree.
+/// The Belgium routing artifact: the region directory itself when it holds
+/// an unpacked `stepN/` tree, else a `*.butterfly` container.
+///
+/// The unpacked tree wins when both are present: it supports strictly more
+/// tests (a packed container carries no `step5/filtered.<mode>.ebg`, which
+/// the raw-CSR hop check side-loads), and running more of them is the whole
+/// point of #587.
 pub fn container() -> Option<PathBuf> {
     let root = region_root()?;
+    if root.join("step5").is_dir() {
+        return Some(root);
+    }
     for name in ["baseline.butterfly", "belgium.butterfly"] {
         let p = root.join(name);
         if p.is_file() {
@@ -122,10 +130,7 @@ pub fn container() -> Option<PathBuf> {
         })
         .collect();
     packed.sort();
-    if let Some(first) = packed.into_iter().next() {
-        return Some(first);
-    }
-    root.join("step5").is_dir().then_some(root)
+    packed.into_iter().next()
 }
 
 /// Announce, at most ONCE per `scope` (use the test file's name), that a
@@ -138,7 +143,7 @@ pub fn skip<T>(scope: &str, needs: &str) -> Option<T> {
     let mut seen = skipped_scopes().lock().unwrap_or_else(|e| e.into_inner());
     if seen.insert(scope.to_string()) {
         eprintln!(
-            "SKIP {scope}: no {needs} — set {DATA_DIR_ENV}=<dir> (a directory of \
+            "SKIP {scope}: needs {needs} — set {DATA_DIR_ENV}=<dir> (a directory of \
              region subdirectories, or one region's own directory) to run these"
         );
     }
