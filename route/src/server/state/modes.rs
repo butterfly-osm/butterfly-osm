@@ -17,7 +17,7 @@ use super::{
 use crate::formats::butterfly_dat::Container;
 use crate::formats::snap_index::SnapMask;
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// The per-mode tables the loader builds, kept together because every
 /// registration site has to keep all three in lockstep: `data[i]` is
