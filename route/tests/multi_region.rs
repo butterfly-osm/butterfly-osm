@@ -29,14 +29,10 @@ use butterfly_route::server::regions::{DispatchError, RegionsState};
 use butterfly_route::testutil;
 
 /// One skip line for this whole file (#587).
-struct Skip;
-impl Skip {
-    fn with_be_lu(&self) {
-        let _: Option<()> =
-            testutil::skip("multi_region", "Belgium + Luxembourg .butterfly containers");
-    }
+fn skip_be_lu() {
+    let _: Option<()> =
+        testutil::skip("multi_region", "Belgium + Luxembourg .butterfly containers");
 }
-const SKIP: Skip = Skip;
 
 const BE_CONTAINER: &str = "data/belgium/baseline.butterfly";
 const LU_CONTAINER: &str = "data/luxembourg/luxembourg.butterfly";
@@ -159,7 +155,7 @@ fn manifest_region_id_handles_garbage_fallsback() {
 #[test]
 fn loads_two_regions_from_directory() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -178,7 +174,7 @@ fn loads_two_regions_from_directory() {
 #[test]
 fn region_filter_skips_unrequested_containers() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), Some(&["BE".to_string()]), None)
@@ -192,7 +188,7 @@ fn region_filter_skips_unrequested_containers() {
 #[test]
 fn dispatcher_picks_right_region_for_known_points() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -216,7 +212,7 @@ fn dispatcher_picks_right_region_for_known_points() {
 #[test]
 fn p2p_dispatch_same_region_be_to_be() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -232,7 +228,7 @@ fn p2p_dispatch_same_region_be_to_be() {
 #[test]
 fn p2p_dispatch_same_region_lu_to_lu() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -249,7 +245,7 @@ fn p2p_dispatch_same_region_lu_to_lu() {
 #[test]
 fn p2p_dispatch_cross_region_returns_501() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -314,7 +310,7 @@ fn non_directory_data_dir_is_rejected() {
 #[test]
 fn region_filter_excluding_everything_is_rejected() {
     let Some((be, lu)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let res = RegionsState::load_from_dir(dir.path(), Some(&["FR".to_string()]), None);
@@ -330,7 +326,7 @@ fn region_filter_excluding_everything_is_rejected() {
 #[test]
 fn duplicate_region_id_is_rejected() {
     let Some((be, _)) = container_paths() else {
-        return SKIP.with_be_lu();
+        return skip_be_lu();
     };
     let dir = tempfile::tempdir().expect("tempdir");
     let dst1 = dir.path().join("be1.butterfly");
