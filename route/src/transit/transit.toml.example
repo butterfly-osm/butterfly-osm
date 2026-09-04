@@ -35,39 +35,32 @@ max_access_stops = 20
 # Each [[feeds]] entry describes one operator. `format` defaults to "gtfs".
 # Today the loader supports:
 #
-#   format = "gtfs"        — GTFS static (.zip) — fully implemented
-#   format = "netex-epip"  — NeTEx-EPIP profile (.xml) — pending #101
+#   format = "gtfs"        — GTFS static (.zip)
+#   format = "netex-epip"  — NeTEx-EPIP profile (.xml)
 #
 # A `rt_url` is an optional one-shot GTFS-RT trip-updates snapshot. It is
 # downloaded by `transit-fetch --realtime` and applied once at server
 # startup. There is no realtime polling loop.
-
-# ----- SNCB (Belgian national rail) -----------------------------------------
-[[feeds]]
-id  = "sncb"
-url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
-
-# ----- De Lijn (Flanders bus / tram) ----------------------------------------
-[[feeds]]
-id  = "delijn"
-url = "https://gtfs.irail.be/de-lijn/de_lijn-gtfs.zip"
-
-# ----- TEC (Wallonia bus) ---------------------------------------------------
-[[feeds]]
-id  = "tec"
-url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
-
-# ----- STIB / MIVB (Brussels metro / bus / tram) ----------------------------
 #
-# STIB has deprecated GTFS in favour of NeTEx (the EU-mandated format under
-# Delegated Regulation 2017/1926). All public STIB GTFS endpoints either
-# return 404s or domain-squat HTML masquerading as application/zip.
+# THIS FILE IS AN OVERRIDE, AND WRITING ONE MAKES YOU ITS MAINTAINER.
+# Without it, the feed list comes from the region index shipped with the
+# binary (`dl/regions/<region>.toml`) — the same list `butterfly-dl
+# <region>` fetches, so a URL that moves is corrected in one place. This
+# file used to carry its own copy of the Belgian URLs; two of them rotted
+# and nothing noticed, which is the whole reason the list now has a single
+# home. Copy the entries you actually want to change, not all of them.
 #
-# Once the EPIP NeTEx loader (issue #101) lands, uncomment the block below
-# to enable STIB. The URL is the canonical Belgian National Access Point
-# location for STIB's EPIP file (~722 MB, last updated May 2025).
-#
+# `transit-fetch` fails the run if any listed feed does not download, and
+# names the feed, the URL and this file.
+
+# ----- one operator, overriding the shipped entry ---------------------------
+[[feeds]]
+id     = "sncb"
+url    = "https://example.org/sncb-gtfs.zip"
+format = "gtfs"
+
+# ----- a NeTEx-EPIP publication ---------------------------------------------
 # [[feeds]]
 # id     = "stib"
-# url    = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
+# url    = "https://example.org/stib-epip.xml"
 # format = "netex-epip"

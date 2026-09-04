@@ -153,6 +153,33 @@ pub fn auto_radius_km(sources: &[(f64, f64)], targets: &[(f64, f64)]) -> f64 {
     (p95 * 1.1).min(MAX_AUTO_RADIUS_KM)
 }
 
+/// Largest number of `(source, target)` entries a neighbour mask may hold.
+///
+/// The mask is a `Vec<Vec<u32>>` built up front and kept for the whole
+/// request — on the streamed matrix path it is the ONLY structure that
+/// still scales with `S x T`, because everything else is either tiled or
+/// streamed. Two ordinary-looking requests fill it without limit: a
+/// generous `radius_km` over a large `S x T`, and a per-origin array of
+/// "no filter" entries, each of which materialises every target index for
+/// its origin. Several hundred thousand origins against a few thousand
+/// destinations — the shape the sparse matrix path is documented for —
+/// reaches billions of entries and takes the process down.
+///
+/// 100 million entries is ~400 MB of `u32`. It is far above any radius
+/// that actually prunes (a mask that big is not filtering anything), and
+/// far below an out-of-memory kill on either deployment. Over it, the
+/// request is refused with the count and the limit rather than allocated.
+pub const MAX_NEIGHBOR_ENTRIES: usize = 100_000_000;
+
+/// The refusal, shared so both matrix surfaces word it identically.
+fn neighbor_budget_error(entries: usize, budget: usize) -> String {
+    format!(
+        "radius_km neighbour set too large: over {budget} in-radius (source, target) \
+         pairs (reached {entries}). Reduce radius_km or split the request into \
+         smaller batches"
+    )
+}
+
 /// For each source, return the sorted indices of targets within `radius_km`.
 ///
 /// Coordinates are `(lon, lat)`. The algorithm sorts targets by longitude once,
@@ -164,12 +191,12 @@ pub fn build_neighbors(
     sources: &[(f64, f64)],
     targets: &[(f64, f64)],
     radius_km: f64,
-) -> Vec<Vec<u32>> {
+) -> Result<Vec<Vec<u32>>, String> {
     // Historical scalar contract: an invalid radius filters EVERYTHING (all
     // rows empty). Preserved explicitly so the wrapper can't inherit the
     // per-origin "inf = no filter" semantics (that path is array-only, #531).
     if !radius_km.is_finite() || radius_km <= 0.0 {
-        return vec![Vec::new(); sources.len()];
+        return Ok(vec![Vec::new(); sources.len()]);
     }
     // Otherwise share the single per-origin implementation so the band-search
     // + antimeridian logic lives once.
@@ -186,17 +213,28 @@ pub fn build_neighbors_per_origin(
     sources: &[(f64, f64)],
     targets: &[(f64, f64)],
     radii: &[f64],
-) -> Vec<Vec<u32>> {
+) -> Result<Vec<Vec<u32>>, String> {
+    build_neighbors_within(sources, targets, radii, MAX_NEIGHBOR_ENTRIES)
+}
+
+/// The implementation, with the budget as a parameter so a test can drive
+/// the refusal without allocating a hundred million entries to reach it.
+fn build_neighbors_within(
+    sources: &[(f64, f64)],
+    targets: &[(f64, f64)],
+    radii: &[f64],
+    budget: usize,
+) -> Result<Vec<Vec<u32>>, String> {
     let n_sources = sources.len();
     let n_targets = targets.len();
 
     if n_sources == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     debug_assert_eq!(radii.len(), n_sources, "radii must be one per source");
 
     if n_targets == 0 {
-        return vec![Vec::new(); n_sources];
+        return Ok(vec![Vec::new(); n_sources]);
     }
 
     // Sort target indices by longitude for band lookup.
@@ -210,10 +248,18 @@ pub fn build_neighbors_per_origin(
     let sorted_lons: Vec<f64> = order.iter().map(|&i| targets[i as usize].0).collect();
 
     let mut result: Vec<Vec<u32>> = Vec::with_capacity(n_sources);
+    // Counted as the rows are built, so a request over the budget is
+    // refused at the row that crosses it — not after the whole mask has
+    // been allocated.
+    let mut entries = 0usize;
     for (si, &(slon, slat)) in sources.iter().enumerate() {
         let radius_km = radii.get(si).copied().unwrap_or(f64::INFINITY);
         // No-filter origin (inf / non-positive): keep every target for it.
         if !radius_km.is_finite() || radius_km <= 0.0 {
+            entries += n_targets;
+            if entries > budget {
+                return Err(neighbor_budget_error(entries, budget));
+            }
             result.push((0..n_targets as u32).collect());
             continue;
         }
@@ -270,10 +316,14 @@ pub fn build_neighbors_per_origin(
         }
 
         row.sort_unstable();
+        entries += row.len();
+        if entries > budget {
+            return Err(neighbor_budget_error(entries, budget));
+        }
         result.push(row);
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -313,7 +363,8 @@ mod tests {
             (o.0 + 0.0314, o.1), // ~2.2 km
             (o.0 + 0.0471, o.1), // ~3.3 km
         ];
-        let out = build_neighbors_per_origin(&sources, &targets, &[1.5, 3.0]);
+        let out = build_neighbors_per_origin(&sources, &targets, &[1.5, 3.0])
+            .expect("fixture is within the neighbour budget");
         assert_eq!(out.len(), 2);
         // Origin 0 (1.5 km): only target 0.
         assert_eq!(
@@ -335,7 +386,8 @@ mod tests {
         let sources = vec![o, o];
         let targets = vec![(o.0 + 0.2, o.1), (o.0 + 0.4, o.1)];
         // Origin 0 tight (0.5 km -> nothing); origin 1 inf (-> everything).
-        let out = build_neighbors_per_origin(&sources, &targets, &[0.5, f64::INFINITY]);
+        let out = build_neighbors_per_origin(&sources, &targets, &[0.5, f64::INFINITY])
+            .expect("fixture is within the neighbour budget");
         assert!(out[0].is_empty(), "tight origin prunes all far targets");
         assert_eq!(out[1], vec![0u32, 1u32], "inf origin keeps every target");
     }
@@ -345,8 +397,10 @@ mod tests {
         // build_neighbors(r) must equal build_neighbors_per_origin(vec![r; n]).
         let sources = vec![(4.35, 50.85), (4.40, 50.80), (5.0, 51.0)];
         let targets = vec![(4.36, 50.86), (4.50, 50.90), (5.2, 51.1)];
-        let scalar = build_neighbors(&sources, &targets, 5.0);
-        let per = build_neighbors_per_origin(&sources, &targets, &[5.0, 5.0, 5.0]);
+        let scalar = build_neighbors(&sources, &targets, 5.0)
+            .expect("fixture is within the neighbour budget");
+        let per = build_neighbors_per_origin(&sources, &targets, &[5.0, 5.0, 5.0])
+            .expect("fixture is within the neighbour budget");
         assert_eq!(scalar, per, "uniform per-origin must equal the scalar path");
     }
 
@@ -379,18 +433,71 @@ mod tests {
         assert_eq!(parse_radius(Some(&json!(" Auto "))), RadiusParam::Auto);
     }
 
+    /// #540: the neighbour mask was the one `S x T` structure with no
+    /// bound anywhere on the matrix path — including the streamed one,
+    /// where every other allocation is tiled. It must be REFUSED, with
+    /// the limit in the message, and refused at the row that crosses the
+    /// budget rather than after the whole mask has been built.
+    #[test]
+    fn a_neighbour_mask_over_its_budget_is_refused_early() {
+        let sources: Vec<(f64, f64)> = (0..40).map(|i| (4.35 + i as f64 * 0.001, 50.85)).collect();
+        let targets: Vec<(f64, f64)> = (0..10).map(|i| (4.35 + i as f64 * 0.001, 50.85)).collect();
+
+        // Every origin keeps every target: 40 x 10 = 400 entries.
+        let wide = vec![f64::INFINITY; sources.len()];
+        let full = build_neighbors_within(&sources, &targets, &wide, 400)
+            .expect("exactly at the budget is allowed");
+        assert_eq!(full.iter().map(Vec::len).sum::<usize>(), 400);
+
+        let err = build_neighbors_within(&sources, &targets, &wide, 399)
+            .expect_err("one entry over the budget must be refused");
+        assert!(err.contains("399"), "{err} must state the limit");
+        assert!(
+            err.contains("radius_km"),
+            "{err} must name the knob to turn"
+        );
+
+        // Early: the refusal reports the count at the crossing row, not
+        // the size of the mask it never built.
+        let err = build_neighbors_within(&sources, &targets, &wide, 100)
+            .expect_err("well over the budget must be refused");
+        assert!(
+            err.contains("110"),
+            "{err} should report the count at the row that crossed (110), \
+             proving it stopped there and did not build all 400"
+        );
+
+        // A radius that genuinely prunes stays under the budget and is
+        // answered: the guard bounds the mask, it does not disable it.
+        let tight = vec![0.15f64; sources.len()];
+        let pruned = build_neighbors_within(&sources, &targets, &tight, 400)
+            .expect("a pruning radius is well inside the budget");
+        assert!(
+            pruned.iter().map(Vec::len).sum::<usize>() < 400,
+            "the fixture radius must actually prune, or this proves nothing"
+        );
+
+        // And the production entry points carry the production budget.
+        assert_eq!(MAX_NEIGHBOR_ENTRIES, 100_000_000);
+        assert!(build_neighbors(&sources, &targets, 1.0).is_ok());
+        assert!(build_neighbors_per_origin(&sources, &targets, &wide).is_ok());
+    }
+
     #[test]
     fn build_neighbors_empty_inputs() {
         let empty: Vec<(f64, f64)> = Vec::new();
-        let result = build_neighbors(&empty, &empty, 10.0);
+        let result =
+            build_neighbors(&empty, &empty, 10.0).expect("fixture is within the neighbour budget");
         assert!(result.is_empty());
 
         let sources = vec![(4.35, 50.85)];
-        let result = build_neighbors(&sources, &empty, 10.0);
+        let result = build_neighbors(&sources, &empty, 10.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         assert!(result[0].is_empty());
 
-        let result = build_neighbors(&empty, &sources, 10.0);
+        let result = build_neighbors(&empty, &sources, 10.0)
+            .expect("fixture is within the neighbour budget");
         assert!(result.is_empty());
     }
 
@@ -399,7 +506,8 @@ mod tests {
         let sources = vec![(4.35, 50.85)];
         // All points within ~5km of Brussels.
         let targets = vec![(4.36, 50.86), (4.34, 50.84), (4.35, 50.85)];
-        let result = build_neighbors(&sources, &targets, 10.0);
+        let result = build_neighbors(&sources, &targets, 10.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], vec![0, 1, 2]);
     }
@@ -408,7 +516,8 @@ mod tests {
     fn build_neighbors_none_within() {
         let sources = vec![(4.35, 50.85)]; // Brussels
         let targets = vec![(2.35, 48.86), (13.40, 52.52)]; // Paris, Berlin
-        let result = build_neighbors(&sources, &targets, 50.0);
+        let result = build_neighbors(&sources, &targets, 50.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         assert!(result[0].is_empty());
     }
@@ -423,7 +532,8 @@ mod tests {
             (5.57, 50.63), // Liège ~90 km
         ];
         // Radius 70 km should include the self/Leuven/Ghent cluster but not Liège.
-        let result = build_neighbors(&sources, &targets, 70.0);
+        let result = build_neighbors(&sources, &targets, 70.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         assert!(result[0].contains(&0), "self must always be in");
         assert!(result[0].contains(&1), "Leuven (~50km) must be within 70km");
@@ -441,7 +551,8 @@ mod tests {
         let sources = vec![(179.9, 0.0)];
         let targets = vec![(-179.9, 0.0), (179.8, 0.0), (0.0, 0.0)];
         // ~22 km across the date line; -179.9/179.9 should cluster.
-        let result = build_neighbors(&sources, &targets, 50.0);
+        let result = build_neighbors(&sources, &targets, 50.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         // 179.8 is ~11 km away and must be included.
         assert!(result[0].contains(&1));
@@ -452,7 +563,8 @@ mod tests {
         let sources = vec![(0.0, 0.0)];
         let targets = vec![(180.0, 0.0)];
         // Half circumference ≈ 20 015 km — far beyond any sane radius.
-        let result = build_neighbors(&sources, &targets, 100.0);
+        let result = build_neighbors(&sources, &targets, 100.0)
+            .expect("fixture is within the neighbour budget");
         assert_eq!(result.len(), 1);
         assert!(result[0].is_empty());
     }
