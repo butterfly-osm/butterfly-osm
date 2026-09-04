@@ -614,35 +614,33 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
         Ok(m) => m,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     };
 
     // Validate percentiles (#564: same rule as the Flight exchange path)
     if let Err(e) = validate_percentiles(&req.percentiles) {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
     }
 
     // Validate stores
     if req.stores.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "stores must not be empty".into(),
-            }),
+            Json(ErrorResponse::new("stores must not be empty")),
         )
             .into_response();
     }
     for (i, s) in req.stores.iter().enumerate() {
         if let Err(e) = validate_coord(s.lon, s.lat, &format!("store[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
 
     // Validate clients
     for (i, c) in req.clients.iter().enumerate() {
         if let Err(e) = validate_coord(c.lon, c.lat, &format!("client[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response();
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
 

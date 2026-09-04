@@ -1334,43 +1334,35 @@ impl DispatchError {
                 ..
             } => (
                 StatusCode::BAD_REQUEST,
-                ErrorResponse {
-                    error: format!(
-                        "No road found within snap distance for {} ({}, {}) mode={}",
-                        endpoint.label(),
-                        lon,
-                        lat,
-                        mode
-                    ),
-                },
+                ErrorResponse::new(format!(
+                    "No road found within snap distance for {} ({}, {}) mode={}",
+                    endpoint.label(),
+                    lon,
+                    lat,
+                    mode
+                )),
             ),
             DispatchError::InvalidMode { mode, available } => (
                 StatusCode::BAD_REQUEST,
-                ErrorResponse {
-                    error: format!(
-                        "Invalid mode '{}'. Available across loaded regions: {}.",
-                        mode,
-                        available.join(", ")
-                    ),
-                },
+                ErrorResponse::new(format!(
+                    "Invalid mode '{}'. Available across loaded regions: {}.",
+                    mode,
+                    available.join(", ")
+                )),
             ),
             DispatchError::CrossRegion {
                 src_region,
                 dst_region,
             } => (
                 StatusCode::NOT_IMPLEMENTED,
-                ErrorResponse {
-                    error: format!(
-                        "route spans regions {} \u{2192} {}; cross-region overlay not yet implemented (#91 Phase 2)",
-                        src_region, dst_region
-                    ),
-                },
+                ErrorResponse::new(format!(
+                    "route spans regions {} \u{2192} {}; cross-region overlay not yet implemented (#91 Phase 2)",
+                    src_region, dst_region
+                )),
             ),
             DispatchError::Empty => (
                 StatusCode::BAD_REQUEST,
-                ErrorResponse {
-                    error: "no coordinates supplied to dispatcher".to_string(),
-                },
+                ErrorResponse::new("no coordinates supplied to dispatcher".to_string()),
             ),
         }
     }

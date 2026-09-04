@@ -332,9 +332,9 @@ pub fn compute_access_context(
     let Some(transit) = state.transit.as_ref() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "transit subsystem is not loaded (no transit/ directory)".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "transit subsystem is not loaded (no transit/ directory)".to_string(),
+            )),
         ));
     };
 
@@ -394,9 +394,7 @@ pub fn compute_access_context(
     if timetable.n_stops() == 0 {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "timetable has zero stops".to_string(),
-            }),
+            Json(ErrorResponse::new("timetable has zero stops".to_string())),
         ));
     }
 
@@ -498,9 +496,9 @@ pub fn compute_transit_journey_with_access(
     let Some(transit) = state.transit.as_ref() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "transit subsystem is not loaded (no transit/ directory)".to_string(),
-            }),
+            Json(ErrorResponse::new(
+                "transit subsystem is not loaded (no transit/ directory)".to_string(),
+            )),
         ));
     };
 
@@ -534,10 +532,8 @@ pub fn compute_transit_journey_with_access(
     let Some(&foot_idx) = state.mode_lookup.get("foot") else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "foot mode is required for /transit (inter-stop transfers are always foot). Load it with --modes foot"
-                    .to_string(),
-            }),
+            Json(ErrorResponse::new("foot mode is required for /transit (inter-stop transfers are always foot). Load it with --modes foot"
+                    .to_string())),
         ));
     };
 
@@ -975,20 +971,18 @@ fn bulk_out_of_region(
 ) -> (StatusCode, ErrorResponse) {
     (
         StatusCode::NOT_IMPLEMENTED,
-        ErrorResponse {
-            error: format!(
-                "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
-                query_idx,
-                match endpoint {
-                    crate::server::regions::Endpoint::Source => "origin",
-                    crate::server::regions::Endpoint::Destination => "destination",
-                    _ => "coord",
-                },
-                lon,
-                lat,
-                region_id
-            ),
-        },
+        ErrorResponse::new(format!(
+            "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
+            query_idx,
+            match endpoint {
+                crate::server::regions::Endpoint::Source => "origin",
+                crate::server::regions::Endpoint::Destination => "destination",
+                _ => "coord",
+            },
+            lon,
+            lat,
+            region_id
+        )),
     )
 }
 
@@ -1047,20 +1041,16 @@ pub async fn transit_bulk_handler(
     if req.queries.len() > MAX_BATCH {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ErrorResponse {
-                error: format!(
-                    "bulk batch size {} exceeds MAX_BATCH {MAX_BATCH}",
-                    req.queries.len()
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "bulk batch size {} exceeds MAX_BATCH {MAX_BATCH}",
+                req.queries.len()
+            ))),
         ));
     }
     if req.queries.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "queries must not be empty".to_string(),
-            }),
+            Json(ErrorResponse::new("queries must not be empty".to_string())),
         ));
     }
 
@@ -1138,12 +1128,10 @@ pub async fn transit_bulk_handler(
     if state.transit.is_none() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: format!(
-                    "transit subsystem is not loaded for region {}",
-                    ctx.region_id
-                ),
-            }),
+            Json(ErrorResponse::new(format!(
+                "transit subsystem is not loaded for region {}",
+                ctx.region_id
+            ))),
         ));
     }
 
@@ -1182,9 +1170,7 @@ pub async fn transit_bulk_handler(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("bulk task panicked: {e}"),
-                    }),
+                    Json(ErrorResponse::new(format!("bulk task panicked: {e}"))),
                 )
             })?;
 
@@ -1265,18 +1251,14 @@ pub fn run_bulk(state: &ServerState, queries: &[TransitRequest]) -> Vec<TransitB
 fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::BAD_REQUEST,
-        Json(ErrorResponse {
-            error: msg.to_string(),
-        }),
+        Json(ErrorResponse::new(msg.to_string())),
     )
 }
 
 fn not_found(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorResponse {
-            error: msg.to_string(),
-        }),
+        Json(ErrorResponse::new(msg.to_string())),
     )
 }
 
