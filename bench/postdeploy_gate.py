@@ -208,15 +208,11 @@ THRESHOLDS = {
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
     "wkb_len_tol": 0.05,  # route_batch geometry_wkb vs distance_m
     "edges_sum_bounds": (0.9, 1.45),  # Σ per-edge duration vs /route
-    # WARN only (#589): the suite's single wall-clock number. 1×800 vs 1×50
-    # wall ratio — a sublinear (seeded PHAST) plan stays ~×1-3, the linear
-    # bucket plan ~×16. A loaded runner flaps it, so it is reported, never
-    # decisive. Asserting on a server-REPORTED plan would be better, but no
-    # such signal exists today: /table sets no response header and the only
-    # /metrics labels are (region, endpoint) — the plan choice (phast_dir in
-    # matrix/bucket_ch.rs) never leaves the process. Expose it and this
-    # becomes a real assertion.
-    "lopsided_scaling_warn": 6.0,
+    # #594: there is NO wall-clock threshold for the matrix plan any more.
+    # gate_lopsided asserts the plan the SERVER REPORTS for the request it
+    # just made (`x-butterfly-matrix-plan` on /table, `plan` in the Flight
+    # matrix trailer) — the branch `phast_dir` actually took. Wall clock is
+    # still printed as context, and is decisive for nothing.
     # INVARIANT (structural lower bound, #589): a road-following contour at a
     # 5-decimal Douglas-Peucker tolerance has hundreds of vertices; the
     # retired sector lasso (#536) could never emit more than 18. Not a
@@ -370,9 +366,46 @@ def route(base, olon, olat, dlon, dlat, mode="car"):
 
 
 def table(base, origins, destinations, mode="car", timeout=120, **extra):
+    return table_with_plan(base, origins, destinations, mode, timeout, **extra)[0]
+
+
+# #594: the matrix plan the server reports for THIS request. `/table` sets the
+# header, the Flight `matrix` completeness trailer carries the same value under
+# `plan`. Closed set — anything else is a drift the gate must fail on.
+MATRIX_PLAN_HEADER = "x-butterfly-matrix-plan"
+MATRIX_PLANS = ("bucket", "phast_fwd", "phast_rev", "mixed")
+# The sublinear plans: one seeded PHAST field per endpoint of the SHORT side
+# (#526 forward, #527 reverse), instead of ~(S+T) bucket sweeps.
+SUBLINEAR_PLANS = ("phast_fwd", "phast_rev")
+
+
+def parse_matrix_plan(value):
+    """Normalise a reported plan. A missing header (an old build, or a surface
+    that dropped the report) and an unrecognised value both come back as
+    markers that no plan check can accept — never silently as "fine"."""
+    if value is None:
+        return "<missing>"
+    v = value.strip()
+    return v if v in MATRIX_PLANS else f"<unknown:{v}>"
+
+
+def table_with_plan(base, origins, destinations, mode="car", timeout=120, **extra):
+    """(matrix, plan) — the plan is the server's own report of the engine it
+    ran for this request (#594), not an inference from timing."""
     payload = {"origins": origins, "destinations": destinations, "mode": mode}
     payload.update(extra)
-    return post_json(f"{base}/table", payload, timeout=timeout)
+    req = urllib.request.Request(f"{base}/table", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = json.loads(r.read())
+        return body, parse_matrix_plan(r.headers.get(MATRIX_PLAN_HEADER))
+
+
+def check_plan(label, got, want):
+    """FAIL unless the server reported one of `want`. #594: this replaced a
+    wall-clock WARN — the plan is a fact the engine states, so it is decisive."""
+    return check(f"{label}: plan", got in want,
+        f"server reported {got!r}, expected one of {list(want)}")
 
 
 def is_no_route(exc):
@@ -400,11 +433,11 @@ def check(name, ok, detail):
     return ok
 
 
-def warn(name, detail):
-    """A measurement worth printing that must NOT decide the gate (#589: a
-    wall-clock ratio flaps on a loaded runner). Never fails."""
-    print(f"  [WARN] {name}: {detail}")
-    return True
+# #594: there is no `warn()` helper any more. Its only caller was the lopsided
+# wall-clock ratio, now replaced by an assertion on the plan the server reports
+# (`check_plan`). A helper whose whole purpose is "print, never fail" is an
+# invitation to downgrade the next flaky check instead of making it
+# deterministic. Context worth printing is printed with `print`.
 
 
 def check_errors(label, errors, unroutable=None):
@@ -1681,11 +1714,28 @@ def gate_bands(base, refs_prefix):
 # Gates — matrix / table
 # ---------------------------------------------------------------------------
 def gate_lopsided(base):
-    """#526: lopsided (1xN) matrices must take a sublinear plan (seeded
-    PHAST) and stay cell-for-cell consistent with /route. Guards BOTH the
-    selection (scaling ratio — linear bucket would be ~16x) and the
-    correctness of the PHAST field evaluation (route==table equality)."""
-    print("== lopsided matrix 1xN: sublinear plan + route==table (#526) ==")
+    """#526/#527: a lopsided matrix (1xN or Nx1) must be SERVED by the
+    sublinear seeded-PHAST plan, and stay cell-for-cell consistent with
+    /route on both channels.
+
+    #594 — the selection is asserted on the plan the SERVER REPORTS for the
+    request the gate just made: `x-butterfly-matrix-plan` on /table and
+    `plan` in the Flight `matrix` completeness trailer, both written at the
+    branch site in `phast_dir`'s dispatch. That is a fact the engine states,
+    so it is a hard FAIL. It replaces a wall-clock scaling ratio that had to
+    be a WARN because a loaded runner flaps it; wall clock is still measured
+    and PRINTED, and is decisive for nothing.
+
+    Both plans are exercised BY SHAPE, which is the only way against a live
+    server: `BUTTERFLY_MATRIX_ALGO=bucket|phast` is read ONCE at the first
+    matrix call and then frozen for the life of the process (the `OnceLock`
+    in `phast_dir`; docs/ENGINEERING.md), so a running server cannot be
+    flipped from here — no pretending otherwise. Instead the router's own
+    cost model decides, and the shapes below sit ~2 orders of magnitude
+    apart in it: min(S,T) full scans vs (S+T) sweeps means 1xN and Nx1 take
+    one field, while a balanced NxN would need N of them and takes the
+    bucket. Asserting all three covers both branches per request."""
+    print("== lopsided matrix: the SERVED plan + route==table (#526/#527/#594) ==")
     rng = random.Random(31)
     origin = (4.3517, 50.8503)
     dests = [(origin[0] + rng.uniform(-0.25, 0.25), origin[1] + rng.uniform(-0.15, 0.15))
@@ -1693,25 +1743,38 @@ def gate_lopsided(base):
 
     def timed(dsts, **kw):
         t0 = time.time()
-        r = table(base, [list(origin)], [list(d) for d in dsts], mode="foot", timeout=300, **kw)
-        return r, time.time() - t0
+        r, plan = table_with_plan(base, [list(origin)], [list(d) for d in dsts],
+                                  mode="foot", timeout=300, **kw)
+        return r, plan, time.time() - t0
 
     timed(dests[:50])  # warm + calibrate the router's measured constants
-    big, tb = timed(dests)
-    _small, ts = timed(dests[:50])
-    ratio = tb / max(ts, 1e-3)
-    # #589: the suite's ONLY wall-clock number — informational. A loaded
-    # runner (the validation instance shares its host) flaps it, and the
-    # server reports no chosen plan to assert on instead (no /table response
-    # header; /metrics carries only (region, endpoint) labels). The decisive
-    # checks are the value ones below:
-    # route==table cell-for-cell on BOTH channels — a wrong plan that still
-    # returns the right numbers is a performance ticket, not a gate failure.
-    lim = THRESHOLDS["lopsided_scaling_warn"]
-    ok_scale = warn("lopsided scaling (wall-clock, informational)",
-        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} "
-        f"({'sublinear' if ratio < lim else f'≥ x{lim:.0f}: looks LINEAR — check the plan'}; "
-        "linear bucket ~x16, PHAST ~x1)")
+    big, plan_1xn, tb = timed(dests)
+    _small, _p, ts = timed(dests[:50])
+    passed = check_plan("1x800 lopsided", plan_1xn, SUBLINEAR_PLANS)
+    # Context only (#594): no threshold, no verdict. A sublinear plan stays
+    # ~x1-3 against the 1x50 baseline, the linear bucket ~x16 — useful when
+    # reading a failure, never the reason for one.
+    print(f"    (wall clock, informational: 1x800 {tb:.2f}s vs 1x50 {ts:.2f}s "
+          f"= x{tb / max(ts, 1e-3):.1f})")
+
+    # #527 REVERSE lopsided: many sources, one target → one reverse field per
+    # target. 2000 sources keeps the decision decisive even on a server whose
+    # reverse-scan cell has never been measured (the router's structural
+    # fallback prices a reverse field at 2 x n_nodes relaxations, so the
+    # sweep side must be well past it).
+    rev_origins = [[origin[0] + rng.uniform(-0.25, 0.25), origin[1] + rng.uniform(-0.15, 0.15)]
+                   for _ in range(2000)]
+    t0 = time.time()
+    _rev, plan_nx1 = table_with_plan(base, rev_origins, [list(dests[0])], mode="foot", timeout=300)
+    passed &= check_plan("2000x1 reverse-lopsided", plan_nx1, SUBLINEAR_PLANS)
+    print(f"    (wall clock, informational: 2000x1 {time.time() - t0:.2f}s)")
+
+    # The other branch: a balanced shape must take the bucket. N fields would
+    # cost N full scans against 2N sweeps — the cost model is never close here.
+    square = [[origin[0] + rng.uniform(-0.1, 0.1), origin[1] + rng.uniform(-0.06, 0.06)]
+              for _ in range(40)]
+    _sq, plan_sq = table_with_plan(base, square, square, mode="foot", timeout=300)
+    passed &= check_plan("40x40 balanced", plan_sq, ("bucket",))
 
     def compare(tab, idxs, channel, relative):
         """Sampled table cells vs /route on the SAME mode → (checked, over-tol
@@ -1733,14 +1796,28 @@ def gate_lopsided(base):
         return len(ds), sum(1 for d in ds if d > tol), max(ds, default=0.0)
 
     checked, mism, worst = compare(big, rng.sample(range(800), 25), "durations", False)
-    ok_eq = check("lopsided route==table", mism == 0 and checked >= 15,
-                  f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s")
-    # #527: 2-channel lopsided — distance channel must equal /route distance_m.
-    dd, _ = timed(dests[:300], annotations="duration,distance")
+    passed &= check("lopsided route==table", mism == 0 and checked >= 15,
+                    f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s")
+    # #527: 2-channel lopsided — distance channel must equal /route distance_m,
+    # and the 2-channel router must reach the SAME sublinear plan (it costs on
+    # its own cell set, so a 1-channel-only regression would hide here).
+    dd, plan_2ch, _ = timed(dests[:300], annotations="duration,distance")
+    passed &= check_plan("1x300 lopsided, 2-channel", plan_2ch, SUBLINEAR_PLANS)
     dchecked, dmis, dworst = compare(dd, rng.sample(range(300), 25), "distances", True)
-    ok_dist = check("lopsided 2-channel distance==route", dmis == 0 and dchecked >= 15,
+    passed &= check("lopsided 2-channel distance==route", dmis == 0 and dchecked >= 15,
                     f"{dchecked} cells, {dmis} mismatches, worst {dworst * 100:.2f}%")
-    return ok_scale and ok_eq and ok_dist
+
+    # The same assertion on the machine-facing surface: the Flight `matrix`
+    # completeness trailer carries the plan too, so a regression that only
+    # dropped the Flight report cannot pass on the REST one.
+    if not flight_enabled():
+        print("  [SKIP] Flight matrix plan: --no-flight")
+    else:
+        _rows, meta = flight_rows_meta(base, "matrix", "foot",
+            {"origins": [list(origin)], "destinations": [list(d) for d in dests]})
+        passed &= check_plan("Flight matrix 1x800 lopsided",
+                             parse_matrix_plan((meta or {}).get("plan")), SUBLINEAR_PLANS)
+    return passed
 
 
 def _distance_channel_vs_route(base, mode):

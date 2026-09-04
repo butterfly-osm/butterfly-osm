@@ -15,6 +15,8 @@ Two of these are parity checks that would otherwise need a deploy to notice:
 and `TICKET_GATES` against the gate registry (#572 fold guard).
 """
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -94,7 +96,74 @@ class ThresholdDerivation(unittest.TestCase):
         self.assertIn("dist_outliers_frac", g.THRESHOLDS)
         self.assertLessEqual(g.THRESHOLDS["dist_outliers_frac"], 0.08)
         self.assertNotIn("lopsided_scaling_max", g.THRESHOLDS)
-        self.assertIn("lopsided_scaling_warn", g.THRESHOLDS)
+        # #594: no wall-clock threshold for the matrix plan at all — the gate
+        # asserts the plan the server reports, so neither the old FAIL bound
+        # nor the WARN bound that replaced it may come back.
+        self.assertNotIn("lopsided_scaling_warn", g.THRESHOLDS)
+
+
+class MatrixPlanReport(unittest.TestCase):
+    """#594: gate_lopsided asserts the plan the SERVER REPORTS
+    (`x-butterfly-matrix-plan` on /table, `plan` in the Flight matrix
+    trailer) instead of a wall-clock ratio. Two properties matter offline:
+    the closed set is parsed exactly, and a wrong plan FAILS — the wall-clock
+    ratio it replaced was a WARN, which could not fail at all."""
+
+    @staticmethod
+    def plan_check(got, want):
+        """`check_plan` without its print, so the test output stays readable."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            return g.check_plan("probe", got, want)
+
+    def test_closed_set_parses_verbatim(self):
+        for p in g.MATRIX_PLANS:
+            self.assertEqual(g.parse_matrix_plan(p), p)
+        self.assertEqual(g.parse_matrix_plan(" phast_rev "), "phast_rev")
+
+    def test_sublinear_is_a_strict_subset(self):
+        self.assertEqual(set(g.SUBLINEAR_PLANS), {"phast_fwd", "phast_rev"})
+        self.assertTrue(set(g.SUBLINEAR_PLANS) < set(g.MATRIX_PLANS))
+        self.assertIn("bucket", g.MATRIX_PLANS)
+        self.assertNotIn("bucket", g.SUBLINEAR_PLANS)
+        # `mixed` (tiles disagreed) is a KNOWN value, but never a lopsided pass.
+        self.assertNotIn("mixed", g.SUBLINEAR_PLANS)
+
+    def test_missing_header_can_never_pass(self):
+        """An old build, or a surface that dropped the report, must FAIL —
+        not read as "plan fine, carry on"."""
+        got = g.parse_matrix_plan(None)
+        self.assertEqual(got, "<missing>")
+        self.assertNotIn(got, g.MATRIX_PLANS)
+        self.assertFalse(self.plan_check(got, g.SUBLINEAR_PLANS))
+        self.assertFalse(self.plan_check(got, ("bucket",)))
+
+    def test_unknown_value_can_never_pass(self):
+        got = g.parse_matrix_plan("phast")  # a plausible near-miss
+        self.assertEqual(got, "<unknown:phast>")
+        self.assertFalse(self.plan_check(got, g.SUBLINEAR_PLANS))
+
+    def test_wrong_plan_fails_and_right_plan_passes(self):
+        # The #526 regression itself: a lopsided shape served by the bucket.
+        self.assertFalse(self.plan_check("bucket", g.SUBLINEAR_PLANS))
+        self.assertFalse(self.plan_check("mixed", g.SUBLINEAR_PLANS))
+        # ...and its mirror: a balanced shape served by a PHAST field.
+        self.assertFalse(self.plan_check("phast_fwd", ("bucket",)))
+        for good in ("phast_fwd", "phast_rev"):
+            self.assertTrue(self.plan_check(good, g.SUBLINEAR_PLANS))
+        self.assertTrue(self.plan_check("bucket", ("bucket",)))
+
+    def test_failure_line_names_what_was_reported(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            g.check_plan("1x800 lopsided", "bucket", g.SUBLINEAR_PLANS)
+        out = buf.getvalue()
+        self.assertIn("[FAIL]", out)
+        self.assertIn("bucket", out)
+        self.assertIn("phast_fwd", out)
+
+    def test_no_warn_helper_left(self):
+        """#594: the print-and-always-pass helper is gone with its one caller."""
+        self.assertFalse(hasattr(g, "warn"))
 
 
 class RefsResolution(unittest.TestCase):
