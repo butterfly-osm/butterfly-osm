@@ -684,6 +684,98 @@ impl PlanCell {
     }
 }
 
+/// One endpoint's primary snap for the matrix path: the primary tuple
+/// `(ebg_id, snapped_lon, snapped_lat, snap_distance_m)`, its CCH rank, and
+/// the #502 phantom seed set `(rank, part_time, part_len, direct_ok)`.
+/// `None` ⇒ the endpoint did not snap and takes no row/column.
+type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
+
+/// The matrix path's per-role endpoint vectors, split out of the primary
+/// snaps. `ranks`, `valid` and `seedsets` are index-aligned with each other
+/// and cover only the endpoints that SNAPPED (`valid[p]` is endpoint `p`'s
+/// original input position); `snapped` has one entry per INPUT endpoint —
+/// the raw coordinate where the snap missed — because the radius mask is
+/// built over the full input list.
+struct SplitSnaps {
+    ranks: Vec<u32>,
+    valid: Vec<usize>,
+    snapped: Vec<(f64, f64)>,
+    seedsets: Vec<Vec<(u32, u32, u32, bool)>>,
+}
+
+/// #580: split one endpoint role's primary snaps. Ran once for origins and
+/// once for destinations; it was the same loop written twice, each copy
+/// CLONING the seed set per endpoint even though the snap vector is dead
+/// straight after. `snaps` is taken by value so the seeds MOVE.
+fn split_primary_snaps(raw: &[[f64; 2]], snaps: Vec<PrimarySnap>) -> SplitSnaps {
+    let n = raw.len();
+    let mut out = SplitSnaps {
+        ranks: Vec::with_capacity(n),
+        valid: Vec::with_capacity(n),
+        snapped: Vec::with_capacity(n),
+        seedsets: Vec::with_capacity(n),
+    };
+    for (i, snap) in snaps.into_iter().enumerate() {
+        match snap {
+            Some(((_, plon, plat, _), rank, seeds)) => {
+                out.ranks.push(rank);
+                out.valid.push(i);
+                out.snapped.push((plon, plat));
+                out.seedsets.push(seeds);
+            }
+            None => {
+                let [lon, lat] = raw[i];
+                out.snapped.push((lon, lat));
+            }
+        }
+    }
+    out
+}
+
+/// #580: K=64 rescue candidates for the endpoints the primary pass could not
+/// route, indexed by POSITION in `valid` — the third copy of the same
+/// "snap the endpoints that need it, in parallel, then look them up" loop.
+///
+/// `needed[p]` selects endpoint position `p`; unselected positions stay
+/// `None` and read back as an empty candidate list. Position-indexed because
+/// every lookup is by position: the two `HashMap<usize, Vec<u32>>` this
+/// replaces hashed a `usize` on every cell of the fallback join, and had to
+/// carry an `&empty` sentinel for the miss.
+fn kbest_ranks_by_position(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    coords: &[[f64; 2]],
+    valid: &[usize],
+    needed: &[bool],
+    role: super::types::SnapRole,
+) -> Vec<Option<Vec<u32>>> {
+    use rayon::prelude::*;
+    let mut out: Vec<Option<Vec<u32>>> = vec![None; valid.len()];
+    let snapped: Vec<(usize, Vec<u32>)> = (0..valid.len())
+        .into_par_iter()
+        .filter(|&p| needed[p])
+        .map(|p| {
+            let [lon, lat] = coords[valid[p]];
+            let snap = super::snap_kbest::snap_k_pair_role(
+                state,
+                mode_data,
+                mode,
+                lon,
+                lat,
+                role,
+                None,
+                super::snap_kbest::SNAP_K,
+            );
+            (p, snap.ranks)
+        })
+        .collect();
+    for (p, ranks) in snapped {
+        out[p] = Some(ranks);
+    }
+    out
+}
+
 /// Execute the matrix Flight action.
 fn do_matrix(
     state: &Arc<ServerState>,
@@ -710,8 +802,8 @@ fn do_matrix(
     // SCC-aware connectivity filter (via mode_data.has_outbound /
     // has_inbound). The first candidate per slot feeds the bucket
     // M2M primary pass; the rest power the per-cell P2P fallback for
-    // INF cells in the small-matrix branch below.
-    use super::snap_kbest::SNAP_K;
+    // INF cells in the small-matrix branch below
+    // ([`kbest_ranks_by_position`]).
     use rayon::prelude::*;
     // Lazy snap (#368 pattern): K=1 primary upfront, K=64 escalation
     // lives in the INF-cell fallback below.
@@ -720,7 +812,6 @@ fn do_matrix(
     // matrix branch expands them into extra rows/columns (SeedExpansion) so
     // the bucket engine stays untouched. The large PHAST-tiled branch keeps
     // the primary-only legacy (engine-level multi-seed is the follow-up).
-    type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
     let snap_endpoint = |lon: f64, lat: f64, role: SnapRole| -> PrimarySnap {
         if let Some(pe) = super::phantom::phantom_for(state, &mode_data, mode, lon, lat, role, None)
         {
@@ -758,36 +849,20 @@ fn do_matrix(
         .map(|&[lon, lat]| snap_endpoint(lon, lat, SnapRole::Dst))
         .collect();
 
-    let mut origins_rank = Vec::with_capacity(params.origins.len());
-    let mut valid_origin = Vec::with_capacity(params.origins.len());
-    let mut origins_snapped = Vec::with_capacity(params.origins.len());
-    let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
-    for (i, snap) in src_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
-            origins_rank.push(*rank);
-            valid_origin.push(i);
-            origins_snapped.push((*plon, *plat));
-            src_seedsets.push(seeds.clone());
-        } else {
-            let [lon, lat] = params.origins[i];
-            origins_snapped.push((lon, lat));
-        }
-    }
-    let mut targets_rank = Vec::with_capacity(params.destinations.len());
-    let mut valid_dst = Vec::with_capacity(params.destinations.len());
-    let mut targets_snapped = Vec::with_capacity(params.destinations.len());
-    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
-    for (i, snap) in dst_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
-            targets_rank.push(*rank);
-            valid_dst.push(i);
-            targets_snapped.push((*plon, *plat));
-            tgt_seedsets.push(seeds.clone());
-        } else {
-            let [lon, lat] = params.destinations[i];
-            targets_snapped.push((lon, lat));
-        }
-    }
+    // #580: one split per role — the seed sets MOVE out of the snap vectors,
+    // which are dead from here.
+    let SplitSnaps {
+        ranks: origins_rank,
+        valid: valid_origin,
+        snapped: origins_snapped,
+        seedsets: src_seedsets,
+    } = split_primary_snaps(&params.origins, src_primary);
+    let SplitSnaps {
+        ranks: targets_rank,
+        valid: valid_dst,
+        snapped: targets_snapped,
+        seedsets: tgt_seedsets,
+    } = split_primary_snaps(&params.destinations, dst_primary);
 
     if origins_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
@@ -1050,12 +1125,12 @@ fn do_matrix(
         // for the high-fidelity, typically-smaller request shape.
         if !bounded && matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
-            use std::collections::HashSet;
             let query = super::query::CchQuery::new(&mode_data);
 
             let mut work: Vec<(usize, usize)> = Vec::new();
-            let mut needed_src: HashSet<usize> = HashSet::new();
-            let mut needed_dst: HashSet<usize> = HashSet::new();
+            // #580: selection by POSITION, matching the lookups below.
+            let mut needed_src = vec![false; valid_origin.len()];
+            let mut needed_dst = vec![false; valid_dst.len()];
             for (i, _) in valid_origin.iter().enumerate() {
                 for (j, _) in valid_dst.iter().enumerate() {
                     if matrix[i * n_valid_dst + j] == u32::MAX {
@@ -1069,67 +1144,36 @@ fn do_matrix(
                             continue;
                         }
                         work.push((i, j));
-                        needed_src.insert(valid_origin[i]);
-                        needed_dst.insert(valid_dst[j]);
+                        needed_src[i] = true;
+                        needed_dst[j] = true;
                     }
                 }
             }
-            // Lazy K=64 snap for only the failing src/dst originals.
-            let needed_src_vec: Vec<usize> = needed_src.into_iter().collect();
-            let needed_dst_vec: Vec<usize> = needed_dst.into_iter().collect();
-            let mut src_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (orig_idx, ranks) in needed_src_vec
-                .par_iter()
-                .map(|&oi| {
-                    let [lon, lat] = params.origins[oi];
-                    let snap = super::snap_kbest::snap_k_pair_role(
-                        state,
-                        &mode_data,
-                        mode,
-                        lon,
-                        lat,
-                        SnapRole::Src,
-                        None,
-                        SNAP_K,
-                    );
-                    (oi, snap.ranks)
-                })
-                .collect::<Vec<_>>()
-            {
-                src_kbest_ranks.insert(orig_idx, ranks);
-            }
-            let mut dst_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (orig_idx, ranks) in needed_dst_vec
-                .par_iter()
-                .map(|&oi| {
-                    let [lon, lat] = params.destinations[oi];
-                    let snap = super::snap_kbest::snap_k_pair_role(
-                        state,
-                        &mode_data,
-                        mode,
-                        lon,
-                        lat,
-                        SnapRole::Dst,
-                        None,
-                        SNAP_K,
-                    );
-                    (oi, snap.ranks)
-                })
-                .collect::<Vec<_>>()
-            {
-                dst_kbest_ranks.insert(orig_idx, ranks);
-            }
+            // Lazy K=64 snap for only the failing src/dst endpoints.
+            let src_kbest_ranks = kbest_ranks_by_position(
+                state,
+                &mode_data,
+                mode,
+                &params.origins,
+                &valid_origin,
+                &needed_src,
+                SnapRole::Src,
+            );
+            let dst_kbest_ranks = kbest_ranks_by_position(
+                state,
+                &mode_data,
+                mode,
+                &params.destinations,
+                &valid_dst,
+                &needed_dst,
+                SnapRole::Dst,
+            );
 
-            let empty: Vec<u32> = Vec::new();
             let patches: Vec<(usize, usize, u32)> = work
                 .par_iter()
                 .filter_map(|&(i, j)| {
-                    let src_orig_idx = valid_origin[i];
-                    let dst_orig_idx = valid_dst[j];
-                    let src_ranks = src_kbest_ranks.get(&src_orig_idx).unwrap_or(&empty);
-                    let dst_ranks = dst_kbest_ranks.get(&dst_orig_idx).unwrap_or(&empty);
+                    let src_ranks = src_kbest_ranks[i].as_deref().unwrap_or_default();
+                    let dst_ranks = dst_kbest_ranks[j].as_deref().unwrap_or_default();
                     super::snap_kbest::p2p_with_kbest_fallback(
                         &query,
                         src_ranks,
