@@ -6,6 +6,7 @@
 
 use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
+use crate::matrix::lex_better;
 #[cfg(feature = "bench")]
 use crate::profile_abi::Mode;
 
@@ -335,13 +336,6 @@ thread_local! {
     /// is a Tokio worker (where `/route` runs inline) or a rayon worker.
     static CCH_QUERY_STATE: crate::server::evictable::EvictableCell<CchQueryState> =
         const { crate::server::evictable::EvictableCell::new() };
-}
-
-/// #529: lexicographic "(time, then lat) strictly better" comparator for
-/// meeting-node selection. `true` iff `(t, l)` precedes `(best_t, best_l)`.
-#[inline]
-fn lex_better(t: u32, l: u32, best_t: u32, best_l: u32) -> bool {
-    t < best_t || (t == best_t && l < best_l)
 }
 
 /// Reconstruct path from generation-stamped parent arrays
