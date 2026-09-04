@@ -522,11 +522,25 @@ fn test_ghent_liege_unpacked_hops_exist_in_filtered_ebg() {
     // Load FilteredEbg from disk for raw CSR introspection (#153
     // dropped it from ServerState's ModeData on the serve path).
     // Test-only side-load; never reached from production code.
+    //
+    // #587: this needs the UNPACKED `stepN/` tree. A packed `.butterfly`
+    // container sets `data_dir` to the container file itself and carries
+    // no `step5/`, so the side-load is a second, narrower data
+    // precondition — skip on it rather than fail, exactly as for the
+    // missing artifact.
     let mode_name = state.mode_names[mode.index()].clone();
     let step5_dir = std::path::Path::new(&state.data_dir).join("step5");
     let filtered_ebg_path = step5_dir.join(format!("filtered.{}.ebg", mode_name));
+    if !filtered_ebg_path.is_file() {
+        let _: Option<()> = crate::testutil::skip(
+            "consistency_test::filtered_ebg",
+            "an unpacked step5/filtered.<mode>.ebg (this test introspects the raw \
+             CSR; a packed container does not carry it)",
+        );
+        return;
+    }
     let filtered_ebg = crate::formats::FilteredEbgFile::read(&filtered_ebg_path)
-        .expect("test requires step5/filtered.<mode>.ebg on disk");
+        .expect("step5/filtered.<mode>.ebg is present but unreadable");
 
     let query = CchQuery::new(&mode_data);
     let result = query
