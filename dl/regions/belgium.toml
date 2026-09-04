@@ -25,10 +25,13 @@ url = "https://gtfs.irail.be/nmbs/gtfs/latest.zip"
 
 [[gtfs]]
 id  = "delijn"
-# #498: the iRail mirror moved to gtfs.flatturtle.cloud and publishes only
-# DATED files (no latest alias). The '*' in the filename is resolved against
-# the directory index at fetch time — newest (lexicographically greatest) wins.
-url = "https://gtfs.flatturtle.cloud/delijn/delijn-gtfs_*.zip"
+# #537: the mirror grew a stable `_latest/` alias, refreshed daily. The
+# dated-file wildcard it replaces (#498) only ever resolved against a
+# directory listing, which the transit fetcher does not do — so this list
+# and butterfly-route's default feed set disagreed, and the route side kept
+# requesting the long-dead iRail path. One URL, resolvable by both.
+# Probed 2026-09-04: 200, ~196 MB, Last-Modified same day.
+url = "https://gtfs.flatturtle.cloud/delijn/_latest/delijn-gtfs.zip"
 
 [[gtfs]]
 id  = "tec"
@@ -36,4 +39,10 @@ url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
 
 [[netex_epip]]
 id  = "stib"
+# This is what the national access point publishes for this dataset as of
+# 2026-09-04 — and it answers 404. Probed the same day: the portal's
+# resource URL is unchanged, the publisher's blob is gone, and the
+# container itself does not list. There is no replacement to point at, so
+# the URL stays as published and the fetch fails loudly and by name
+# rather than quietly leaving the timetable a feed short (#537).
 url = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"

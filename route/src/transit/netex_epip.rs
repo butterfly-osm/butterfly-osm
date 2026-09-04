@@ -15,7 +15,8 @@
 //! ## Scope of this MVP
 //!
 //! - Target shape: STIB's Belgian NAP publication
-//!   (`https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml`).
+//!   (the URL lives in the shipped region index, not here — see
+//!   `transit::config::default_feeds`).
 //!   Verified 2026-04-14: 722 MB, 11,757 ScheduledStopPoints, 1,994
 //!   StopPlaces, 2,504 Quays, 90 Lines, 812 ServiceJourneyPatterns,
 //!   110,045 ServiceJourneys, 2.2M TimetabledPassingTimes. See
