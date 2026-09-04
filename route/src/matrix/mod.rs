@@ -31,6 +31,17 @@ pub mod tile_geometry;
 
 #[cfg(feature = "bench")]
 pub use arrow_stream::ArrowMatrixWriter;
+
+/// #529/#557: THE lexicographic "(time, then length) strictly better"
+/// comparator — `true` iff `(t, l)` precedes `(best_t, best_l)`. One
+/// definition shared by P2P meeting-node selection (`server::query`), the
+/// bucket joins and the seeded PHAST evaluators, so every surface breaks an
+/// equal-duration tie the same way and `/table` cannot disagree with
+/// `/route` on the distance channel.
+#[inline]
+pub(crate) fn lex_better(t: u32, l: u32, best_t: u32, best_l: u32) -> bool {
+    t < best_t || (t == best_t && l < best_l)
+}
 pub use arrow_stream::MatrixTile;
 pub use batched_phast::{BatchedPhastEngine, BatchedPhastResult, BatchedPhastStats};
 #[cfg(feature = "bench")]
