@@ -1,13 +1,16 @@
 //! Geometry reconstruction from EBG path
 
+use rustc_hash::FxHashSet;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use std::collections::HashSet;
-
 use crate::formats::EbgNodes;
+use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
+use crate::profile_abi::Mode;
 use crate::range::{ContourPolygon, ReachableSegment, SparseContourConfig};
 use crate::server::edge_geom::EdgeGeometry;
+use crate::server::state::{ModeData, ServerState};
+use crate::server::types::SnapRole;
 
 /// A point in WGS84 coordinates
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
@@ -359,6 +362,10 @@ pub type ReachPolylines = (Vec<Vec<(i32, i32)>>, Option<(i32, i32)>);
 /// polygon stamp and `include=network` so they can never disagree. Returns
 /// lat-first e7 polylines (whole edges, then oriented frontier fragments)
 /// and the legacy anchor fallback (start of the minimum-label edge).
+///
+/// `want_anchor` = false skips the min-label scan entirely: the caller
+/// already knows the exact snapped origin (`origin_anchor`), so the derived
+/// fallback would be thrown away (#549).
 pub fn reachable_polylines(
     settled_nodes: &[(u32, u32)], // (original_ebg_id, label)
     max_threshold: u32,
@@ -366,12 +373,11 @@ pub fn reachable_polylines(
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
     model: &ReachModel<'_>,
+    want_anchor: bool,
 ) -> ReachPolylines {
     let mut out: Vec<Vec<(i32, i32)>> = Vec::with_capacity(settled_nodes.len());
     let mut anchor: Option<(i32, i32)> = None;
     let mut anchor_dist = u32::MAX;
-    // Endpoints of whole edges: a frontier fragment hangs off one of them.
-    let mut reached_ends: HashSet<(i32, i32)> = HashSet::with_capacity(settled_nodes.len() * 2);
     let mut partial: Vec<(u32, f32)> = Vec::new();
 
     for &(ebg_id, dist) in settled_nodes {
@@ -389,7 +395,7 @@ pub fn reachable_polylines(
         if polyline.is_empty() {
             continue;
         }
-        if dist < anchor_dist {
+        if want_anchor && dist < anchor_dist {
             anchor_dist = dist;
             anchor = Some(polyline.at_lat_lon_e7(0));
         }
@@ -398,16 +404,27 @@ pub fn reachable_polylines(
             ReachModel::Arrive => dist.saturating_add(weight) <= max_threshold,
         };
         if whole {
-            let points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
-            reached_ends.insert(points[0]);
-            reached_ends.insert(points[points.len() - 1]);
-            out.push(points);
+            out.push(polyline.iter_lat_lon_e7().collect());
         } else {
             partial.push((ebg_id, (max_threshold - dist) as f32 / weight as f32));
         }
     }
     if let ReachModel::Depart { frontier } = model {
         partial.extend_from_slice(frontier);
+    }
+    if partial.is_empty() {
+        // Nothing hangs off the whole edges: never build the endpoint set
+        // (it hashes 2 entries per reached edge — millions on a wide car
+        // isochrone — for a lookup nobody performs).
+        return (out, anchor);
+    }
+
+    // Endpoints of whole edges: a frontier fragment hangs off one of them.
+    let mut reached_ends: FxHashSet<(i32, i32)> =
+        FxHashSet::with_capacity_and_hasher(out.len() * 2, Default::default());
+    for points in &out {
+        reached_ends.insert(points[0]);
+        reached_ends.insert(points[points.len() - 1]);
     }
 
     // Frontier fragments. A stored polyline is shared by both directed twins
@@ -462,6 +479,9 @@ pub fn build_isochrone_geometry_sparse(
         ebg_nodes,
         edge_geom,
         model,
+        // The min-label fallback is only consulted when the caller has no
+        // exact snap; don't scan for it otherwise (#549).
+        origin_anchor.is_none(),
     );
     if polylines.is_empty() {
         return vec![];
@@ -495,6 +515,300 @@ pub fn build_isochrone_geometry_sparse(
     }
 }
 
+// ===========================================================================
+// ONE isochrone pipeline (#549)
+// ===========================================================================
+
+/// The recustomized flats an isochrone runs on when the request carries
+/// `avoid_polygons` / `exclude` — otherwise the mode's own flats are used.
+#[derive(Clone, Copy)]
+pub struct IsochroneFlats<'a> {
+    /// UP adjacency (upward sweep, both directions).
+    pub up: &'a UpAdjFlat,
+    /// DOWN adjacency (forward downward scan).
+    pub down_fwd: &'a DownAdjFlat,
+    /// Target-keyed reverse DOWN adjacency (arrive field).
+    pub down_rev: &'a DownReverseAdjFlat,
+}
+
+/// One isochrone query against one weight set — the input every surface
+/// (REST single/contours, REST bands, `/isochrone/bulk`, Flight `isochrone`,
+/// catchment road hull) used to spell out for itself before #549.
+pub struct IsochroneQuery<'a> {
+    /// Raw query point (also the stamped access-leg pin, #535).
+    pub lon: f64,
+    pub lat: f64,
+    /// One topology per entry, returned in THIS order.
+    pub thresholds: &'a [u32],
+    /// `true` = arrive field (reverse PHAST); `false` = depart.
+    pub reverse: bool,
+    /// Contour-config key — the mode name AS THE CALLER NAMES IT
+    /// (`SparseContourConfig::for_mode_name_with_threshold`).
+    pub mode_name: &'a str,
+    /// Snap bitset; `None` = unfiltered (Flight / catchment).
+    pub snap_mask: Option<&'a [u64]>,
+    /// Recustomized flats (avoid / exclude). `Some` ALSO forces the legacy
+    /// single seed: phantom partial costs assume base weights.
+    pub flats: Option<IsochroneFlats<'a>>,
+    /// `include=network` at the max threshold (shares that frontier).
+    pub include_network: bool,
+}
+
+/// Everything the surfaces need back: the settled field (for
+/// `reachable_edges` counts), one topology per requested threshold, the
+/// exact snapped anchor, and the reached network when asked for.
+pub struct IsochroneField {
+    /// `(original EBG id, label)` within the MAX threshold.
+    pub settled: Vec<(u32, u32)>,
+    /// One entry per `IsochroneQuery::thresholds` entry, same order.
+    pub topologies: Vec<Vec<ContourPolygon>>,
+    /// `include=network`: reached road polylines as `[lon, lat]`.
+    pub network: Option<Vec<Vec<[f64; 2]>>>,
+    /// Exact snapped center (`origin_anchor`), when the phantom snap ran.
+    pub anchor: Option<(f64, f64)>,
+}
+
+/// Why an isochrone could not even start. Each surface renders its own
+/// message (400 / 404 / empty WKB) — the core stays transport-agnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsochroneSnapError {
+    /// The center does not snap to the road network.
+    NoSnap,
+    /// It snaps, but the snapped edge is not accessible for this mode.
+    NotAccessible,
+}
+
+/// Depart frontiers memoised per DISTINCT threshold: `include=network` at
+/// the max threshold reuses that threshold's contour frontier instead of
+/// recomputing it (#549 — `depart_frontier` used to run twice per request).
+struct FrontierCache<'a> {
+    /// `(threshold, frontier)`, at most one entry per distinct threshold.
+    slots: Vec<(u32, Vec<(u32, f32)>)>,
+    /// An arrive field has no frontier: the settled edge IS the partial.
+    reverse: bool,
+    phast_settled: &'a [(u32, u32)],
+    up: &'a UpAdjFlat,
+    down_fwd: &'a DownAdjFlat,
+    mode_data: &'a ModeData,
+    node_weights: &'a [u32],
+}
+
+impl FrontierCache<'_> {
+    fn slot(&mut self, threshold: u32) -> usize {
+        if let Some(i) = self.slots.iter().position(|(t, _)| *t == threshold) {
+            return i;
+        }
+        let frontier = if self.reverse {
+            Vec::new()
+        } else {
+            crate::server::isochrone_handler::depart_frontier(
+                self.phast_settled,
+                threshold,
+                self.up,
+                self.down_fwd,
+                self.mode_data,
+                self.node_weights,
+            )
+        };
+        self.slots.push((threshold, frontier));
+        self.slots.len() - 1
+    }
+}
+
+/// THE isochrone pipeline: snap → phantom seeds → seeded PHAST →
+/// rank→original → per-threshold depart frontier → `ReachModel` →
+/// topology (one simple polygon, the origin's component).
+///
+/// Every isochrone surface goes through here so they cannot drift apart:
+/// same seeds, same thresholds, same anchor, same access-leg pin.
+pub fn isochrone_polygons(
+    state: &ServerState,
+    mode_data: &ModeData,
+    mode: Mode,
+    q: &IsochroneQuery<'_>,
+) -> Result<IsochroneField, IsochroneSnapError> {
+    // Directional snap role (#197): depart → the center is a source (needs
+    // outbound arcs), arrive → a destination (needs inbound).
+    let role = if q.reverse {
+        SnapRole::Dst
+    } else {
+        SnapRole::Src
+    };
+    let center_orig = state
+        .snap_index
+        .snap_filtered_role(
+            q.lon,
+            q.lat,
+            mode.0,
+            q.snap_mask,
+            role.role_filter(mode_data),
+        )
+        .ok_or(IsochroneSnapError::NoSnap)?;
+    let center_rank = mode_data.orig_to_rank[center_orig as usize];
+    if center_rank == u32::MAX {
+        return Err(IsochroneSnapError::NotAccessible);
+    }
+
+    // #506: phantom center — seed both directed twins (and near-equidistant
+    // parallel edges) so the polygon isn't committed to one departure /
+    // arrival direction of the snapped edge. Custom-weight paths
+    // (avoid/exclude) keep the legacy single seed.
+    let (seeds, anchor) = if q.flats.is_none() {
+        crate::server::phantom::isochrone_center_seeds(
+            state,
+            mode_data,
+            mode,
+            q.lon,
+            q.lat,
+            role,
+            q.snap_mask,
+            q.reverse,
+            center_rank,
+        )
+    } else {
+        (vec![(center_rank, 0)], None)
+    };
+
+    let up = q.flats.map_or(&mode_data.up_adj_flat, |f| f.up);
+    let down_fwd = q.flats.map_or(&mode_data.down_adj_flat, |f| f.down_fwd);
+    let down_rev = q.flats.map_or(&mode_data.down_rev_flat, |f| f.down_rev);
+    let node_weights = &mode_data.node_weights[..];
+
+    // One PHAST run at the MAX threshold; every contour is a slice of it.
+    let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
+    let phast_settled = if q.reverse {
+        crate::server::isochrone_handler::run_phast_bounded_fast_reverse_seeded(
+            up,
+            down_rev,
+            &seeds,
+            max_threshold,
+            mode,
+        )
+    } else {
+        crate::server::isochrone_handler::run_phast_bounded_fast_seeded(
+            up,
+            down_fwd,
+            &seeds,
+            max_threshold,
+            mode,
+        )
+    };
+
+    // Rank → original EBG id (ranks are kept: the depart frontier scans arcs).
+    let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
+    for &(rank, dist) in &phast_settled {
+        let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        settled.push((mode_data.filtered_to_original[filtered_id as usize], dist));
+    }
+
+    let mut frontiers = FrontierCache {
+        slots: Vec::new(),
+        reverse: q.reverse,
+        phast_settled: &phast_settled,
+        up,
+        down_fwd,
+        mode_data,
+        node_weights,
+    };
+    let mut topologies = Vec::with_capacity(q.thresholds.len());
+    for &threshold in q.thresholds {
+        let slot = frontiers.slot(threshold);
+        topologies.push(build_isochrone_topology(
+            &settled,
+            threshold,
+            node_weights,
+            &state.ebg_nodes,
+            &state.edge_geom,
+            q.mode_name,
+            anchor,
+            Some((q.lon, q.lat)),
+            &ReachModel::for_direction(q.reverse, &frontiers.slots[slot].1),
+        ));
+    }
+
+    let network = q.include_network.then(|| {
+        let slot = frontiers.slot(max_threshold);
+        crate::server::isochrone_handler::build_network_geometry(
+            &settled,
+            max_threshold,
+            node_weights,
+            &state.ebg_nodes,
+            &state.edge_geom,
+            &ReachModel::for_direction(q.reverse, &frontiers.slots[slot].1),
+        )
+    });
+
+    Ok(IsochroneField {
+        settled,
+        topologies,
+        network,
+        anchor,
+    })
+}
+
+/// The three mutually exclusive contour encodings of one ring:
+/// `(polygon, polygon_geojson, polygon_points)`.
+pub type EncodedContour = (Option<String>, Option<Vec<[f64; 2]>>, Option<Vec<Point>>);
+
+/// ONE contour encoder for every surface (#548.3): the ring is normalised
+/// exactly once — CCW like the WKB encoder, then CLOSED — and only then
+/// rendered in the requested format. The band branch used to re-encode
+/// inline and shipped an unclosed GeoJSON ring; by construction it cannot
+/// any more.
+pub fn encode_contour(ring: &[Point], format: GeometryFormat) -> EncodedContour {
+    fn normalise(mut coords: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+        crate::range::wkb_stream::ensure_ccw(&mut coords);
+        if let (Some(&first), Some(&last)) = (coords.first(), coords.last())
+            && first != last
+        {
+            coords.push(first);
+        }
+        coords
+    }
+    match format {
+        GeometryFormat::Polyline6 => {
+            let pts: Vec<Point> = normalise(ring.iter().map(|p| (p.lon, p.lat)).collect())
+                .into_iter()
+                .map(|(lon, lat)| Point { lon, lat })
+                .collect();
+            (Some(encode_polyline6(&pts)), None, None)
+        }
+        GeometryFormat::GeoJson => {
+            // 5 decimals (~1 m) — the JSON surfaces have always truncated
+            // before orienting, so the ring's winding is judged on the same
+            // coordinates the client receives.
+            let trunc = |v: f64| (v * 1e5).round() / 1e5;
+            let coords = normalise(ring.iter().map(|p| (trunc(p.lon), trunc(p.lat))).collect());
+            (
+                None,
+                Some(coords.into_iter().map(|(x, y)| [x, y]).collect()),
+                None,
+            )
+        }
+        GeometryFormat::Points => {
+            let pts: Vec<Point> = normalise(ring.iter().map(|p| (p.lon, p.lat)).collect())
+                .into_iter()
+                .map(|(lon, lat)| Point { lon, lat })
+                .collect();
+            (None, None, Some(pts))
+        }
+    }
+}
+
+/// The primary polygon's outer ring as `Point`s — the legacy
+/// `polygon` / `polygon_geojson` / `polygon_points` view of a topology.
+pub fn primary_outer_ring(topology: &[ContourPolygon]) -> Vec<Point> {
+    topology
+        .first()
+        .map(|p| {
+            p.outer
+                .iter()
+                .map(|&(lon, lat)| Point { lon, lat })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Orientation of a frontier edge's stored polyline for this traversal:
 /// `Some(false)` = stored order, `Some(true)` = reversed (only its LAST
 /// point touches the reached set), `None` = neither endpoint touches it.
@@ -505,7 +819,7 @@ pub fn build_isochrone_geometry_sparse(
 /// reachable roads.
 pub(crate) fn frontier_orientation(
     points: &[(i32, i32)],
-    reached_ends: &HashSet<(i32, i32)>,
+    reached_ends: &FxHashSet<(i32, i32)>,
 ) -> Option<bool> {
     match points {
         [first, .., last] => match (reached_ends.contains(first), reached_ends.contains(last)) {
@@ -558,7 +872,7 @@ mod frontier_orientation_tests {
 
     #[test]
     fn frontier_orientation_from_reached_endpoints() {
-        let mut reached = HashSet::new();
+        let mut reached = FxHashSet::default();
         reached.insert((10, 10));
         let fwd = [(10, 10), (20, 20), (30, 30)];
         let rev = [(30, 30), (20, 20), (10, 10)];

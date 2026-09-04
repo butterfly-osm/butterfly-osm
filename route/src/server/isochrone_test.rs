@@ -111,6 +111,109 @@ mod tests {
     // numbers as locals and prints them inline; nothing constructed
     // or read the struct.
 
+    /// #548.3 / #549: ONE contour encoder for the median branch, the
+    /// uncertainty=bands branch, the bulk endpoint and Flight. The band
+    /// branch used to re-encode inline and shipped an OPEN GeoJSON ring;
+    /// closure is now structural — no branch can forget it.
+    #[test]
+    fn encode_contour_closes_the_ring_in_every_format() {
+        use crate::server::geometry::{GeometryFormat, decode_polyline6, encode_contour};
+
+        // Deliberately CW and deliberately OPEN: exactly what the sparse
+        // tracer hands over.
+        let ring: Vec<IsoPoint> = [(4.35, 50.85), (4.35, 50.86), (4.36, 50.86), (4.36, 50.85)]
+            .iter()
+            .map(|&(lon, lat)| IsoPoint { lon, lat })
+            .collect();
+
+        let (poly, geo, pts) = encode_contour(&ring, GeometryFormat::Polyline6);
+        let decoded = decode_polyline6(&poly.expect("polyline6 ring"));
+        assert_eq!(decoded.len(), ring.len() + 1, "polyline6 ring must close");
+        assert_eq!(
+            decoded.first(),
+            decoded.last(),
+            "polyline6 first != last: ring left open"
+        );
+        assert!(geo.is_none() && pts.is_none());
+
+        let (poly, geo, pts) = encode_contour(&ring, GeometryFormat::GeoJson);
+        let geo = geo.expect("geojson ring");
+        assert_eq!(geo.len(), ring.len() + 1, "geojson ring must close");
+        assert_eq!(
+            geo.first(),
+            geo.last(),
+            "geojson first != last: this is the #548.3 band bug"
+        );
+        assert!(poly.is_none() && pts.is_none());
+
+        let (poly, geo, pts) = encode_contour(&ring, GeometryFormat::Points);
+        let pts = pts.expect("points ring");
+        assert_eq!(pts.len(), ring.len() + 1, "points ring must close");
+        assert_eq!(
+            (pts[0].lon, pts[0].lat),
+            (pts[pts.len() - 1].lon, pts[pts.len() - 1].lat),
+            "points first != last: ring left open"
+        );
+        assert!(poly.is_none() && geo.is_none());
+    }
+
+    /// The median and band branches encode the SAME ring through the SAME
+    /// encoder, and the `geometry` object a feature carries must be the
+    /// very same ring as its `polygon_geojson` — winding, truncation and
+    /// closure included.
+    #[test]
+    fn band_and_median_contours_encode_identically() {
+        use crate::range::ContourPolygon;
+        use crate::server::geometry::{GeometryFormat, encode_contour, primary_outer_ring};
+        use crate::server::isochrone_handler::topology_geojson;
+
+        let topology = vec![ContourPolygon {
+            outer: vec![
+                (4.351712, 50.850311),
+                (4.351712, 50.860317),
+                (4.361718, 50.860317),
+                (4.361718, 50.850311),
+            ],
+            holes: vec![],
+        }];
+        let ring = primary_outer_ring(&topology);
+
+        for format in [
+            GeometryFormat::Polyline6,
+            GeometryFormat::GeoJson,
+            GeometryFormat::Points,
+        ] {
+            // The median branch and the band branch build their feature
+            // from the same two calls (#549) — same ring in, same three
+            // fields out.
+            let median = encode_contour(&ring, format);
+            let band = encode_contour(&primary_outer_ring(&topology), format);
+            assert_eq!(median.0, band.0, "polyline6 differs between branches");
+            assert_eq!(median.1, band.1, "polygon_geojson differs between branches");
+            let same_points = match (&median.2, &band.2) {
+                (Some(a), Some(b)) => {
+                    a.len() == b.len()
+                        && a.iter()
+                            .zip(b)
+                            .all(|(p, q)| p.lon == q.lon && p.lat == q.lat)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            assert!(same_points, "polygon_points differs between branches");
+        }
+
+        // `geometry` (full topology) ≡ `polygon_geojson` (outer ring).
+        let (_, geo, _) = encode_contour(&ring, GeometryFormat::GeoJson);
+        let geo = geo.expect("geojson ring");
+        let outer = topology_geojson(&topology)["coordinates"][0].clone();
+        let outer: Vec<[f64; 2]> = serde_json::from_value(outer).expect("outer ring array");
+        assert_eq!(
+            geo, outer,
+            "the feature's geometry and polygon_geojson must be the same ring"
+        );
+    }
+
     #[test]
     fn test_sample_points_deterministic() {
         let points1 = sample_points_in_bbox(4.0, 5.0, 50.0, 51.0, 10, 42);
