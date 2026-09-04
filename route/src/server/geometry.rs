@@ -275,9 +275,10 @@ pub fn build_isochrone_geometry(
     .unwrap_or_default()
 }
 
-/// Full isochrone topology: every reachable component (primary — the one
-/// containing the origin — first) with its holes, WGS84 `(lon, lat)`.
-/// `build_isochrone_geometry` is the single-outer-ring view of this.
+/// The isochrone topology served to the API: the ONE polygon of the
+/// origin's component, no holes, WGS84 `(lon, lat)` — an isochrone is one
+/// simple polygon by definition (#535/#542), enforced by the contour type
+/// since #570. `build_isochrone_geometry` is the ring-only view of this.
 #[allow(clippy::too_many_arguments)]
 pub fn build_isochrone_topology(
     settled_nodes: &[(u32, u32)],
@@ -308,7 +309,6 @@ pub fn build_isochrone_topology(
         settled_input = settled_nodes.len(),
         polygon_vertices = result.first().map_or(0, |p| p.outer.len()),
         components = result.len(),
-        holes = result.iter().map(|p| p.holes.len()).sum::<usize>(),
         geometry_us = geo_us,
         "isochrone geometry pipeline timing"
     );
