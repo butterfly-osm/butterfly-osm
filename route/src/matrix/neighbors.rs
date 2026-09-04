@@ -180,6 +180,66 @@ fn neighbor_budget_error(entries: usize, budget: usize) -> String {
     )
 }
 
+/// Build the per-source neighbour mask for a `radius_km` request AND report
+/// the largest radius in play (`None` ⇒ no filter at all).
+///
+/// #602: ONE body for the Flight `matrix` action and REST `/table`. Both need
+/// the mask AND the kilometre value behind it — the mask alone does not retain
+/// it, and the compute bound below has to be derived from the same number the
+/// mask was built from or the two surfaces prune differently.
+pub fn build_radius_mask(
+    param: RadiusParam,
+    sources: &[(f64, f64)],
+    targets: &[(f64, f64)],
+) -> Result<(Option<Vec<Vec<u32>>>, Option<f64>), String> {
+    match param {
+        RadiusParam::None => Ok((None, None)),
+        RadiusParam::Km(r) => Ok((Some(build_neighbors(sources, targets, r)?), Some(r))),
+        RadiusParam::Auto => {
+            let r = auto_radius_km(sources, targets);
+            if r > 0.0 {
+                Ok((Some(build_neighbors(sources, targets, r)?), Some(r)))
+            } else {
+                Ok((None, None))
+            }
+        }
+        // #531: validated `len == origins` upstream. The widest origin sets
+        // the compute bound — a tighter one is still masked at emit.
+        RadiusParam::PerOrigin(radii) => {
+            let max = radii
+                .iter()
+                .copied()
+                .filter(|r| r.is_finite())
+                .fold(None, |acc: Option<f64>, r| {
+                    Some(acc.map_or(r, |a| a.max(r)))
+                });
+            let mask = build_neighbors_per_origin(sources, targets, &radii)?;
+            Ok((Some(mask), max))
+        }
+    }
+}
+
+/// #538/#602: the conservative TRAVEL-TIME bound a `radius_km` implies, in
+/// seconds.
+///
+/// Crow-fly kilometres cannot bound road time exactly, so the cap is
+/// deliberately generous — a 1.8× detour driven at 36 km/h, plus a flat
+/// allowance for the first and last mile — and every in-radius cell it still
+/// cuts is recomputed EXACTLY by the caller's rescue pass. The two constants
+/// trade rescue frequency against sweep pruning; they never trade
+/// correctness, because nothing is served straight out of the bounded sweep
+/// above the cap.
+///
+/// ONE body for the Flight `matrix` action and REST `/table` (#602): a caller
+/// that sets a radius must get the same cells whichever transport it uses.
+pub fn radius_compute_cap_s(radius_km: f64) -> u32 {
+    const RADIUS_SEC_PER_KM: f64 = 180.0; // ≥ detour 1.8 at 36 km/h
+    const RADIUS_BASE_S: f64 = 900.0;
+    (radius_km * RADIUS_SEC_PER_KM + RADIUS_BASE_S)
+        .ceil()
+        .min(u32::MAX as f64) as u32
+}
+
 /// For each source, return the sorted indices of targets within `radius_km`.
 ///
 /// Coordinates are `(lon, lat)`. The algorithm sorts targets by longitude once,
