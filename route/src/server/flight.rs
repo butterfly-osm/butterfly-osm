@@ -429,35 +429,62 @@ struct MatrixParams {
     sparse: bool,
 }
 
-/// Build matrix RecordBatch from flat u32 distances.
+/// Build ONE matrix `RecordBatch` from a flat row-major slice
+/// (`matrix[row * dst_orig.len() + col]`, CCH seconds).
+///
+/// This is the SINGLE emit for BOTH matrix paths — the small bucket-M2M
+/// branch (one batch for the whole request) and the large PHAST-tiled branch
+/// (one batch per source tile). They differ only in what they hand in: the
+/// small branch passes every valid endpoint and an unbounded `threshold` (its
+/// time bound is already masked into both channels before emit), the tiled
+/// branch passes one source block plus the bound. One body is what makes the
+/// "a small and a large request return the SAME columns" invariant
+/// STRUCTURAL: after #534 it survived only as a comment plus a cross-path
+/// test, and the divergence it was written for — the tiled copy hardcoding
+/// `distance_m = u32::MAX` while durations were real — had already shipped,
+/// with large-request clients reading whole tiles as unreachable.
+///
+/// `src_orig` / `dst_orig` are ORIGINAL input positions (never compacted tile
+/// offsets); they are emitted verbatim as `source_idx` / `target_idx`.
+/// `neighbor_mask[orig_src]`, when present, is the sorted set of in-radius
+/// destination ORIGINAL indices. Cells above `threshold` are nulled (#415;
+/// `u32::MAX` ⇒ unbounded ⇒ never fires). `lat_matrix` shares `matrix`'s
+/// layout and carries length-along-time metres.
+///
+/// Returns `Ok(None)` when no cell survived, so a caller that would otherwise
+/// stream an empty batch can skip it; a non-empty dense grid always yields
+/// `Ok(Some(_))`.
 #[allow(clippy::too_many_arguments)]
 fn build_matrix_batch(
     matrix: &[u32],
     lat_matrix: Option<&[u32]>,
-    n_valid_origin: usize,
-    n_valid_dst: usize,
-    valid_src_indices: &[usize],
-    valid_dst_indices: &[usize],
-    schema: Arc<Schema>,
+    src_orig: &[usize],
+    dst_orig: &[usize],
+    threshold: u32,
     neighbor_mask: Option<&[Vec<u32>]>,
+    schema: Arc<Schema>,
     sparse: bool,
-) -> std::result::Result<RecordBatch, Status> {
-    let capacity = n_valid_origin * n_valid_dst;
+) -> std::result::Result<Option<RecordBatch>, Status> {
+    let n_dst = dst_orig.len();
+    let capacity = src_orig.len() * n_dst;
     let mut src_idx = UInt32Builder::with_capacity(capacity);
     let mut tgt_idx = UInt32Builder::with_capacity(capacity);
     let mut dur_ms = UInt32Builder::with_capacity(capacity);
     let mut dist_m = UInt32Builder::with_capacity(capacity);
+    let mut emitted = 0usize;
 
-    for (si, &orig_src) in valid_src_indices.iter().enumerate() {
+    for (row, &orig_src) in src_orig.iter().enumerate() {
         let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_src].as_slice());
-        for (di, &orig_dst) in valid_dst_indices.iter().enumerate() {
-            let pruned = if let Some(ns) = neighbors {
-                ns.binary_search(&(orig_dst as u32)).is_err()
+        for (col, &orig_dst) in dst_orig.iter().enumerate() {
+            let pruned = neighbors.is_some_and(|ns| ns.binary_search(&(orig_dst as u32)).is_err());
+            let cell = row * n_dst + col;
+            let d = if pruned {
+                u32::MAX
             } else {
-                false
+                let v = matrix[cell];
+                // #415: null cells beyond the time bound.
+                if v > threshold { u32::MAX } else { v }
             };
-            let cell_idx = si * n_valid_dst + di;
-            let d = if pruned { u32::MAX } else { matrix[cell_idx] };
             // #532: in sparse mode, omit sentinel cells entirely. Keyed on the
             // DURATION channel only — a reachable cell whose distance_m is
             // unknown (old container without cch.lat, or a K-best-rescued cell)
@@ -474,95 +501,11 @@ fn build_matrix_batch(
                 // dur_ms is the time matrix value scaled to ms (post-#297
                 // weights are in seconds).
                 dur_ms.append_value(d.saturating_mul(1000));
-                // #372: when the 2-channel run produced a lat matrix,
-                // emit it as distance_m. Otherwise emit u32::MAX (the
-                // pre-#372 behaviour — old containers without cch.lat).
-                let dist_val = lat_matrix.map(|lm| lm[cell_idx]).unwrap_or(u32::MAX);
-                dist_m.append_value(dist_val);
-            }
-        }
-    }
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(src_idx.finish()) as ArrayRef,
-            Arc::new(tgt_idx.finish()),
-            Arc::new(dur_ms.finish()),
-            Arc::new(dist_m.finish()),
-        ],
-    )
-    .map_err(|e| Status::internal(format!("Arrow error: {}", e)))
-}
-
-/// #532: build ONE streamed tile's RecordBatch (single-channel) for the
-/// large-matrix PHAST-tiled path. Extracted from the `spawn_blocking` closure
-/// so the dense/sparse + time-bound + radius-mask emit semantics are
-/// unit-testable instead of buried in a background task.
-///
-/// `tile_matrix` is row-major `block_src_orig.len() × valid_dst.len()` in CCH
-/// seconds. `neighbor_mask[orig_src]` (when present) is the sorted set of
-/// in-radius destination ORIGINAL indices. Emitted `source_idx`/`target_idx`
-/// are ORIGINAL input positions (never compacted tile offsets). Distance is
-/// always `u32::MAX` here — the tiled path is duration-only. Returns `Ok(None)`
-/// when sparse drops every cell so the caller skips streaming an empty batch;
-/// dense always returns `Ok(Some(_))`.
-#[allow(clippy::too_many_arguments)]
-fn build_matrix_tile_batch(
-    tile_matrix: &[u32],
-    lat_matrix: Option<&[u32]>,
-    block_src_orig: &[usize],
-    valid_dst: &[usize],
-    threshold: u32,
-    neighbor_mask: Option<&[Vec<u32>]>,
-    schema: Arc<Schema>,
-    sparse: bool,
-) -> std::result::Result<Option<RecordBatch>, Status> {
-    let n_block_dst = valid_dst.len();
-    let capacity = block_src_orig.len() * n_block_dst;
-    let mut si_arr = UInt32Builder::with_capacity(capacity);
-    let mut di_arr = UInt32Builder::with_capacity(capacity);
-    let mut dur_arr = UInt32Builder::with_capacity(capacity);
-    let mut dist_arr = UInt32Builder::with_capacity(capacity);
-    let mut emitted = 0usize;
-
-    for (bsi, &orig_si) in block_src_orig.iter().enumerate() {
-        let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_si].as_slice());
-        for (bdi, &orig_di) in valid_dst.iter().enumerate() {
-            let pruned = if let Some(ns) = neighbors {
-                ns.binary_search(&(orig_di as u32)).is_err()
-            } else {
-                false
-            };
-            let d = if pruned {
-                u32::MAX
-            } else {
-                let v = tile_matrix[bsi * n_block_dst + bdi];
-                // #415: null cells beyond the time bound. Unbounded ⇒
-                // threshold == u32::MAX so this never fires.
-                if v > threshold { u32::MAX } else { v }
-            };
-            // #532: sparse omits sentinel cells (duration channel only).
-            if sparse && d == u32::MAX {
-                continue;
-            }
-            let cell = bsi * n_block_dst + bdi;
-            si_arr.append_value(orig_si as u32);
-            di_arr.append_value(orig_di as u32);
-            if d == u32::MAX {
-                dur_arr.append_value(u32::MAX);
-                dist_arr.append_value(u32::MAX);
-            } else {
-                // seconds → milliseconds (matches build_matrix_batch and the
-                // `duration_ms` schema name).
-                dur_arr.append_value(d.saturating_mul(1000));
-                // #534: emit the length-along-time distance when the 2-channel
-                // run produced it (real metres along the time-optimal path),
-                // exactly like the small-matrix branch. u32::MAX only on
-                // containers without cch.lat — never a silent column-wide MAX
-                // on the big-request path anymore.
-                let dist_val = lat_matrix.map(|lm| lm[cell]).unwrap_or(u32::MAX);
-                dist_arr.append_value(dist_val);
+                // #372/#534: emit the length-along-time distance when the
+                // 2-channel run produced it (real metres along the time-optimal
+                // path); u32::MAX only on containers without cch.lat — never a
+                // silent column-wide MAX on one of the two paths.
+                dist_m.append_value(lat_matrix.map(|lm| lm[cell]).unwrap_or(u32::MAX));
             }
             emitted += 1;
         }
@@ -574,14 +517,14 @@ fn build_matrix_tile_batch(
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(si_arr.finish()) as ArrayRef,
-            Arc::new(di_arr.finish()),
-            Arc::new(dur_arr.finish()),
-            Arc::new(dist_arr.finish()),
+            Arc::new(src_idx.finish()) as ArrayRef,
+            Arc::new(tgt_idx.finish()),
+            Arc::new(dur_ms.finish()),
+            Arc::new(dist_m.finish()),
         ],
     )
     .map(Some)
-    .map_err(|e| Status::internal(format!("Arrow: {}", e)))
+    .map_err(|e| Status::internal(format!("Arrow error: {}", e)))
 }
 
 pub type BatchStream =
@@ -1224,17 +1167,20 @@ fn do_matrix(
         // `dur_ms` came from p2p_with_kbest_fallback). The Flight
         // schema callers already treat u32::MAX as "no distance".
         let schema = Arc::new(matrix_schema());
+        // The bound is already masked into BOTH channels above, so this emit
+        // is unbounded (`u32::MAX`); a fully-dropped sparse request still owes
+        // the client one (empty) batch with the schema, hence the fallback.
         let batch = build_matrix_batch(
             &matrix,
             lat_matrix_opt.as_deref(),
-            n_valid_origin,
-            n_valid_dst,
             &valid_origin,
             &valid_dst,
-            schema,
+            u32::MAX,
             neighbor_mask.as_ref().map(|v| v.as_slice()),
+            schema.clone(),
             params.sparse,
-        )?;
+        )?
+        .unwrap_or_else(|| RecordBatch::new_empty(schema));
         let _ = &mut lat_matrix_opt; // silence unused-mut if later refactored
 
         // Single synchronous batch — built with `?` above, so it is either
@@ -1438,7 +1384,7 @@ fn do_matrix(
                     "matrix tile #534 telemetry"
                 );
 
-                let batch = match build_matrix_tile_batch(
+                let batch = match build_matrix_batch(
                     &tile_matrix,
                     tile_lat.as_deref(),
                     &block_src_orig,
@@ -5241,12 +5187,17 @@ mod route_batch_prune_tests {
 /// #532: sparse matrix output — sentinel cells (radius-pruned, beyond a time
 /// bound, or unreachable) are omitted entirely instead of being emitted as
 /// `u32::MAX` rows. Full invariant battery for BOTH emit paths: the small-
-/// matrix `build_matrix_batch` (2-channel capable) and the streamed
-/// `build_matrix_tile_batch` (duration-only tile). Every invariant the sparse
+/// matrix branch (whole grid, unbounded at emit) and the streamed tiled
+/// branch (one source block, bound applied at emit). Every invariant the sparse
 /// contract makes is pinned here so a regression breaks a named test.
+///
+/// #580: both paths are now the SAME `build_matrix_batch` body, shaped by the
+/// two call-site helpers below (`emit_small` / `emit_tile`) — the cross-path
+/// agreement tests therefore pin the two SHAPINGS, and the column contract
+/// itself can no longer drift.
 #[cfg(test)]
 mod matrix_sparse_tests {
-    use super::{build_matrix_batch, build_matrix_tile_batch, matrix_schema};
+    use super::{build_matrix_batch, matrix_schema};
     use arrow::array::{Array, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -5266,8 +5217,40 @@ mod matrix_sparse_tests {
             .collect()
     }
 
+    /// The SMALL branch's call site, verbatim: the whole valid grid, no bound
+    /// at emit (its `max_minutes` mask already ran over both channels), and an
+    /// empty batch — never "nothing" — when sparse drops every cell.
+    fn emit_small(
+        m: &[u32],
+        lat: Option<&[u32]>,
+        vs: &[usize],
+        vd: &[usize],
+        mask: Option<&[Vec<u32>]>,
+        sparse: bool,
+    ) -> RecordBatch {
+        build_matrix_batch(m, lat, vs, vd, MAX, mask, schema(), sparse)
+            .unwrap()
+            .unwrap_or_else(|| RecordBatch::new_empty(schema()))
+    }
+
+    /// The TILED branch's call site, verbatim: one source block, the time
+    /// bound applied at emit, and `None` (stream nothing) when no cell
+    /// survives.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_tile(
+        m: &[u32],
+        lat: Option<&[u32]>,
+        src: &[usize],
+        dst: &[usize],
+        threshold: u32,
+        mask: Option<&[Vec<u32>]>,
+        sparse: bool,
+    ) -> Option<RecordBatch> {
+        build_matrix_batch(m, lat, src, dst, threshold, mask, schema(), sparse).unwrap()
+    }
+
     // ============================ small path ============================
-    // build_matrix_batch. Fixture: originals src {0,1} × dst {0,1,2}, so the
+    // The small branch's shaping (`emit_small`). Fixture: originals src {0,1} × dst {0,1,2}, so the
     // valid index vectors are contiguous here (index-preservation gets its own
     // non-contiguous fixture below). Row-major matrix[si*3 + di]:
     //   src0: [100, MAX, 300]     src1: [MAX, 200, 250]
@@ -5284,18 +5267,7 @@ mod matrix_sparse_tests {
 
     fn build_small(lat: Option<&[u32]>, mask: Option<&[Vec<u32>]>, sparse: bool) -> RecordBatch {
         let (m, vs, vd, _default_mask) = small_fixture();
-        build_matrix_batch(
-            &m,
-            lat,
-            vs.len(),
-            vd.len(),
-            &vs,
-            &vd,
-            schema(),
-            mask,
-            sparse,
-        )
-        .unwrap()
+        emit_small(&m, lat, &vs, &vd, mask, sparse)
     }
 
     /// I1 — dense emits the full valid grid (n_valid_src × n_valid_dst), with
@@ -5381,7 +5353,7 @@ mod matrix_sparse_tests {
         let m = vec![MAX; 6];
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
-        let b = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, true).unwrap();
+        let b = emit_small(&m, None, &vs, &vd, None, true);
         assert_eq!(b.num_rows(), 0);
         assert_eq!(b.schema().as_ref(), &matrix_schema());
     }
@@ -5393,8 +5365,8 @@ mod matrix_sparse_tests {
         let m = vec![10, 20, 30, 40, 50, 60];
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
-        let dense = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, false).unwrap();
-        let sparse = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, true).unwrap();
+        let dense = emit_small(&m, None, &vs, &vd, None, false);
+        let sparse = emit_small(&m, None, &vs, &vd, None, true);
         assert_eq!(rows(&dense), rows(&sparse));
         assert_eq!(sparse.num_rows(), 6);
     }
@@ -5408,7 +5380,7 @@ mod matrix_sparse_tests {
         let m = vec![70, MAX, MAX, 90];
         let vs = vec![2usize, 5];
         let vd = vec![1usize, 4];
-        let b = build_matrix_batch(&m, None, 2, 2, &vs, &vd, schema(), None, true).unwrap();
+        let b = emit_small(&m, None, &vs, &vd, None, true);
         let mut got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         got.sort();
         // (2,1)=70 and (5,4)=90 survive; the two MAX cells drop.
@@ -5433,7 +5405,7 @@ mod matrix_sparse_tests {
     }
 
     // ========================== streaming path ==========================
-    // build_matrix_tile_batch (duration-only, returns Option). Fixture:
+    // The tiled branch's shaping (`emit_tile`, returns Option). Fixture:
     // block_src_orig {0,3} (NON-contiguous) × valid_dst {1,2,4}. tile row-major
     // 2×3 in seconds:
     //   src0: [50, MAX, 300]      src3: [MAX, 120, 999]
@@ -5455,10 +5427,8 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_dense_full_grid_distance_max() {
         let (m, src, dst, mask) = tile_fixture();
-        let b =
-            build_matrix_tile_batch(&m, None, &src, &dst, TILE_THR, Some(&mask), schema(), false)
-                .unwrap()
-                .expect("dense tile is never None");
+        let b = emit_tile(&m, None, &src, &dst, TILE_THR, Some(&mask), false)
+            .expect("dense tile is never None");
         assert_eq!(b.num_rows(), 6);
         assert!(
             rows(&b).iter().all(|r| r.3 == MAX),
@@ -5473,9 +5443,7 @@ mod matrix_sparse_tests {
     fn tile_sparse_equals_dense_minus_sentinels() {
         let (m, src, dst, mask) = tile_fixture();
         let b =
-            build_matrix_tile_batch(&m, None, &src, &dst, TILE_THR, Some(&mask), schema(), true)
-                .unwrap()
-                .expect("3 cells survive");
+            emit_tile(&m, None, &src, &dst, TILE_THR, Some(&mask), true).expect("3 cells survive");
         let mut got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         got.sort();
         assert_eq!(got, vec![(0, 1, 50_000), (0, 4, 300_000), (3, 2, 120_000)]);
@@ -5488,18 +5456,14 @@ mod matrix_sparse_tests {
     fn tile_threshold_bound_gates_cells() {
         let (m, src, dst, _mask) = tile_fixture();
         // Unbounded, no mask: every non-MAX matrix cell survives.
-        let b = build_matrix_tile_batch(&m, None, &src, &dst, MAX, None, schema(), true)
-            .unwrap()
-            .unwrap();
+        let b = emit_tile(&m, None, &src, &dst, MAX, None, true).unwrap();
         let got: std::collections::BTreeSet<_> = rows(&b).iter().map(|r| (r.0, r.1)).collect();
         // matrix MAX only at (0,2) and (3,1); everything else (incl. 999) is in.
         let expect: std::collections::BTreeSet<_> =
             [(0, 1), (0, 4), (3, 2), (3, 4)].into_iter().collect();
         assert_eq!(got, expect);
         // Now bound at 500: (3,4)=999 drops back out.
-        let b2 = build_matrix_tile_batch(&m, None, &src, &dst, 500, None, schema(), true)
-            .unwrap()
-            .unwrap();
+        let b2 = emit_tile(&m, None, &src, &dst, 500, None, true).unwrap();
         assert!(rows(&b2).iter().all(|r| !(r.0 == 3 && r.1 == 4)));
     }
 
@@ -5509,18 +5473,7 @@ mod matrix_sparse_tests {
     fn tile_radius_mask_prunes_reachable() {
         // src {0} × dst {1,2}; both reachable, but mask allows only dst 2.
         let m = vec![40, 80];
-        let b = build_matrix_tile_batch(
-            &m,
-            None,
-            &[0],
-            &[1, 2],
-            MAX,
-            Some(&[vec![2u32]]),
-            schema(),
-            true,
-        )
-        .unwrap()
-        .unwrap();
+        let b = emit_tile(&m, None, &[0], &[1, 2], MAX, Some(&[vec![2u32]]), true).unwrap();
         let got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         assert_eq!(
             got,
@@ -5534,22 +5487,11 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_sparse_all_sentinels_is_none() {
         let m = vec![MAX; 4];
-        let none =
-            build_matrix_tile_batch(&m, None, &[0, 1], &[0, 1], MAX, None, schema(), true).unwrap();
+        let none = emit_tile(&m, None, &[0, 1], &[0, 1], MAX, None, true);
         assert!(none.is_none(), "all-sentinel sparse tile must be None");
         // pruned-to-empty also yields None.
         let m2 = vec![10, 20];
-        let none2 = build_matrix_tile_batch(
-            &m2,
-            None,
-            &[0],
-            &[0, 1],
-            MAX,
-            Some(&[vec![]]),
-            schema(),
-            true,
-        )
-        .unwrap();
+        let none2 = emit_tile(&m2, None, &[0], &[0, 1], MAX, Some(&[vec![]]), true);
         assert!(none2.is_none(), "fully-pruned sparse tile must be None");
     }
 
@@ -5558,9 +5500,8 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_dense_all_sentinels_is_some() {
         let m = vec![MAX; 4];
-        let b = build_matrix_tile_batch(&m, None, &[0, 1], &[0, 1], MAX, None, schema(), false)
-            .unwrap()
-            .expect("dense is always Some");
+        let b =
+            emit_tile(&m, None, &[0, 1], &[0, 1], MAX, None, false).expect("dense is always Some");
         assert_eq!(b.num_rows(), 4);
         assert!(rows(&b).iter().all(|r| r.2 == MAX && r.3 == MAX));
     }
@@ -5573,21 +5514,8 @@ mod matrix_sparse_tests {
     fn small_and_tile_agree_on_survivors() {
         // src {0,1} × dst {0,1,2}, reuse the small fixture's matrix + mask.
         let (m, vs, vd, mask) = small_fixture();
-        let small = build_matrix_batch(
-            &m,
-            None,
-            vs.len(),
-            vd.len(),
-            &vs,
-            &vd,
-            schema(),
-            Some(&mask),
-            true,
-        )
-        .unwrap();
-        let tile = build_matrix_tile_batch(&m, None, &vs, &vd, MAX, Some(&mask), schema(), true)
-            .unwrap()
-            .unwrap();
+        let small = emit_small(&m, None, &vs, &vd, Some(&mask), true);
+        let tile = emit_tile(&m, None, &vs, &vd, MAX, Some(&mask), true).unwrap();
         let key = |b: &RecordBatch| {
             let mut v: Vec<_> = rows(b).iter().map(|r| (r.0, r.1, r.2)).collect();
             v.sort();
@@ -5610,10 +5538,7 @@ mod matrix_sparse_tests {
         // src {0} × dst {0,1}: both reachable; lat carries real metres.
         let time = vec![50u32, 100];
         let lat = vec![700u32, 1400];
-        let b =
-            build_matrix_tile_batch(&time, Some(&lat), &[0], &[0, 1], MAX, None, schema(), false)
-                .unwrap()
-                .unwrap();
+        let b = emit_tile(&time, Some(&lat), &[0], &[0, 1], MAX, None, false).unwrap();
         let got: Vec<_> = rows(&b).iter().map(|r| (r.1, r.2, r.3)).collect();
         // (target, duration_ms, distance_m): duration = s×1000, distance = lat.
         assert_eq!(got, vec![(0, 50_000, 700), (1, 100_000, 1400)]);
@@ -5628,14 +5553,12 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_distance_max_without_lat() {
         let time = vec![50u32, 100];
-        let b = build_matrix_tile_batch(&time, None, &[0], &[0, 1], MAX, None, schema(), false)
-            .unwrap()
-            .unwrap();
+        let b = emit_tile(&time, None, &[0], &[0, 1], MAX, None, false).unwrap();
         assert!(rows(&b).iter().all(|r| r.3 == MAX));
     }
 
-    /// CROSS-PATH LOCK (#534): the small-matrix emit (`build_matrix_batch`) and
-    /// the streamed tile emit (`build_matrix_tile_batch`) must produce
+    /// CROSS-PATH LOCK (#534): the small-matrix emit (`emit_small`) and
+    /// the streamed tile emit (`emit_tile`) must produce
     /// BYTE-IDENTICAL rows — source, target, duration AND distance — for the
     /// same time+lat matrices. This is exactly the invariant #534 broke: the
     /// tile path hardcoded distance_m = u32::MAX while the small path emitted
@@ -5649,22 +5572,8 @@ mod matrix_sparse_tests {
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
         for sparse in [false, true] {
-            let small = build_matrix_batch(
-                &time,
-                Some(&lat),
-                vs.len(),
-                vd.len(),
-                &vs,
-                &vd,
-                schema(),
-                None,
-                sparse,
-            )
-            .unwrap();
-            let tile =
-                build_matrix_tile_batch(&time, Some(&lat), &vs, &vd, MAX, None, schema(), sparse)
-                    .unwrap()
-                    .unwrap();
+            let small = emit_small(&time, Some(&lat), &vs, &vd, None, sparse);
+            let tile = emit_tile(&time, Some(&lat), &vs, &vd, MAX, None, sparse).unwrap();
             let key = |b: &RecordBatch| {
                 let mut v = rows(b);
                 v.sort();
@@ -5680,6 +5589,47 @@ mod matrix_sparse_tests {
                 rows(&tile).iter().any(|r| r.3 != MAX),
                 "tile must emit real distances from lat"
             );
+        }
+    }
+
+    /// #580 STRUCTURAL LOCK: the small branch and the tiled branch emit the
+    /// IDENTICAL Arrow schema — same field count, names, data types and
+    /// nullability, in the same order — and it is `matrix_schema()`. Before
+    /// #580 this was a comment plus a values-only cross-path test; a builder
+    /// that dropped or renamed a column on one path only would have shipped.
+    /// Asserted for dense AND sparse, with and without a lat matrix, since
+    /// those are the axes on which the two emits used to differ.
+    #[test]
+    fn small_and_tile_emit_identical_schema() {
+        let time = vec![100, MAX, 300, MAX, 200, 250];
+        let lat = vec![1100, MAX, 3300, MAX, 2200, 2500];
+        let vs = vec![0usize, 1];
+        let vd = vec![0usize, 1, 2];
+        for sparse in [false, true] {
+            for lat_opt in [None, Some(lat.as_slice())] {
+                let small = emit_small(&time, lat_opt, &vs, &vd, None, sparse);
+                let tile = emit_tile(&time, lat_opt, &vs, &vd, MAX, None, sparse)
+                    .expect("cells survive in this fixture");
+                assert_eq!(
+                    small.schema(),
+                    tile.schema(),
+                    "small and tile must emit the same schema (sparse={sparse}, lat={})",
+                    lat_opt.is_some()
+                );
+                assert_eq!(small.schema().as_ref(), &matrix_schema());
+                assert_eq!(small.num_columns(), tile.num_columns());
+                for (a, b) in small
+                    .schema()
+                    .fields()
+                    .iter()
+                    .zip(tile.schema().fields().iter())
+                {
+                    assert_eq!(
+                        (a.name(), a.data_type(), a.is_nullable()),
+                        (b.name(), b.data_type(), b.is_nullable())
+                    );
+                }
+            }
         }
     }
 }
