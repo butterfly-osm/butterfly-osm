@@ -1,11 +1,12 @@
 //! Integration tests for #91 multi-region container loading + dispatch.
 //!
-//! These tests are `#[ignore]` because they require the prebuilt
-//! Belgium and Luxembourg `.butterfly` containers; CI does not ship
-//! either dataset. Run them locally with:
+//! The multi-region tests SELF-SKIP (#587) when the prebuilt Belgium and
+//! Luxembourg `.butterfly` containers are absent; CI ships neither. On a
+//! runner that has them, a plain `cargo test` runs them:
 //!
 //! ```bash
-//! cargo test -p butterfly-route --release --test multi_region -- --ignored
+//! BUTTERFLY_TEST_DATA_DIR=/path/to/data cargo test -p butterfly-route \
+//!     --release --test multi_region
 //! ```
 //!
 //! Test inventory (per #91 spec):
@@ -25,6 +26,19 @@ use std::path::Path;
 
 use butterfly_route::pack::{self, DEFAULT_REGION_ID, normalize_region_id};
 use butterfly_route::server::regions::{DispatchError, RegionsState};
+use butterfly_route::testutil;
+
+/// One skip line for this whole file (#587).
+struct Skip;
+impl Skip {
+    fn with_be_lu(&self) {
+        let _: Option<()> = testutil::skip(
+            "multi_region",
+            "Belgium + Luxembourg .butterfly containers",
+        );
+    }
+}
+const SKIP: Skip = Skip;
 
 const BE_CONTAINER: &str = "data/belgium/baseline.butterfly";
 const LU_CONTAINER: &str = "data/luxembourg/luxembourg.butterfly";
@@ -145,11 +159,9 @@ fn manifest_region_id_handles_garbage_fallsback() {
 /// Two regions discovered from a directory of `*.butterfly` files.
 /// Verifies sorting (BE before LU) and that both are present.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn loads_two_regions_from_directory() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -166,11 +178,9 @@ fn loads_two_regions_from_directory() {
 
 /// `--regions BE` filter loads only the matching container.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn region_filter_skips_unrequested_containers() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), Some(&["BE".to_string()]), None)
@@ -182,11 +192,9 @@ fn region_filter_skips_unrequested_containers() {
 /// Snapping a Brussels coordinate must dispatch to BE; Luxembourg
 /// city to LU. Verifies the multi-region snap-winner logic.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn dispatcher_picks_right_region_for_known_points() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -208,11 +216,9 @@ fn dispatcher_picks_right_region_for_known_points() {
 
 /// BE → BE p2p dispatch returns the BE state without 501.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn p2p_dispatch_same_region_be_to_be() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -226,11 +232,9 @@ fn p2p_dispatch_same_region_be_to_be() {
 
 /// LU → LU p2p dispatch returns the LU state without 501.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn p2p_dispatch_same_region_lu_to_lu() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -245,11 +249,9 @@ fn p2p_dispatch_same_region_lu_to_lu() {
 /// BE → LU is the **correctness invariant**: must return 501 with a
 /// clear "spans regions" error. No silent wrong answer, no panic.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn p2p_dispatch_cross_region_returns_501() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let regions = RegionsState::load_from_dir(dir.path(), None, None).expect("load_from_dir");
@@ -312,11 +314,9 @@ fn non_directory_data_dir_is_rejected() {
 /// Operator typo'd a region id; better to fail loudly than to start a
 /// zero-region server.
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg containers"]
 fn region_filter_excluding_everything_is_rejected() {
     let Some((be, lu)) = container_paths() else {
-        eprintln!("skipping: BE + LU containers not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = stage_dir(&be, &lu);
     let res = RegionsState::load_from_dir(dir.path(), Some(&["FR".to_string()]), None);
@@ -330,11 +330,9 @@ fn region_filter_excluding_everything_is_rejected() {
 /// region tag. Exercises the loader's dispatch table and the duplicate-
 /// region-id rejection path. Skipped if BE container is absent.
 #[test]
-#[ignore = "requires data/belgium container"]
 fn duplicate_region_id_is_rejected() {
     let Some((be, _)) = container_paths() else {
-        eprintln!("skipping: BE container not on disk");
-        return;
+        return SKIP.with_be_lu();
     };
     let dir = tempfile::tempdir().expect("tempdir");
     let dst1 = dir.path().join("be1.butterfly");

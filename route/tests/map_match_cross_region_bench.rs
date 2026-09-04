@@ -171,10 +171,12 @@ fn measure<F: FnMut() -> Option<usize>>(name: &str, n_trials: usize, mut f: F) -
 }
 
 #[test]
-#[ignore = "requires data/belgium + data/luxembourg + data/be-lu-overlay"]
 fn bench_map_match_cross_region() {
     let Some((be, lu, ov)) = fixture_paths() else {
-        eprintln!("skipping: BE + LU + overlay fixtures not on disk");
+        let _: Option<()> = butterfly_route::testutil::skip(
+            "map_match_cross_region_bench",
+            "Belgium + Luxembourg containers and the BE-LU overlay",
+        );
         return;
     };
 
