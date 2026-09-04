@@ -41,6 +41,20 @@ threshold.
   600 s), where the pre-fix field left **15.75 %** and **7.72 %** out, worst
   257 m. No over-reach: 0 unreachable points sit deeper than 150 m inside.
 
+**The gate tolerance was deliberately NOT tightened**, and the next person to
+re-measure on real data should be the one to do it. #544 proposed accepting at
+`reach_out_tol` 0.99 T for arrive (it is 0.95 T today, one knob shared by both
+directions). Two separate budgets meet there: this level defect, now fixed and
+proven exact, and the deliberate crumb filter — detached reach under ~300 m is
+not drawn, which `gate_isochrone_topology` budgets separately at 1.5 %. A
+crumb that IS reachable at, say, 0.97 T and sits > 150 m outside would start
+failing the reach gate under 0.99 T for a reason that has nothing to do with
+#544. Tightening it without a Belgium measurement would fold one budget into
+the other; **the arrive residual on real data was not re-measured here** (no
+server boot). To close it: measure both directions at 0.99 T on Belgium, and
+only then move the knob — or split it per direction if the crumb filter turns
+out to be what binds.
+
 ### 2026-09-04 — One query context for the handlers that never cross a region (#577)
 
 `RegionsState` was the axum state of a dozen handlers, but only `/route` and
