@@ -2439,6 +2439,43 @@ def rest_probes():
     }
 
 
+# Paths that take no request input at all: nothing to refuse, so they have
+# no invalid probe. Mirrors `INPUTLESS_PATHS` in route/src/server/api.rs.
+REST_INPUTLESS_PATHS = ("/health", "/version", "/regions")
+
+
+def rest_invalid_probes():
+    """One deliberately invalid request per input-taking path (#576): the
+    same shape as `rest_probes()`, with longitude 999 where a coordinate
+    belongs. Every one of them must be refused with a 4xx carrying the
+    documented `error` field — that is the shape check `/trip` and `/match`
+    were missing when they answered `{code, message}` instead."""
+    bad = (999.0, 50.8503)
+    d = (4.4025, 51.2194)
+    return {
+        "/route": ("GET", f"/route?origin_lon={bad[0]}&origin_lat={bad[1]}"
+                          f"&destination_lon={d[0]}&destination_lat={d[1]}&mode=car", None),
+        "/nearest": ("GET", f"/nearest?lon={bad[0]}&lat={bad[1]}&mode=car", None),
+        "/isochrone": ("GET", f"/isochrone?lon={bad[0]}&lat={bad[1]}&time_s=300&mode=car", None),
+        "/height": ("GET", f"/height?coordinates={bad[0]},{bad[1]}", None),
+        "/transit": ("GET", f"/transit?origin_lon={bad[0]}&origin_lat={bad[1]}"
+                            f"&destination_lon={d[0]}&destination_lat={d[1]}", None),
+        "/table": ("POST", "/table", {"origins": [list(bad)], "destinations": [list(d)],
+                                      "mode": "car", "annotations": "duration"}),
+        "/trip": ("POST", "/trip", {"points": [list(bad), list(d)], "mode": "car"}),
+        "/match": ("POST", "/match", {"points": [list(bad), list(d)], "mode": "car"}),
+        "/catchment": ("POST", "/catchment", {
+            "mode": "car", "hull_shape": "road", "percentiles": [50], "remove_outliers": False,
+            "stores": [{"id": "s1", "lon": bad[0], "lat": bad[1]}],
+            "clients": [{"lon": d[0], "lat": d[1]}]}),
+        "/isochrone/bulk": ("POST", "/isochrone/bulk",
+                            {"origins": [list(bad)], "time_s": 300, "mode": "car"}),
+        "/transit/bulk": ("POST", "/transit/bulk", {"queries": [
+            {"origin_lon": bad[0], "origin_lat": bad[1],
+             "destination_lon": d[0], "destination_lat": d[1]}]}),
+    }
+
+
 # status -> why it is a SKIP rather than a FAIL. ONLY documented-optional
 # surfaces belong here; anything else must answer 2xx.
 REST_PROBE_SKIPS = {
@@ -2501,6 +2538,49 @@ def gate_all_endpoints_smoke(base):
         if not ok:
             detail += f" body={payload[:160]!r}"
         passed &= check(f"REST {method} {path}", ok, detail)
+
+    # ---- One INVALID request per input-taking path (#576) ----
+    # The refusal shape is part of the API: every endpoint answers 4xx with
+    # the documented `error` field. `/trip` and `/match` served `{code,
+    # message}` instead until #576, and nothing here noticed.
+    invalid = rest_invalid_probes()
+    covered = sorted(set(documented) - set(REST_INPUTLESS_PATHS))
+    missing_invalid = [p for p in covered if p not in invalid]
+    passed &= check("every input-taking path has an invalid probe",
+        not missing_invalid, f"{len(invalid)} probes"
+        + (f"; MISSING: {missing_invalid}" if missing_invalid else ""))
+    for path in covered:
+        spec = invalid.get(path)
+        if spec is None:
+            continue  # already reported above
+        method, target, body = spec
+        try:
+            status, ctype, payload = http_status(f"{base}{target}", method=method, body=body,
+                                                 timeout=60)
+        except Exception as ex:
+            passed &= check(f"REST {method} {path} (invalid)", False, f"{type(ex).__name__}: {ex}")
+            continue
+        skips = REST_PROBE_SKIPS.get(path, {})
+        if status in skips:
+            print(f"  [SKIP] REST {method} {path} (invalid): {status} — {skips[status]}")
+            continue
+        detail = f"{status}"
+        ok = 400 <= status < 500
+        if not ok:
+            detail += f" not a 4xx; body={payload[:160]!r}"
+        else:
+            try:
+                doc_body = json.loads(payload)
+            except Exception as ex:
+                ok, detail = False, f"{status} undecodable JSON: {ex}"
+            else:
+                ok = isinstance(doc_body, dict) and isinstance(doc_body.get("error"), str) \
+                    and bool(doc_body["error"])
+                keys = sorted(doc_body) if isinstance(doc_body, dict) else type(doc_body).__name__
+                detail = f"{status} keys={keys}"
+                if not ok:
+                    detail += " — no documented `error` field"
+        passed &= check(f"REST {method} {path} (invalid) carries `error`", ok, detail)
 
     # ---- Flight ----
     if not flight_enabled():
