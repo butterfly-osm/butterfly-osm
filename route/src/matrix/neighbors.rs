@@ -15,6 +15,9 @@
 //! applying a `neighbor_mask` after the M2M solve — see `table.rs` and
 //! `catchment.rs` for the call sites.
 
+use rayon::prelude::*;
+
+use crate::matrix::bucket_ch::{DownReverseAdjFlat, EngineSeed, UpAdjFlat};
 use crate::nbg::haversine_distance;
 
 /// Parsed `radius_km` parameter as received from a JSON request body.
@@ -242,6 +245,188 @@ pub fn radius_compute_cap_s(radius_km: f64) -> u32 {
     (radius_km * RADIUS_SEC_PER_KM + RADIUS_BASE_S)
         .ceil()
         .min(u32::MAX as f64) as u32
+}
+
+/// Everything the exact rescue pass needs: the graph, the seed sets, the mask
+/// and the two bounds.
+///
+/// #602: ONE rescue body for the Flight `matrix` action and REST `/table`.
+/// `src_ix` / `dst_ix` map a matrix ROW/COLUMN back to the request index the
+/// mask is keyed by — Flight compacts invalid endpoints out of the grid, REST
+/// does not, and that mapping was the only real difference between the two
+/// copies.
+pub struct RadiusRescue<'a> {
+    pub n_nodes: usize,
+    pub up: &'a UpAdjFlat,
+    pub down: &'a DownReverseAdjFlat,
+    /// Length-along-time flats, when the 2-channel grid is in play. The
+    /// distance channel follows the time channel, so a cut cell has a wrong
+    /// value in BOTH and both are repaired together.
+    pub lat_flats: Option<(&'a UpAdjFlat, &'a DownReverseAdjFlat)>,
+    pub src_seedsets: &'a [Vec<EngineSeed>],
+    pub tgt_seedsets: &'a [Vec<EngineSeed>],
+    pub neighbor_mask: &'a [Vec<u32>],
+    pub src_ix: &'a [usize],
+    pub dst_ix: &'a [usize],
+    /// The bound the grid was actually computed under.
+    pub eff_threshold: u32,
+    /// The caller's own bound — what the rescue recomputes under.
+    pub threshold: u32,
+}
+
+/// Once this share of the active sources needs a rescue run, the radius cap
+/// misfired for this request and one batched re-sweep is cheaper than a
+/// single-source sweep per source.
+///
+/// It is not a tuning knob for accuracy — the answer is identical either way.
+/// It bounds the COST of a cap that does not suit the mode. Measured on
+/// Belgium 2026-09-04, before this bailout existed: a 400x400 foot matrix with
+/// `radius_km=10` took 7.9 s against 1.6 s unpruned (0.20x), because 10 km on
+/// foot is over two hours of walking while the cap allows 45 minutes — so the
+/// bound cut essentially every in-radius cell and the rescue ran 400
+/// single-source sweeps. Car was unaffected (2.4x faster) and never bails out.
+const RESCUE_BAILOUT_SOURCE_FRAC: f64 = 0.25;
+
+/// #538/#602: the radius compute bound is a heuristic, never an output
+/// contract. Any cell INSIDE the radius that the bound cut — left at
+/// `u32::MAX`, or left as a non-minimal bounded-join artifact (#415), both of
+/// which surface as a value above `eff_threshold` — is recomputed EXACTLY
+/// here under the CALLER's bound only.
+///
+/// Sources and targets whose seed sets were emptied cannot appear: their cells
+/// are out of radius by construction and are masked at emit.
+///
+/// A no-op when the radius did not tighten the bound. Returns the number of
+/// cells repaired.
+pub fn rescue_radius_cut_cells(
+    r: &RadiusRescue<'_>,
+    time_mat: &mut [u32],
+    mut lat_mat: Option<&mut Vec<u32>>,
+) -> usize {
+    if r.eff_threshold >= r.threshold {
+        return 0;
+    }
+    let n_rows = r.src_ix.len();
+    let n_cols = r.dst_ix.len();
+    let in_radius = |i: usize, j: usize| -> bool {
+        r.neighbor_mask
+            .get(r.src_ix[i])
+            .is_some_and(|row| row.binary_search(&(r.dst_ix[j] as u32)).is_ok())
+    };
+    let mut active_sources = 0usize;
+    let rescue_work: Vec<(usize, Vec<usize>)> = (0..n_rows)
+        .filter_map(|i| {
+            if r.src_seedsets[i].is_empty() {
+                return None;
+            }
+            active_sources += 1;
+            let cut: Vec<usize> = (0..n_cols)
+                .filter(|&j| {
+                    !r.tgt_seedsets[j].is_empty()
+                        && time_mat[i * n_cols + j] > r.eff_threshold
+                        && in_radius(i, j)
+                })
+                .collect();
+            if cut.is_empty() { None } else { Some((i, cut)) }
+        })
+        .collect();
+    if rescue_work.is_empty() {
+        return 0;
+    }
+    let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
+
+    // The cap misfired for this mode/radius: redo the grid ONCE under the
+    // caller's bound. Identical answer, bounded cost.
+    if active_sources > 0
+        && (rescue_work.len() as f64) > RESCUE_BAILOUT_SOURCE_FRAC * active_sources as f64
+    {
+        tracing::debug!(
+            sources = rescue_work.len(),
+            active_sources,
+            cells = n_cells,
+            eff_threshold = r.eff_threshold,
+            "radius cap misfired for this mode: one batched re-sweep (#602)"
+        );
+        if let Some((up_lat, dn_lat)) = r.lat_flats {
+            let (t, l, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                r.n_nodes,
+                r.up,
+                r.down,
+                up_lat,
+                dn_lat,
+                None,
+                r.src_seedsets,
+                r.tgt_seedsets,
+                r.threshold,
+            );
+            time_mat.copy_from_slice(&t);
+            if let Some(lm) = lat_mat.as_deref_mut() {
+                lm.copy_from_slice(&l);
+            }
+        } else {
+            let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+                r.n_nodes,
+                r.up,
+                r.down,
+                None,
+                r.src_seedsets,
+                r.tgt_seedsets,
+                r.threshold,
+            );
+            time_mat.copy_from_slice(&t);
+        }
+        return n_cells;
+    }
+
+    tracing::debug!(
+        sources = rescue_work.len(),
+        cells = n_cells,
+        eff_threshold = r.eff_threshold,
+        "radius cap rescue (#538/#602): exact recompute of cut in-radius cells"
+    );
+    type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
+    let patches: Vec<RescuePatch> = rescue_work
+        .par_iter()
+        .map(|(i, cut)| {
+            let one_src = vec![r.src_seedsets[*i].clone()];
+            let sel_tgts: Vec<Vec<EngineSeed>> =
+                cut.iter().map(|&j| r.tgt_seedsets[j].clone()).collect();
+            if let Some((up_lat, dn_lat)) = r.lat_flats {
+                let (t, l, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                    r.n_nodes,
+                    r.up,
+                    r.down,
+                    up_lat,
+                    dn_lat,
+                    None,
+                    &one_src,
+                    &sel_tgts,
+                    r.threshold,
+                );
+                (*i, cut.clone(), t, Some(l))
+            } else {
+                let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+                    r.n_nodes,
+                    r.up,
+                    r.down,
+                    None,
+                    &one_src,
+                    &sel_tgts,
+                    r.threshold,
+                );
+                (*i, cut.clone(), t, None)
+            }
+        })
+        .collect();
+    for (i, cut, t, l) in patches {
+        for (k, &j) in cut.iter().enumerate() {
+            time_mat[i * n_cols + j] = t[k];
+            if let (Some(lm), Some(lv)) = (lat_mat.as_deref_mut(), l.as_ref()) {
+                lm[i * n_cols + j] = lv[k];
+            }
+        }
+    }
+    n_cells
 }
 
 /// For each source, return the sorted indices of targets within `radius_km`.

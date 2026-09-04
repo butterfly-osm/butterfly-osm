@@ -13,7 +13,8 @@ use utoipa::ToSchema;
 
 use crate::matrix::MatrixPlan;
 use crate::matrix::neighbors::{
-    RadiusParam, build_radius_mask, parse_radius, radius_compute_cap_s,
+    RadiusParam, RadiusRescue, build_radius_mask, parse_radius, radius_compute_cap_s,
+    rescue_radius_cut_cells,
 };
 use crate::model::types::Mode;
 
@@ -465,104 +466,6 @@ pub async fn table_post_handler(
     resp
 }
 
-/// #602/#538: the radius compute bound is a heuristic, never an output
-/// contract. Any cell INSIDE the radius that the bound cut — left at
-/// `u32::MAX`, or left as a non-minimal bounded-join artifact (#415), both of
-/// which show up as a value above `eff_threshold` — is recomputed EXACTLY
-/// here, one bucket run per affected source over just its cut targets, under
-/// the CALLER's bound only.
-///
-/// Sources and targets whose seedsets were emptied cannot appear: their cells
-/// are out-of-radius by construction and are nulled at emit.
-///
-/// A no-op when the radius did not tighten the bound (`eff_threshold ==
-/// threshold`) or when no mask is in play. Returns the number of cells
-/// repaired.
-#[allow(clippy::too_many_arguments)]
-fn rescue_radius_cut_cells(
-    n_nodes: usize,
-    time_up: &crate::matrix::bucket_ch::UpAdjFlat,
-    time_down: &crate::matrix::bucket_ch::DownReverseAdjFlat,
-    lat_flats: Option<(
-        &crate::matrix::bucket_ch::UpAdjFlat,
-        &crate::matrix::bucket_ch::DownReverseAdjFlat,
-    )>,
-    src_seedsets: &[Vec<crate::matrix::bucket_ch::EngineSeed>],
-    tgt_seedsets: &[Vec<crate::matrix::bucket_ch::EngineSeed>],
-    neighbor_mask: Option<&[Vec<u32>]>,
-    time_mat: &mut [u32],
-    mut lat_mat: Option<&mut Vec<u32>>,
-    n_targets: usize,
-    eff_threshold: u32,
-    threshold: u32,
-) -> usize {
-    let Some(nm) = neighbor_mask else {
-        return 0;
-    };
-    if eff_threshold >= threshold {
-        return 0;
-    }
-    let in_radius = |i: usize, j: usize| -> bool {
-        nm.get(i)
-            .is_some_and(|row| row.binary_search(&(j as u32)).is_ok())
-    };
-    let rescue_work: Vec<(usize, Vec<usize>)> = (0..src_seedsets.len())
-        .filter_map(|i| {
-            if src_seedsets[i].is_empty() {
-                return None;
-            }
-            let cut: Vec<usize> = (0..n_targets)
-                .filter(|&j| {
-                    !tgt_seedsets[j].is_empty()
-                        && time_mat[i * n_targets + j] > eff_threshold
-                        && in_radius(i, j)
-                })
-                .collect();
-            if cut.is_empty() { None } else { Some((i, cut)) }
-        })
-        .collect();
-    if rescue_work.is_empty() {
-        return 0;
-    }
-    let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
-    tracing::debug!(
-        sources = rescue_work.len(),
-        cells = n_cells,
-        eff_threshold,
-        "radius cap rescue (#602): exact recompute of cut in-radius cells"
-    );
-    type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
-    let patches: Vec<RescuePatch> = rescue_work
-        .par_iter()
-        .map(|(i, cut)| {
-            let one_src = vec![src_seedsets[*i].clone()];
-            let sel_tgts: Vec<Vec<crate::matrix::bucket_ch::EngineSeed>> =
-                cut.iter().map(|&j| tgt_seedsets[j].clone()).collect();
-            if let Some((up_lat, dn_lat)) = lat_flats {
-                let (t, l, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
-                    n_nodes, time_up, time_down, up_lat, dn_lat, None, &one_src, &sel_tgts,
-                    threshold,
-                );
-                (*i, cut.clone(), t, Some(l))
-            } else {
-                let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
-                    n_nodes, time_up, time_down, None, &one_src, &sel_tgts, threshold,
-                );
-                (*i, cut.clone(), t, None)
-            }
-        })
-        .collect();
-    for (i, cut, t, l) in patches {
-        for (k, &j) in cut.iter().enumerate() {
-            time_mat[i * n_targets + j] = t[k];
-            if let (Some(lm), Some(lv)) = (lat_mat.as_deref_mut(), l.as_ref()) {
-                lm[i * n_targets + j] = lv[k];
-            }
-        }
-    }
-    n_cells
-}
-
 /// Core table computation using bucket M2M algorithm
 #[allow(clippy::too_many_arguments)]
 pub fn compute_table_bucket_m2m(
@@ -818,6 +721,12 @@ pub fn compute_table_bucket_m2m(
         }
     }
     let eff_threshold = radius_max_km.map_or(threshold, |r| threshold.min(radius_compute_cap_s(r)));
+    // REST serves the FULL S x T grid (invalid endpoints keep their row and
+    // column, empty-seeded), so a matrix row/column IS the request index. The
+    // Flight matrix compacts invalid endpoints out, which is the only reason
+    // the shared rescue takes these index maps at all.
+    let row_ix: Vec<usize> = (0..n_sources).collect();
+    let col_ix: Vec<usize> = (0..n_targets).collect();
 
     // #594: the plan the engine ACTUALLY ran, reported verbatim on the
     // response. Written by the call whose result is served; never re-derived
@@ -869,20 +778,25 @@ pub fn compute_table_bucket_m2m(
         );
         // #594: the rescue is a repair pass over individual cells, not the
         // plan that produced the grid — deliberately not folded into `plan`.
-        rescue_radius_cut_cells(
-            n_nodes,
-            time_up,
-            time_down,
-            Some((up_lat, dn_lat)),
-            &src_seedsets,
-            &tgt_seedsets,
-            neighbor_mask.as_deref(),
-            &mut time_mat,
-            Some(&mut lat_mat),
-            n_targets,
-            eff_threshold,
-            threshold,
-        );
+        if let Some(nm) = &neighbor_mask {
+            rescue_radius_cut_cells(
+                &RadiusRescue {
+                    n_nodes,
+                    up: time_up,
+                    down: time_down,
+                    lat_flats: Some((up_lat, dn_lat)),
+                    src_seedsets: &src_seedsets,
+                    tgt_seedsets: &tgt_seedsets,
+                    neighbor_mask: nm,
+                    src_ix: &row_ix,
+                    dst_ix: &col_ix,
+                    eff_threshold,
+                    threshold,
+                },
+                &mut time_mat,
+                Some(&mut lat_mat),
+            );
+        }
         let dur = flat_matrix_to_2d(
             &time_mat,
             n_sources,
@@ -929,20 +843,25 @@ pub fn compute_table_bucket_m2m(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
             );
-            rescue_radius_cut_cells(
-                n_nodes,
-                time_up,
-                time_down,
-                None,
-                &src_seedsets,
-                &tgt_seedsets,
-                neighbor_mask.as_deref(),
-                &mut matrix,
-                None,
-                n_targets,
-                eff_threshold,
-                threshold,
-            );
+            if let Some(nm) = &neighbor_mask {
+                rescue_radius_cut_cells(
+                    &RadiusRescue {
+                        n_nodes,
+                        up: time_up,
+                        down: time_down,
+                        lat_flats: None,
+                        src_seedsets: &src_seedsets,
+                        tgt_seedsets: &tgt_seedsets,
+                        neighbor_mask: nm,
+                        src_ix: &row_ix,
+                        dst_ix: &col_ix,
+                        eff_threshold,
+                        threshold,
+                    },
+                    &mut matrix,
+                    None,
+                );
+            }
             Some(matrix)
         } else {
             None
