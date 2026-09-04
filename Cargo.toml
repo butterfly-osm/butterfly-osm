@@ -31,6 +31,29 @@ toml = "1.1"
 wiremock = "0.6.5"
 ctor = "0.10"
 
+[profile.release]
+# #573: the release binary shipped 7.6 MB of symbol table (.symtab/.strtab —
+# 55.6 MB → 48.0 MB for butterfly-route). Nothing at run time reads it: the
+# server's own diagnostics are the panic location (`file:line`, a &'static str
+# in .rodata, untouched by stripping), the panic message, and anyhow's context
+# chain — all of which survive. What stripping DOES cost is symbol names in a
+# `RUST_BACKTRACE` dump, which is why the escape hatch below exists rather
+# than being an argument for shipping the symbols to every container forever.
+#
+# `lto`/`codegen-units` are deliberately NOT set: they trade build wall time
+# for a few percent of run time, and this ticket is about build and image
+# cost, not code generation.
+strip = "symbols"
+
+# Same optimisation, same behaviour, symbols kept — for when you need named
+# frames in a backtrace:  cargo build --profile release-debug
+# The binary lands in `target/release-debug/`, so it never overwrites the
+# shipped artifact.
+[profile.release-debug]
+inherits = "release"
+strip = "none"
+debug = 1
+
 [workspace.lints.rust]
 # Ship-readiness policy: every warning is a build failure. `warnings = "deny"`
 # already covers `dead_code`, `unused_*`, etc., but we name the ones the audit

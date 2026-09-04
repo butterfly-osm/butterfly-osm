@@ -20,6 +20,25 @@
 - Distance: within 0.5%, or 50m absolute (whichever is larger)
 - Duration: within 1%,   or 5s absolute (whichever is larger)
 
+## Raw per-pair data (no longer in the working tree)
+
+The per-pair sweep output -- `results-car.jsonl`, `results-bike.jsonl`,
+`results-foot.jsonl`, 8.7 MB together -- was removed from the working tree
+(#586). Every clone paid for it forever, while the conclusions are the
+`summary-*.json`, the `top-disagreements-*.tsv` and this report.
+
+The raw data is still reachable in history at the commit that produced it,
+**`00fe172bb7f3e1583c9cc98374150f921b4cc5cd`** (`00fe172`, *bench(route):
+correctness sweep vs OSRM on 10k Belgium pairs (#198)*):
+
+```
+git show 00fe172:bench/route/results/correctness-sweep-2026-05-06/results-car.jsonl > results-car.jsonl
+```
+
+(same path for `-bike` and `-foot`). It can also be regenerated from scratch
+with `scripts/route_correctness_sweep.py` against the pinned pair list
+`be-pairs.tsv`, which stays here.
+
 ## Methodology caveat -- speed-profile bias
 
 OSRM and butterfly use different speed profiles by design.

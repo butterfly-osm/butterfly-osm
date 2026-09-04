@@ -6,19 +6,21 @@ If you have never run the server, start with the [Quickstart](quickstart.md). Fo
 
 ## Build the container
 
-The Dockerfile is multi-stage. Stage 1 is `rust:1.95-trixie` and builds the release binary (Cargo workspace, `protobuf-compiler` is needed for the `gtfs-rt` codegen). Stage 2 is `debian:trixie-slim` with `curl` and `ca-certificates` only; the binary copies in and the image runs as a non-root `butterfly` user.
+One `Dockerfile`, three stages, two shippable targets (#573). A shared `builder` stage on `rust:1.95-trixie` compiles `butterfly-dl` and `butterfly-route` once — dependencies are cached by BuildKit cache mounts, not by a dummy-source pre-build, and no step swallows its own errors (#565). No protobuf toolchain is installed: the GTFS-Realtime bindings are generated ahead of time and committed (#574). `tools` is the pipeline/fetch image; `runtime` is the serving image and is the LAST stage, so a bare `docker build .` still builds it. `runtime` is `debian:trixie-slim` plus `ca-certificates` — `curl` is gone, and the `HEALTHCHECK` calls the binary's own `healthcheck` subcommand instead. The binary is stripped (`[profile.release] strip = "symbols"`); build `--profile release-debug` when you need named backtrace frames.
 
 ```dockerfile
 FROM rust:1.95-trixie AS builder
-# ... cargo build --release -p butterfly-route
-FROM debian:trixie-slim
-COPY --from=builder /build/target/release/butterfly-route /usr/local/bin/butterfly-route
+# ... RUN --mount=type=cache,... cargo build --release -p butterfly-dl -p butterfly-route
+FROM debian:trixie-slim AS tools
+# ... butterfly-dl + butterfly-route + models/ + traffic/ + build-pipeline.sh
+FROM debian:trixie-slim AS runtime
+COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
 USER butterfly
 VOLUME /data
 EXPOSE 8080 8081
 ENV RUST_LOG=info,tower_http=debug
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD ["butterfly-route", "healthcheck", "--url", "http://127.0.0.1:8080/health"]
 ENTRYPOINT ["butterfly-route"]
 CMD ["serve", "--data-dir", "/data", "--port", "8080", "--log-format", "json"]
 ```
@@ -26,10 +28,15 @@ CMD ["serve", "--data-dir", "/data", "--port", "8080", "--log-format", "json"]
 Build it:
 
 ```bash
-docker build -t butterfly-route .
+docker build -t butterfly-route .                  # serving image
+docker build --target tools -t butterfly-tools .   # pipeline / fetch image
 ```
 
-The image is roughly 26 GB once a baked Belgium container is mounted at runtime; the image itself is small (the binary is ~80 MB) and the size lives in the data volume.
+`Dockerfile.tools` still builds the tools image, but it is deprecated: it is generated from `Dockerfile` by `scripts/gen-dockerfile-tools.sh` (CI checks it is current) and will be removed after one release. Use `--target tools`.
+
+`butterfly-route healthcheck [--url URL] [--timeout-secs N]` performs a plain HTTP GET and exits 0 on 2xx, 1 otherwise — usable outside Docker too. Kubernetes ignores `HEALTHCHECK` and should keep using its own `httpGet` probe against `/health`.
+
+The image is roughly 26 GB once a baked Belgium container is mounted at runtime; the image itself is small (the stripped binary is ~48 MB) and the size lives in the data volume.
 
 ## Run conventions
 
