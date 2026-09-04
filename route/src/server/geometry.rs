@@ -510,8 +510,12 @@ pub fn build_isochrone_geometry_sparse(
         .map(|(lon, lat)| ((lat * 1e7) as i32, (lon * 1e7) as i32))
         .or(anchor);
     match crate::range::generate_sparse_contour_anchored(&segments, &config, anchor) {
-        Ok(result) => result.polygons,
-        Err(_) => vec![],
+        // ONE simple polygon, no holes — the tracer cannot return more (#570).
+        Ok(result) if result.ring.len() >= 3 => vec![ContourPolygon {
+            outer: result.ring,
+            holes: vec![],
+        }],
+        _ => vec![],
     }
 }
 
