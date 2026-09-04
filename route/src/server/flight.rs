@@ -429,35 +429,62 @@ struct MatrixParams {
     sparse: bool,
 }
 
-/// Build matrix RecordBatch from flat u32 distances.
+/// Build ONE matrix `RecordBatch` from a flat row-major slice
+/// (`matrix[row * dst_orig.len() + col]`, CCH seconds).
+///
+/// This is the SINGLE emit for BOTH matrix paths — the small bucket-M2M
+/// branch (one batch for the whole request) and the large PHAST-tiled branch
+/// (one batch per source tile). They differ only in what they hand in: the
+/// small branch passes every valid endpoint and an unbounded `threshold` (its
+/// time bound is already masked into both channels before emit), the tiled
+/// branch passes one source block plus the bound. One body is what makes the
+/// "a small and a large request return the SAME columns" invariant
+/// STRUCTURAL: after #534 it survived only as a comment plus a cross-path
+/// test, and the divergence it was written for — the tiled copy hardcoding
+/// `distance_m = u32::MAX` while durations were real — had already shipped,
+/// with large-request clients reading whole tiles as unreachable.
+///
+/// `src_orig` / `dst_orig` are ORIGINAL input positions (never compacted tile
+/// offsets); they are emitted verbatim as `source_idx` / `target_idx`.
+/// `neighbor_mask[orig_src]`, when present, is the sorted set of in-radius
+/// destination ORIGINAL indices. Cells above `threshold` are nulled (#415;
+/// `u32::MAX` ⇒ unbounded ⇒ never fires). `lat_matrix` shares `matrix`'s
+/// layout and carries length-along-time metres.
+///
+/// Returns `Ok(None)` when no cell survived, so a caller that would otherwise
+/// stream an empty batch can skip it; a non-empty dense grid always yields
+/// `Ok(Some(_))`.
 #[allow(clippy::too_many_arguments)]
 fn build_matrix_batch(
     matrix: &[u32],
     lat_matrix: Option<&[u32]>,
-    n_valid_origin: usize,
-    n_valid_dst: usize,
-    valid_src_indices: &[usize],
-    valid_dst_indices: &[usize],
-    schema: Arc<Schema>,
+    src_orig: &[usize],
+    dst_orig: &[usize],
+    threshold: u32,
     neighbor_mask: Option<&[Vec<u32>]>,
+    schema: Arc<Schema>,
     sparse: bool,
-) -> std::result::Result<RecordBatch, Status> {
-    let capacity = n_valid_origin * n_valid_dst;
+) -> std::result::Result<Option<RecordBatch>, Status> {
+    let n_dst = dst_orig.len();
+    let capacity = src_orig.len() * n_dst;
     let mut src_idx = UInt32Builder::with_capacity(capacity);
     let mut tgt_idx = UInt32Builder::with_capacity(capacity);
     let mut dur_ms = UInt32Builder::with_capacity(capacity);
     let mut dist_m = UInt32Builder::with_capacity(capacity);
+    let mut emitted = 0usize;
 
-    for (si, &orig_src) in valid_src_indices.iter().enumerate() {
+    for (row, &orig_src) in src_orig.iter().enumerate() {
         let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_src].as_slice());
-        for (di, &orig_dst) in valid_dst_indices.iter().enumerate() {
-            let pruned = if let Some(ns) = neighbors {
-                ns.binary_search(&(orig_dst as u32)).is_err()
+        for (col, &orig_dst) in dst_orig.iter().enumerate() {
+            let pruned = neighbors.is_some_and(|ns| ns.binary_search(&(orig_dst as u32)).is_err());
+            let cell = row * n_dst + col;
+            let d = if pruned {
+                u32::MAX
             } else {
-                false
+                let v = matrix[cell];
+                // #415: null cells beyond the time bound.
+                if v > threshold { u32::MAX } else { v }
             };
-            let cell_idx = si * n_valid_dst + di;
-            let d = if pruned { u32::MAX } else { matrix[cell_idx] };
             // #532: in sparse mode, omit sentinel cells entirely. Keyed on the
             // DURATION channel only — a reachable cell whose distance_m is
             // unknown (old container without cch.lat, or a K-best-rescued cell)
@@ -474,95 +501,11 @@ fn build_matrix_batch(
                 // dur_ms is the time matrix value scaled to ms (post-#297
                 // weights are in seconds).
                 dur_ms.append_value(d.saturating_mul(1000));
-                // #372: when the 2-channel run produced a lat matrix,
-                // emit it as distance_m. Otherwise emit u32::MAX (the
-                // pre-#372 behaviour — old containers without cch.lat).
-                let dist_val = lat_matrix.map(|lm| lm[cell_idx]).unwrap_or(u32::MAX);
-                dist_m.append_value(dist_val);
-            }
-        }
-    }
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(src_idx.finish()) as ArrayRef,
-            Arc::new(tgt_idx.finish()),
-            Arc::new(dur_ms.finish()),
-            Arc::new(dist_m.finish()),
-        ],
-    )
-    .map_err(|e| Status::internal(format!("Arrow error: {}", e)))
-}
-
-/// #532: build ONE streamed tile's RecordBatch (single-channel) for the
-/// large-matrix PHAST-tiled path. Extracted from the `spawn_blocking` closure
-/// so the dense/sparse + time-bound + radius-mask emit semantics are
-/// unit-testable instead of buried in a background task.
-///
-/// `tile_matrix` is row-major `block_src_orig.len() × valid_dst.len()` in CCH
-/// seconds. `neighbor_mask[orig_src]` (when present) is the sorted set of
-/// in-radius destination ORIGINAL indices. Emitted `source_idx`/`target_idx`
-/// are ORIGINAL input positions (never compacted tile offsets). Distance is
-/// always `u32::MAX` here — the tiled path is duration-only. Returns `Ok(None)`
-/// when sparse drops every cell so the caller skips streaming an empty batch;
-/// dense always returns `Ok(Some(_))`.
-#[allow(clippy::too_many_arguments)]
-fn build_matrix_tile_batch(
-    tile_matrix: &[u32],
-    lat_matrix: Option<&[u32]>,
-    block_src_orig: &[usize],
-    valid_dst: &[usize],
-    threshold: u32,
-    neighbor_mask: Option<&[Vec<u32>]>,
-    schema: Arc<Schema>,
-    sparse: bool,
-) -> std::result::Result<Option<RecordBatch>, Status> {
-    let n_block_dst = valid_dst.len();
-    let capacity = block_src_orig.len() * n_block_dst;
-    let mut si_arr = UInt32Builder::with_capacity(capacity);
-    let mut di_arr = UInt32Builder::with_capacity(capacity);
-    let mut dur_arr = UInt32Builder::with_capacity(capacity);
-    let mut dist_arr = UInt32Builder::with_capacity(capacity);
-    let mut emitted = 0usize;
-
-    for (bsi, &orig_si) in block_src_orig.iter().enumerate() {
-        let neighbors: Option<&[u32]> = neighbor_mask.map(|nm| nm[orig_si].as_slice());
-        for (bdi, &orig_di) in valid_dst.iter().enumerate() {
-            let pruned = if let Some(ns) = neighbors {
-                ns.binary_search(&(orig_di as u32)).is_err()
-            } else {
-                false
-            };
-            let d = if pruned {
-                u32::MAX
-            } else {
-                let v = tile_matrix[bsi * n_block_dst + bdi];
-                // #415: null cells beyond the time bound. Unbounded ⇒
-                // threshold == u32::MAX so this never fires.
-                if v > threshold { u32::MAX } else { v }
-            };
-            // #532: sparse omits sentinel cells (duration channel only).
-            if sparse && d == u32::MAX {
-                continue;
-            }
-            let cell = bsi * n_block_dst + bdi;
-            si_arr.append_value(orig_si as u32);
-            di_arr.append_value(orig_di as u32);
-            if d == u32::MAX {
-                dur_arr.append_value(u32::MAX);
-                dist_arr.append_value(u32::MAX);
-            } else {
-                // seconds → milliseconds (matches build_matrix_batch and the
-                // `duration_ms` schema name).
-                dur_arr.append_value(d.saturating_mul(1000));
-                // #534: emit the length-along-time distance when the 2-channel
-                // run produced it (real metres along the time-optimal path),
-                // exactly like the small-matrix branch. u32::MAX only on
-                // containers without cch.lat — never a silent column-wide MAX
-                // on the big-request path anymore.
-                let dist_val = lat_matrix.map(|lm| lm[cell]).unwrap_or(u32::MAX);
-                dist_arr.append_value(dist_val);
+                // #372/#534: emit the length-along-time distance when the
+                // 2-channel run produced it (real metres along the time-optimal
+                // path); u32::MAX only on containers without cch.lat — never a
+                // silent column-wide MAX on one of the two paths.
+                dist_m.append_value(lat_matrix.map(|lm| lm[cell]).unwrap_or(u32::MAX));
             }
             emitted += 1;
         }
@@ -574,14 +517,14 @@ fn build_matrix_tile_batch(
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(si_arr.finish()) as ArrayRef,
-            Arc::new(di_arr.finish()),
-            Arc::new(dur_arr.finish()),
-            Arc::new(dist_arr.finish()),
+            Arc::new(src_idx.finish()) as ArrayRef,
+            Arc::new(tgt_idx.finish()),
+            Arc::new(dur_ms.finish()),
+            Arc::new(dist_m.finish()),
         ],
     )
     .map(Some)
-    .map_err(|e| Status::internal(format!("Arrow: {}", e)))
+    .map_err(|e| Status::internal(format!("Arrow error: {}", e)))
 }
 
 pub type BatchStream =
@@ -741,6 +684,98 @@ impl PlanCell {
     }
 }
 
+/// One endpoint's primary snap for the matrix path: the primary tuple
+/// `(ebg_id, snapped_lon, snapped_lat, snap_distance_m)`, its CCH rank, and
+/// the #502 phantom seed set `(rank, part_time, part_len, direct_ok)`.
+/// `None` ⇒ the endpoint did not snap and takes no row/column.
+type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
+
+/// The matrix path's per-role endpoint vectors, split out of the primary
+/// snaps. `ranks`, `valid` and `seedsets` are index-aligned with each other
+/// and cover only the endpoints that SNAPPED (`valid[p]` is endpoint `p`'s
+/// original input position); `snapped` has one entry per INPUT endpoint —
+/// the raw coordinate where the snap missed — because the radius mask is
+/// built over the full input list.
+struct SplitSnaps {
+    ranks: Vec<u32>,
+    valid: Vec<usize>,
+    snapped: Vec<(f64, f64)>,
+    seedsets: Vec<Vec<(u32, u32, u32, bool)>>,
+}
+
+/// #580: split one endpoint role's primary snaps. Ran once for origins and
+/// once for destinations; it was the same loop written twice, each copy
+/// CLONING the seed set per endpoint even though the snap vector is dead
+/// straight after. `snaps` is taken by value so the seeds MOVE.
+fn split_primary_snaps(raw: &[[f64; 2]], snaps: Vec<PrimarySnap>) -> SplitSnaps {
+    let n = raw.len();
+    let mut out = SplitSnaps {
+        ranks: Vec::with_capacity(n),
+        valid: Vec::with_capacity(n),
+        snapped: Vec::with_capacity(n),
+        seedsets: Vec::with_capacity(n),
+    };
+    for (i, snap) in snaps.into_iter().enumerate() {
+        match snap {
+            Some(((_, plon, plat, _), rank, seeds)) => {
+                out.ranks.push(rank);
+                out.valid.push(i);
+                out.snapped.push((plon, plat));
+                out.seedsets.push(seeds);
+            }
+            None => {
+                let [lon, lat] = raw[i];
+                out.snapped.push((lon, lat));
+            }
+        }
+    }
+    out
+}
+
+/// #580: K=64 rescue candidates for the endpoints the primary pass could not
+/// route, indexed by POSITION in `valid` — the third copy of the same
+/// "snap the endpoints that need it, in parallel, then look them up" loop.
+///
+/// `needed[p]` selects endpoint position `p`; unselected positions stay
+/// `None` and read back as an empty candidate list. Position-indexed because
+/// every lookup is by position: the two `HashMap<usize, Vec<u32>>` this
+/// replaces hashed a `usize` on every cell of the fallback join, and had to
+/// carry an `&empty` sentinel for the miss.
+fn kbest_ranks_by_position(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    coords: &[[f64; 2]],
+    valid: &[usize],
+    needed: &[bool],
+    role: super::types::SnapRole,
+) -> Vec<Option<Vec<u32>>> {
+    use rayon::prelude::*;
+    let mut out: Vec<Option<Vec<u32>>> = vec![None; valid.len()];
+    let snapped: Vec<(usize, Vec<u32>)> = (0..valid.len())
+        .into_par_iter()
+        .filter(|&p| needed[p])
+        .map(|p| {
+            let [lon, lat] = coords[valid[p]];
+            let snap = super::snap_kbest::snap_k_pair_role(
+                state,
+                mode_data,
+                mode,
+                lon,
+                lat,
+                role,
+                None,
+                super::snap_kbest::SNAP_K,
+            );
+            (p, snap.ranks)
+        })
+        .collect();
+    for (p, ranks) in snapped {
+        out[p] = Some(ranks);
+    }
+    out
+}
+
 /// Execute the matrix Flight action.
 fn do_matrix(
     state: &Arc<ServerState>,
@@ -767,8 +802,8 @@ fn do_matrix(
     // SCC-aware connectivity filter (via mode_data.has_outbound /
     // has_inbound). The first candidate per slot feeds the bucket
     // M2M primary pass; the rest power the per-cell P2P fallback for
-    // INF cells in the small-matrix branch below.
-    use super::snap_kbest::SNAP_K;
+    // INF cells in the small-matrix branch below
+    // ([`kbest_ranks_by_position`]).
     use rayon::prelude::*;
     // Lazy snap (#368 pattern): K=1 primary upfront, K=64 escalation
     // lives in the INF-cell fallback below.
@@ -777,7 +812,6 @@ fn do_matrix(
     // matrix branch expands them into extra rows/columns (SeedExpansion) so
     // the bucket engine stays untouched. The large PHAST-tiled branch keeps
     // the primary-only legacy (engine-level multi-seed is the follow-up).
-    type PrimarySnap = Option<((u32, f64, f64, f64), u32, Vec<(u32, u32, u32, bool)>)>;
     let snap_endpoint = |lon: f64, lat: f64, role: SnapRole| -> PrimarySnap {
         if let Some(pe) = super::phantom::phantom_for(state, &mode_data, mode, lon, lat, role, None)
         {
@@ -815,36 +849,20 @@ fn do_matrix(
         .map(|&[lon, lat]| snap_endpoint(lon, lat, SnapRole::Dst))
         .collect();
 
-    let mut origins_rank = Vec::with_capacity(params.origins.len());
-    let mut valid_origin = Vec::with_capacity(params.origins.len());
-    let mut origins_snapped = Vec::with_capacity(params.origins.len());
-    let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
-    for (i, snap) in src_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
-            origins_rank.push(*rank);
-            valid_origin.push(i);
-            origins_snapped.push((*plon, *plat));
-            src_seedsets.push(seeds.clone());
-        } else {
-            let [lon, lat] = params.origins[i];
-            origins_snapped.push((lon, lat));
-        }
-    }
-    let mut targets_rank = Vec::with_capacity(params.destinations.len());
-    let mut valid_dst = Vec::with_capacity(params.destinations.len());
-    let mut targets_snapped = Vec::with_capacity(params.destinations.len());
-    let mut tgt_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
-    for (i, snap) in dst_primary.iter().enumerate() {
-        if let Some(((_, plon, plat, _), rank, seeds)) = snap {
-            targets_rank.push(*rank);
-            valid_dst.push(i);
-            targets_snapped.push((*plon, *plat));
-            tgt_seedsets.push(seeds.clone());
-        } else {
-            let [lon, lat] = params.destinations[i];
-            targets_snapped.push((lon, lat));
-        }
-    }
+    // #580: one split per role — the seed sets MOVE out of the snap vectors,
+    // which are dead from here.
+    let SplitSnaps {
+        ranks: origins_rank,
+        valid: valid_origin,
+        snapped: origins_snapped,
+        seedsets: src_seedsets,
+    } = split_primary_snaps(&params.origins, src_primary);
+    let SplitSnaps {
+        ranks: targets_rank,
+        valid: valid_dst,
+        snapped: targets_snapped,
+        seedsets: tgt_seedsets,
+    } = split_primary_snaps(&params.destinations, dst_primary);
 
     if origins_rank.is_empty() || targets_rank.is_empty() {
         let schema = Arc::new(matrix_schema());
@@ -1107,12 +1125,12 @@ fn do_matrix(
         // for the high-fidelity, typically-smaller request shape.
         if !bounded && matrix.contains(&u32::MAX) {
             use rayon::prelude::*;
-            use std::collections::HashSet;
             let query = super::query::CchQuery::new(&mode_data);
 
             let mut work: Vec<(usize, usize)> = Vec::new();
-            let mut needed_src: HashSet<usize> = HashSet::new();
-            let mut needed_dst: HashSet<usize> = HashSet::new();
+            // #580: selection by POSITION, matching the lookups below.
+            let mut needed_src = vec![false; valid_origin.len()];
+            let mut needed_dst = vec![false; valid_dst.len()];
             for (i, _) in valid_origin.iter().enumerate() {
                 for (j, _) in valid_dst.iter().enumerate() {
                     if matrix[i * n_valid_dst + j] == u32::MAX {
@@ -1126,67 +1144,36 @@ fn do_matrix(
                             continue;
                         }
                         work.push((i, j));
-                        needed_src.insert(valid_origin[i]);
-                        needed_dst.insert(valid_dst[j]);
+                        needed_src[i] = true;
+                        needed_dst[j] = true;
                     }
                 }
             }
-            // Lazy K=64 snap for only the failing src/dst originals.
-            let needed_src_vec: Vec<usize> = needed_src.into_iter().collect();
-            let needed_dst_vec: Vec<usize> = needed_dst.into_iter().collect();
-            let mut src_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (orig_idx, ranks) in needed_src_vec
-                .par_iter()
-                .map(|&oi| {
-                    let [lon, lat] = params.origins[oi];
-                    let snap = super::snap_kbest::snap_k_pair_role(
-                        state,
-                        &mode_data,
-                        mode,
-                        lon,
-                        lat,
-                        SnapRole::Src,
-                        None,
-                        SNAP_K,
-                    );
-                    (oi, snap.ranks)
-                })
-                .collect::<Vec<_>>()
-            {
-                src_kbest_ranks.insert(orig_idx, ranks);
-            }
-            let mut dst_kbest_ranks: std::collections::HashMap<usize, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (orig_idx, ranks) in needed_dst_vec
-                .par_iter()
-                .map(|&oi| {
-                    let [lon, lat] = params.destinations[oi];
-                    let snap = super::snap_kbest::snap_k_pair_role(
-                        state,
-                        &mode_data,
-                        mode,
-                        lon,
-                        lat,
-                        SnapRole::Dst,
-                        None,
-                        SNAP_K,
-                    );
-                    (oi, snap.ranks)
-                })
-                .collect::<Vec<_>>()
-            {
-                dst_kbest_ranks.insert(orig_idx, ranks);
-            }
+            // Lazy K=64 snap for only the failing src/dst endpoints.
+            let src_kbest_ranks = kbest_ranks_by_position(
+                state,
+                &mode_data,
+                mode,
+                &params.origins,
+                &valid_origin,
+                &needed_src,
+                SnapRole::Src,
+            );
+            let dst_kbest_ranks = kbest_ranks_by_position(
+                state,
+                &mode_data,
+                mode,
+                &params.destinations,
+                &valid_dst,
+                &needed_dst,
+                SnapRole::Dst,
+            );
 
-            let empty: Vec<u32> = Vec::new();
             let patches: Vec<(usize, usize, u32)> = work
                 .par_iter()
                 .filter_map(|&(i, j)| {
-                    let src_orig_idx = valid_origin[i];
-                    let dst_orig_idx = valid_dst[j];
-                    let src_ranks = src_kbest_ranks.get(&src_orig_idx).unwrap_or(&empty);
-                    let dst_ranks = dst_kbest_ranks.get(&dst_orig_idx).unwrap_or(&empty);
+                    let src_ranks = src_kbest_ranks[i].as_deref().unwrap_or_default();
+                    let dst_ranks = dst_kbest_ranks[j].as_deref().unwrap_or_default();
                     super::snap_kbest::p2p_with_kbest_fallback(
                         &query,
                         src_ranks,
@@ -1224,17 +1211,20 @@ fn do_matrix(
         // `dur_ms` came from p2p_with_kbest_fallback). The Flight
         // schema callers already treat u32::MAX as "no distance".
         let schema = Arc::new(matrix_schema());
+        // The bound is already masked into BOTH channels above, so this emit
+        // is unbounded (`u32::MAX`); a fully-dropped sparse request still owes
+        // the client one (empty) batch with the schema, hence the fallback.
         let batch = build_matrix_batch(
             &matrix,
             lat_matrix_opt.as_deref(),
-            n_valid_origin,
-            n_valid_dst,
             &valid_origin,
             &valid_dst,
-            schema,
+            u32::MAX,
             neighbor_mask.as_ref().map(|v| v.as_slice()),
+            schema.clone(),
             params.sparse,
-        )?;
+        )?
+        .unwrap_or_else(|| RecordBatch::new_empty(schema));
         let _ = &mut lat_matrix_opt; // silence unused-mut if later refactored
 
         // Single synchronous batch — built with `?` above, so it is either
@@ -1438,7 +1428,7 @@ fn do_matrix(
                     "matrix tile #534 telemetry"
                 );
 
-                let batch = match build_matrix_tile_batch(
+                let batch = match build_matrix_batch(
                     &tile_matrix,
                     tile_lat.as_deref(),
                     &block_src_orig,
@@ -1562,16 +1552,164 @@ struct RoutePairRow {
     wkb: Option<Vec<u8>>,
 }
 
+/// #580: how one surface drives a single (src,dst) pair through the CCH.
+///
+/// `route_batch` (bounded and unbounded) and `edges_batch` all snap both
+/// endpoints, run the query and escalate on a miss. They carried a private
+/// copy of all three tiers and differed only in these knobs — plus what they
+/// do with the result, which is the `emit` closure of [`drive_pair`].
+struct PairPlan<'a> {
+    /// Bumped once per pair whose phantom-seeded fast path missed and had to
+    /// escalate. `route_batch` logs the rate per chunk (#275-bench);
+    /// `edges_batch` does not instrument it.
+    fallback_count: Option<&'a std::sync::atomic::AtomicU64>,
+    /// Try the direct K=1 snap + query before paying the K=64 collect.
+    /// `edges_batch` does (#438: it also feeds the grouped path's precomputed
+    /// ranks); `route_batch` does not, and enabling it there would change
+    /// which of several equal-cost geometries a phantom-miss pair returns.
+    k1_shortcut: bool,
+    /// Cap on (source × destination) candidate combinations in the K=64
+    /// escalation. NOT the same on both surfaces — see
+    /// [`EDGES_BATCH_MAX_COMBOS`].
+    max_combos: usize,
+}
+
+/// `edges_batch`'s escalation cap. Bounds the worst-case cost of a pair whose
+/// K=64 candidates don't connect: reachable pairs connect on the
+/// closest-sum-first combos almost immediately (the #197 connectivity masks
+/// keep candidates on the main component), and the Belgium benchmark's
+/// reachable count is identical at 8 / 16 / 200.
+///
+/// It is NOT [`super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS`], which #548
+/// set to 400 everywhere else precisely so two surfaces could not disagree on
+/// whether a pair is routable at all. `edges_batch` is the one surface still
+/// outside that: a pair it calls unreachable can be routable on `/route`.
+/// Raising it is a measurable change (25× the combos on disconnected pairs),
+/// so it stays named and deliberate rather than quietly unified here.
+const EDGES_BATCH_MAX_COMBOS: usize = 16;
+
+/// `edges_batch`'s plan: K=1 shortcut, bounded escalation, no instrumentation.
+const EDGES_PAIR_PLAN: PairPlan<'static> = PairPlan {
+    fallback_count: None,
+    k1_shortcut: true,
+    max_combos: EDGES_BATCH_MAX_COMBOS,
+};
+
+/// `route_batch`'s plan (bounded and unbounded alike): no K=1 shortcut, the
+/// org-wide 400-combo escalation, fallback rate instrumented.
+fn route_pair_plan(fallback_count: &std::sync::atomic::AtomicU64) -> PairPlan<'_> {
+    PairPlan {
+        fallback_count: Some(fallback_count),
+        k1_shortcut: false,
+        max_combos: super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+    }
+}
+
+/// #502/#506/#509: the phantom-seeded fast path — both directed twins of up
+/// to 3 near-equidistant physical edges per endpoint with exact partial
+/// costs, one seeded query. Replaces the K=1 single-directed-edge commitment
+/// that caused 4× fwd/rev asymmetry on long rural chains, and is what makes
+/// `/route`, `route_batch` and `edges_batch` return the SAME route for a pair.
+///
+/// `None` ⇒ an endpoint had no phantom, or the seeded query did not connect;
+/// the caller escalates.
+fn phantom_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+) -> Option<(u32, u32, super::query::QueryResult)> {
+    use super::types::SnapRole;
+    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+    // #585: one `phantom_for` per endpoint — snap candidates + build, once.
+    let sp = super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None)?;
+    let dp = super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None)?;
+    let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+    let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+    let r = query.query_seeded(&src_seeds, &dst_seeds, false)?;
+    Some((
+        r.src_root,
+        r.dst_root,
+        super::query::QueryResult {
+            distance: r.distance.saturating_sub(dst_shift),
+            meeting_node: r.meeting_node,
+            forward_parent: r.forward_parent,
+            backward_parent: r.backward_parent,
+        },
+    ))
+}
+
+/// #580: ONE per-pair routing core. Phantom-seeded fast path
+/// ([`phantom_pair`]); on a miss, the plan's optional K=1 shortcut; then the
+/// K=64 + combo escalation ([`escalate_route`]). `None` ⇒ unreachable.
+///
+/// Reads only `&state` + `&mode_data`; safe to call from many worker threads
+/// in parallel (`CchQueryState` is thread-local, so the bidirectional search
+/// never contends).
+fn route_pair(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+    plan: &PairPlan<'_>,
+) -> Option<(u32, u32, super::query::QueryResult)> {
+    if let Some(hit) = phantom_pair(state, mode_data, mode, query, pair) {
+        return Some(hit);
+    }
+    // #275-bench: the phantom fast path missed.
+    if let Some(c) = plan.fallback_count {
+        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if plan.k1_shortcut {
+        use super::types::SnapRole;
+        let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
+        let src_role = SnapRole::Src.role_filter(mode_data);
+        let dst_role = SnapRole::Dst.role_filter(mode_data);
+        if let (Some(src_id), Some(dst_id)) = (
+            state
+                .snap_index
+                .snap_filtered_role(slon, slat, mode.0, None, src_role),
+            state
+                .snap_index
+                .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
+        ) && let (Some(s), Some(d)) = (
+            mode_data.orig_to_rank.get(src_id as usize).copied(),
+            mode_data.orig_to_rank.get(dst_id as usize).copied(),
+        ) && s != u32::MAX
+            && d != u32::MAX
+            && let Some(r) = query.query(s, d)
+        {
+            return Some((s, d, r));
+        }
+    }
+    escalate_route(state, mode_data, mode, query, pair, plan.max_combos)
+}
+
+/// #580: [`route_pair`] plus the ONE thing the surfaces actually differ on —
+/// what they build out of a successful `QueryResult`. `route_batch` encodes a
+/// WKB route (or just its length, under `max_meters`); `edges_batch` unpacks
+/// per-edge OSM rows. `None` ⇒ the pair did not route, and `emit` never ran.
+fn drive_pair<R>(
+    state: &ServerState,
+    mode_data: &super::state::ModeData,
+    mode: Mode,
+    query: &CchQuery<'_>,
+    pair: &[f64; 4],
+    plan: &PairPlan<'_>,
+    emit: impl FnOnce(u32, u32, &super::query::QueryResult) -> R,
+) -> Option<R> {
+    route_pair(state, mode_data, mode, query, pair, plan)
+        .map(|(src_rank, dst_rank, result)| emit(src_rank, dst_rank, &result))
+}
+
 /// Compute a single pair's `(duration, distance, WKB linestring)`.
 ///
-/// Two-tier snap strategy: K=1 fast path first (covers most pairs per
-/// #197 connectivity-aware role masks); on miss, escalate to K=64 +
-/// (i+j)-combo fallback. Eliminates the K=64 tax on the hot path:
-/// 5.79 ms/pair down to roughly 0.5 ms/pair on Belgium.
-///
-/// Reads only `&state` + `&mode_data`; safe to call from many worker
-/// threads in parallel. `CchQueryState` is thread-local so the
-/// bidirectional search never contends.
+/// #580: [`drive_pair`] under [`route_pair_plan`] — the phantom-seeded fast
+/// path, then the K=64 + (i+j)-combo escalation — with `build_route_output`
+/// as the emit. Skipping the K=64 tax on the hot path is what took Belgium
+/// from 5.79 ms/pair to roughly 0.5 ms/pair.
 #[allow(clippy::too_many_arguments)]
 fn compute_route_pair(
     state: &ServerState,
@@ -1585,70 +1723,17 @@ fn compute_route_pair(
     fallback_count: &std::sync::atomic::AtomicU64,
     scratch: &mut RouteScratch,
 ) -> Option<(f32, f32, Vec<u8>)> {
-    use super::types::SnapRole;
-
-    // Fast path (#502): phantom-seeded single query — both directed twins of
-    // up to 3 near-equidistant physical edges per endpoint, exact partial
-    // costs. Replaces the K=1 single-directed-edge commitment that caused 4x
-    // fwd/rev asymmetry on long rural chains.
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            let result = super::query::QueryResult {
-                distance: r.distance.saturating_sub(dst_shift),
-                meeting_node: r.meeting_node,
-                forward_parent: r.forward_parent,
-                backward_parent: r.backward_parent,
-            };
-            return Some(build_route_output(
-                state, mode_data, &result, r.src_root, r.dst_root, scratch,
-            ));
-        }
-    }
-
-    // #275-bench: increment fallback counter — K=1 fast path missed.
-    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // Slow path: K=64 K-best snap + (i+j)-combo fallback.
-    use super::snap_kbest::SNAP_K;
-    let src_snap = super::snap_kbest::snap_k_pair_role(
+    drive_pair(
         state,
         mode_data,
         mode,
-        slon,
-        slat,
-        SnapRole::Src,
-        None,
-        SNAP_K,
-    );
-    let dst_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        dlon,
-        dlat,
-        SnapRole::Dst,
-        None,
-        SNAP_K,
-    );
-
-    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-        return None;
-    }
-
-    super::snap_kbest::p2p_with_kbest_fallback(
         query,
-        &src_snap.ranks,
-        &dst_snap.ranks,
-        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+        &[slon, slat, dlon, dlat],
+        &route_pair_plan(fallback_count),
+        |src_rank, dst_rank, result| {
+            build_route_output(state, mode_data, result, src_rank, dst_rank, scratch)
+        },
     )
-    .map(|(src_rank, dst_rank, result)| {
-        build_route_output(state, mode_data, &result, src_rank, dst_rank, scratch)
-    })
 }
 
 /// Common output builder for a successful CCH P2P result. Returns
@@ -1729,12 +1814,14 @@ fn build_route_output(
 /// re-validation), and it uses the fast time CCH — not the distance metric
 /// (the dropped #482 approach was ~12x slower AND a different metric, #487).
 ///
-/// Snap MIRRORS `compute_route_pair`: K=1 fast path, then K=64 + 16-combo
-/// fallback ONLY when the K=1 snap misses or the snapped ranks do not
-/// connect — NOT when the route simply exceeds the bound. An over-bound
-/// pair whose endpoints snapped fine is dropped immediately (one time
-/// query), which is the whole point of a prune; the original #482 code's
-/// escalation-on-over-bound made the pruned pairs the SLOWEST (the 12x).
+/// #580: the SAME [`drive_pair`] and the SAME [`route_pair_plan`] as the
+/// unbounded path, so bounded and unbounded `route_batch` cannot disagree on
+/// which route a pair gets (and therefore on the distance the bound prunes).
+/// The bound lives in the EMIT, not in the driver: escalation is triggered by
+/// the query failing, never by a route merely exceeding the bound. An
+/// over-bound pair whose endpoints snapped fine is dropped after one time
+/// query, which is the whole point of a prune — the original #482 code
+/// escalated on over-bound and made the pruned pairs the SLOWEST (the 12x).
 #[allow(clippy::too_many_arguments)]
 fn compute_route_distance_bounded(
     state: &ServerState,
@@ -1749,73 +1836,20 @@ fn compute_route_distance_bounded(
     fallback_count: &std::sync::atomic::AtomicU64,
     scratch: &mut RouteScratch,
 ) -> Option<f32> {
-    use super::types::SnapRole;
     let bound = max_m as f32;
-
-    // Fast path (#506): phantom-seeded single query — same seeding as the
-    // unbounded `compute_route_pair`, so bounded and unbounded route_batch
-    // agree on the route (and therefore on the distance the bound prunes).
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            // Reachability is authoritative here: if the seeded query
-            // connects, the bound decides — over-bound DROPS, no K=64
-            // escalation (same rule as the pre-#506 K=1 path).
-            let result = super::query::QueryResult {
-                distance: r.distance.saturating_sub(dst_shift),
-                meeting_node: r.meeting_node,
-                forward_parent: r.forward_parent,
-                backward_parent: r.backward_parent,
-            };
-            let dist = build_route_distance(state, mode_data, &result, r.src_root, scratch);
-            return if dist <= bound { Some(dist) } else { None };
-        }
-        // seeded query found no path → fall through to K=64 (same
-        // reachability escalation compute_route_pair does).
-    }
-
-    // K=64 escalation — only reached on a K=1 snap miss / non-connecting
-    // ranks, NOT on over-bound. Find the time-optimal route over combos,
-    // then apply the bound ONCE.
-    fallback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    use super::snap_kbest::SNAP_K;
-    let src_snap = super::snap_kbest::snap_k_pair_role(
+    drive_pair(
         state,
         mode_data,
         mode,
-        slon,
-        slat,
-        SnapRole::Src,
-        None,
-        SNAP_K,
-    );
-    let dst_snap = super::snap_kbest::snap_k_pair_role(
-        state,
-        mode_data,
-        mode,
-        dlon,
-        dlat,
-        SnapRole::Dst,
-        None,
-        SNAP_K,
-    );
-    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
-        return None;
-    }
-    super::snap_kbest::p2p_with_kbest_fallback(
         query,
-        &src_snap.ranks,
-        &dst_snap.ranks,
-        super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+        &[slon, slat, dlon, dlat],
+        &route_pair_plan(fallback_count),
+        |src_rank, _dst_rank, result| {
+            let dist = build_route_distance(state, mode_data, result, src_rank, scratch);
+            (dist <= bound).then_some(dist)
+        },
     )
-    .and_then(|(src_rank, _dst_rank, result)| {
-        let dist = build_route_distance(state, mode_data, &result, src_rank, scratch);
-        if dist <= bound { Some(dist) } else { None }
-    })
+    .flatten()
 }
 
 fn route_batch_worker_threads(n_pairs: usize) -> usize {
@@ -2568,13 +2602,12 @@ pub struct PairEdges {
 /// Compute the unpacked edge sequence for a single (src,dst) pair.
 ///
 /// #436: factored out of `do_edges_batch` so the chunk loop can fan it
-/// across rayon workers. Mirrors `compute_route_pair`'s lean K=1 snap
-/// fast path (direct `snap_filtered_role`, no K=64 collect) and only
-/// escalates to the K=64 + combo fallback when the fast path misses —
-/// the dominant per-pair cost cut, since most realistic pairs snap on
-/// the first try. `CchQuery::new` is free (just references + a
-/// thread-local scratch reused across pairs on the same worker), so
-/// constructing it per pair carries no allocation.
+/// across rayon workers. #580: [`drive_pair`] under [`EDGES_PAIR_PLAN`] with
+/// [`emit_pair_rows`] as the emit — the same three routing tiers
+/// `route_batch` runs, differing only in the plan's two named knobs.
+/// `CchQuery::new` is free (just references + a thread-local scratch reused
+/// across pairs on the same worker), so constructing it per pair carries no
+/// allocation.
 pub(crate) fn edges_for_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -2583,22 +2616,27 @@ pub(crate) fn edges_for_pair(
     query_idx: u32,
     pair: &[f64; 4],
 ) -> PairEdges {
-    match route_for_pair(state, mode_data, mode, query, pair) {
-        Some((src_rank, dst_rank, result)) => {
-            emit_pair_rows(state, mode_data, src_rank, dst_rank, &result, query_idx)
-        }
-        None => PairEdges {
-            query_idx,
-            rows: Vec::new(),
-            cch_distance: None,
+    drive_pair(
+        state,
+        mode_data,
+        mode,
+        query,
+        pair,
+        &EDGES_PAIR_PLAN,
+        |src_rank, dst_rank, result| {
+            emit_pair_rows(state, mode_data, src_rank, dst_rank, result, query_idx)
         },
-    }
+    )
+    .unwrap_or(PairEdges {
+        query_idx,
+        rows: Vec::new(),
+        cch_distance: None,
+    })
 }
 
-/// #460: the routing core of [`edges_for_pair`] WITHOUT row emission —
-/// K=1 fast path + K=64/16-combo escalation, returning the raw
-/// `(src_rank, dst_rank, QueryResult)` so flow accumulation can fold
-/// ranks instead of materialized rows. `None` ⇒ unreachable.
+/// #460: the routing core of [`edges_for_pair`] WITHOUT row emission,
+/// returning the raw `(src_rank, dst_rank, QueryResult)` so flow accumulation
+/// can fold ranks instead of materialized rows. `None` ⇒ unreachable.
 pub(crate) fn route_for_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -2606,62 +2644,16 @@ pub(crate) fn route_for_pair(
     query: &super::query::CchQuery<'_>,
     pair: &[f64; 4],
 ) -> Option<(u32, u32, super::query::QueryResult)> {
-    use super::types::SnapRole;
-    let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
-
-    // Phantom-seeded fast path (#506/#509): same seeding as /route and
-    // route_batch, so the emitted per-edge path is the SAME route those
-    // endpoints return — no more directional-commit detours feeding flow
-    // analytics (fixtures emitted 334s/2880m vs the true 163s/1258m).
-    if let (Some(sp), Some(dp)) = (
-        super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None),
-        super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None),
-    ) {
-        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-        if let Some(r) = query.query_seeded(&src_seeds, &dst_seeds, false) {
-            return Some((
-                r.src_root,
-                r.dst_root,
-                super::query::QueryResult {
-                    distance: r.distance.saturating_sub(dst_shift),
-                    meeting_node: r.meeting_node,
-                    forward_parent: r.forward_parent,
-                    backward_parent: r.backward_parent,
-                },
-            ));
-        }
-    }
-
-    // Phantom missed / didn't connect → legacy K=1 + K=64 escalation.
-    let src_role = SnapRole::Src.role_filter(mode_data);
-    let dst_role = SnapRole::Dst.role_filter(mode_data);
-    if let (Some(src_id), Some(dst_id)) = (
-        state
-            .snap_index
-            .snap_filtered_role(slon, slat, mode.0, None, src_role),
-        state
-            .snap_index
-            .snap_filtered_role(dlon, dlat, mode.0, None, dst_role),
-    ) && let (Some(s), Some(d)) = (
-        mode_data.orig_to_rank.get(src_id as usize).copied(),
-        mode_data.orig_to_rank.get(dst_id as usize).copied(),
-    ) && s != u32::MAX
-        && d != u32::MAX
-        && let Some(r) = query.query(s, d)
-    {
-        return Some((s, d, r));
-    }
-    // K=1 didn't connect → K=64 escalation.
-    escalate_route(state, mode_data, mode, query, pair)
+    route_pair(state, mode_data, mode, query, pair, &EDGES_PAIR_PLAN)
 }
 
-/// #438: K=64 + 16-combo escalation for a pair the K=1 fast path could not
+/// #438: K=64 + combo escalation for a pair the cheaper tiers could not
 /// connect. Snaps both ends to 64 candidates and tries the closest-sum-first
-/// combos. Routing only (#460 split — callers emit rows via
-/// [`emit_pair_rows`] or fold ranks); `None` ⇒ unreachable.
+/// combos, capped at `max_combos` ([`PairPlan::max_combos`]). Routing only
+/// (#460 split — callers emit rows via [`emit_pair_rows`] or fold ranks);
+/// `None` ⇒ unreachable.
 ///
-/// Split out of `edges_for_pair` so the source-grouped per-pair path
+/// Split out of the per-pair path so the source-grouped driver
 /// (`process_per_pair_work`) can escalate WITHOUT re-doing the K=1 snap+query
 /// it already attempted with the precomputed ranks (#438-review: avoids the
 /// redundant K=1 work that made the all-singleton workload regress).
@@ -2671,13 +2663,14 @@ fn escalate_route(
     mode: Mode,
     query: &super::query::CchQuery<'_>,
     pair: &[f64; 4],
+    max_combos: usize,
 ) -> Option<(u32, u32, super::query::QueryResult)> {
     use super::types::SnapRole;
     let (slon, slat, dlon, dlat) = (pair[0], pair[1], pair[2], pair[3]);
     use super::snap_kbest::SNAP_K;
-    // Rescues K=1 misses, including pairs whose closest snap had a u32::MAX
-    // rank (not in this mode's CCH) — K=64 looks further out for a contracted
-    // node.
+    // Rescues fast-path misses, including pairs whose closest snap had a
+    // u32::MAX rank (not in this mode's CCH) — K=64 looks further out for a
+    // contracted node.
     let src_snap = super::snap_kbest::snap_k_pair_role(
         state,
         mode_data,
@@ -2698,24 +2691,10 @@ fn escalate_route(
         None,
         SNAP_K,
     );
-    if !src_snap.ranks.is_empty() && !dst_snap.ranks.is_empty() {
-        // Bound the escalation at 16 combos rather than the default 200.
-        // Reachable pairs connect on the closest-sum-first combos almost
-        // immediately (the #197 connectivity masks keep candidates on the main
-        // component), so 16 loses no reachable pairs on the Belgium benchmark
-        // (reachable count identical at 8 / 16 / 200) while bounding the
-        // worst-case cost of a pair whose K=64 candidates don't connect.
-        const EDGES_BATCH_MAX_COMBOS: usize = 16;
-        if let Some(hit) = super::snap_kbest::p2p_with_kbest_fallback(
-            query,
-            &src_snap.ranks,
-            &dst_snap.ranks,
-            EDGES_BATCH_MAX_COMBOS,
-        ) {
-            return Some(hit);
-        }
+    if src_snap.ranks.is_empty() || dst_snap.ranks.is_empty() {
+        return None;
     }
-    None // unreachable
+    super::snap_kbest::p2p_with_kbest_fallback(query, &src_snap.ranks, &dst_snap.ranks, max_combos)
 }
 
 /// #438: shared unpack + per-edge row emit. Used by BOTH the per-pair
@@ -5143,6 +5122,111 @@ mod edges_batch_grouping_tests {
     }
 }
 
+/// #580: the per-pair driver. `route_batch` (bounded and unbounded) and
+/// `edges_batch` used to carry a private copy of the phantom-seeded fast
+/// path and the K=64 escalation — four copies of the first, three of the
+/// second — and a divergence in any one of them meant two surfaces
+/// answering differently for the same pair. They are now one
+/// [`drive_pair`] shaped by a named [`PairPlan`]; these tests pin both the
+/// single body and the two plans, so a re-divergence fails here.
+#[cfg(test)]
+mod pair_driver_tests {
+    use super::{EDGES_BATCH_MAX_COMBOS, EDGES_PAIR_PLAN, route_pair_plan};
+
+    /// The ENGINE half of this file — everything before the first test
+    /// module. The scans below look for call sites in shipped code, and the
+    /// tests themselves quote those call sites verbatim.
+    fn engine_source() -> &'static str {
+        let src = include_str!("flight.rs");
+        let end = src
+            .find("\n#[cfg(test)]\n")
+            .expect("flight.rs has test modules");
+        &src[..end]
+    }
+
+    /// The phantom-seeded fast path (#502/#506/#509) exists EXACTLY ONCE in
+    /// this file. It is the reason `/route`, `route_batch` and `edges_batch`
+    /// return the same route for the same pair; three hand-copies of it is
+    /// how they drifted apart before. Read from the source, so a fourth copy
+    /// fails here rather than in production traffic nobody diffs.
+    #[test]
+    fn one_phantom_seeded_fast_path() {
+        let calls = engine_source().matches("query.query_seeded(").count();
+        assert_eq!(
+            calls, 1,
+            "the phantom-seeded pair query must live in phantom_pair() alone; \
+             found {calls} call sites"
+        );
+    }
+
+    /// Every per-pair surface enters through [`drive_pair`]. Read from the
+    /// source: a surface that re-rolls snap → query → escalate privately
+    /// would compile and pass every other test while silently answering
+    /// differently from its siblings.
+    #[test]
+    fn every_pair_surface_goes_through_drive_pair() {
+        let src = engine_source();
+        for (name, sig) in [
+            ("compute_route_pair", "\nfn compute_route_pair("),
+            (
+                "compute_route_distance_bounded",
+                "\nfn compute_route_distance_bounded(",
+            ),
+            ("edges_for_pair", "\npub(crate) fn edges_for_pair("),
+        ] {
+            let at = src
+                .find(sig)
+                .unwrap_or_else(|| panic!("{name} present in flight.rs"));
+            // The function body ends at the next top-level `}` on column 0.
+            let body_end = at + src[at..].find("\n}\n").expect("function body closes");
+            let body = &src[at..body_end];
+            assert!(
+                body.contains("drive_pair("),
+                "{name} must route through drive_pair (#580), not a private copy"
+            );
+            assert!(
+                !body.contains("query_seeded(") && !body.contains("p2p_with_kbest_fallback("),
+                "{name} re-rolls a routing tier instead of using the shared driver"
+            );
+        }
+    }
+
+    /// The two plans differ ONLY where they are documented to. `route_batch`
+    /// carries the fallback-rate counter and no K=1 shortcut; `edges_batch`
+    /// carries the shortcut and no counter.
+    #[test]
+    fn the_two_plans_differ_only_where_documented() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let route = route_pair_plan(&counter);
+        assert!(route.fallback_count.is_some(), "route_batch instruments");
+        assert!(EDGES_PAIR_PLAN.fallback_count.is_none(), "edges does not");
+        assert!(!route.k1_shortcut, "route_batch has no K=1 shortcut");
+        const { assert!(EDGES_PAIR_PLAN.k1_shortcut, "edges_batch has one (#438)") };
+    }
+
+    /// #548 set the escalation cap to 400 on every surface so two of them
+    /// could not disagree on whether a pair is routable at all.
+    /// `edges_batch` is the one surface still outside that: it caps at 16 to
+    /// bound the worst case on disconnected pairs. Pinned so the
+    /// disagreement stays a deliberate, visible number rather than an
+    /// accident — and so closing it is a decision someone makes here.
+    #[test]
+    fn edges_batch_caps_escalation_below_the_org_wide_value() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        assert_eq!(
+            route_pair_plan(&counter).max_combos,
+            super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS
+        );
+        assert_eq!(EDGES_PAIR_PLAN.max_combos, EDGES_BATCH_MAX_COMBOS);
+        const {
+            assert!(
+                EDGES_BATCH_MAX_COMBOS < super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                "edges_batch is the narrower cap; if that changed, say so on #580"
+            )
+        };
+    }
+}
+
 #[cfg(test)]
 mod route_batch_prune_tests {
     use super::{RouteBatchParams, route_batch_schema};
@@ -5241,12 +5325,17 @@ mod route_batch_prune_tests {
 /// #532: sparse matrix output — sentinel cells (radius-pruned, beyond a time
 /// bound, or unreachable) are omitted entirely instead of being emitted as
 /// `u32::MAX` rows. Full invariant battery for BOTH emit paths: the small-
-/// matrix `build_matrix_batch` (2-channel capable) and the streamed
-/// `build_matrix_tile_batch` (duration-only tile). Every invariant the sparse
+/// matrix branch (whole grid, unbounded at emit) and the streamed tiled
+/// branch (one source block, bound applied at emit). Every invariant the sparse
 /// contract makes is pinned here so a regression breaks a named test.
+///
+/// #580: both paths are now the SAME `build_matrix_batch` body, shaped by the
+/// two call-site helpers below (`emit_small` / `emit_tile`) — the cross-path
+/// agreement tests therefore pin the two SHAPINGS, and the column contract
+/// itself can no longer drift.
 #[cfg(test)]
 mod matrix_sparse_tests {
-    use super::{build_matrix_batch, build_matrix_tile_batch, matrix_schema};
+    use super::{build_matrix_batch, matrix_schema};
     use arrow::array::{Array, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -5266,8 +5355,40 @@ mod matrix_sparse_tests {
             .collect()
     }
 
+    /// The SMALL branch's call site, verbatim: the whole valid grid, no bound
+    /// at emit (its `max_minutes` mask already ran over both channels), and an
+    /// empty batch — never "nothing" — when sparse drops every cell.
+    fn emit_small(
+        m: &[u32],
+        lat: Option<&[u32]>,
+        vs: &[usize],
+        vd: &[usize],
+        mask: Option<&[Vec<u32>]>,
+        sparse: bool,
+    ) -> RecordBatch {
+        build_matrix_batch(m, lat, vs, vd, MAX, mask, schema(), sparse)
+            .unwrap()
+            .unwrap_or_else(|| RecordBatch::new_empty(schema()))
+    }
+
+    /// The TILED branch's call site, verbatim: one source block, the time
+    /// bound applied at emit, and `None` (stream nothing) when no cell
+    /// survives.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_tile(
+        m: &[u32],
+        lat: Option<&[u32]>,
+        src: &[usize],
+        dst: &[usize],
+        threshold: u32,
+        mask: Option<&[Vec<u32>]>,
+        sparse: bool,
+    ) -> Option<RecordBatch> {
+        build_matrix_batch(m, lat, src, dst, threshold, mask, schema(), sparse).unwrap()
+    }
+
     // ============================ small path ============================
-    // build_matrix_batch. Fixture: originals src {0,1} × dst {0,1,2}, so the
+    // The small branch's shaping (`emit_small`). Fixture: originals src {0,1} × dst {0,1,2}, so the
     // valid index vectors are contiguous here (index-preservation gets its own
     // non-contiguous fixture below). Row-major matrix[si*3 + di]:
     //   src0: [100, MAX, 300]     src1: [MAX, 200, 250]
@@ -5284,18 +5405,7 @@ mod matrix_sparse_tests {
 
     fn build_small(lat: Option<&[u32]>, mask: Option<&[Vec<u32>]>, sparse: bool) -> RecordBatch {
         let (m, vs, vd, _default_mask) = small_fixture();
-        build_matrix_batch(
-            &m,
-            lat,
-            vs.len(),
-            vd.len(),
-            &vs,
-            &vd,
-            schema(),
-            mask,
-            sparse,
-        )
-        .unwrap()
+        emit_small(&m, lat, &vs, &vd, mask, sparse)
     }
 
     /// I1 — dense emits the full valid grid (n_valid_src × n_valid_dst), with
@@ -5381,7 +5491,7 @@ mod matrix_sparse_tests {
         let m = vec![MAX; 6];
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
-        let b = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, true).unwrap();
+        let b = emit_small(&m, None, &vs, &vd, None, true);
         assert_eq!(b.num_rows(), 0);
         assert_eq!(b.schema().as_ref(), &matrix_schema());
     }
@@ -5393,8 +5503,8 @@ mod matrix_sparse_tests {
         let m = vec![10, 20, 30, 40, 50, 60];
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
-        let dense = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, false).unwrap();
-        let sparse = build_matrix_batch(&m, None, 2, 3, &vs, &vd, schema(), None, true).unwrap();
+        let dense = emit_small(&m, None, &vs, &vd, None, false);
+        let sparse = emit_small(&m, None, &vs, &vd, None, true);
         assert_eq!(rows(&dense), rows(&sparse));
         assert_eq!(sparse.num_rows(), 6);
     }
@@ -5408,7 +5518,7 @@ mod matrix_sparse_tests {
         let m = vec![70, MAX, MAX, 90];
         let vs = vec![2usize, 5];
         let vd = vec![1usize, 4];
-        let b = build_matrix_batch(&m, None, 2, 2, &vs, &vd, schema(), None, true).unwrap();
+        let b = emit_small(&m, None, &vs, &vd, None, true);
         let mut got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         got.sort();
         // (2,1)=70 and (5,4)=90 survive; the two MAX cells drop.
@@ -5433,7 +5543,7 @@ mod matrix_sparse_tests {
     }
 
     // ========================== streaming path ==========================
-    // build_matrix_tile_batch (duration-only, returns Option). Fixture:
+    // The tiled branch's shaping (`emit_tile`, returns Option). Fixture:
     // block_src_orig {0,3} (NON-contiguous) × valid_dst {1,2,4}. tile row-major
     // 2×3 in seconds:
     //   src0: [50, MAX, 300]      src3: [MAX, 120, 999]
@@ -5455,10 +5565,8 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_dense_full_grid_distance_max() {
         let (m, src, dst, mask) = tile_fixture();
-        let b =
-            build_matrix_tile_batch(&m, None, &src, &dst, TILE_THR, Some(&mask), schema(), false)
-                .unwrap()
-                .expect("dense tile is never None");
+        let b = emit_tile(&m, None, &src, &dst, TILE_THR, Some(&mask), false)
+            .expect("dense tile is never None");
         assert_eq!(b.num_rows(), 6);
         assert!(
             rows(&b).iter().all(|r| r.3 == MAX),
@@ -5473,9 +5581,7 @@ mod matrix_sparse_tests {
     fn tile_sparse_equals_dense_minus_sentinels() {
         let (m, src, dst, mask) = tile_fixture();
         let b =
-            build_matrix_tile_batch(&m, None, &src, &dst, TILE_THR, Some(&mask), schema(), true)
-                .unwrap()
-                .expect("3 cells survive");
+            emit_tile(&m, None, &src, &dst, TILE_THR, Some(&mask), true).expect("3 cells survive");
         let mut got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         got.sort();
         assert_eq!(got, vec![(0, 1, 50_000), (0, 4, 300_000), (3, 2, 120_000)]);
@@ -5488,18 +5594,14 @@ mod matrix_sparse_tests {
     fn tile_threshold_bound_gates_cells() {
         let (m, src, dst, _mask) = tile_fixture();
         // Unbounded, no mask: every non-MAX matrix cell survives.
-        let b = build_matrix_tile_batch(&m, None, &src, &dst, MAX, None, schema(), true)
-            .unwrap()
-            .unwrap();
+        let b = emit_tile(&m, None, &src, &dst, MAX, None, true).unwrap();
         let got: std::collections::BTreeSet<_> = rows(&b).iter().map(|r| (r.0, r.1)).collect();
         // matrix MAX only at (0,2) and (3,1); everything else (incl. 999) is in.
         let expect: std::collections::BTreeSet<_> =
             [(0, 1), (0, 4), (3, 2), (3, 4)].into_iter().collect();
         assert_eq!(got, expect);
         // Now bound at 500: (3,4)=999 drops back out.
-        let b2 = build_matrix_tile_batch(&m, None, &src, &dst, 500, None, schema(), true)
-            .unwrap()
-            .unwrap();
+        let b2 = emit_tile(&m, None, &src, &dst, 500, None, true).unwrap();
         assert!(rows(&b2).iter().all(|r| !(r.0 == 3 && r.1 == 4)));
     }
 
@@ -5509,18 +5611,7 @@ mod matrix_sparse_tests {
     fn tile_radius_mask_prunes_reachable() {
         // src {0} × dst {1,2}; both reachable, but mask allows only dst 2.
         let m = vec![40, 80];
-        let b = build_matrix_tile_batch(
-            &m,
-            None,
-            &[0],
-            &[1, 2],
-            MAX,
-            Some(&[vec![2u32]]),
-            schema(),
-            true,
-        )
-        .unwrap()
-        .unwrap();
+        let b = emit_tile(&m, None, &[0], &[1, 2], MAX, Some(&[vec![2u32]]), true).unwrap();
         let got: Vec<_> = rows(&b).iter().map(|r| (r.0, r.1, r.2)).collect();
         assert_eq!(
             got,
@@ -5534,22 +5625,11 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_sparse_all_sentinels_is_none() {
         let m = vec![MAX; 4];
-        let none =
-            build_matrix_tile_batch(&m, None, &[0, 1], &[0, 1], MAX, None, schema(), true).unwrap();
+        let none = emit_tile(&m, None, &[0, 1], &[0, 1], MAX, None, true);
         assert!(none.is_none(), "all-sentinel sparse tile must be None");
         // pruned-to-empty also yields None.
         let m2 = vec![10, 20];
-        let none2 = build_matrix_tile_batch(
-            &m2,
-            None,
-            &[0],
-            &[0, 1],
-            MAX,
-            Some(&[vec![]]),
-            schema(),
-            true,
-        )
-        .unwrap();
+        let none2 = emit_tile(&m2, None, &[0], &[0, 1], MAX, Some(&[vec![]]), true);
         assert!(none2.is_none(), "fully-pruned sparse tile must be None");
     }
 
@@ -5558,9 +5638,8 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_dense_all_sentinels_is_some() {
         let m = vec![MAX; 4];
-        let b = build_matrix_tile_batch(&m, None, &[0, 1], &[0, 1], MAX, None, schema(), false)
-            .unwrap()
-            .expect("dense is always Some");
+        let b =
+            emit_tile(&m, None, &[0, 1], &[0, 1], MAX, None, false).expect("dense is always Some");
         assert_eq!(b.num_rows(), 4);
         assert!(rows(&b).iter().all(|r| r.2 == MAX && r.3 == MAX));
     }
@@ -5573,21 +5652,8 @@ mod matrix_sparse_tests {
     fn small_and_tile_agree_on_survivors() {
         // src {0,1} × dst {0,1,2}, reuse the small fixture's matrix + mask.
         let (m, vs, vd, mask) = small_fixture();
-        let small = build_matrix_batch(
-            &m,
-            None,
-            vs.len(),
-            vd.len(),
-            &vs,
-            &vd,
-            schema(),
-            Some(&mask),
-            true,
-        )
-        .unwrap();
-        let tile = build_matrix_tile_batch(&m, None, &vs, &vd, MAX, Some(&mask), schema(), true)
-            .unwrap()
-            .unwrap();
+        let small = emit_small(&m, None, &vs, &vd, Some(&mask), true);
+        let tile = emit_tile(&m, None, &vs, &vd, MAX, Some(&mask), true).unwrap();
         let key = |b: &RecordBatch| {
             let mut v: Vec<_> = rows(b).iter().map(|r| (r.0, r.1, r.2)).collect();
             v.sort();
@@ -5610,10 +5676,7 @@ mod matrix_sparse_tests {
         // src {0} × dst {0,1}: both reachable; lat carries real metres.
         let time = vec![50u32, 100];
         let lat = vec![700u32, 1400];
-        let b =
-            build_matrix_tile_batch(&time, Some(&lat), &[0], &[0, 1], MAX, None, schema(), false)
-                .unwrap()
-                .unwrap();
+        let b = emit_tile(&time, Some(&lat), &[0], &[0, 1], MAX, None, false).unwrap();
         let got: Vec<_> = rows(&b).iter().map(|r| (r.1, r.2, r.3)).collect();
         // (target, duration_ms, distance_m): duration = s×1000, distance = lat.
         assert_eq!(got, vec![(0, 50_000, 700), (1, 100_000, 1400)]);
@@ -5628,14 +5691,12 @@ mod matrix_sparse_tests {
     #[test]
     fn tile_distance_max_without_lat() {
         let time = vec![50u32, 100];
-        let b = build_matrix_tile_batch(&time, None, &[0], &[0, 1], MAX, None, schema(), false)
-            .unwrap()
-            .unwrap();
+        let b = emit_tile(&time, None, &[0], &[0, 1], MAX, None, false).unwrap();
         assert!(rows(&b).iter().all(|r| r.3 == MAX));
     }
 
-    /// CROSS-PATH LOCK (#534): the small-matrix emit (`build_matrix_batch`) and
-    /// the streamed tile emit (`build_matrix_tile_batch`) must produce
+    /// CROSS-PATH LOCK (#534): the small-matrix emit (`emit_small`) and
+    /// the streamed tile emit (`emit_tile`) must produce
     /// BYTE-IDENTICAL rows — source, target, duration AND distance — for the
     /// same time+lat matrices. This is exactly the invariant #534 broke: the
     /// tile path hardcoded distance_m = u32::MAX while the small path emitted
@@ -5649,22 +5710,8 @@ mod matrix_sparse_tests {
         let vs = vec![0usize, 1];
         let vd = vec![0usize, 1, 2];
         for sparse in [false, true] {
-            let small = build_matrix_batch(
-                &time,
-                Some(&lat),
-                vs.len(),
-                vd.len(),
-                &vs,
-                &vd,
-                schema(),
-                None,
-                sparse,
-            )
-            .unwrap();
-            let tile =
-                build_matrix_tile_batch(&time, Some(&lat), &vs, &vd, MAX, None, schema(), sparse)
-                    .unwrap()
-                    .unwrap();
+            let small = emit_small(&time, Some(&lat), &vs, &vd, None, sparse);
+            let tile = emit_tile(&time, Some(&lat), &vs, &vd, MAX, None, sparse).unwrap();
             let key = |b: &RecordBatch| {
                 let mut v = rows(b);
                 v.sort();
@@ -5680,6 +5727,47 @@ mod matrix_sparse_tests {
                 rows(&tile).iter().any(|r| r.3 != MAX),
                 "tile must emit real distances from lat"
             );
+        }
+    }
+
+    /// #580 STRUCTURAL LOCK: the small branch and the tiled branch emit the
+    /// IDENTICAL Arrow schema — same field count, names, data types and
+    /// nullability, in the same order — and it is `matrix_schema()`. Before
+    /// #580 this was a comment plus a values-only cross-path test; a builder
+    /// that dropped or renamed a column on one path only would have shipped.
+    /// Asserted for dense AND sparse, with and without a lat matrix, since
+    /// those are the axes on which the two emits used to differ.
+    #[test]
+    fn small_and_tile_emit_identical_schema() {
+        let time = vec![100, MAX, 300, MAX, 200, 250];
+        let lat = vec![1100, MAX, 3300, MAX, 2200, 2500];
+        let vs = vec![0usize, 1];
+        let vd = vec![0usize, 1, 2];
+        for sparse in [false, true] {
+            for lat_opt in [None, Some(lat.as_slice())] {
+                let small = emit_small(&time, lat_opt, &vs, &vd, None, sparse);
+                let tile = emit_tile(&time, lat_opt, &vs, &vd, MAX, None, sparse)
+                    .expect("cells survive in this fixture");
+                assert_eq!(
+                    small.schema(),
+                    tile.schema(),
+                    "small and tile must emit the same schema (sparse={sparse}, lat={})",
+                    lat_opt.is_some()
+                );
+                assert_eq!(small.schema().as_ref(), &matrix_schema());
+                assert_eq!(small.num_columns(), tile.num_columns());
+                for (a, b) in small
+                    .schema()
+                    .fields()
+                    .iter()
+                    .zip(tile.schema().fields().iter())
+                {
+                    assert_eq!(
+                        (a.name(), a.data_type(), a.is_nullable()),
+                        (b.name(), b.data_type(), b.is_nullable())
+                    );
+                }
+            }
         }
     }
 }
