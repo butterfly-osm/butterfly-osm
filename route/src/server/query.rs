@@ -334,8 +334,8 @@ thread_local! {
     /// changes. #409/#410: an `EvictableCell` so the idle-compactor can
     /// free this ~185 MB arena regardless of whether the owning thread
     /// is a Tokio worker (where `/route` runs inline) or a rayon worker.
-    static CCH_QUERY_STATE: crate::server::evictable::EvictableCell<CchQueryState> =
-        const { crate::server::evictable::EvictableCell::new() };
+    static CCH_QUERY_STATE: crate::evictable::EvictableCell<CchQueryState> =
+        const { crate::evictable::EvictableCell::new() };
 }
 
 /// Reconstruct path from generation-stamped parent arrays

@@ -929,7 +929,7 @@ fn phast_table_and_route_all_agree_with_an_independent_dijkstra() {
     use butterfly_route::matrix::bucket_ch::{
         DownAdjFlat, DownReverseAdjFlat, UpAdjFlat, table_bucket_full_flat,
     };
-    use butterfly_route::server::isochrone_handler::run_phast_bounded_fast;
+    use butterfly_route::range::phast_seeded::run_phast_bounded_fast;
     use butterfly_route::server::query::CchQuery;
 
     let net = hierarchy_lattice();
@@ -1025,7 +1025,7 @@ fn isochrone_reach_matches_the_table_on_the_synthetic_hierarchy() {
     use butterfly_route::matrix::bucket_ch::{
         DownAdjFlat, DownReverseAdjFlat, UpAdjFlat, table_bucket_full_flat,
     };
-    use butterfly_route::server::isochrone_handler::run_phast_bounded_fast;
+    use butterfly_route::range::phast_seeded::run_phast_bounded_fast;
 
     // `gate_isochrone_reach_truth`, data-free: /table is the independent
     // truth for what the isochrone claims to reach.

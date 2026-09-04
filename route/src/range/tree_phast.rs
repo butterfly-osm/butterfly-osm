@@ -27,12 +27,12 @@
 //!
 //! Scratch arrays are thread-local, generation-stamped (O(1) per-tree reset),
 //! and registered with the idle compactor via
-//! [`crate::server::evictable::EvictableCell`] (~60 MB per worker thread on
+//! [`crate::evictable::EvictableCell`] (~60 MB per worker thread on
 //! Belgium, freed when idle).
 
+use crate::evictable::EvictableCell;
 use crate::formats::{CchTopo, CchWeights};
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat};
-use crate::server::evictable::EvictableCell;
 use crate::server::query::HANDLE_NONE;
 #[cfg(feature = "bench")]
 use std::cmp::Reverse;

@@ -205,8 +205,8 @@ thread_local! {
     /// One RAPTOR state per thread, reused across queries. See #104.
     /// #409: an `EvictableCell` so the idle-compactor reclaims it on
     /// Tokio access/egress worker threads too, not just rayon workers.
-    static RAPTOR_STATE: crate::server::evictable::EvictableCell<RaptorState> =
-        const { crate::server::evictable::EvictableCell::new() };
+    static RAPTOR_STATE: crate::evictable::EvictableCell<RaptorState> =
+        const { crate::evictable::EvictableCell::new() };
 }
 
 /// A single leg of a RAPTOR journey.
