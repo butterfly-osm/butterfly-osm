@@ -11,7 +11,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::crc;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 const MAGIC: u32 = 0x48535447; // "HSTG" = Hybrid STate Graph
 const VERSION: u16 = 1;
@@ -204,7 +204,7 @@ impl HybridStateFile {
         }
 
         anyhow::ensure!(
-            (header[6] as usize) < crate::profile_abi::MAX_MODES,
+            (header[6] as usize) < crate::model::types::MAX_MODES,
             "Invalid mode: {}",
             header[6]
         );

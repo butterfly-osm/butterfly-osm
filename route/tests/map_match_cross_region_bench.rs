@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use butterfly_route::profile_abi::Mode;
+use butterfly_route::model::types::Mode;
 use butterfly_route::server::map_match::{map_match, map_match_multi_region};
 use butterfly_route::server::overlay::OverlayCluster;
 use butterfly_route::server::regions::RegionsState;

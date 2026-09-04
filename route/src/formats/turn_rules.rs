@@ -30,7 +30,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use super::crc::Digest;
-use crate::profile_abi::{Mode, TurnRuleKind};
+use crate::model::types::{Mode, TurnRuleKind};
 
 const MAGIC: u32 = 0x5455524E; // "TURN"
 const VERSION: u16 = 2;

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
 use crate::density::{DensityClassifier, WayTagsView};
 use crate::formats::{TurnRule, WayAttr, turn_rules, way_attrs};
-use crate::profile_abi::{Mode, TurnRuleKind, WayOutput};
+use crate::model::types::{Mode, TurnRuleKind, WayOutput};
 
 pub struct ProfileConfig {
     pub ways_path: PathBuf,

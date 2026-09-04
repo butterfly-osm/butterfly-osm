@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::formats::*;
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Integer division with round-half-to-even (banker's rounding) semantics.
 /// `numerator / denominator`, with halves rounded toward the even quotient.

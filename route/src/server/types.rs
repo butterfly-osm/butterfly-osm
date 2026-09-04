@@ -4,7 +4,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 /// Standard error response body
 #[derive(Debug, Serialize, ToSchema)]

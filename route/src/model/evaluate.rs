@@ -2,7 +2,7 @@
 //!
 //! Uses dense table lookups for O(1) evaluation per way.
 
-use crate::profile_abi::{TurnRuleKind, WayOutput};
+use crate::model::types::{TurnRuleKind, WayOutput};
 
 use super::compile::{CompiledClassBitRule, CompiledModel};
 

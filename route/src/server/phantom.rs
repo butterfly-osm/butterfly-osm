@@ -22,7 +22,7 @@
 //!   `seed(d) = shift - suffix(d)` with `shift = max suffix`; the caller
 //!   subtracts `shift` from the final best (see `query_phantom`).
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::edge_geom::EdgeGeometry;
 use super::state::{ModeData, ServerState};

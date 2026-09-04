@@ -571,7 +571,7 @@ fn build_way_mode_lookup(
     mode_way_attrs: &[(u8, &Path)],
 ) -> Result<std::collections::HashMap<i64, u8>> {
     use crate::formats::way_attrs;
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
     use std::collections::HashMap;
 
     let mut lookup = HashMap::new();

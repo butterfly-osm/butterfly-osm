@@ -19,7 +19,7 @@ use crate::matrix::bucket_ch::{
     DownAdjFlat, DownAdjFlatFile, DownReverseAdjFlat, DownReverseAdjFlatFile, UpAdjFlat,
     UpAdjFlatFile,
 };
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::exclude::{self, ExcludeWeights};
 
@@ -3636,7 +3636,7 @@ fn clone_mode_data(base: &ModeData) -> ModeData {
 mod tests {
     use super::build_role_masks;
     use crate::formats::FilteredEbg;
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
 
     fn tiny_filtered_ebg(offsets: Vec<u64>, heads: Vec<u32>) -> FilteredEbg {
         let n = offsets.len() - 1;

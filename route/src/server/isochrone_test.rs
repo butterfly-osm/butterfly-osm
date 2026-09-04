@@ -9,7 +9,7 @@ use rand::rngs::StdRng;
 #[allow(unused_imports)]
 use rand::{Rng, RngExt, SeedableRng};
 
-use crate::profile_abi::Mode;
+use crate::model::types::Mode;
 
 use super::geometry::{Point as IsoPoint, build_isochrone_geometry_sparse};
 
@@ -674,7 +674,7 @@ mod depart_frontier_tests {
         EdgeGeomPoints, WeightArray,
     };
     use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
-    use crate::profile_abi::Mode;
+    use crate::model::types::Mode;
     use crate::server::edge_geom::EdgeGeometry;
     use crate::server::geometry::{ReachModel, reachable_polylines};
     use crate::server::isochrone_handler::depart_frontier;
