@@ -191,7 +191,22 @@ THRESHOLDS = {
     "topology_outside_frac": 0.015,
     "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
     "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
-    "reach_out_tol": 0.95,  # nothing reachable ≤0.95 T may lie outside
+    # 0.95 -> 0.99 (2026-09-04, measured on Belgium after #544). #544 fixed the
+    # arrive field but deliberately left this knob alone: it is shared with the
+    # depart direction and with the crumb filter's separate budget, and nobody
+    # had measured the real-data residual. Measured now, car, T=600 s, 1500
+    # sampled road points > 150 m outside the polygon per direction:
+    #   arrive — earliest reachable far point 1.0217 T; NOTHING outside the
+    #            polygon is reachable within T at all, so 0/1500 at every
+    #            tolerance up to 1.00 T;
+    #   depart — earliest 0.8867 T (one detached stub at Berloz, exactly the
+    #            crumb the filter declines to draw); the next is 1.0133 T, so
+    #            1/1500 at 0.99 T against a budget of 7.
+    # One knob still serves both directions — the measurement says a split is
+    # not needed. Not raised to 1.00: the depart frontier needs its own cell of
+    # headroom, and the crumb filter keeps its separate 1.5 % budget in
+    # gate_isochrone_topology.
+    "reach_out_tol": 0.99,  # nothing reachable ≤0.99 T may lie outside
     "reach_out_frac": 0.005,  # ≤0.5 % tolerated
     "pin_near_ring_m": 30.0,  # #535: pin inside, or ≤30 m from the ring
     "pin_snap_max_m": 300.0,  # car-free centres snap 100-200 m
@@ -1953,13 +1968,11 @@ def gate_radius_exactness(base):
     passed = True
     for mode in ("car", "foot"):
         def run(extra):
-            t0 = time.time()
-            r = table(base, origins, dests, mode=mode, annotations="duration,distance",
-                      timeout=900, **extra)
-            return r, time.time() - t0
+            return table(base, origins, dests, mode=mode, annotations="duration,distance",
+                         timeout=900, **extra)
 
-        full, t_full = run({})
-        pruned, t_pruned = run({"radius_km": R})
+        full = run({})
+        pruned = run({"radius_km": R})
         fd, pd = full["durations"], pruned["durations"]
         fm, pm = full.get("distances"), pruned.get("distances")
         kept = mism = dropped = 0
@@ -1987,11 +2000,12 @@ def gate_radius_exactness(base):
                 if fd[i][j] is not None and pd[i][j] is None and _within_km(
                         so[i], sd[j], R):
                     lost += 1
+        # No timing here on purpose: two sequential calls over the same points
+        # are not a fair comparison (the second runs warm), and this gate's job
+        # is exactness. The speedup is measured separately, interleaved.
         passed &= check(f"{mode}: radius actually prunes",
                         0 < kept < len(origins) * len(dests),
-                        f"{kept}/{len(origins) * len(dests)} cells kept, "
-                        f"{t_pruned:.2f}s vs {t_full:.2f}s unpruned "
-                        f"({t_full / t_pruned:.2f}x)" if t_pruned > 0 else "")
+                        f"{kept}/{len(origins) * len(dests)} cells kept")
         passed &= check(f"{mode}: every kept cell identical to the unpruned run",
                         mism == 0 and dropped == 0,
                         f"{mism} value mismatches, {dropped} cells the unpruned run "
@@ -2405,7 +2419,14 @@ def gate_route_batch_max_meters(base):
         return {pi[i]: di[i] for i in range(tb.num_rows) if di[i] is not None}
 
     unb = run({})
-    B = pct(list(unb.values()), 0.5)  # median → ~half pruned
+    # Integral bound: the engine rounds `max_meters` to whole metres, so a
+    # fractional B would make "distance <= B" here and "distance <= round(B)"
+    # there disagree about the one pair whose distance IS the median (measured
+    # 2026-09-04: B = 5276.355 m, pair 38 at exactly 5276.355 m, correctly
+    # dropped by the engine and wrongly expected here). Flooring removes the
+    # ambiguity without loosening anything — the set equality below is still
+    # exact.
+    B = float(math.floor(pct(list(unb.values()), 0.5)))  # median → ~half pruned
     bnd = run({"max_meters": B})
     expected = {k for k, v in unb.items() if v <= B}
     got = set(bnd.keys())
