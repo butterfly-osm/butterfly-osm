@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::formats::EbgNodes;
+use crate::formats::{CchTopo, CchWeights, EbgNodes};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::model::types::Mode;
 use crate::range::{ContourPolygon, ReachableSegment, SparseContourConfig};
@@ -208,6 +208,55 @@ pub fn build_raw_points_into(
     coordinates.dedup_by(|a, b| (a.lon - b.lon).abs() < 1e-9 && (a.lat - b.lat).abs() < 1e-9);
 
     total_distance_m
+}
+
+/// Unpack a CCH query result into the original-EBG path it represents,
+/// then build that path's polyline and return its length in metres.
+///
+/// This is THE route-geometry builder. `/route` and the Flight
+/// `route_batch` batch surface both reach their polyline through it, so
+/// neither can grow its own idea of what a route looks like: #493 was
+/// exactly that failure — a surface that appended every edge's stored
+/// polyline forward, drawing a route whose polyline was ~2x the
+/// `distance_m` the same surface reported, because half the traversals
+/// run against the stored orientation.
+///
+/// `rank_path` and `ebg_path` are caller-owned scratch so a batch of
+/// thousands of pairs pays no per-pair allocation; both are cleared on
+/// entry and left holding this pair's path (callers need `ebg_path`
+/// afterwards for steps and annotations). The returned length is the sum
+/// of the traversed edges' `length_m` — the SAME number every surface
+/// reports as `distance_m`, which is why polyline length and
+/// `distance_m` must agree.
+#[allow(clippy::too_many_arguments)]
+pub fn build_route_points_into(
+    topo: &CchTopo,
+    weights: &CchWeights,
+    filtered_to_original: &[u32],
+    ebg_nodes: &EbgNodes,
+    edge_geom: &EdgeGeometry,
+    forward_parent: &[(u32, u32)],
+    backward_parent: &[(u32, u32)],
+    src_rank: u32,
+    rank_path: &mut Vec<u32>,
+    ebg_path: &mut Vec<u32>,
+    points: &mut Vec<Point>,
+) -> f64 {
+    crate::server::unpack::unpack_path_into(
+        topo,
+        weights,
+        forward_parent,
+        backward_parent,
+        src_rank,
+        rank_path,
+    );
+    ebg_path.clear();
+    ebg_path.reserve(rank_path.len());
+    for &rank in rank_path.iter() {
+        let filtered_id = topo.rank_to_filtered[rank as usize];
+        ebg_path.push(filtered_to_original[filtered_id as usize]);
+    }
+    build_raw_points_into(ebg_path, ebg_nodes, edge_geom, points)
 }
 
 /// Squared planar distance between a Point and a (lon, lat) tuple — cheap

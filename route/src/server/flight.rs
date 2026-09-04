@@ -1755,26 +1755,17 @@ fn build_route_distance(
     src_rank: u32,
     scratch: &mut RouteScratch,
 ) -> f32 {
-    super::unpack::unpack_path_into(
+    super::geometry::build_route_points_into(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
+        &mode_data.filtered_to_original,
+        &state.ebg_nodes,
+        &state.edge_geom,
         &result.forward_parent,
         &result.backward_parent,
         src_rank,
         &mut scratch.rank_path,
-    );
-    scratch.ebg_path.clear();
-    scratch.ebg_path.reserve(scratch.rank_path.len());
-    for &rank in &scratch.rank_path {
-        let filt_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        scratch
-            .ebg_path
-            .push(mode_data.filtered_to_original[filt_id as usize]);
-    }
-    super::geometry::build_raw_points_into(
-        &scratch.ebg_path,
-        &state.ebg_nodes,
-        &state.edge_geom,
+        &mut scratch.ebg_path,
         &mut scratch.points,
     ) as f32
 }
