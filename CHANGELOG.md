@@ -161,6 +161,60 @@ best/typical/worst bands and the serve-boot recustomization that consumes
 them. None of it went through the profile schema: `car_freeflow` and the band
 weight sets are built in `server/state/recustomize.rs` from the edge table,
 never from a variant section.
+### 2026-09-04 — One REST error shape, one coordinate validator (#576)
+
+**DEPRECATION — `/trip` and `/match` legacy `code` / `message` fields.**
+Eight REST endpoints refused a request with `{"error": ...}`; `/trip` and
+`/match` answered with an ad-hoc `{"code": "InvalidValue", "message": ...}`
+body built by 35 inline `serde_json::json!` literals that no OpenAPI
+component described. Both now build the same `ErrorResponse` as every other
+endpoint.
+
+Because that is breaking for a client reading `message`, it ships as a
+window rather than a switch: **for this release those two endpoints emit
+BOTH** — the documented `error` field AND the two legacy fields, carrying
+the identical text and each call site's legacy `code` constant
+(`InvalidValue`, `NoSegment`, `NoMatch`, `InternalError`):
+
+```json
+{ "error": "...", "code": "InvalidValue", "message": "..." }
+```
+
+**`code` and `message` are deprecated as of 2.1.0 and are REMOVED in
+2.2.0.** Read `error` and the HTTP status. No other endpoint emits them —
+they are `Option` fields skipped when unset, so the eight endpoints that
+already served `{error}` are byte-identical to before. Status codes and
+evaluation order did not move on any endpoint.
+
+- **One validator.** `types::validate_coord` had three siblings: `/trip`'s
+  inline bounds check, Flight's own copy (which refused in different words),
+  and `parse_coordinates` in the elevation path (which checked latitude
+  first). All four are now one function, so a coordinate `/route` calls
+  out of range is out of range everywhere, in the same words. `/trip`'s
+  byte-identical private `parse_mode` copy is gone too.
+- **The document now says what is served.** `/trip`, `/isochrone/bulk` and
+  `/catchment` documented a 400 with no body; `/transit` and `/transit/bulk`
+  documented neither their 400 nor a body on the statuses they did list.
+  All five name `ErrorResponse` now, `error` is published as the only
+  required property, and the legacy pair is published as deprecated.
+  `docs/api.md` gains the 501 row it was missing (mixed-region inputs were
+  documented as 400 and have never been).
+- **The mixed-region rejection.** `/trip` and `/match` render it through the
+  shared `DispatchError::into_code_message_parts` (#577), which now returns
+  an `ErrorResponse` carrying the window's three fields instead of a
+  hand-built `{code, message}` value. The status and the message text it
+  freezes are byte-identical; the two tests that pin them assert three
+  fields, and say in their own comment that the count returns to one when
+  the window closes.
+- **Guards, worth more than the consolidation.** The router-versus-document
+  parity test checked the path LIST only — which is exactly how the two
+  shapes drifted. It now checks, per path, that every non-2xx response
+  `$ref`s the one shared component and that every input-taking path
+  documents a refusal at all; a companion test forbids any handler from
+  naming the legacy JSON keys. On the live surface,
+  `gate_all_endpoints_smoke` sends one deliberately invalid request per
+  input-taking endpoint and asserts a 4xx carrying a non-empty `error`,
+  with offline mirrors keeping the probe table equal to the mounted paths.
 
 ### 2026-09-04 — One matrix batch builder, one seed split, one pair driver (#580)
 

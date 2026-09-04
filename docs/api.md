@@ -788,19 +788,31 @@ Cache key is a quantised, deduped hash of the polygon JSON (`avoid.rs:hash_avoid
 | Status | When |
 |--------|------|
 | 200 | Success — including "no route" when the response body itself carries the failure (e.g. `TripLeg.duration = null`) |
-| 400 | Validation: bad coord, bad mode, bad token (annotation/exclude/bearing/direction), empty required field, matrix too large, batch too large for the JSON endpoint, mixed-region inputs to a same-region endpoint |
+| 400 | Validation: bad coord, bad mode, bad token (annotation/exclude/bearing/direction), empty required field, matrix too large, batch too large for the JSON endpoint |
 | 404 | `/route` only: no path between src and dst after the K-best fallback |
 | 408 | Request timeout — 120 s on most endpoints, 600 s on `/isochrone/bulk`; emitted by `TimeoutLayer` |
 | 413 | `/transit/bulk` batch larger than 100000 |
 | 500 | Internal bug. Panics are caught by `CatchPanicLayer` and turned into 500 instead of dropping the connection |
 | 503 | Subsystem unavailable: `/height` with no SRTM tiles loaded, `/transit*` with no feeds loaded |
+| 501 | Mixed-region inputs to a same-region endpoint, with no cross-region overlay loaded |
 
-REST error body shape (`route/src/server/types.rs::ErrorResponse`):
+REST error body shape (`route/src/server/types.rs::ErrorResponse`) — the
+same shape on **every** endpoint and every non-2xx status:
 
 ```json
 { "error": "human-readable message" }
 ```
 
-`/trip` uses a slightly different shape (`{ "code": "InvalidValue", "message": "..." }`) for OSRM compatibility on validation paths.
+**Deprecation window (#576).** `/trip` and `/match` used to answer with an
+ad-hoc `{ "code": "InvalidValue", "message": "..." }` body instead. For one
+release they emit BOTH — the documented field and the two legacy ones,
+carrying the identical text:
+
+```json
+{ "error": "...", "code": "InvalidValue", "message": "..." }
+```
+
+Read `error` and the HTTP status. `code` and `message` are deprecated as of
+2.1.0 and are removed in 2.2.0; no other endpoint ever emits them.
 
 Flight errors surface as `tonic::Status` with codes `InvalidArgument` (validation / unknown action / bad ticket), `FailedPrecondition` (transit not loaded), and `Internal` (Arrow encoding errors).
