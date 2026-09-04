@@ -42,7 +42,11 @@ pub enum HullMode {
     Isochrone,
 }
 
-/// Parameters for catchment computation
+/// Parameters for the hull computation itself (post-matrix).
+///
+/// The Euclidean pre-filter (`radius_km`) is deliberately NOT here: it is
+/// applied to the client list BEFORE the 1-to-N matrix, by whichever transport
+/// received the request. See [`effective_radius_m`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatchmentParams {
     /// Percentile thresholds (e.g. [50, 80])
@@ -51,6 +55,40 @@ pub struct CatchmentParams {
     pub hull_shape: HullMode,
     /// Whether to remove geographic outliers before hull computation
     pub remove_outliers: bool,
+}
+
+/// The Euclidean pre-filter radius, in METRES, for one store (#596).
+///
+/// ONE definition, called by the REST handler and the Flight exchange alike,
+/// so `radius_km` cannot come to mean different things on the two transports.
+/// `clients` is read only for [`RadiusParam::Auto`] (p95 × 1.1 over the RAW,
+/// pre-snap coordinates — cheap, and closer to the caller's intent than
+/// post-snap geometry).
+///
+/// `PerOrigin` is a MATRIX shape (one radius per source); a catchment is
+/// store-centred with a single cap, so it has no meaning here and collapses to
+/// "no pre-filter".
+pub fn effective_radius_m(
+    store: (f64, f64),
+    clients: &[(f64, f64)],
+    radius: &RadiusParam,
+) -> Option<f64> {
+    let km = match radius {
+        RadiusParam::None | RadiusParam::PerOrigin(_) => return None,
+        RadiusParam::Km(r) => *r,
+        RadiusParam::Auto => auto_radius_km(std::slice::from_ref(&store), clients),
+    };
+    if km > 0.0 { Some(km * 1000.0) } else { None }
+}
+
+/// Is `client` inside the store's pre-filter radius? `None` ⇒ no filter, so
+/// every client passes. Companion of [`effective_radius_m`] — one definition
+/// of the test, shared by both transports.
+pub fn within_radius(store: (f64, f64), client: (f64, f64), radius_m: Option<f64>) -> bool {
+    match radius_m {
+        None => true,
+        Some(r) => haversine_distance(store.1, store.0, client.1, client.0) <= r,
+    }
 }
 
 /// #564: the ONE percentile validation, shared by the REST handler and the
@@ -463,7 +501,10 @@ pub fn compute_catchment(
 // REST handler types
 // ===========================================================================
 
-#[derive(Debug, Deserialize)]
+/// `Serialize` is derived for `catchment_transport_parity` (#596), which reads
+/// the accepted field names back off a serialized instance instead of trusting
+/// a hand-kept list that drifts.
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CatchmentRequest {
     pub mode: String,
     pub hull_shape: HullMode,
@@ -484,14 +525,14 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StoreInput {
     pub id: String,
     pub lon: f64,
     pub lat: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ClientInput {
     pub lon: f64,
     pub lat: f64,
@@ -525,7 +566,9 @@ use super::types::{ErrorResponse, parse_mode, validate_coord};
 
 #[utoipa::path(post, path = "/catchment", tag = "Catchment", summary = "Store catchments from client locations",
     request_body(content = serde_json::Value, description = "{mode, hull_shape, percentiles, remove_outliers, stores:[{id,lon,lat}], clients:[{lon,lat}], radius_km}"),
-    description = "Per-store catchment polygons: the road-following hull (the threshold isochrone) or a convex hull, at the requested client percentiles.",
+    description = "Per-store catchment polygons: the road-following hull (the threshold isochrone) or a convex hull, at the requested client percentiles. \
+`radius_km` (number, \"auto\" or null) is an optional per-store Euclidean pre-filter; clients beyond it are excluded from that store's matrix and catchment entirely. \
+The Flight `catchment` DoExchange action takes the SAME parameter set (#596) — only the mode (ticket profile) and the stores/clients (input columns) travel differently.",
     responses((status = 200, description = "Catchments per store"), (status = 400, description = "Invalid request")))]
 /// POST /catchment handler
 pub async fn catchment_handler(
@@ -657,20 +700,8 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         // `Auto`, we compute p95 × 1.1 over the Euclidean distances from the
         // store to the *raw* client coordinates (pre-snap) — this is cheap
         // and reflects the user's intent better than post-snap geometry.
-        let effective_radius_km: Option<f64> = match radius_param {
-            RadiusParam::None => None,
-            RadiusParam::Km(r) => Some(r),
-            RadiusParam::Auto => {
-                let store_coord = (store_input.lon, store_input.lat);
-                let r = auto_radius_km(std::slice::from_ref(&store_coord), &auto_client_coords);
-                if r > 0.0 { Some(r) } else { None }
-            }
-            // #531 per-origin radii are a MATRIX shape (per source); catchment
-            // is store-centred with a single cap, so this input has no meaning
-            // here — fall back to no euclid pre-filter.
-            RadiusParam::PerOrigin(_) => None,
-        };
-        let effective_radius_m: Option<f64> = effective_radius_km.map(|km| km * 1000.0);
+        let store_coord = (store_input.lon, store_input.lat);
+        let radius_m = effective_radius_m(store_coord, &auto_client_coords, &radius_param);
 
         // Snap all clients K=1 upfront (cheap). The K=64 escalation
         // happens lazily inside the INF-cell fallback below — same
@@ -678,11 +709,8 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         let mut client_ranks: Vec<u32> = Vec::with_capacity(req.clients.len());
         let mut client_valid: Vec<usize> = Vec::with_capacity(req.clients.len());
         for (ci, c) in req.clients.iter().enumerate() {
-            if let Some(radius_m) = effective_radius_m {
-                let d = haversine_distance(store_input.lat, store_input.lon, c.lat, c.lon);
-                if d > radius_m {
-                    continue;
-                }
+            if !within_radius(store_coord, (c.lon, c.lat), radius_m) {
+                continue;
             }
             if let Some((_, rank)) = super::snap_kbest::snap_primary_role(
                 &state,
@@ -786,7 +814,6 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
         }
 
         // Compute catchment
-        let store_coord = (store_input.lon, store_input.lat);
         let mut catch_results =
             compute_catchment(&state, mode, store_coord, &clients_with_dt, &params);
 
@@ -825,30 +852,60 @@ fn catchment_sync(regions: Arc<RegionsState>, req: CatchmentRequest) -> axum::re
 // Flight exchange types
 // ===========================================================================
 
+/// The catchment parameters carried in the Flight descriptor cmd JSON.
+///
+/// This set MUST equal the tunable half of [`CatchmentRequest`] — the same
+/// action cannot take different parameters on the two transports (#596:
+/// `radius_km` was REST-only, and the gate's Flight probes "passed" for a long
+/// time only because the field was silently dropped). The stores and clients
+/// themselves are not here: on Flight they are the DoExchange input columns,
+/// and the mode is the ticket's profile segment. `catchment_transport_parity`
+/// asserts exactly that difference and nothing more.
+///
+/// `Serialize` exists for that parity test, which reads the field names back
+/// off a serialized instance rather than trusting a hand-kept list.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)] // #548: a stale/mistyped field must fail loud
+pub struct CatchmentExchangeParams {
+    /// Percentile thresholds (e.g. [50, 80])
+    pub percentiles: Vec<f32>,
+    /// Hull generation mode
+    pub hull_shape: HullMode,
+    /// Whether to remove geographic outliers before hull computation
+    #[serde(default = "default_true")]
+    pub remove_outliers: bool,
+    /// Optional Euclidean pre-filter radius in kilometres — same grammar and
+    /// same meaning as the REST body's field.
+    #[serde(default)]
+    pub radius_km: Option<serde_json::Value>,
+}
+
+impl CatchmentExchangeParams {
+    /// The post-matrix hull parameters.
+    pub fn hull_params(&self) -> CatchmentParams {
+        CatchmentParams {
+            percentiles: self.percentiles.clone(),
+            hull_shape: self.hull_shape,
+            remove_outliers: self.remove_outliers,
+        }
+    }
+
+    /// The parsed pre-matrix Euclidean filter.
+    pub fn radius(&self) -> RadiusParam {
+        parse_radius(self.radius_km.as_ref())
+    }
+}
+
 /// Parse catchment parameters from descriptor cmd JSON.
 ///
 /// #564: validated exactly like the REST handler (`validate_percentiles`),
 /// and unknown fields fail loud (`deny_unknown_fields`, the #548 rule the
 /// other Flight param structs already follow) instead of being ignored.
-pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentParams, String> {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ExchangeParams {
-        percentiles: Vec<f32>,
-        hull_shape: HullMode,
-        #[serde(default = "default_true")]
-        remove_outliers: bool,
-    }
-
-    let parsed: ExchangeParams =
+pub fn parse_exchange_params(json_str: &str) -> Result<CatchmentExchangeParams, String> {
+    let parsed: CatchmentExchangeParams =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid catchment params: {}", e))?;
     validate_percentiles(&parsed.percentiles)?;
-
-    Ok(CatchmentParams {
-        percentiles: parsed.percentiles,
-        hull_shape: parsed.hull_shape,
-        remove_outliers: parsed.remove_outliers,
-    })
+    Ok(parsed)
 }
 
 /// Arrow schema for catchment exchange output
@@ -1276,5 +1333,152 @@ mod tests {
         assert!(p.remove_outliers);
         // The same list is what the REST handler validates.
         assert!(validate_percentiles(&p.percentiles).is_ok());
+    }
+
+    // ===== #596: transport parity =====
+
+    /// The `catchment` action must take the SAME parameters on both
+    /// transports. It did not: `radius_km` was REST-only, silently dropped by
+    /// Flight until #564's `deny_unknown_fields` made it fail loud — a caller
+    /// could believe the pre-filter had been applied when it never was.
+    ///
+    /// Both sets are read off the REAL structs (serde field names), not a
+    /// hand-kept list, so adding a parameter to one transport and forgetting
+    /// the other fails here. The only permitted difference is what the Flight
+    /// transport carries OUTSIDE the params JSON.
+    #[test]
+    fn catchment_transport_parity() {
+        use std::collections::BTreeSet;
+
+        fn keys<T: Serialize>(v: &T) -> BTreeSet<String> {
+            serde_json::to_value(v)
+                .expect("serialize")
+                .as_object()
+                .expect("struct serializes as a JSON object")
+                .keys()
+                .cloned()
+                .collect()
+        }
+
+        let rest = keys(&CatchmentRequest {
+            mode: "car".into(),
+            hull_shape: HullMode::Road,
+            percentiles: vec![50.0],
+            remove_outliers: true,
+            stores: vec![StoreInput {
+                id: "s".into(),
+                lon: 4.35,
+                lat: 50.85,
+            }],
+            clients: vec![ClientInput {
+                lon: 4.36,
+                lat: 50.86,
+            }],
+            radius_km: None,
+        });
+        let flight = keys(&CatchmentExchangeParams {
+            percentiles: vec![50.0],
+            hull_shape: HullMode::Road,
+            remove_outliers: true,
+            radius_km: None,
+        });
+
+        // On Flight the mode is the ticket's profile segment and the stores
+        // and clients are the DoExchange input columns (`store_id`,
+        // `store_lon`, `store_lat`, `client_lon`, `client_lat`) — so they are
+        // absent from the params JSON BY TRANSPORT, not by capability.
+        let carried_elsewhere: BTreeSet<String> = ["mode", "stores", "clients"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(
+            &rest - &flight,
+            carried_elsewhere,
+            "REST accepts parameters Flight does not. Either implement them on \
+             the Flight side or move them into the documented transport \
+             difference above — a silently narrower surface is #596."
+        );
+        assert!(
+            (&flight - &rest).is_empty(),
+            "Flight accepts parameters REST does not: {:?}",
+            &flight - &rest
+        );
+    }
+
+    /// #596 red proof: before the fix this input was rejected outright
+    /// ("unknown field `radius_km`").
+    #[test]
+    fn exchange_params_accept_radius_km() {
+        let p =
+            parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"road","radius_km":12.5}"#)
+                .unwrap();
+        assert_eq!(p.radius(), RadiusParam::Km(12.5));
+
+        let p =
+            parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"road","radius_km":"auto"}"#)
+                .unwrap();
+        assert_eq!(p.radius(), RadiusParam::Auto);
+
+        // Absent / null / 0 means no pre-filter, exactly as on REST.
+        let p = parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"road"}"#).unwrap();
+        assert_eq!(p.radius(), RadiusParam::None);
+        let p = parse_exchange_params(r#"{"percentiles":[50],"hull_shape":"road","radius_km":0}"#)
+            .unwrap();
+        assert_eq!(p.radius(), RadiusParam::None);
+
+        // The hull half is untouched by the split.
+        let hp = p.hull_params();
+        assert_eq!(hp.hull_shape, HullMode::Road);
+        assert_eq!(hp.percentiles, vec![50.0]);
+    }
+
+    /// The shared pre-filter both transports now call.
+    #[test]
+    fn radius_prefilter_is_one_definition() {
+        let store = (4.3517, 50.8466); // Brussels
+        let near = (4.36, 50.85);
+        let far = (4.4025, 51.2194); // ~41 km north
+
+        assert_eq!(
+            effective_radius_m(store, &[], &RadiusParam::None),
+            None,
+            "no radius means no filter"
+        );
+        assert_eq!(
+            effective_radius_m(store, &[], &RadiusParam::PerOrigin(vec![5.0])),
+            None,
+            "a per-origin matrix shape has no store-centred meaning"
+        );
+        assert_eq!(
+            effective_radius_m(store, &[], &RadiusParam::Km(10.0)),
+            Some(10_000.0)
+        );
+
+        // `Auto` is p95 x 1.1, capped strictly below the observed maximum
+        // (matrix/neighbors.rs): a tight cluster stays in, a lone far outlier
+        // is pruned. That is the whole point of the pre-filter.
+        let mut cluster: Vec<(f64, f64)> = (0..20)
+            .map(|i| (store.0 + 0.002 * i as f64, store.1 + 0.001 * i as f64))
+            .collect();
+        cluster.push(far);
+        let auto = effective_radius_m(store, &cluster, &RadiusParam::Auto)
+            .expect("auto radius over real clients");
+        for c in &cluster[..20] {
+            assert!(
+                within_radius(store, *c, Some(auto)),
+                "auto radius {auto} m dropped a cluster client {c:?}"
+            );
+        }
+        assert!(
+            !within_radius(store, far, Some(auto)),
+            "auto radius {auto} m kept the outlier"
+        );
+
+        let ten_km = Some(10_000.0);
+        assert!(within_radius(store, near, ten_km));
+        assert!(!within_radius(store, far, ten_km));
+        // No radius means every client passes, however far.
+        assert!(within_radius(store, far, None));
     }
 }

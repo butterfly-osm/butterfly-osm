@@ -53,6 +53,8 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   containers return 404 by design).
 - REST `POST /catchment` takes `stores[].id` (the Flight `catchment`
   DoExchange table uses `store_id` columns) and requires `hull_shape`.
+  Both transports accept the SAME tunable parameters, `radius_km`
+  included (#596).
 - Isochrone polygons follow **snapped-road-point semantics**: the polygon
   always contains the snapped origin; a raw query point far off-network
   may legitimately fall outside.
@@ -334,7 +336,7 @@ Per-store catchment polygons: for each store, run 1-to-N matrix against clients,
 | Field | Type | Notes |
 |-------|------|-------|
 | `mode` | string | required |
-| `hull_mode` | enum | `convex` / `concave` / `isochrone` |
+| `hull_shape` | enum | required — `road` / `isochrone` (same thing since #536) or `convex` |
 | `percentiles` | `[f32]` | required, each 0-100 |
 | `remove_outliers` | bool | default `true` |
 | `stores` | `[{ id, lon, lat }]` | required |
@@ -650,9 +652,18 @@ Params:
 Descriptor cmd: `catchment:<profile>:<params>` with params
 
 ```json
-{ "percentiles": [50, 80], "hull_mode": "isochrone" | "convex" | "concave",
-  "remove_outliers": true }
+{ "percentiles": [50, 80], "hull_shape": "road" | "isochrone" | "convex",
+  "remove_outliers": true, "radius_km": 25 }
 ```
+
+**Same parameter set as REST `POST /catchment` (#596)** — `radius_km` included,
+with the same grammar (number / `"auto"` / null) and the same per-store meaning.
+The only difference between the two transports is where the rest of the request
+travels: the mode is the ticket's `<profile>` segment and the stores/clients are
+the DoExchange input columns below, instead of body fields. Unknown params are
+rejected (`deny_unknown_fields`), so a mistyped field fails loud rather than
+being silently dropped. `catchment_transport_parity` in
+`route/src/server/catchment.rs` locks the two sets together.
 
 Input schema:
 

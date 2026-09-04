@@ -99,24 +99,28 @@ fn topology_diff_belgium_runs_clean() {
     topology_diff(&path, None).expect("topology-diff against Belgium container");
 }
 
+/// The two modes the explicit-pair comparison runs on.
+///
+/// #595: this was `car,truck`. Truck is a DEFERRED profile (P5) and no shipped
+/// container has ever carried a `mode/truck/topo` section, so the test could
+/// not have passed on any real artifact — it only ever looked green because it
+/// was `#[ignore]`d. `car` + `car_nodir` (car ignoring one-ways) inherits the
+/// role truck was standing in for: the CLOSEST-topology pair the engine ships,
+/// and therefore the strongest bundling candidate a `topology-diff` reader
+/// would actually evaluate.
+const EXPLICIT_PAIR: [&str; 2] = ["car", "car_nodir"];
+
 #[test]
 fn topology_diff_belgium_explicit_pair() {
-    // The car+truck pair is the candidate this PR specifically calls
-    // out as "predicted to pass". The tool must accept the explicit
-    // mode list and produce a single comparison.
-    //
-    // #587: `truck` is a DEFERRED profile (P5) — no shipped container has
-    // a `mode/truck/topo` section, so this test could not have passed on
-    // any current artifact. Running it at all is new; the missing mode is
-    // a data-content precondition, so it skips rather than failing, and
-    // the pair is worth repointing at two modes that actually ship.
+    // The tool must accept an explicit mode list and produce a single
+    // comparison for it.
     let Some(path) = locate_belgium_container() else {
         return;
     };
     if path.is_file() {
         let container = Container::open(&path).expect("open container");
         let modes = container.list_modes();
-        for want in ["car", "truck"] {
+        for want in EXPLICIT_PAIR {
             if !modes.iter().any(|m| m == want) {
                 let _: Option<()> = testutil::skip(
                     "topology_grouping::explicit_pair",
@@ -126,5 +130,6 @@ fn topology_diff_belgium_explicit_pair() {
             }
         }
     }
-    topology_diff(&path, Some("car,truck")).expect("topology-diff car,truck");
+    let pair = EXPLICIT_PAIR.join(",");
+    topology_diff(&path, Some(&pair)).unwrap_or_else(|e| panic!("topology-diff {pair}: {e}"));
 }
