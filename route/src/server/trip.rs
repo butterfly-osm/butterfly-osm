@@ -481,7 +481,7 @@ pub struct TripLeg {
     ),
     responses(
         (status = 200, description = "Optimized trip", body = TripResponse),
-        (status = 400, description = "Bad request"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
     )
 )]
 pub async fn trip_handler(
