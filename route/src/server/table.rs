@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 
 use crate::matrix::MatrixPlan;
 use crate::matrix::neighbors::{
-    RadiusParam, auto_radius_km, build_neighbors, build_neighbors_per_origin, parse_radius,
+    RadiusParam, build_radius_mask, parse_radius, radius_compute_cap_s,
 };
 use crate::model::types::Mode;
 
@@ -465,6 +465,104 @@ pub async fn table_post_handler(
     resp
 }
 
+/// #602/#538: the radius compute bound is a heuristic, never an output
+/// contract. Any cell INSIDE the radius that the bound cut — left at
+/// `u32::MAX`, or left as a non-minimal bounded-join artifact (#415), both of
+/// which show up as a value above `eff_threshold` — is recomputed EXACTLY
+/// here, one bucket run per affected source over just its cut targets, under
+/// the CALLER's bound only.
+///
+/// Sources and targets whose seedsets were emptied cannot appear: their cells
+/// are out-of-radius by construction and are nulled at emit.
+///
+/// A no-op when the radius did not tighten the bound (`eff_threshold ==
+/// threshold`) or when no mask is in play. Returns the number of cells
+/// repaired.
+#[allow(clippy::too_many_arguments)]
+fn rescue_radius_cut_cells(
+    n_nodes: usize,
+    time_up: &crate::matrix::bucket_ch::UpAdjFlat,
+    time_down: &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    lat_flats: Option<(
+        &crate::matrix::bucket_ch::UpAdjFlat,
+        &crate::matrix::bucket_ch::DownReverseAdjFlat,
+    )>,
+    src_seedsets: &[Vec<crate::matrix::bucket_ch::EngineSeed>],
+    tgt_seedsets: &[Vec<crate::matrix::bucket_ch::EngineSeed>],
+    neighbor_mask: Option<&[Vec<u32>]>,
+    time_mat: &mut [u32],
+    mut lat_mat: Option<&mut Vec<u32>>,
+    n_targets: usize,
+    eff_threshold: u32,
+    threshold: u32,
+) -> usize {
+    let Some(nm) = neighbor_mask else {
+        return 0;
+    };
+    if eff_threshold >= threshold {
+        return 0;
+    }
+    let in_radius = |i: usize, j: usize| -> bool {
+        nm.get(i)
+            .is_some_and(|row| row.binary_search(&(j as u32)).is_ok())
+    };
+    let rescue_work: Vec<(usize, Vec<usize>)> = (0..src_seedsets.len())
+        .filter_map(|i| {
+            if src_seedsets[i].is_empty() {
+                return None;
+            }
+            let cut: Vec<usize> = (0..n_targets)
+                .filter(|&j| {
+                    !tgt_seedsets[j].is_empty()
+                        && time_mat[i * n_targets + j] > eff_threshold
+                        && in_radius(i, j)
+                })
+                .collect();
+            if cut.is_empty() { None } else { Some((i, cut)) }
+        })
+        .collect();
+    if rescue_work.is_empty() {
+        return 0;
+    }
+    let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
+    tracing::debug!(
+        sources = rescue_work.len(),
+        cells = n_cells,
+        eff_threshold,
+        "radius cap rescue (#602): exact recompute of cut in-radius cells"
+    );
+    type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
+    let patches: Vec<RescuePatch> = rescue_work
+        .par_iter()
+        .map(|(i, cut)| {
+            let one_src = vec![src_seedsets[*i].clone()];
+            let sel_tgts: Vec<Vec<crate::matrix::bucket_ch::EngineSeed>> =
+                cut.iter().map(|&j| tgt_seedsets[j].clone()).collect();
+            if let Some((up_lat, dn_lat)) = lat_flats {
+                let (t, l, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                    n_nodes, time_up, time_down, up_lat, dn_lat, None, &one_src, &sel_tgts,
+                    threshold,
+                );
+                (*i, cut.clone(), t, Some(l))
+            } else {
+                let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+                    n_nodes, time_up, time_down, None, &one_src, &sel_tgts, threshold,
+                );
+                (*i, cut.clone(), t, None)
+            }
+        })
+        .collect();
+    for (i, cut, t, l) in patches {
+        for (k, &j) in cut.iter().enumerate() {
+            time_mat[i * n_targets + j] = t[k];
+            if let (Some(lm), Some(lv)) = (lat_mat.as_deref_mut(), l.as_ref()) {
+                lm[i * n_targets + j] = lv[k];
+            }
+        }
+    }
+    n_cells
+}
+
 /// Core table computation using bucket M2M algorithm
 #[allow(clippy::too_many_arguments)]
 pub fn compute_table_bucket_m2m(
@@ -600,37 +698,22 @@ pub fn compute_table_bucket_m2m(
         });
     }
 
-    // Build the per-source neighbour mask if a radius was requested.
-    // NOTE: this is a correctness-preserving "mask-at-emit" integration — the
-    // full N×M bucket M2M still runs, and pruned pairs are nulled out below.
-    // Pruning the inner solver per source would require refactoring bucket_ch
-    // to accept per-source target slices without losing its amortised forward
-    // phase; that's a follow-up optimisation and is unnecessary for
-    // correctness.
-    let neighbor_mask: Option<Vec<Vec<u32>>> = match match radius_param {
-        RadiusParam::None => Ok(None),
-        RadiusParam::Km(r) => build_neighbors(&sources_snapped, &targets_snapped, r).map(Some),
-        RadiusParam::Auto => {
-            let r = auto_radius_km(&sources_snapped, &targets_snapped);
-            if r > 0.0 {
-                build_neighbors(&sources_snapped, &targets_snapped, r).map(Some)
-            } else {
-                Ok(None)
+    // #602: the per-source neighbour mask AND the largest radius behind it,
+    // from the same builder the Flight matrix action uses. `radius_km` prunes
+    // the COMPUTE here now, not just the emitted rows: this endpoint used to
+    // run the full N×M and null the pruned pairs at emit, so a caller who set
+    // a radius paid for every cell and got a sparse answer — the opposite of
+    // what the parameter promises, and a different cost from the Flight
+    // surface for the same parameter name.
+    let (neighbor_mask, radius_max_km): (Option<Vec<Vec<u32>>>, Option<f64>) =
+        match build_radius_mask(radius_param, &sources_snapped, &targets_snapped) {
+            Ok(v) => v,
+            // Over the neighbour budget: refuse, rather than allocate a mask
+            // that would take the process down.
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
             }
-        }
-        // #531 per-origin radii: validated len==origins upstream; a wrong
-        // length degrades to no-filter for the missing tail (get→inf).
-        RadiusParam::PerOrigin(radii) => {
-            build_neighbors_per_origin(&sources_snapped, &targets_snapped, &radii).map(Some)
-        }
-    } {
-        Ok(mask) => mask,
-        // Over the neighbour budget: refuse, rather than allocate a mask
-        // that would take the process down.
-        Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response();
-        }
-    };
+        };
 
     let n_sources = sources.len();
     let n_targets = destinations.len();
@@ -699,6 +782,43 @@ pub fn compute_table_bucket_m2m(
     // cells. Replaces the #502 API-layer SeedExpansion, which multiplied
     // engine cells by ~(avg seeds)^2 (measured 12-15x slower at every size).
 
+    // #602: the two exact levers the Flight matrix action has used since
+    // #538, ported here so the same `radius_km` costs the same on both
+    // surfaces:
+    //  1. an endpoint with NO in-radius counterpart gets its seedset emptied.
+    //     The engine's sweep for an empty seedset is a no-op, so the whole
+    //     row/column stays MAX — which the emit mask nulls anyway. Exact by
+    //     construction: those cells are out-of-radius.
+    //  2. the TIME sweeps run under a bound derived from the radius
+    //     ([`radius_compute_cap_s`]). Crow-fly cannot bound road time, so the
+    //     cap is deliberately generous, and every in-radius cell it still
+    //     cuts is recomputed EXACTLY by [`rescue_radius_cut_cells`] below,
+    //     under the caller's own bound only. Nothing above the cap is served
+    //     straight out of the bounded sweep, so the served matrix stays
+    //     cell-for-cell equal to the unpruned one inside the radius.
+    //
+    // The distance-metric sweep of the legacy two-pass path is NOT capped:
+    // its channel is metres and the cap is seconds. It still benefits from
+    // lever 1.
+    if let Some(nm) = &neighbor_mask {
+        let mut tgt_active = vec![false; n_targets];
+        for (i, row) in nm.iter().enumerate().take(n_sources) {
+            if row.is_empty() {
+                src_seedsets[i].clear();
+            } else {
+                for &t in row.iter() {
+                    tgt_active[t as usize] = true;
+                }
+            }
+        }
+        for (j, active) in tgt_active.iter().enumerate() {
+            if !active {
+                tgt_seedsets[j].clear();
+            }
+        }
+    }
+    let eff_threshold = radius_max_km.map_or(threshold, |r| threshold.min(radius_compute_cap_s(r)));
+
     // #594: the plan the engine ACTUALLY ran, reported verbatim on the
     // response. Written by the call whose result is served; never re-derived
     // from the shape here.
@@ -730,21 +850,38 @@ pub fn compute_table_bucket_m2m(
         } else {
             None
         };
-        let (time_mat, lat_mat, stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
-            n_nodes,
-            time_up,
-            time_down,
-            up_lat,
-            dn_lat,
-            phast_ctx2,
-            &src_seedsets,
-            &tgt_seedsets,
-            threshold,
-        );
+        let (mut time_mat, mut lat_mat, stats) =
+            crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                n_nodes,
+                time_up,
+                time_down,
+                up_lat,
+                dn_lat,
+                phast_ctx2,
+                &src_seedsets,
+                &tgt_seedsets,
+                eff_threshold,
+            );
         plan = stats.plan;
         tracing::debug!(
             "compute_table_bucket_m2m: 2-channel M2M took {:?}",
             t_2ch.elapsed(),
+        );
+        // #594: the rescue is a repair pass over individual cells, not the
+        // plan that produced the grid — deliberately not folded into `plan`.
+        rescue_radius_cut_cells(
+            n_nodes,
+            time_up,
+            time_down,
+            Some((up_lat, dn_lat)),
+            &src_seedsets,
+            &tgt_seedsets,
+            neighbor_mask.as_deref(),
+            &mut time_mat,
+            Some(&mut lat_mat),
+            n_targets,
+            eff_threshold,
+            threshold,
         );
         let dur = flat_matrix_to_2d(
             &time_mat,
@@ -778,19 +915,33 @@ pub fn compute_table_bucket_m2m(
             } else {
                 None
             };
-            let (matrix, stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
+            let (mut matrix, stats) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
                 n_nodes,
                 time_up,
                 time_down,
                 phast_ctx,
                 &src_seedsets,
                 &tgt_seedsets,
-                threshold,
+                eff_threshold,
             );
             plan = stats.plan;
             tracing::debug!(
                 "compute_table_bucket_m2m: duration M2M took {:?}",
                 t_dur.elapsed()
+            );
+            rescue_radius_cut_cells(
+                n_nodes,
+                time_up,
+                time_down,
+                None,
+                &src_seedsets,
+                &tgt_seedsets,
+                neighbor_mask.as_deref(),
+                &mut matrix,
+                None,
+                n_targets,
+                eff_threshold,
+                threshold,
             );
             Some(matrix)
         } else {

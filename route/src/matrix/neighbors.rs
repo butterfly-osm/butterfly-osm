@@ -180,6 +180,10 @@ fn neighbor_budget_error(entries: usize, budget: usize) -> String {
     )
 }
 
+/// A built radius filter: the per-source sorted target lists, and the largest
+/// radius in kilometres behind them. Both are `None` when no filter applies.
+pub type RadiusMask = (Option<Vec<Vec<u32>>>, Option<f64>);
+
 /// Build the per-source neighbour mask for a `radius_km` request AND report
 /// the largest radius in play (`None` ⇒ no filter at all).
 ///
@@ -191,7 +195,7 @@ pub fn build_radius_mask(
     param: RadiusParam,
     sources: &[(f64, f64)],
     targets: &[(f64, f64)],
-) -> Result<(Option<Vec<Vec<u32>>>, Option<f64>), String> {
+) -> Result<RadiusMask, String> {
     match param {
         RadiusParam::None => Ok((None, None)),
         RadiusParam::Km(r) => Ok((Some(build_neighbors(sources, targets, r)?), Some(r))),
@@ -277,6 +281,63 @@ pub fn build_neighbors_per_origin(
     build_neighbors_within(sources, targets, radii, MAX_NEIGHBOR_ENTRIES)
 }
 
+/// The longitude half-width of the band that CONTAINS every point within
+/// `radius_m` of latitude `lat_deg` — an over-estimate by construction, never
+/// an under-estimate.
+///
+/// The band is only a pre-filter: everything inside it still faces the exact
+/// haversine check, so being generous costs a few extra distance evaluations.
+/// Being tight, on the other hand, silently drops in-radius pairs before the
+/// exact check ever runs, and that is what the old `radius_km / (111.32 ·
+/// cos lat)` did. Two independent errors pushed the same way:
+///
+///  * 111.32 km/deg is the EQUATORIAL degree (radius 6 378.137 km) while the
+///    exact check is a haversine on the MEAN radius, 111.195 km/deg — so the
+///    band was 0.11 % narrower than the check it guards; and
+///  * along a parallel the great-circle path bows poleward, so a given
+///    distance spans MORE longitude than the parallel arc suggests, and a
+///    target may also sit closer to the equator than the source, where a
+///    degree of longitude is wider still.
+///
+/// Measured consequence before the fix (Belgium, 60×220 points, radius 20 km):
+/// a pair 19 988.8 m apart was excluded because its Δlon of 0.285678° just
+/// exceeded the 0.285597° band. The pruned matrix therefore lost a cell the
+/// unpruned matrix reported — the exact failure #602's rescue is meant to make
+/// impossible.
+///
+/// Bound: the haversine identity
+/// `sin²(d/2R) = sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2)` gives
+/// `sin(Δλ/2) ≤ sin(d/2R) / √(cos φ₁ · cos φ₂)`. The source latitude φ₁ is
+/// fixed; φ₂ can be at most `d/R` away from it, and the ratio is largest when
+/// `cos φ₂` is SMALLEST — the latitude FURTHEST from the equator within
+/// reach. At the pole the cosine vanishes and every longitude is in range,
+/// which the guard reports honestly as "no pruning".
+fn lon_half_width_deg(lat_deg: f64, radius_m: f64) -> f64 {
+    if !radius_m.is_finite() || radius_m <= 0.0 {
+        return 0.0;
+    }
+    let r = crate::nbg::earth_radius_m();
+    let ang = radius_m / r; // angular radius, radians
+    if ang >= std::f64::consts::FRAC_PI_2 {
+        return 360.0;
+    }
+    let lat_far_abs = (lat_deg.abs() + ang.to_degrees()).min(90.0);
+    let cos_prod = lat_deg.to_radians().cos().abs() * lat_far_abs.to_radians().cos();
+    if cos_prod < 1e-12 {
+        return 360.0;
+    }
+    let s = (ang / 2.0).sin() / cos_prod.sqrt();
+    if s >= 1.0 {
+        return 360.0;
+    }
+    // A whisker of slack on top of the closed form, so that rounding in the
+    // trig can never make the guard narrower than the check it guards.
+    (2.0 * s.asin())
+        .to_degrees()
+        .mul_add(1.0 + 1e-9, 1e-9)
+        .min(360.0)
+}
+
 /// The implementation, with the budget as a parameter so a test can drive
 /// the refusal without allocating a hundred million entries to reach it.
 fn build_neighbors_within(
@@ -324,14 +385,7 @@ fn build_neighbors_within(
             continue;
         }
         let radius_m = radius_km * 1000.0;
-        // Longitude half-width. At high latitudes cos(lat) -> 0 so we must guard.
-        let cos_lat = slat.to_radians().cos().abs();
-        let lon_half_deg = if cos_lat < 1e-9 {
-            // Near the poles every target could be within radius → no pruning.
-            360.0
-        } else {
-            (radius_km / (111.32 * cos_lat)).min(360.0)
-        };
+        let lon_half_deg = lon_half_width_deg(slat, radius_m);
 
         let lo = slon - lon_half_deg;
         let hi = slon + lon_half_deg;
@@ -659,5 +713,166 @@ mod tests {
     fn auto_radius_empty_is_zero() {
         let empty: Vec<(f64, f64)> = Vec::new();
         assert_eq!(auto_radius_km(&empty, &empty), 0.0);
+    }
+
+    // --- #602: the shared radius mask + compute bound ---------------------
+
+    /// The bound must COVER the radius with a wide margin: crow-fly km cannot
+    /// bound road time, so anything a real road detour can cost inside the
+    /// radius has to fall under the cap, or the rescue pass carries the whole
+    /// matrix. 180 s/km is a 1.8x detour driven at 36 km/h.
+    #[test]
+    fn the_radius_compute_bound_covers_a_slow_detour() {
+        for km in [1.0, 5.0, 20.0, 100.0] {
+            let cap = radius_compute_cap_s(km) as f64;
+            let detour_s = km * 1.8 / 36.0 * 3600.0;
+            assert!(
+                cap >= detour_s,
+                "cap {cap} s does not cover a 1.8x detour at 36 km/h ({detour_s} s) at {km} km"
+            );
+        }
+    }
+
+    /// Monotone and never zero: a smaller radius must never admit a LARGER
+    /// bound, and the flat allowance keeps a sub-kilometre radius from
+    /// bounding the sweep to nothing.
+    #[test]
+    fn the_radius_compute_bound_is_monotone_and_never_zero() {
+        let mut last = 0;
+        for km in [0.001, 0.1, 1.0, 2.0, 10.0, 1000.0] {
+            let cap = radius_compute_cap_s(km);
+            assert!(cap >= last, "cap fell from {last} to {cap} at {km} km");
+            assert!(cap > 0);
+            last = cap;
+        }
+    }
+
+    /// The mask a radius request gets must be EXACTLY the one the old private
+    /// per-surface matches built, and the reported km must be the number the
+    /// mask was built from — the compute bound is derived from it.
+    #[test]
+    fn build_radius_mask_reports_the_km_behind_the_mask() {
+        let sources = vec![(4.35, 50.85), (3.71, 51.05)];
+        let targets = vec![(4.36, 50.86), (4.86, 50.47), (5.57, 50.63)];
+
+        let (mask, km) = build_radius_mask(RadiusParam::Km(60.0), &sources, &targets).unwrap();
+        assert_eq!(km, Some(60.0));
+        assert_eq!(
+            mask,
+            Some(build_neighbors(&sources, &targets, 60.0).unwrap())
+        );
+
+        let (mask, km) = build_radius_mask(RadiusParam::None, &sources, &targets).unwrap();
+        assert_eq!((mask, km), (None, None));
+
+        // Per-origin: the WIDEST origin sets the bound; a tighter one is
+        // still pruned by the mask at emit.
+        let radii = vec![5.0, 80.0];
+        let (mask, km) =
+            build_radius_mask(RadiusParam::PerOrigin(radii.clone()), &sources, &targets).unwrap();
+        assert_eq!(km, Some(80.0));
+        assert_eq!(
+            mask,
+            Some(build_neighbors_per_origin(&sources, &targets, &radii).unwrap())
+        );
+
+        // Auto: the km reported must be the one the mask used, not a re-roll.
+        let (mask, km) = build_radius_mask(RadiusParam::Auto, &sources, &targets).unwrap();
+        let r = km.expect("auto radius on a non-degenerate point set");
+        assert_eq!(mask, Some(build_neighbors(&sources, &targets, r).unwrap()));
+    }
+
+    /// A per-origin array of "no filter for this origin" entries must not
+    /// produce a finite bound — an infinite radius bounds nothing.
+    #[test]
+    fn per_origin_no_filter_entries_yield_no_compute_bound() {
+        let sources = vec![(4.35, 50.85)];
+        let targets = vec![(4.36, 50.86)];
+        let (_, km) = build_radius_mask(
+            RadiusParam::PerOrigin(vec![f64::INFINITY]),
+            &sources,
+            &targets,
+        )
+        .unwrap();
+        assert_eq!(km, None, "an infinite radius must not bound the compute");
+    }
+
+    // --- the longitude band pre-filter ------------------------------------
+
+    /// The band is a GUARD in front of the exact haversine check, so it must
+    /// never be narrower than the check. The old `radius_km / (111.32 · cos
+    /// lat)` was: this exact pair, 19 988.8 m apart on the real Belgium graph,
+    /// was pruned out of a 20 km radius before the haversine ever ran, and the
+    /// pruned matrix lost a cell the unpruned matrix reported.
+    #[test]
+    fn the_longitude_band_keeps_a_pair_just_inside_the_radius() {
+        let src = (5.2812643, 51.0180138);
+        let dst = (4.9955864, 51.0226445);
+        let d = haversine_distance(src.1, src.0, dst.1, dst.0);
+        assert!(
+            d < 20_000.0 && d > 19_900.0,
+            "fixture must sit just inside 20 km, got {d} m"
+        );
+        let rows = build_neighbors(&[src], &[dst], 20.0).unwrap();
+        assert_eq!(rows, vec![vec![0]], "in-radius target dropped by the band");
+    }
+
+    /// Randomised: for every source/target pair the band admits, the exact
+    /// check decides; for every pair it rejects, the exact check MUST agree
+    /// that the pair is out of range. Swept across latitudes and radii, since
+    /// the band's error grows with both.
+    #[test]
+    fn the_longitude_band_never_excludes_an_in_radius_pair() {
+        let mut state = 0x2026_0904_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for radius_km in [0.5, 5.0, 20.0, 120.0, 800.0] {
+            for lat_c in [0.0, 25.0, 51.0, 68.0, -51.0] {
+                let src = (3.0 + next(), lat_c);
+                // Targets scattered in a box comfortably wider than the band.
+                let span = radius_km / 40.0;
+                let targets: Vec<(f64, f64)> = (0..400)
+                    .map(|_| {
+                        (
+                            src.0 + (next() - 0.5) * 4.0 * span,
+                            (src.1 + (next() - 0.5) * 4.0 * span).clamp(-89.0, 89.0),
+                        )
+                    })
+                    .collect();
+                let rows = build_neighbors(&[src], &targets, radius_km).unwrap();
+                let kept: std::collections::HashSet<u32> = rows[0].iter().copied().collect();
+                for (j, t) in targets.iter().enumerate() {
+                    let d = haversine_distance(src.1, src.0, t.1, t.0);
+                    let inside = d <= radius_km * 1000.0;
+                    assert_eq!(
+                        inside,
+                        kept.contains(&(j as u32)),
+                        "radius {radius_km} km at lat {lat_c}: target {j} at {d} m \
+                         inside={inside} kept={}",
+                        kept.contains(&(j as u32))
+                    );
+                }
+            }
+        }
+    }
+
+    /// The band must widen with the radius and never collapse; near the poles
+    /// it degrades to "no pruning" rather than to a wrong answer.
+    #[test]
+    fn the_longitude_band_is_monotone_and_degrades_safely() {
+        let mut last = 0.0;
+        for km in [0.1, 1.0, 20.0, 500.0, 5000.0] {
+            let w = lon_half_width_deg(51.0, km * 1000.0);
+            assert!(w >= last, "band shrank from {last} to {w} at {km} km");
+            last = w;
+        }
+        assert_eq!(lon_half_width_deg(89.999_999, 20_000.0), 360.0);
+        assert_eq!(lon_half_width_deg(51.0, 0.0), 0.0);
+        // Half the earth's circumference of angular radius ⇒ everything.
+        assert_eq!(lon_half_width_deg(0.0, 20_000_000.0), 360.0);
     }
 }
