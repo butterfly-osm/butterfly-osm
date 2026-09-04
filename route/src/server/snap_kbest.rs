@@ -195,3 +195,103 @@ pub fn p2p_with_kbest_fallback(
     }
     None
 }
+
+/// What [`cell_with_kbest_fallback`] recovered for one cell: the time
+/// and/or the distance channel, `None` where no combo in the bounded
+/// enumeration produced a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CellFallback {
+    /// Travel time in the time query's units (seconds post-#297).
+    pub time: Option<u32>,
+    /// Travel distance in the distance query's units (metres post-#297).
+    pub distance: Option<u32>,
+}
+
+/// Recover ONE cell — a `/table` matrix cell, a `/trip` leg — with the
+/// `(i+j)` K-best combo escalation, filling the time and/or the distance
+/// channel.
+///
+/// The dual-metric sibling of [`p2p_with_kbest_fallback`]: callers that
+/// recover a cell rather than a route need a time AND a distance value,
+/// and those live on two `CchQuery` weight vectors over the same
+/// topology. `need_time` / `need_distance` say which channels are still
+/// missing; each is filled by the first combo that connects it.
+///
+/// `threshold`:
+/// * `None` — unbounded. Each requested channel is filled independently.
+/// * `Some(t)` — bounded (#415). A cell is recovered ONLY when the pair's
+///   travel time is ≤ `t`. Under a caller-supplied bound a missing cell
+///   may be missing because the pair is genuinely beyond the bound, and
+///   the fallback must not resurrect those. The time query gates the
+///   DISTANCE channel too, so a distance-only request still respects the
+///   bound; without a `time_query` nothing is recovered.
+#[allow(clippy::too_many_arguments)]
+pub fn cell_with_kbest_fallback(
+    time_query: Option<&CchQuery>,
+    dist_query: Option<&CchQuery>,
+    src_ranks: &[u32],
+    dst_ranks: &[u32],
+    need_time: bool,
+    need_distance: bool,
+    threshold: Option<u32>,
+    max_combos: usize,
+) -> CellFallback {
+    let mut out = CellFallback::default();
+    let mut time_done = !need_time;
+    let mut dist_done = !need_distance;
+    if time_done && dist_done {
+        return out;
+    }
+    for (i, j) in combo_order(src_ranks.len(), dst_ranks.len(), max_combos) {
+        let s = src_ranks[i];
+        let d = dst_ranks[j];
+        if s == d {
+            continue;
+        }
+        match threshold {
+            // Bounded: `distance_bounded` returns None for > threshold or
+            // unreachable, so an out-of-bound cell stays missing — and the
+            // distance channel only opens once the time gate has passed.
+            Some(thr) => {
+                if let Some(tq) = time_query
+                    && let Some(t) = tq.distance_bounded(s, d, thr)
+                {
+                    if !time_done {
+                        out.time = Some(t);
+                        time_done = true;
+                    }
+                    if !dist_done
+                        && let Some(dq) = dist_query
+                        && let Some(r) = dq.query(s, d)
+                    {
+                        out.distance = Some(r.distance);
+                        dist_done = true;
+                    }
+                    if time_done && dist_done {
+                        break;
+                    }
+                }
+            }
+            None => {
+                if !time_done
+                    && let Some(tq) = time_query
+                    && let Some(r) = tq.query(s, d)
+                {
+                    out.time = Some(r.distance);
+                    time_done = true;
+                }
+                if !dist_done
+                    && let Some(dq) = dist_query
+                    && let Some(r) = dq.query(s, d)
+                {
+                    out.distance = Some(r.distance);
+                    dist_done = true;
+                }
+                if time_done && dist_done {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
