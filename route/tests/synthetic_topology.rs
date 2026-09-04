@@ -1064,3 +1064,109 @@ fn isochrone_reach_matches_the_table_on_the_synthetic_hierarchy() {
         );
     }
 }
+
+/// #567: `/table` and `/trip` used to each hand-roll the K-best combo
+/// escalation; they now share `snap_kbest::cell_with_kbest_fallback`.
+/// Its bounded rule — a recovered cell is accepted ONLY when the pair's
+/// travel time is ≤ the caller's threshold — is the guard `/trip`'s copy
+/// never had, and it must hold on BOTH channels: under a bound the time
+/// query gates the distance one, so a distance-only recovery cannot slip
+/// past the threshold either.
+///
+/// The fixture drives both channels off the same time metric — the rule
+/// under test is the gating, not the units.
+#[test]
+fn bounded_cell_fallback_never_recovers_past_the_threshold() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::snap_kbest::{
+        DEFAULT_MAX_FALLBACK_COMBOS, cell_with_kbest_fallback,
+    };
+
+    let net = hierarchy_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let (_rank_to_seg, seg_to_rank) = rank_maps(&h, n);
+    let query = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &h.weights);
+
+    let src = net.segment_from(0, 0);
+    let dst = net.segment_from(11, 9);
+    // Ground truth from the independent Dijkstra in this file, not from
+    // the engine path under test.
+    let truth = net.reference_dijkstra(src)[dst as usize];
+    assert!(
+        truth != u32::MAX && truth > 1,
+        "the fixture pair must be reachable and non-trivial, got {truth}"
+    );
+
+    let src_rank = seg_to_rank[src as usize];
+    let dst_rank = seg_to_rank[dst as usize];
+    // Candidate lists that force the escalation past combo (0, 0): the
+    // first source candidate IS the destination, so (0, 0) is skipped and
+    // only (1, 0) can connect. This is a recovered cell, not a primary.
+    let src_ranks = vec![dst_rank, src_rank];
+    let dst_ranks = vec![dst_rank];
+
+    let unbounded = cell_with_kbest_fallback(
+        Some(&query),
+        Some(&query),
+        &src_ranks,
+        &dst_ranks,
+        true,
+        true,
+        None,
+        DEFAULT_MAX_FALLBACK_COMBOS,
+    );
+    assert_eq!(
+        unbounded.time,
+        Some(truth),
+        "unbounded: the escalation must recover the reference cost"
+    );
+    assert_eq!(
+        unbounded.distance,
+        Some(truth),
+        "unbounded: the distance channel must recover too"
+    );
+
+    let at_bound = cell_with_kbest_fallback(
+        Some(&query),
+        Some(&query),
+        &src_ranks,
+        &dst_ranks,
+        true,
+        true,
+        Some(truth),
+        DEFAULT_MAX_FALLBACK_COMBOS,
+    );
+    assert_eq!(
+        at_bound.time,
+        Some(truth),
+        "the bound is inclusive: a cell exactly at the threshold stays recovered"
+    );
+    assert_eq!(
+        at_bound.distance,
+        Some(truth),
+        "the bound is inclusive on the distance channel too"
+    );
+
+    let past_bound = cell_with_kbest_fallback(
+        Some(&query),
+        Some(&query),
+        &src_ranks,
+        &dst_ranks,
+        true,
+        true,
+        Some(truth - 1),
+        DEFAULT_MAX_FALLBACK_COMBOS,
+    );
+    assert_eq!(
+        past_bound.time, None,
+        "a cell whose travel time exceeds the bound must NOT be recovered"
+    );
+    assert_eq!(
+        past_bound.distance, None,
+        "the time bound must gate the DISTANCE channel too"
+    );
+}
