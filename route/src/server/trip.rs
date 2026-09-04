@@ -772,18 +772,10 @@ pub async fn trip_handler(
                 continue;
             }
             let mk = |role: super::types::SnapRole| -> Vec<(u32, u32, u32, bool)> {
-                let k = state_clone.snap_index.snap_k_with_info_filtered_role(
-                    lon,
-                    lat,
-                    mode.0,
-                    8,
-                    Some(snap_mask),
-                    role.role_filter(&mode_data),
-                );
-                match super::phantom::phantom_from_candidates(
+                match super::phantom::phantom_for(
                     &state_clone,
                     &mode_data,
-                    &k,
+                    mode,
                     lon,
                     lat,
                     role,
