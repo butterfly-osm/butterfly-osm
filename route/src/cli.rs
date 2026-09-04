@@ -457,9 +457,8 @@ pub enum Commands {
         outdir: PathBuf,
     },
 
-    /// Step 8: Customize per-mode CCH with weights. Optional `--traffic`
-    /// switches into a fast traffic recustomization that scales edge weights
-    /// by per-density-class speed factors and emits `cch.w.<mode>_<variant>.u32`.
+    /// Step 8: Customize per-mode CCH with weights. Emits
+    /// `cch.w.<mode>.u32`, `cch.d.<mode>.u32` and `cch.lat.<mode>.u32`.
     Step8Customize {
         /// Path to cch.*.topo from Step 7
         #[arg(long)]
@@ -492,34 +491,6 @@ pub enum Commands {
         /// Output directory for cch.w.*.u32 and cch.d.*.u32
         #[arg(short, long)]
         outdir: PathBuf,
-
-        /// OPTIONAL: path to a `*.traffic.json` profile. When set, performs a
-        /// fast traffic recustomization that scales edge weights per density
-        /// class and writes `cch.w.<mode>_<variant>.u32` (no distance file —
-        /// distance is physical). Requires `--way-attrs` and `--nbg-geo`.
-        #[arg(long)]
-        traffic: Option<PathBuf>,
-
-        /// REQUIRED with `--traffic`: path to `way_attrs.<mode>.bin` from
-        /// step 2. Used to look up per-way `density_class`.
-        #[arg(long)]
-        way_attrs: Option<PathBuf>,
-
-        /// REQUIRED with `--traffic`: path to `nbg.geo` from step 3. Used to
-        /// map EBG nodes back to their first OSM way id.
-        #[arg(long)]
-        nbg_geo: Option<PathBuf>,
-
-        /// When set together with `--traffic`, write the customised
-        /// weights to the BASE path `cch.w.<mode>.u32` instead of the
-        /// `_<variant>` suffix. Use this to make a friction profile the
-        /// implicit default for `?mode=<mode>` queries (e.g.
-        /// `--traffic realistic --bake-as-base` so `?mode=car` returns
-        /// realistic-friction durations). The sidecar
-        /// `cch.w.<mode>.traffic.json` is still written for provenance.
-        /// Has no effect without `--traffic`.
-        #[arg(long)]
-        bake_as_base: bool,
     },
 
     /// Download (refresh) GTFS transit feeds into `<data>/transit/gtfs/`.
@@ -1296,71 +1267,6 @@ pub enum Commands {
         #[arg(short, long)]
         outdir: PathBuf,
     },
-
-    /// #388: fit a traffic profile's per-density speed factors from an
-    /// observed-drive-times dataset. Offline — runs OUTSIDE the step1-8
-    /// pipeline and emits a `*.traffic.json` that step 8's `--traffic` flag
-    /// (#84) consumes unchanged, replacing hand-picked multipliers with
-    /// learned numbers.
-    ///
-    /// Source-independent: it takes whatever `(way_id,
-    /// observed_avg_speed_kmh, sample_count)` table you produce (parquet or
-    /// csv). Choosing/licensing the observed-speed dataset, and resolving any
-    /// non-OSM segment identifier to a way_id, are out of scope (the MVP
-    /// adapter assumes the identifier IS the OSM way_id).
-    CalibrateTraffic {
-        /// Observed-speed table. `.parquet`/`.pq`, `.csv`, or `.tsv` with
-        /// columns way_id (aka segment_identifier), observed_avg_speed_kmh,
-        /// and optional sample_count.
-        #[arg(long)]
-        observations: PathBuf,
-
-        /// Path to a loose `way_attrs.<mode>.bin` (a step-2 output).
-        #[arg(long, conflicts_with = "data_dir")]
-        way_attrs: Option<PathBuf>,
-
-        /// Alternatively, a step-tree data dir; resolves
-        /// `<dir>/step2/way_attrs.<mode>.bin` for `--mode`.
-        #[arg(long, conflicts_with = "way_attrs")]
-        data_dir: Option<PathBuf>,
-
-        /// Mode whose way_attrs to use (with `--data-dir`). Default: car.
-        #[arg(long, default_value = "car")]
-        mode: String,
-
-        /// `name` field written into the emitted profile JSON.
-        #[arg(long, default_value = "calibrated")]
-        name: String,
-
-        /// `base_model` field written into the emitted profile JSON.
-        #[arg(long, default_value = "car")]
-        base_model: String,
-
-        /// Minimum observations (sum of sample_count, not row count) a density
-        /// class needs before we trust its own median; below this it inherits
-        /// the global median.
-        #[arg(long, default_value_t = 100)]
-        min_samples: usize,
-
-        /// Sanity clamp band for emitted factors (must lie within the schema
-        /// bounds [0.1, 1.5]). Default mirrors the #388 spec.
-        #[arg(long, default_value_t = 0.30)]
-        clamp_min: f32,
-        #[arg(long, default_value_t = 1.20)]
-        clamp_max: f32,
-
-        /// #428: additionally fit a (highway_class × density) factor matrix.
-        /// The highway axis is the model-defined u16 code stored per way in
-        /// way_attrs.<mode>.bin. Only cells clearing --min-samples are
-        /// emitted; omitted cells fall back to the per-density vector at
-        /// application time. Off by default (vector-only profile).
-        #[arg(long)]
-        matrix: bool,
-
-        /// Output `*.traffic.json` path.
-        #[arg(long)]
-        out: PathBuf,
-    },
 }
 
 impl Cli {
@@ -1925,68 +1831,12 @@ impl Cli {
                 ebg_nodes,
                 mode,
                 outdir,
-                traffic,
-                way_attrs,
-                nbg_geo,
-                bake_as_base,
             } => {
                 // Parse mode — discover from filtered_ebg's parent (step5 dir)
                 let mode_name_str = mode.to_lowercase();
                 let step5_dir = filtered_ebg.parent().unwrap_or(Path::new("."));
                 let mode = resolve_mode(&mode_name_str, step5_dir)?;
 
-                let traffic_cfg = match traffic {
-                    Some(traffic_path) => {
-                        let way_attrs_path = way_attrs.ok_or_else(|| {
-                            anyhow::anyhow!("--traffic requires --way-attrs <PATH>")
-                        })?;
-                        let nbg_geo_path = nbg_geo.ok_or_else(|| {
-                            anyhow::anyhow!("--traffic requires --nbg-geo <PATH>")
-                        })?;
-                        let profile = crate::traffic::TrafficProfile::load(&traffic_path)?;
-                        // Validate base_model matches the mode we're customizing.
-                        // For profiles carrying a (highway_class × density)
-                        // matrix this is a HARD error: matrix keys are the
-                        // model-specific highway_class codes from
-                        // way_attrs.<mode>.bin (e.g. code 12 is residential in
-                        // the car model but maps to a different road type in
-                        // bike/foot), so applying the matrix to another mode
-                        // would silently scale the wrong roads. Vector-only
-                        // profiles key on the shared density classes, so a
-                        // mismatch stays a warning.
-                        if profile.base_model != mode_name_str {
-                            if profile.has_matrix() {
-                                anyhow::bail!(
-                                    "traffic profile base_model='{}' but customizing mode='{}': \
-                                     the profile carries a (highway_class × density) matrix, and \
-                                     matrix highway-class codes are model-specific (the same code \
-                                     names different road types in different models), so applying \
-                                     it to another mode would scale the wrong roads. Re-run \
-                                     calibrate-traffic against way_attrs.{}.bin (emitting \
-                                     base_model='{}') or use a vector-only profile.",
-                                    profile.base_model,
-                                    mode_name_str,
-                                    mode_name_str,
-                                    mode_name_str
-                                );
-                            }
-                            println!(
-                                "⚠️  warning: traffic profile base_model='{}' but customizing mode='{}'. Proceeding.",
-                                profile.base_model, mode_name_str
-                            );
-                        }
-                        Some(customization::TrafficCustomization {
-                            profile,
-                            way_attrs_path,
-                            nbg_geo_path,
-                        })
-                    }
-                    None => None,
-                };
-
-                if bake_as_base && traffic_cfg.is_none() {
-                    anyhow::bail!("--bake-as-base requires --traffic <PROFILE>");
-                }
                 let config = customization::Step8Config {
                     cch_topo_path: cch_topo,
                     filtered_ebg_path: filtered_ebg,
@@ -1997,26 +1847,14 @@ impl Cli {
                     mode,
                     mode_name: mode_name_str.clone(),
                     outdir: outdir.clone(),
-                    traffic: traffic_cfg,
-                    bake_traffic_as_base: bake_as_base,
                 };
 
-                let traffic_variant = config.traffic.as_ref().map(|t| t.profile.name.clone());
                 let result = customization::customize_cch(config)?;
 
-                // Generate lock file. When `--bake-as-base` baked a
-                // traffic profile into the base path, the lock file
-                // also takes the base name (overwriting any previous
-                // base lock) — the lock body still records which
-                // traffic_variant produced the bytes.
                 let mode_name = &result.mode_name;
-                let lock_basename = match (&traffic_variant, bake_as_base) {
-                    (Some(v), false) => format!("step8.{}_{}.lock.json", mode_name, v),
-                    _ => format!("step8.{}.lock.json", mode_name),
-                };
+                let lock_basename = format!("step8.{}.lock.json", mode_name);
                 let lock = serde_json::json!({
                     "mode": mode_name,
-                    "traffic_variant": traffic_variant,
                     "output_path": result.output_path.display().to_string(),
                     "distance_output_path": result.distance_output_path.display().to_string(),
                     "n_up_edges": result.n_up_edges,
@@ -2996,120 +2834,6 @@ impl Cli {
                 println!("✅ Step 8 (Hybrid) CCH customization complete!");
                 println!("📋 Lock file: {}", lock_path.display());
 
-                Ok(())
-            }
-            Commands::CalibrateTraffic {
-                observations,
-                way_attrs,
-                data_dir,
-                mode,
-                name,
-                base_model,
-                min_samples,
-                clamp_min,
-                clamp_max,
-                matrix,
-                out,
-            } => {
-                let wa_path = match (way_attrs, data_dir) {
-                    (Some(p), None) => p,
-                    (None, Some(dir)) => dir
-                        .join("step2")
-                        .join(format!("way_attrs.{}.bin", mode.to_lowercase())),
-                    (Some(_), Some(_)) => {
-                        anyhow::bail!("--way-attrs and --data-dir are mutually exclusive")
-                    }
-                    (None, None) => {
-                        anyhow::bail!("one of --way-attrs or --data-dir is required")
-                    }
-                };
-
-                let params = crate::calibrate::CalibrationParams {
-                    name,
-                    base_model,
-                    min_samples,
-                    clamp_min,
-                    clamp_max,
-                    fit_matrix: matrix,
-                };
-                let result = crate::calibrate::run_calibration(&observations, &wa_path, &params)?;
-
-                // Human-readable fit summary to stderr (the profile JSON is
-                // the machine output, written to --out).
-                eprintln!(
-                    "calibration: {} matched, {} unmatched, {} dropped; global ratio {:.3}",
-                    result.matched, result.unmatched, result.skipped_bad, result.global_factor
-                );
-                eprintln!(
-                    "{:<14} {:>10} {:>12} {:>10} {:>16} {:>8}",
-                    "density", "n_obs", "samples", "raw", "source", "factor"
-                );
-                for cf in &result.per_class {
-                    let raw = cf
-                        .raw_factor
-                        .map(|r| format!("{r:.3}"))
-                        .unwrap_or_else(|| "-".to_string());
-                    let source = match cf.fallback_source {
-                        crate::calibrate::FallbackSource::OwnMedian => "own".to_string(),
-                        crate::calibrate::FallbackSource::NearestClass(c) => {
-                            format!("<-{}", c.as_str())
-                        }
-                        crate::calibrate::FallbackSource::Global => "global".to_string(),
-                    };
-                    eprintln!(
-                        "{:<14} {:>10} {:>12} {:>10} {:>16} {:>8.3}",
-                        cf.class.as_str(),
-                        cf.n_obs,
-                        cf.total_samples,
-                        raw,
-                        source,
-                        cf.factor
-                    );
-                }
-
-                if matrix {
-                    let emitted = result.per_cell.iter().filter(|c| c.emitted).count();
-                    eprintln!(
-                        "matrix (#428): {} highway rows, {}/{} cells emitted (omitted cells fall back to the density vector)",
-                        result.profile.matrix.len(),
-                        emitted,
-                        result.per_cell.len()
-                    );
-                    eprintln!(
-                        "{:>8} {:<14} {:>10} {:>12} {:>10} {:>10}",
-                        "highway", "density", "n_obs", "samples", "raw", "factor"
-                    );
-                    for cell in &result.per_cell {
-                        let factor = cell
-                            .factor
-                            .map(|f| format!("{f:.3}"))
-                            .unwrap_or_else(|| "(vector)".to_string());
-                        eprintln!(
-                            "{:>8} {:<14} {:>10} {:>12} {:>10.3} {:>10}",
-                            cell.highway_class,
-                            cell.class.as_str(),
-                            cell.n_obs,
-                            cell.total_samples,
-                            cell.raw_factor,
-                            factor
-                        );
-                    }
-                }
-
-                let json = result.profile.to_json_string()?;
-                // Create the parent dir so `--out traffic/realistic.traffic.json`
-                // works without a manual mkdir (matches other generated-artifact
-                // writers in this crate).
-                if let Some(parent) = out.parent()
-                    && !parent.as_os_str().is_empty()
-                {
-                    std::fs::create_dir_all(parent).with_context(|| {
-                        format!("creating output directory {}", parent.display())
-                    })?;
-                }
-                std::fs::write(&out, &json)
-                    .with_context(|| format!("writing profile to {}", out.display()))?;
-                println!("✅ wrote calibrated traffic profile: {}", out.display());
                 Ok(())
             }
         }

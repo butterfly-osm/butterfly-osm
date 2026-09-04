@@ -47,7 +47,7 @@ butterfly-common/  shared errors and small utilities
 dl/                butterfly-dl — streaming OSM downloader (<1 GB RAM, any size)
 route/             butterfly-route — the pipeline, the router, the transit engine
 bench/             post-deploy gate + competitor harnesses
-models/, traffic/  per-mode *.model.json profiles; density-class speed profiles
+models/            per-mode *.model.json cost profiles
 
 --- data flow, run once per region ---
 region.pbf

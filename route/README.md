@@ -53,7 +53,7 @@ butterfly-route step8-customize --cch-topo data/step7/cch.car.topo --filtered-eb
 butterfly-route pack            --data-dir data --out belgium.butterfly --region BE
 ```
 
-Repeat steps 3-8 with `--way-attrs bike=...`, `--turn-rules bike=...` etc. to add modes. Modes are discovered from the filenames in each step directory; there are no hardcoded mode names in the Rust code. Traffic recustomization (`step8-customize --traffic <profile>.traffic.json --bake-as-base`) applies per-density-class speed factors to the base car weights.
+Repeat steps 3-8 with `--way-attrs bike=...`, `--turn-rules bike=...` etc. to add modes. Modes are discovered from the filenames in each step directory; there are no hardcoded mode names in the Rust code. Observed car speeds are applied at serve boot, not at build time: the engine recustomizes `?mode=car` from a runtime `edge_speeds.parquet` staged next to the data.
 
 See [Architecture](../docs/architecture.md) for the full edge-based CCH derivation.
 

@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::formats::{
     ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
-    HybridStateFile, NbgGeoFile, WeightArray, mod_turns, mod_weights, way_attrs,
+    HybridStateFile, WeightArray, mod_turns, mod_weights, way_attrs,
 };
 use crate::profile_abi::Mode;
 
@@ -54,40 +54,12 @@ pub struct Step8Config {
     pub mode: Mode,
     pub mode_name: String,
     pub outdir: PathBuf,
-    /// Optional traffic recustomization. When `Some`, applies per-density-class
-    /// speed factors to edge weights, writes outputs as
-    /// `cch.w.<mode>_<variant>.u32` and skips the distance metric (distance is
-    /// physical and unaffected by traffic).
-    pub traffic: Option<TrafficCustomization>,
-    /// When `true` AND `traffic` is set, write the traffic-customised
-    /// weights to the BASE path `cch.w.<mode>.u32` instead of the
-    /// suffixed variant path `cch.w.<mode>_<variant>.u32`. The sidecar
-    /// `cch.w.<mode>.traffic.json` is still emitted for provenance so
-    /// human-readable origin survives.
-    ///
-    /// Used to make a friction profile the implicit default — e.g.
-    /// `step8-customize --traffic realistic --bake-as-base` makes
-    /// `?mode=car` return realistic-friction durations instead of the
-    /// legal-limit baseline, without introducing a separate variant
-    /// mode name.
-    pub bake_traffic_as_base: bool,
-}
-
-/// Inputs needed to apply a traffic profile during step 8.
-pub struct TrafficCustomization {
-    pub profile: crate::traffic::TrafficProfile,
-    /// `way_attrs.<mode>.bin` — required for the per-way density class.
-    pub way_attrs_path: PathBuf,
-    /// `nbg.geo` from step 3 — required to map EBG node → first OSM way id.
-    pub nbg_geo_path: PathBuf,
 }
 
 /// Result of Step 8 customization
 #[derive(Debug)]
 pub struct Step8Result {
     pub output_path: PathBuf,
-    /// Empty PathBuf for traffic recustomization (distance is physical and
-    /// not re-emitted — the freeflow `cch.d.<mode>.u32` covers all variants).
     pub distance_output_path: PathBuf,
     pub mode: Mode,
     pub mode_name: String,
@@ -170,38 +142,8 @@ impl SortedFilteredEbgAdj {
 pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     let start_time = std::time::Instant::now();
     let mode_name = &config.mode_name;
-    let traffic = config.traffic.as_ref();
 
-    if let Some(t) = traffic {
-        println!(
-            "\n🚦 Step 8: Traffic recustomization for {} via profile '{}'...\n",
-            mode_name, t.profile.name
-        );
-        for class in crate::density::DensityClass::ALL {
-            println!(
-                "  factor[{}] = {:.3}",
-                class.as_str(),
-                t.profile.factor_for(class)
-            );
-        }
-        if t.profile.has_matrix() {
-            println!(
-                "  + (highway_class × density) matrix: {} highway rows (cells override the vector; missing cells fall back)",
-                t.profile.matrix.len()
-            );
-            for (code, row) in &t.profile.matrix {
-                let cells: Vec<String> = crate::density::DensityClass::ALL
-                    .iter()
-                    .filter_map(|c| {
-                        row[c.to_u8() as usize].map(|f| format!("{}={:.3}", c.as_str(), f))
-                    })
-                    .collect();
-                println!("    matrix[{}]: {}", code, cells.join(", "));
-            }
-        }
-    } else {
-        println!("\n🎨 Step 8: Customizing CCH for {}...\n", mode_name);
-    }
+    println!("\n🎨 Step 8: Customizing CCH for {}...\n", mode_name);
 
     // Load all data
     println!("Loading CCH topology...");
@@ -222,7 +164,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     );
 
     println!("Loading weights ({})...", mode_name);
-    let mut weights = mod_weights::read_all(&config.weights_path)?;
+    let weights = mod_weights::read_all(&config.weights_path)?;
     println!("  ✓ {} node weights", weights.weights.len());
 
     println!("Loading turn penalties ({})...", mode_name);
@@ -232,24 +174,6 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     println!("Loading EBG nodes...");
     let ebg_nodes = EbgNodesFile::read(&config.ebg_nodes_path)?;
     println!("  ✓ {} EBG nodes", ebg_nodes.n_nodes);
-
-    // Apply traffic factors directly to the in-memory `weights.weights` array
-    // (per-EBG-node travel-time in seconds, post-#297). The bottom-up customization
-    // passes that follow then propagate the scaled originals through the
-    // shortcut hierarchy.
-    if let Some(t) = traffic {
-        let scale_start = std::time::Instant::now();
-        // #294: weights.weights is Cow<[u32]>. Customization is a
-        // build-time path that always owns the data; `to_mut()` is a
-        // no-op on Owned and a copy-on-write on Borrowed.
-        apply_traffic_to_node_weights(weights.weights.to_mut(), &ebg_nodes, t)?;
-        println!(
-            "  ✓ Applied '{}' speed factors to {} EBG node weights in {:.3}s",
-            t.profile.name,
-            weights.weights.len(),
-            scale_start.elapsed().as_secs_f64()
-        );
-    }
 
     // Build shared structures
     println!("\nBuilding sorted filtered EBG adjacency (parallel)...");
@@ -287,50 +211,33 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // concurrently via rayon::join.
     // ===================================================================
     let bu_start = std::time::Instant::now();
-    let (time_up, time_down, dist_pair_opt) = if traffic.is_some() {
-        println!("\n⚡ Bottom-up customization (TIME only)...");
-        let (tu, td) = bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
-            compute_original_weight_rank_aligned(
-                u_rank,
-                v_rank,
-                &weights.weights,
-                &turns.penalties,
-                &sorted_ebg,
-                &filtered_ebg.filtered_to_original,
-                rank_to_filtered,
-            )
-        });
-        (tu, td, None)
-    } else {
-        println!("\n⚡ Bottom-up customization (time + distance in parallel)...");
-        let ((time_up, time_down), (dist_up, dist_down)) = rayon::join(
-            || {
-                bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
-                    compute_original_weight_rank_aligned(
-                        u_rank,
-                        v_rank,
-                        &weights.weights,
-                        &turns.penalties,
-                        &sorted_ebg,
-                        &filtered_ebg.filtered_to_original,
-                        rank_to_filtered,
-                    )
-                })
-            },
-            || {
-                bottom_up_customize(&topo, &sorted_down_indices, |_u_rank, v_rank| {
-                    compute_distance_weight_rank_aligned(
-                        v_rank,
-                        &weights.weights,
-                        &ebg_nodes.nodes,
-                        &filtered_ebg.filtered_to_original,
-                        rank_to_filtered,
-                    )
-                })
-            },
-        );
-        (time_up, time_down, Some((dist_up, dist_down)))
-    };
+    println!("\n⚡ Bottom-up customization (time + distance in parallel)...");
+    let ((time_up, time_down), (dist_up, dist_down)) = rayon::join(
+        || {
+            bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
+                compute_original_weight_rank_aligned(
+                    u_rank,
+                    v_rank,
+                    &weights.weights,
+                    &turns.penalties,
+                    &sorted_ebg,
+                    &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
+                )
+            })
+        },
+        || {
+            bottom_up_customize(&topo, &sorted_down_indices, |_u_rank, v_rank| {
+                compute_distance_weight_rank_aligned(
+                    v_rank,
+                    &weights.weights,
+                    &ebg_nodes.nodes,
+                    &filtered_ebg.filtered_to_original,
+                    rank_to_filtered,
+                )
+            })
+        },
+    );
     println!("  ✓ Bottom-up in {:.2}s", bu_start.elapsed().as_secs_f64());
 
     // ===================================================================
@@ -342,61 +249,33 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // loose upper bounds that make the search pick suboptimal corridors
     // (#584 deleted the dev-only skip flag over exactly that).
     // ===================================================================
-    let (time_up, time_down, time_up_mid, time_down_mid) =
-        if let Some((ref dist_up, ref dist_down)) = dist_pair_opt {
-            // #529: non-traffic build — elect middles by (time, then
-            // length-along-time). Seeds the length channel with the pre-relax
-            // bottom-up DISTANCE weights (length along the contraction
-            // decomposition), which are still owned by `dist_pair_opt` and
-            // consumed unchanged by the DISTANCE relaxation below. TIME
-            // weights are byte-identical to the time-only relaxation; only the
-            // elected middles change (shortest length among equal-time apexes).
-            println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
-            let tr_start = std::time::Instant::now();
-            let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
-                triangle_relax_lex_parallel(
-                    &topo, time_up, time_down, dist_up, dist_down, &rev_down,
-                );
-            println!(
-                "  ✓ {:.2}s, {} updates in {} passes",
-                tr_start.elapsed().as_secs_f64(),
-                time_relax_count,
-                time_relax_passes
-            );
-            (tu, td, tu_mid, td_mid)
-        } else {
-            // Traffic recustomization (no DISTANCE channel available): keep the
-            // time-only middle election. Traffic modes seldom tie on duration,
-            // so the length tie-break is not needed here.
-            println!("\n🔺 Triangle relaxation for TIME (parallel)...");
-            let tr_start = std::time::Instant::now();
-            let (tu, td, tu_mid, td_mid, time_relax_count, time_relax_passes) =
-                triangle_relax_parallel(&topo, time_up, time_down, &rev_down);
-            println!(
-                "  ✓ {:.2}s, {} updates in {} passes",
-                tr_start.elapsed().as_secs_f64(),
-                time_relax_count,
-                time_relax_passes
-            );
-            (tu, td, tu_mid, td_mid)
-        };
+    // #529: elect middles by (time, then length-along-time). Seeds the length
+    // channel with the pre-relax bottom-up DISTANCE weights (length along the
+    // contraction decomposition), which are consumed unchanged by the DISTANCE
+    // relaxation below. TIME weights are byte-identical to a time-only
+    // relaxation; only the elected middles change (shortest length among
+    // equal-time apexes).
+    println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
+    let tr_start = std::time::Instant::now();
+    let (time_up, time_down, time_up_mid, time_down_mid, time_relax_count, time_relax_passes) =
+        triangle_relax_lex_parallel(&topo, time_up, time_down, &dist_up, &dist_down, &rev_down);
+    println!(
+        "  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(),
+        time_relax_count,
+        time_relax_passes
+    );
 
-    let dist_relaxed = match dist_pair_opt {
-        Some((dist_up, dist_down)) => {
-            println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
-            let tr_start = std::time::Instant::now();
-            let (du, dd, _du_mid, _dd_mid, dist_relax_count, dist_relax_passes) =
-                triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
-            println!(
-                "  ✓ {:.2}s, {} updates in {} passes",
-                tr_start.elapsed().as_secs_f64(),
-                dist_relax_count,
-                dist_relax_passes
-            );
-            Some((du, dd))
-        }
-        None => None,
-    };
+    println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
+    let tr_start = std::time::Instant::now();
+    let (dist_up, dist_down, _du_mid, _dd_mid, dist_relax_count, dist_relax_passes) =
+        triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
+    println!(
+        "  ✓ {:.2}s, {} updates in {} passes",
+        tr_start.elapsed().as_secs_f64(),
+        dist_relax_count,
+        dist_relax_passes
+    );
 
     // Length-along-time-shortest (#371/#372). For every CCH edge, the
     // sum of physical edge lengths along the time-optimal expansion
@@ -407,55 +286,39 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // per-cell unpacking. The on-disk file `cch.lat.<mode>.u32` is
     // written alongside the existing `cch.d.<mode>.u32`; consumers
     // migrate in #372.
-    let lat_pair = if dist_relaxed.is_some() {
-        println!("\n📏 Length-along-time-shortest customization...");
-        let lat_start = std::time::Instant::now();
-        let (lat_up, lat_down) = bottom_up_with_external_middles(
-            &topo,
-            &sorted_down_indices,
-            &time_up_mid,
-            &time_down_mid,
-            |_u_rank, v_rank| {
-                compute_distance_weight_rank_aligned(
-                    v_rank,
-                    &weights.weights,
-                    &ebg_nodes.nodes,
-                    &filtered_ebg.filtered_to_original,
-                    rank_to_filtered,
-                )
-            },
-        );
-        println!(
-            "  ✓ {:.2}s — {} up entries, {} down entries",
-            lat_start.elapsed().as_secs_f64(),
-            lat_up.len(),
-            lat_down.len()
-        );
-        Some((lat_up, lat_down))
-    } else {
-        None
-    };
+    println!("\n📏 Length-along-time-shortest customization...");
+    let lat_start = std::time::Instant::now();
+    let (lat_up, lat_down) = bottom_up_with_external_middles(
+        &topo,
+        &sorted_down_indices,
+        &time_up_mid,
+        &time_down_mid,
+        |_u_rank, v_rank| {
+            compute_distance_weight_rank_aligned(
+                v_rank,
+                &weights.weights,
+                &ebg_nodes.nodes,
+                &filtered_ebg.filtered_to_original,
+                rank_to_filtered,
+            )
+        },
+    );
+    println!(
+        "  ✓ {:.2}s — {} up entries, {} down entries",
+        lat_start.elapsed().as_secs_f64(),
+        lat_up.len(),
+        lat_down.len()
+    );
 
     // Sanity checks
     sanity_check_weights(&topo, &time_up, &time_down, "Time", 95.0)?;
-    if let Some((ref du, ref dd)) = dist_relaxed {
-        sanity_check_weights_simple(du, dd, "Distance", 95.0)?;
-    }
-    if let Some((ref lu, ref ld)) = lat_pair {
-        sanity_check_weights_simple(lu, ld, "Length-along-time", 95.0)?;
-    }
+    sanity_check_weights_simple(&dist_up, &dist_down, "Distance", 95.0)?;
+    sanity_check_weights_simple(&lat_up, &lat_down, "Length-along-time", 95.0)?;
 
     // Write outputs
     std::fs::create_dir_all(&config.outdir)?;
 
-    // Output filename — traffic variants get a `_<variant>` suffix
-    // unless `--bake-as-base` was passed, in which case the variant
-    // overwrites the base `cch.w.<mode>.u32`.
-    let weight_suffix = match traffic {
-        Some(t) if !config.bake_traffic_as_base => format!("{}_{}", mode_name, t.profile.name),
-        Some(_) | None => mode_name.clone(),
-    };
-    let output_path = config.outdir.join(format!("cch.w.{}.u32", weight_suffix));
+    let output_path = config.outdir.join(format!("cch.w.{}.u32", mode_name));
     println!("\nWriting time weights...");
     write_cch_weights(
         &output_path,
@@ -467,55 +330,37 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     )?;
     println!("  ✓ Written {}", output_path.display());
 
-    let distance_output_path = if let Some((dist_up, dist_down)) = dist_relaxed {
-        let p = config.outdir.join(format!("cch.d.{}.u32", mode_name));
-        println!("Writing distance weights...");
+    let distance_output_path = config.outdir.join(format!("cch.d.{}.u32", mode_name));
+    println!("Writing distance weights...");
+    {
         let topo_up_mid: Vec<u32> = topo.up_middle.to_vec_u32();
         let topo_down_mid: Vec<u32> = topo.down_middle.to_vec_u32();
         write_cch_weights(
-            &p,
+            &distance_output_path,
             &dist_up,
             &dist_down,
             &topo_up_mid,
             &topo_down_mid,
             config.mode,
         )?;
-        println!("  ✓ Written {}", p.display());
-        p
-    } else {
-        // Traffic path: distance is unchanged, no new file written. We
-        // surface the freeflow path so callers / lock files have a stable
-        // reference, but it MUST already exist (server still reads it).
-        config.outdir.join(format!("cch.d.{}.u32", mode_name))
-    };
+    }
+    println!("  ✓ Written {}", distance_output_path.display());
 
     // #371/#372: length-along-time-shortest weights. Same on-disk
     // shape as cch.d (same `write_cch_weights`); new file name so
     // both files coexist during migration. Reuses the time-optimal
     // middles since the metric is derived from the same path.
-    if let Some((lat_up, lat_down)) = lat_pair {
-        let p = config.outdir.join(format!("cch.lat.{}.u32", mode_name));
-        println!("Writing length-along-time weights...");
-        write_cch_weights(
-            &p,
-            &lat_up,
-            &lat_down,
-            &time_up_mid,
-            &time_down_mid,
-            config.mode,
-        )?;
-        println!("  ✓ Written {}", p.display());
-    }
-
-    // For traffic variants, also drop a sibling `.traffic.json` next to the
-    // weight file for provenance — the server validates this on boot.
-    if let Some(t) = traffic {
-        let provenance_path = config
-            .outdir
-            .join(format!("cch.w.{}.traffic.json", weight_suffix));
-        std::fs::write(&provenance_path, t.profile.to_json_string()?)?;
-        println!("  ✓ Written {}", provenance_path.display());
-    }
+    let lat_path = config.outdir.join(format!("cch.lat.{}.u32", mode_name));
+    println!("Writing length-along-time weights...");
+    write_cch_weights(
+        &lat_path,
+        &lat_up,
+        &lat_down,
+        &time_up_mid,
+        &time_down_mid,
+        config.mode,
+    )?;
+    println!("  ✓ Written {}", lat_path.display());
 
     let customize_time_ms = start_time.elapsed().as_millis() as u64;
 
@@ -539,10 +384,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
 /// unaffected by traffic, so the caller keeps the base mode's dist/lat weights
 /// (the serve clones them from the base `ModeData`).
 ///
-/// `traffic` = `(profile, way_attrs, nbg_geo)`: when `Some`, per-density-class
-/// speed factors are applied to a PRIVATE clone of the node time-weights before
-/// contraction (`node_weights_time` is borrowed read-only and left untouched).
-/// Triangle relaxation is ALWAYS run — serving requires exact shortcut weights.
+/// The caller's `node_weights_time` slice (a container section) is borrowed
+/// read-only; the returned adjusted vector is a private clone. Triangle
+/// relaxation is ALWAYS run — serving requires exact shortcut weights.
 ///
 /// Determinism: for identical inputs the returned `(up, down, up_middle,
 /// down_middle)` values are element-for-element equal to what the CLI
@@ -558,27 +402,12 @@ pub fn customize_cch_time_in_memory(
     filtered_ebg: &crate::formats::FilteredEbg,
     node_weights_time: &[u32],
     turn_penalties: &[u32],
-    ebg_nodes: &EbgNodes,
-    traffic: Option<(
-        &crate::traffic::TrafficProfile,
-        &[way_attrs::WayAttr],
-        &crate::formats::NbgGeo,
-    )>,
 ) -> Result<(CchWeights, Vec<u32>)> {
     let n_nodes = topo.n_nodes as usize;
 
-    // Apply traffic to a private copy of the node time-weights — the caller's
-    // slice (a container section) is borrowed read-only.
-    let mut node_weights: Vec<u32> = node_weights_time.to_vec();
-    if let Some((profile, way_attrs_slice, nbg_geo)) = traffic {
-        apply_traffic_to_node_weights_in_memory(
-            &mut node_weights,
-            ebg_nodes,
-            profile,
-            way_attrs_slice,
-            nbg_geo,
-        )?;
-    }
+    // Private copy of the node time-weights — the caller's slice (a container
+    // section) is borrowed read-only.
+    let node_weights: Vec<u32> = node_weights_time.to_vec();
 
     // Shared structures — identical construction to the CLI TIME path.
     let sorted_ebg = SortedFilteredEbgAdj::build(filtered_ebg);
@@ -628,7 +457,8 @@ pub fn customize_cch_time_in_memory(
     ))
 }
 
-/// Apply per-density-class speed factors to the in-memory time-weight array.
+/// Scale the per-EBG-node time-weights by a traffic profile's per-density-class
+/// factors, given already-parsed way attributes + nbg geometry.
 ///
 /// For every accessible EBG node `n`:
 ///   - `way_id = nbg_geo.edges[ebg_nodes[n].geom_idx].first_osm_way_id`
@@ -640,43 +470,10 @@ pub fn customize_cch_time_in_memory(
 ///     preserving the `0 = inaccessible` sentinel.
 ///
 /// Inaccessible nodes (weight 0) stay zero. Wall-time bound: O(n_ebg).
-fn apply_traffic_to_node_weights(
-    weights: &mut [u32],
-    ebg_nodes: &EbgNodes,
-    traffic: &TrafficCustomization,
-) -> Result<()> {
-    println!("\nLoading traffic profile inputs...");
-    let way_attrs_vec = way_attrs::read_all(&traffic.way_attrs_path)?;
-    println!(
-        "  ✓ {} way attrs from {}",
-        way_attrs_vec.len(),
-        traffic.way_attrs_path.display()
-    );
-    let nbg_geo = NbgGeoFile::read(&traffic.nbg_geo_path)?;
-    println!(
-        "  ✓ {} nbg edges from {}",
-        nbg_geo.edges.len(),
-        traffic.nbg_geo_path.display()
-    );
-
-    apply_traffic_to_node_weights_in_memory(
-        weights,
-        ebg_nodes,
-        &traffic.profile,
-        &way_attrs_vec,
-        &nbg_geo,
-    )
-}
-
-/// In-memory core of [`apply_traffic_to_node_weights`]: scale the per-EBG-node
-/// time-weights by the profile's per-density-class factors given the
-/// already-parsed way attributes + nbg geometry (no file reads, no profile
-/// path resolution).
 ///
-/// Used by the build-time CLI path (via the file-reading shell above) AND by
-/// the serve-boot recustomization, which feeds in structs decoded from the
-/// `.butterfly` container sections. The loop is byte-for-byte identical to the
-/// pre-split CLI logic, so the built artifact is unchanged.
+/// The only caller is the runtime traffic-VARIANT loader (#440), which
+/// re-derives a variant's per-node durations from the provenance profile a
+/// legacy artifact ships alongside its baked variant weights.
 pub(crate) fn apply_traffic_to_node_weights_in_memory(
     weights: &mut [u32],
     ebg_nodes: &EbgNodes,
@@ -1998,27 +1795,24 @@ mod determinism_tests {
     /// contract the serve-boot hot-swap relies on: feeding the same raw inputs
     /// the build used must yield the same weights the build baked.
     ///
-    /// Skipped unless all six fixture paths are provided via env, because the
-    /// Belgium step4-7/step8 outputs are large and not committed. To run
+    /// Skipped unless all five fixture paths are provided via env, because the
+    /// Belgium step5/step7/step8 outputs are large and not committed. To run
     /// against a real Belgium build:
     /// ```text
     /// BT_TOPO=data/belgium/step7/cch.car.topo \
     /// BT_FILTERED_EBG=data/belgium/step5/filtered.car.ebg \
     /// BT_W_CAR=data/belgium/step5/w.car.u32 \
     /// BT_T_CAR=data/belgium/step5/t.car.u32 \
-    /// BT_EBG_NODES=data/belgium/step4/ebg.nodes \
     /// BT_CCH_W_CAR=data/belgium/step8/cch.w.car.u32 \
     ///   cargo test -p butterfly-route customize_in_memory_matches_cli -- --nocapture
     /// ```
-    /// `BT_CCH_W_CAR` MUST be a legal-limit (no-traffic-bake) step8 output.
     #[test]
     fn customize_in_memory_matches_cli() {
-        const KEYS: [&str; 6] = [
+        const KEYS: [&str; 5] = [
             "BT_TOPO",
             "BT_FILTERED_EBG",
             "BT_W_CAR",
             "BT_T_CAR",
-            "BT_EBG_NODES",
             "BT_CCH_W_CAR",
         ];
         let Some(paths) = KEYS
@@ -2037,19 +1831,12 @@ mod determinism_tests {
         let filtered_ebg = FilteredEbgFile::read(&paths[1]).unwrap();
         let weights = mod_weights::read_all(&paths[2]).unwrap();
         let turns = mod_turns::read_all(&paths[3]).unwrap();
-        let ebg_nodes = EbgNodesFile::read(&paths[4]).unwrap();
 
-        let (got, _adjusted_node_weights) = customize_cch_time_in_memory(
-            &topo,
-            &filtered_ebg,
-            &weights.weights,
-            &turns.penalties,
-            &ebg_nodes,
-            None,
-        )
-        .unwrap();
+        let (got, _adjusted_node_weights) =
+            customize_cch_time_in_memory(&topo, &filtered_ebg, &weights.weights, &turns.penalties)
+                .unwrap();
 
-        let want = CchWeightsFile::read(&paths[5]).unwrap();
+        let want = CchWeightsFile::read(&paths[4]).unwrap();
 
         assert_eq!(
             got.up.to_vec_u32(),

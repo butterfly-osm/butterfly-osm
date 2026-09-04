@@ -89,8 +89,7 @@ butterfly-osm/
 ```
 
 Support directories: `bench/` (regression and competitor benches),
-`scripts/` (OSRM/Valhalla harnesses), `data/` (Belgium artifacts), `traffic/`
-(per-density-class speed profiles for #84 recustomization), `models/`
+`scripts/` (OSRM/Valhalla harnesses), `data/` (Belgium artifacts), `models/`
 (declarative `*.model.json` cost models, Q-Sprint).
 
 ## Features
