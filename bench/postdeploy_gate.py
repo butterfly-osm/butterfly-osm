@@ -15,38 +15,53 @@ Checks
    speed-calibration-independent — it gates pure routing correctness.
 2. SYMMETRY: route(A→B) vs route(B→A) on seeded random pairs. The #502 snap
    bug's fingerprint was 4× asymmetry; a healthy two-way network stays <1.5×.
-3. TICKET FIXTURES: the #502/#503 cases (Berloz, Heers, Robertville) pinned
-   to their validated values ±10 %.
-4. ENDPOINT CONSISTENCY: /route and /table must agree on durations (±3 s)
-   for the same pairs — one answer per question.
+3. TICKET FIXTURES: the #502/#503 cases (Berloz, Heers, Robertville) checked
+   against invariants that never expire (no pasted constants).
+4. ENDPOINT AGREEMENT: /route and /table must agree on durations (±3 s) for
+   the same pairs — one answer per question. TWO samplers in ONE gate (#550):
+   uniform long pairs AND close pairs 50-400 m apart, the same-edge /
+   co-located-candidate regime where a legacy same-rank shortcut and a reduce
+   clamp both emitted bogus 0 s answers and which uniform sampling never
+   reaches.
 5. ISOCHRONE CONTAINMENT (#497/#506): every isochrone polygon must contain
    its own SNAPPED origin (snapped-road-point semantics — the raw query
    point may legitimately sit outside when it is far off-network).
-6. CLOSE-PAIR CONSISTENCY: /route vs /table on pairs 50-400 m apart —
-   the same-edge / co-located-candidate regime where a legacy same-rank
-   shortcut and a reduce clamp both emitted bogus 0 s answers. Uniform
-   random pairs almost never land in this regime, so it gets its own sweep.
+
+Fail-loud rules (#550)
+----------------------
+* pyarrow/pandas are REQUIRED: a runner without them used to green-light a
+  deploy with every Flight invariant unchecked. Missing → FAIL at preflight,
+  unless you explicitly pass `--no-flight` (then the Flight gates print SKIP).
+* an unreachable Flight endpoint is a FAIL, not a skip.
+* request exceptions are COUNTED, not swallowed: more than
+  THRESHOLDS["max_errors"] transport errors in a sampling gate fails it.
+  An HTTP 400/404 "no route" is a legitimate answer for an off-network or
+  out-of-region point and is counted separately — gate_one_way_routable is
+  the gate that owns directional 404s.
 
 Usage
 -----
     python3 bench/postdeploy_gate.py --base http://localhost:3001 \
-        [--trips /path/to/od.csv] [--quick]
+        [--trips /path/to/od.csv] [--quick] [--no-flight] \
+        [--flight-base grpc://host:port]
+    python3 bench/postdeploy_gate.py --list-gates    # names only, exit 0
 
 `--quick` skips the 1,000-trip ground truth (runs invariants only, ~30 s).
-Thresholds are set from the measured 2026-07-16 baseline (see BASELINE below)
-with modest slack; RATCHET THEM DOWN as tails get fixed, never up.
+Thresholds live in ONE table (THRESHOLDS below); RATCHET THEM DOWN as tails
+get fixed, never up.
 """
 
-import os
-import math
 import argparse
 import concurrent.futures as cf
 import csv
 import json
+import math
+import os
 import random
 import statistics
 import struct
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,22 +74,70 @@ import urllib.request
 # and let a free-flow engine pass at p50 1.0.
 REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR", "/data/reference-trips")
 DEFAULT_TRIPS = os.path.join(REFS_DIR, "od_typical.csv")
+# Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
+# free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
+# a solid route-length truth (motorway-dominated), which the ~40-min regional
+# od_typical pairs are not (the reference router and the engine pick
+# different regional routes on ~17 % of them, identically on a free-flow
+# engine — see #545).
+LEGACY_TRIPS_DISTANCE = os.path.join(REFS_DIR, "od.csv")
 
 # BASELINE 2026-07-16 (engine d97168d, 1000 trips, zero errors):
 #   duration ratio: p05=0.854 p50=1.029 p90=1.246 p95=1.304 mean=1.048
 #   distance ratio: p05=0.933 p50=1.004 p90=1.148 p95=1.253 mean=1.039
 #   distance outliers (<0.85 / >1.2): 73
+#
+# ONE table for every tolerance in this file (#550) — no gate hardcodes a
+# bound of its own.
 THRESHOLDS = {
+    # --- ground truth (reference trips) ---
     "dur_p50": (0.98, 1.12),  # Pierre 2026-09-03: never >2 % fast, up to 12 % slow
     "dur_p90_max": 1.30,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
     "dist_outliers_max": 80,  # baseline 72-73; ratcheted 90→80 (2026-07-17); next drop needs richer per-edge speed data
+    "like_for_like_km_tol": 0.10,  # pinned corridors: compare only same-length routes
+    # --- sampling gates ---
     "symmetry_ratio_max": 1.5,
     "symmetry_violations_max": 0,
     "consistency_tolerance_s": 3.0,
-    "max_errors": 5,  # unroutable trips (OSM drift) tolerated before failing
+    "close_pair_mismatch_max": 2,
+    "max_errors": 5,  # transport errors / unroutable trips tolerated before failing
+    # --- bands (#543) ---
+    "band_level": (0.98, 1.09),  # median(engine/reference) per profile
+    "band_regional": (0.98, 1.12),  # per-region median, typical profile
+    "band_spread_min": 1.10,  # median(worst/best) over the typical trips
+    "band_min_trips": 100,  # like-for-like trips needed to judge a level
+    "band_min_regional": 10,
+    # --- isochrone geometry ---
+    "iso_reach_slack": 1.20,  # max vertex reach ≤ v_max × T × slack
+    "iso_nest_tol": 0.98,  # outer contour reach ≥ inner × tol
+    "topology_outside_m": 150.0,  # a network vertex counts "outside" beyond this
+    "topology_outside_frac": 0.015,  # ≤1.5 % of the engine's own reachable network
+    "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
+    "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
+    "reach_out_tol": 0.95,  # nothing reachable ≤0.95 T may lie outside
+    "reach_out_frac": 0.005,  # ≤0.5 % tolerated
+    "pin_near_ring_m": 30.0,  # #535: pin inside, or ≤30 m from the ring
+    "pin_snap_max_m": 300.0,  # car-free centres snap 100-200 m
+    # --- other invariants ---
+    "geom_consistency_tol": 0.03,  # distance_m vs polyline length vs Σ annotations
+    "ann_duration_tol": 0.15,  # Σ annotation duration vs duration_s (turn costs)
+    "sentinel_max_detour": 8.0,  # bounded detour vs crow-fly
+    "car_speed_kmh": (15.0, 135.0),
+    "foot_speed_kmh": (2.0, 8.0),  # #522: foot routes reported up to 19 km/h
+    "bike_speed_kmh": (5.0, 32.0),
+    "motorway_floor_kmh": 50.0,
+    "car_foot_detour_max": 3.0,
+    "car_foot_holes_max": 2,
+    "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
+    "wkb_len_tol": 0.05,  # route_batch geometry_wkb vs distance_m
+    "edges_sum_bounds": (0.9, 1.45),  # Σ per-edge duration vs /route
+    "lopsided_scaling_max": 6.0,  # 1×800 vs 1×50 wall ratio (linear bucket ~×16)
+    "catchment_min_vertices": 50,  # the retired sector lasso capped at 18 extremes
 }
+
+MAX_U32 = 4294967295
 
 # #502/#503 sentinel pairs. NO hardcoded expected values (a measured-then-
 # pasted constant only asserts "the server returns what it returned", and
@@ -87,19 +150,32 @@ THRESHOLDS = {
 #   3. internal consistency: distance_m ≡ polyline length ≡ Σ annotations
 #      (the #523 invariant — would have caught #522 automatically)
 # (name, o_lon, o_lat, d_lon, d_lat)
-FIXTURES = [
-    ("Berloz #503", 5.211554, 50.709124, 5.211383, 50.698323),
+FIXTURES = [("Berloz #503", 5.211554, 50.709124, 5.211383, 50.698323),
     ("Heers #503", 5.307080, 50.751610, 5.293005, 50.752418),
-    ("Robertville #502", 6.008464, 50.428652, 6.022535, 50.428452),
-]
-SENTINEL_MAX_DETOUR = 8.0
-CAR_SPEED_BOUNDS_KMH = (15.0, 135.0)  # mean over a whole route, car mode
-# Physical-plausibility bounds on the IMPLIED mean speed (distance/duration),
-# per mode — not measured values, just "a human can't walk 19 km/h" limits.
-# #522: foot routes were reporting up to 5.3 m/s (19 km/h).
-FOOT_SPEED_BOUNDS_KMH = (2.0, 8.0)
-BIKE_SPEED_BOUNDS_KMH = (5.0, 32.0)
-GEOM_CONSISTENCY_TOL = 0.03  # distance_m vs polyline length
+    ("Robertville #502", 6.008464, 50.428652, 6.022535, 50.428452) ]
+
+# Origins chosen to cover urban, rural, long-edge (#502 Robertville) and
+# off-network snaps. Containment is checked against the SNAPPED point.
+ISO_POINTS = [("Brussels", 4.3517, 50.8503), ("Antwerp", 4.4025, 51.2194), ("Rixensart", 4.5286, 50.7115),
+    ("Robertville #502", 6.008464, 50.428652),
+    ("Heers #503", 5.30708, 50.75161),
+    ("rural WB", 4.85, 50.55),
+    ("Ardennes", 5.65, 50.10),
+    ("coast", 2.95, 51.20),
+    ("Ghent", 3.7174, 51.0543),
+    ("Berloz #503", 5.211554, 50.709124) ]
+
+# Runtime switches, set once by main().
+CONFIG = {"flight": True, "flight_base": None}
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+def http_bytes(url, timeout=120, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
 
 
 def http_json(url, timeout=30, data=None, headers=None):
@@ -108,18 +184,39 @@ def http_json(url, timeout=30, data=None, headers=None):
         return json.loads(r.read())
 
 
+def post_json(url, payload, timeout=120):
+    return http_json(url, timeout=timeout, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+
+
+def route_json(base, olon, olat, dlon, dlat, mode="car", timeout=60, **extra):
+    q = {
+        "origin_lon": olon,
+        "origin_lat": olat,
+        "destination_lon": dlon,
+        "destination_lat": dlat,
+        "mode": mode}
+    q.update(extra)
+    return http_json(f"{base}/route?{urllib.parse.urlencode(q)}", timeout=timeout)
+
+
 def route(base, olon, olat, dlon, dlat, mode="car"):
-    q = urllib.parse.urlencode(
-        {
-            "origin_lon": olon,
-            "origin_lat": olat,
-            "destination_lon": dlon,
-            "destination_lat": dlat,
-            "mode": mode,
-        }
-    )
-    d = http_json(f"{base}/route?{q}")
+    d = route_json(base, olon, olat, dlon, dlat, mode)
     return d["duration_s"], d["distance_m"]
+
+
+def table(base, origins, destinations, mode="car", timeout=120, **extra):
+    payload = {"origins": origins, "destinations": destinations, "mode": mode}
+    payload.update(extra)
+    return post_json(f"{base}/table", payload, timeout=timeout)
+
+
+def is_no_route(exc):
+    """A 400/404 is the server SAYING "no route / off network" — a legitimate
+    answer for a random point, not a transport failure. Everything else
+    (timeout, connection reset, 5xx, malformed body) is an error and counts
+    against THRESHOLDS["max_errors"]."""
+    return isinstance(exc, urllib.error.HTTPError) and exc.code in (400, 404)
 
 
 def pct(xs, q):
@@ -132,119 +229,1298 @@ def check(name, ok, detail):
     return ok
 
 
+def check_errors(label, errors, unroutable=None):
+    """#550: sampling gates used to `continue` past every exception. Count
+    them and FAIL past the tolerated budget."""
+    t = THRESHOLDS["max_errors"]
+    extra = f", {unroutable} unroutable (not an error)" if unroutable is not None else ""
+    return check(f"{label}: request errors", errors <= t, f"{errors} (max {t}){extra}")
+
+
+# ---------------------------------------------------------------------------
+# Geometry — ONE implementation of each primitive (#550)
+# ---------------------------------------------------------------------------
+def haversine_m(lon1, lat1, lon2, lat2):
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def polyline_len_m(coords):
+    return sum(haversine_m(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
+        for i in range(len(coords) - 1))
+
+
+def decode_polyline6(s):
+    coords, idx, lat, lon = [], 0, 0, 0
+    while idx < len(s):
+        for which in (0, 1):
+            shift = result = 0
+            while True:
+                b = ord(s[idx]) - 63
+                idx += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            d = ~(result >> 1) if result & 1 else result >> 1
+            if which == 0:
+                lat += d
+            else:
+                lon += d
+        coords.append((lon / 1e6, lat / 1e6))
+    return coords
+
+
+def point_in_ring(pt, ring):
+    """Even-odd point-in-polygon. `ring` must be the OPEN ring (no repeated
+    last vertex) — callers pass ring[:-1]."""
+    x, y = pt[0], pt[1]
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def ring_area2(ring):
+    """Signed shoelace (×2): >0 = CCW, <0 = CW."""
+    s = 0.0
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return s
+
+
+def ring_area(ring):
+    """Unsigned planar area (degrees²) — only ever compared to another one."""
+    return abs(ring_area2(ring)) / 2.0
+
+
+def dist_to_ring_m(p, ring):
+    """Metres from (lon, lat) `p` to the nearest SIDE of `ring` — not to its
+    vertices: after Douglas-Peucker a straight 450 m side has no vertex near a
+    road that grazes it, and a vertex-distance reports ~200 m for a point
+    5 m off the boundary."""
+    kx = 111_320.0 * math.cos(math.radians(p[1]))
+    ky = 110_540.0
+    best = float("inf")
+    for i in range(len(ring) - 1):
+        ax, ay = (ring[i][0] - p[0]) * kx, (ring[i][1] - p[1]) * ky
+        bx, by = (ring[i + 1][0] - p[0]) * kx, (ring[i + 1][1] - p[1]) * ky
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0.0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / l2))
+        d = math.hypot(ax + t * dx, ay + t * dy)
+        if d < best:
+            best = d
+    return best
+
+
+def wkb_type(buf):
+    e = "<" if buf[0] == 1 else ">"
+    return struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
+
+
+def wkb_polygons(buf):
+    """Parse WKB Polygon (3) or MultiPolygon (6) into
+    [[outer, hole, hole, ...], ...] of (lon, lat) rings. Stdlib-only."""
+
+    def rd_poly(off, e):
+        nrings = struct.unpack_from(e + "I", buf, off)[0]
+        off += 4
+        rings = []
+        for _ in range(nrings):
+            npts = struct.unpack_from(e + "I", buf, off)[0]
+            off += 4
+            ring = [struct.unpack_from(e + "dd", buf, off + 16 * i) for i in range(npts)]
+            off += 16 * npts
+            rings.append(ring)
+        return rings, off
+
+    e = "<" if buf[0] == 1 else ">"
+    gtype = struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
+    if gtype == 3:
+        return [rd_poly(5, e)[0]]
+    if gtype == 6:
+        n = struct.unpack_from(e + "I", buf, 5)[0]
+        off = 9
+        polys = []
+        for _ in range(n):
+            e2 = "<" if buf[off] == 1 else ">"
+            t2 = struct.unpack_from(e2 + "I", buf, off + 1)[0] & 0xFF
+            assert t2 == 3, f"MultiPolygon part of type {t2}"
+            rings, off = rd_poly(off + 5, e2)
+            polys.append(rings)
+        return polys
+    return []
+
+
+def wkb_linestring_len_m(buf):
+    """Length (metres) of a WKB LineString, for the #493 geometry check."""
+    if not buf or len(buf) < 9:
+        return None
+    e = "<" if buf[0] == 1 else ">"
+    if struct.unpack_from(e + "I", buf, 1)[0] & 0xFF != 2:  # 2 = LineString
+        return None
+    npts = struct.unpack_from(e + "I", buf, 5)[0]
+    off = 9
+    pts = []
+    for _ in range(npts):
+        if off + 16 > len(buf):
+            break
+        pts.append(struct.unpack_from(e + "dd", buf, off))
+        off += 16
+    return polyline_len_m(pts)
+
+
+# ---------------------------------------------------------------------------
+# Arrow Flight — ONE client, ONE port convention (#550)
+# ---------------------------------------------------------------------------
+_FLIGHT_CLIENTS = {}
+
+
+def require_pyarrow():
+    """Preflight: return the list of missing modules. Missing pyarrow/pandas
+    used to make eleven gates return PASS without checking anything."""
+    missing = []
+    for mod in ("pyarrow", "pyarrow.flight", "pandas"):
+        try:
+            __import__(mod)
+        except ImportError as e:
+            missing.append(f"{mod} ({e})")
+    return missing
+
+
+def flight_enabled():
+    return CONFIG["flight"]
+
+
+def flight_uri(base):
+    """Flight port convention: REST port + 1 (dev container maps 3011).
+    Overridable with --flight-base for deploys that map it elsewhere."""
+    if CONFIG["flight_base"]:
+        return CONFIG["flight_base"]
+    u = urllib.parse.urlparse(base)
+    return f"grpc://{u.hostname or 'localhost'}:{(u.port or 8080) + 1}"
+
+
+def flight_client(base):
+    import pyarrow.flight as fl
+
+    uri = flight_uri(base)
+    if uri not in _FLIGHT_CLIENTS:
+        _FLIGHT_CLIENTS[uri] = fl.FlightClient(uri)
+    return _FLIGHT_CLIENTS[uri]
+
+
+def flight_reader(base, action, mode, params):
+    import pyarrow.flight as fl
+
+    ticket = f"{action}:{mode}:{json.dumps(params)}".encode()
+    return flight_client(base).do_get(fl.Ticket(ticket))
+
+
+def flight_table(base, action, mode, params):
+    return flight_reader(base, action, mode, params).read_all()
+
+
+def flight_rows_meta(base, action, mode, params):
+    """Iterate chunks (read_all() would discard the app_metadata trailer) and
+    return (decoded_rows, trailer_dict_or_None). A chunk with data=None is the
+    #533 completeness trailer — chunk-iterating clients MUST skip its body."""
+    rows = 0
+    meta = None
+    for chunk in flight_reader(base, action, mode, params):
+        if getattr(chunk, "data", None) is not None:
+            rows += chunk.data.num_rows
+        am = getattr(chunk, "app_metadata", None)
+        if am:
+            meta = json.loads(bytes(am))
+    return rows, meta
+
+
+def _exchange(base, command, tbl):
+    """do_exchange (catchment, edges_flow): send `tbl`, drain the reply.
+    Returns (rows as dicts, trailing app_metadata dict or None)."""
+    import pyarrow.flight as fl
+
+    writer, reader = flight_client(base).do_exchange(fl.FlightDescriptor.for_command(command))
+    writer.begin(tbl.schema)
+    writer.write_table(tbl)
+    writer.done_writing()
+    rows, meta = [], None
+    for chunk in reader:
+        if getattr(chunk, "data", None) is not None:
+            rows.extend(chunk.data.to_pylist())
+        am = getattr(chunk, "app_metadata", None)
+        if am:
+            meta = json.loads(bytes(am))
+    writer.close()
+    return rows, meta
+
+
+def flight_matrix_cells(base, mode, params):
+    """{(source_idx, target_idx): duration_ms} plus the row count."""
+    tb = flight_table(base, "matrix", mode, params)
+    s, t, dur = tb.column("source_idx"), tb.column("target_idx"), tb.column("duration_ms")
+    cells = {(s[i].as_py(), t[i].as_py()): dur[i].as_py() for i in range(tb.num_rows)}
+    return cells, tb.num_rows
+
+
+# ---------------------------------------------------------------------------
+# Isochrone bundle — ONE fetch per (origin, mode, time, direction) (#550)
+# ---------------------------------------------------------------------------
+_SNAP_CACHE = {}
+_ISO_CACHE = {}
+
+
+def snap_point(base, lon, lat, mode):
+    key = (base, lon, lat, mode)
+    if key not in _SNAP_CACHE:
+        j = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
+        _SNAP_CACHE[key] = tuple(j["waypoints"][0]["location"])
+    return _SNAP_CACHE[key]
+
+
+class IsoBundle:
+    """Memoised view of ONE isochrone query: WKB polygons, JSON contours, the
+    engine's own reachable network, the GeoJSON geometry and the snapped
+    origin. Five gates assert against the same responses; before #550 each
+    re-fetched them."""
+
+    def __init__(self, base, lon, lat, mode, time_s, direction):
+        self.base, self.lon, self.lat = base, lon, lat
+        self.mode, self.time_s, self.direction = mode, time_s, direction
+        self._memo = {}
+
+    def _cached(self, key, fn):
+        if key not in self._memo:
+            self._memo[key] = fn()
+        return self._memo[key]
+
+    @property
+    def q(self):
+        return (f"lon={self.lon}&lat={self.lat}&mode={self.mode}"
+            f"&direction={self.direction}&time_s={self.time_s}")
+
+    def _json(self, extra=""):
+        return self._cached(("json", extra),
+            lambda: http_json(f"{self.base}/isochrone?{self.q}{extra}", timeout=120))
+
+    @staticmethod
+    def _rings(payload):
+        """Outer rings of the JSON `contours[].polygon` (polyline6), in
+        REQUEST order."""
+        return [decode_polyline6(c["polygon"]) for c in payload.get("contours", []) if c.get("polygon")]
+
+    @property
+    def snap(self):
+        return snap_point(self.base, self.lon, self.lat, self.mode)
+
+    @property
+    def wkb(self):
+        return self._cached("wkb", lambda: http_bytes(
+            f"{self.base}/isochrone?{self.q}", headers={"Accept": "application/octet-stream"}))
+
+    @property
+    def polys(self):
+        return self._cached("polys", lambda: wkb_polygons(self.wkb))
+
+    @property
+    def json(self):
+        return self._json()
+
+    @property
+    def rings(self):
+        return self._rings(self._json())
+
+    @property
+    def network(self):
+        return self._json("&include=network").get("network", [])
+
+    @property
+    def geojson(self):
+        return self._json("&geometries=geojson")
+
+    def contour_rings(self, times):
+        """Multi-contour request (`contours=a,b`) — a DIFFERENT query shape
+        from `time_s`, so it does not reuse `json`."""
+        return self._cached(("contours", tuple(times)), lambda: self._rings(http_json(
+            f"{self.base}/isochrone?lon={self.lon}&lat={self.lat}&mode={self.mode}"
+            f"&direction={self.direction}&contours={','.join(str(t) for t in times)}",
+            timeout=120)))
+
+
+def iso_bundle(base, lon, lat, mode, time_s, direction="depart"):
+    key = (base, lon, lat, mode, time_s, direction)
+    if key not in _ISO_CACHE:
+        _ISO_CACHE[key] = IsoBundle(base, lon, lat, mode, time_s, direction)
+    return _ISO_CACHE[key]
+
+
+# ---------------------------------------------------------------------------
+# Reference trips — routed ONCE, shared by gate_bands and gate_ground_truth
+# ---------------------------------------------------------------------------
+_REF_ROUTES = {}
+
+
+def ref_trips(path):
+    """Reference trips CSV (local file under $BUTTERFLY_REFS_DIR) → dicts."""
+    with open(path) as f:
+        return list(csv.DictReader(f))
+
+
+def ref_trip_routes(base, path):
+    """Route every reference trip ONCE with `uncertainty=bands` and memoise:
+    gate_bands needs the three band durations, gate_ground_truth needs the
+    typical duration + distance — the same /route call (#550)."""
+    key = (base, path)
+    if key in _REF_ROUTES:
+        return _REF_ROUTES[key]
+    rows = ref_trips(path)
+
+    def one(t):
+        try:
+            d = route_json(base, t["long_1"], t["lat_1"], t["long_2"], t["lat_2"], mode="car", timeout=60,
+                uncertainty="bands")
+        except Exception:
+            return None
+        return {
+            "min": d["duration_s"] / 60.0,
+            "best_min": (d.get("duration_best_s") or 0.0) / 60.0,
+            "worst_min": (d.get("duration_worst_s") or 0.0) / 60.0,
+            "km": d["distance_m"] / 1000.0}
+
+    with cf.ThreadPoolExecutor(16) as ex:
+        res = list(ex.map(one, rows))
+    _REF_ROUTES[key] = (rows, res)
+    return rows, res
+
+
+def like_for_like(r, t):
+    """The reference OD trips are PINNED corridors: only compare where the
+    engine's free route has the same length (±10 %) — elsewhere a faster
+    engine time is a better route, not a level error (Brussels, 2026-09-03)."""
+    if r is None:
+        return False
+    try:
+        km = float(t.get("ref_km") or 0)
+    except (TypeError, ValueError):
+        return False
+    return km > 0 and abs(r["km"] / km - 1.0) <= THRESHOLDS["like_for_like_km_tol"]
+
+
+# ---------------------------------------------------------------------------
+# Gates — routing invariants
+# ---------------------------------------------------------------------------
+def _route_geometry_report(base, olon, olat, dlon, dlat, mode):
+    """/route with geometry + annotations → the numbers every coherence check
+    needs: (duration_s, distance_m, polyline length, Σann distance, Σann
+    duration). Raises on transport failure."""
+    d = route_json(base, olon, olat, dlon, dlat, mode=mode, geometries="polyline6",
+        annotations="distance,duration")
+    geom = d.get("geometry", {})
+    poly = geom.get("polyline") or geom.get("coordinates_polyline6") or ""
+    ann = d.get("annotations") or {}
+    return (d["duration_s"], d["distance_m"], polyline_len_m(decode_polyline6(poly)) if poly else None,
+        sum(ann.get("distance") or []),
+        sum(ann.get("duration") or []))
+
+
+def gate_fixtures(base):
+    print("== sentinel pairs (#502/#503) — invariant checks, no expected constants ==")
+    passed = True
+    lo_kmh, hi_kmh = THRESHOLDS["car_speed_kmh"]
+    max_detour = THRESHOLDS["sentinel_max_detour"]
+    gtol = THRESHOLDS["geom_consistency_tol"]
+    for name, olon, olat, dlon, dlat in FIXTURES:
+        try:
+            dur_s, dist_m, geom_m, ann_dist, ann_dur = _route_geometry_report(
+                base, olon, olat, dlon, dlat, "car")
+        except Exception as e:
+            passed &= check(name, False, f"request failed: {e}")
+            continue
+        crow = haversine_m(olon, olat, dlon, dlat)
+        detour = dist_m / max(crow, 1.0)
+        kmh = dist_m / max(dur_s, 0.001) * 3.6
+        ok_detour = detour <= max_detour
+        ok_speed = lo_kmh <= kmh <= hi_kmh
+        ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * gtol
+        # annotations may legitimately differ from duration_s by the turn/
+        # junction costs the summary carries; require them within 15%.
+        ok_ann = ann_dist == 0 or (abs(ann_dist - dist_m) <= dist_m * gtol
+            and abs(ann_dur - dur_s) <= dur_s * THRESHOLDS["ann_duration_tol"])
+        gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
+        passed &= check(name, ok_detour and ok_speed and ok_geom and ok_ann,
+            f"{dur_s:.0f}s/{dist_m:.0f}m detour×{detour:.2f}(≤{max_detour}) "
+            f"{kmh:.0f}km/h geom={gtxt} annΣ={ann_dist:.0f}m/{ann_dur:.0f}s")
+    return passed
+
+
+def gate_mode_coherence(base):
+    """#522 / #493: foot and bike routes must be internally coherent —
+    distance_m ≡ polyline length ≡ Σ annotation distances (within tol), and the
+    IMPLIED mean speed (distance/duration) must be physically plausible for the
+    mode. Catches #522 (foot routes reporting up to 5.3 m/s ≈ 19 km/h) and #493
+    (foot/bike geometry_wkb ~2× the reported distance — polyline doubled/zigzag).
+    Same invariant the car sentinel gate enforces, extended to the modes where
+    the bugs actually landed."""
+    print("== foot/bike geometry ≡ distance ≡ annotations + plausible speed (#522/#493) ==")
+    passed = True
+    gtol = THRESHOLDS["geom_consistency_tol"]
+    for mode in ("foot", "bike"):
+        lo_kmh, hi_kmh = THRESHOLDS[f"{mode}_speed_kmh"]
+        for name, olon, olat, dlon, dlat in FIXTURES:
+            try:
+                dur_s, dist_m, geom_m, ann_dist, _ = _route_geometry_report(
+                    base, olon, olat, dlon, dlat, mode)
+            except Exception as e:
+                passed &= check(f"{mode} {name}", False, f"request failed: {e}")
+                continue
+            if dist_m <= 0 or dur_s <= 0:
+                passed &= check(f"{mode} {name}", False, f"degenerate {dist_m}m/{dur_s}s")
+                continue
+            kmh = dist_m / dur_s * 3.6
+            ok_speed = lo_kmh <= kmh <= hi_kmh
+            ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * gtol
+            ok_ann = ann_dist == 0 or abs(ann_dist - dist_m) <= dist_m * gtol
+            gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
+            passed &= check(f"{mode} {name}", ok_speed and ok_geom and ok_ann,
+                f"{dur_s:.0f}s/{dist_m:.0f}m {kmh:.1f}km/h "
+                f"(bound {lo_kmh:.0f}-{hi_kmh:.0f}) geom={gtxt} annΣ={ann_dist:.0f}m")
+    return passed
+
+
+def gate_symmetry(base, n_pairs=150):
+    print(f"== symmetry invariant ({n_pairs} seeded random pairs) ==")
+    rng = random.Random(99)
+    t = THRESHOLDS
+    pairs = [(round(rng.uniform(3.0, 6.2), 5), round(rng.uniform(49.6, 51.4), 5),
+              round(rng.uniform(3.0, 6.2), 5), round(rng.uniform(49.6, 51.4), 5))
+             for _ in range(n_pairs)]
+
+    def probe(p):
+        a, b, c, d = p
+        try:
+            f, _ = route(base, a, b, c, d)
+            r, _ = route(base, c, d, a, b)
+        except Exception as e:
+            return ("unroutable" if is_no_route(e) else "error", None, None)
+        return ("ok", f, r)
+
+    with cf.ThreadPoolExecutor(16) as ex:
+        res = list(ex.map(probe, pairs))
+    violations = []
+    tested = errors = unroutable = 0
+    worst = 1.0
+    for p, (kind, f, r) in zip(pairs, res):
+        if kind == "error":
+            errors += 1
+            continue
+        if kind == "unroutable":
+            unroutable += 1
+            continue
+        if f < 60:
+            continue
+        tested += 1
+        ratio = max(f, r) / max(min(f, r), 1)
+        worst = max(worst, ratio)
+        if ratio > t["symmetry_ratio_max"]:
+            violations.append((ratio, p))
+    for v in violations[:5]:
+        print(f"    violation: ratio {v[0]:.2f} @ {v[1]}")
+    passed = check("fwd/rev symmetry", len(violations) <= t["symmetry_violations_max"] and tested >= 50,
+                   f"{tested} pairs, {len(violations)} >{t['symmetry_ratio_max']}x, worst {worst:.2f}")
+    passed &= check_errors("symmetry", errors, unroutable)
+    return passed
+
+
+def gate_route_table_agreement(base, n_uniform=50, n_close=150):
+    """MERGED gate_consistency + gate_close_pairs (#550): ONE route≡table
+    agreement gate with two samplers, run in parallel.
+
+    * uniform: long random pairs — /route and /table must return the SAME
+      duration (worst |Δ| ≤ 3 s). One answer per question.
+    * close (50-400 m): the same-edge / co-located-candidate regime where a
+      legacy same-rank shortcut and a reduce clamp both emitted bogus 0 s
+      answers. Uniform random pairs almost never land in it.
+    """
+    print(f"== route ≡ table agreement: {n_uniform} uniform + {n_close} close (50-400 m) pairs ==")
+    tol = THRESHOLDS["consistency_tolerance_s"]
+    rng_u = random.Random(7)
+    uniform = [(round(rng_u.uniform(3.5, 5.8), 5), round(rng_u.uniform(50.2, 51.2), 5),
+                round(rng_u.uniform(3.5, 5.8), 5), round(rng_u.uniform(50.2, 51.2), 5))
+               for _ in range(n_uniform)]
+    rng_c = random.Random(123)
+    close = []
+    for _ in range(n_close):
+        lon, lat = rng_c.uniform(3.5, 5.8), rng_c.uniform(50.3, 51.2)
+        d, a = rng_c.uniform(0.0005, 0.004), rng_c.uniform(0, 6.283)
+        close.append((round(lon, 6), round(lat, 6),
+                      round(lon + d * math.cos(a), 6), round(lat + d * math.sin(a), 6)))
+
+    def probe(p):
+        try:
+            dur_r, _ = route(base, p[0], p[1], p[2], p[3])
+            tab = table(base, [[p[0], p[1]]], [[p[2], p[3]]], annotations="duration")
+            return ("ok", dur_r, tab["durations"][0][0])
+        except Exception as e:
+            return ("unroutable" if is_no_route(e) else "error", None, None)
+
+    with cf.ThreadPoolExecutor(16) as ex:
+        res_u = list(ex.map(probe, uniform))
+        res_c = list(ex.map(probe, close))
+
+    def measure(res):
+        tested = errors = unroutable = mism = zeros = 0
+        worst = 0.0
+        for kind, dur_r, dur_t in res:
+            if kind == "error":
+                errors += 1
+                continue
+            if kind == "unroutable":
+                unroutable += 1
+                continue
+            if dur_t is None:
+                continue
+            tested += 1
+            delta = abs(dur_r - dur_t)
+            worst = max(worst, delta)
+            if delta > tol:
+                mism += 1
+            # a sub-second answer while the other side needs >10 s is the
+            # fingerprint of the 0-second bug class
+            if (dur_r < 1 and dur_t > 10) or (dur_t < 1 and dur_r > 10):
+                zeros += 1
+        return tested, errors, unroutable, mism, zeros, worst
+
+    t_u, e_u, u_u, m_u, z_u, w_u = measure(res_u)
+    t_c, e_c, u_c, m_c, z_c, w_c = measure(res_c)
+    max_mism = THRESHOLDS["close_pair_mismatch_max"]
+    passed = check("uniform pairs: route == table",
+                   w_u <= tol and z_u == 0 and t_u >= max(8, n_uniform // 2),
+                   f"{t_u} pairs, {z_u} zero-bugs, {m_u} >{tol}s, worst delta {w_u:.1f}s (max {tol}s)")
+    passed &= check("close pairs: route == table", z_c == 0 and m_c <= max_mism and t_c >= 80,
+                    f"{t_c} pairs, {z_c} zero-bugs, {m_c} >{tol}s (max {max_mism}), worst {w_c:.1f}s")
+    passed &= check_errors("route≡table", e_u + e_c, u_u + u_c)
+    return passed
+
+
+def _city_pairs():
+    """Long inter-city car pairs (endpoints = ISO_POINTS cities)."""
+    cities = [(n, lo, la) for (n, lo, la) in ISO_POINTS]
+    out = []
+    for i in range(0, len(cities) - 1, 2):
+        a, b = cities[i], cities[i + 1]
+        out.append((f"{a[0]}→{b[0]}", a[1], a[2], b[1], b[2]))
+    return out
+
+
+def gate_one_way_routable(base):
+    """#197: on a bidirectional-dominant road network, a car pair that routes
+    one way MUST route the other — a one-directional `No route found` (the #197
+    fingerprint: A→B ok, B→A 404) is a directed-graph / snap-role regression.
+    `gate_symmetry` counts a 404 as "unroutable", so a DIRECTIONAL 404 is
+    invisible there; this asserts BOTH directions return a route."""
+    print("== car one-way routability: no directional 404 (#197) ==")
+
+    def probe(p):
+        _, olon, olat, dlon, dlat = p
+        out = []
+        for a, b, c, d in ((olon, olat, dlon, dlat), (dlon, dlat, olon, olat)):
+            try:
+                route(base, a, b, c, d, "car")
+                out.append(True)
+            except Exception:
+                out.append(False)
+        return tuple(out)
+
+    pairs = _city_pairs()
+    with cf.ThreadPoolExecutor(16) as ex:
+        res = list(ex.map(probe, pairs))
+    fails = [f"{p[0]} (fwd={fwd} rev={rev})"
+        for p, (fwd, rev) in zip(pairs, res)
+        if not (fwd and rev)]
+    n_ok = len(pairs) - len(fails)
+    for f in fails[:5]:
+        print(f"    directional gap: {f}")
+    return check("both directions route", n_ok == len(pairs), f"{n_ok}/{len(pairs)} pairs route both ways")
+
+
+def gate_graph_holes(base):
+    """#503/#478: a car graph hole shows up as car routing 3–4× further than
+    foot between the same coordinates (foot uses the missing connection). Car ≥
+    foot is legitimate (one-ways), but a large ratio is the hole fingerprint
+    (#478: 645 unroutable expressway edges; #503: Berloz/Heers detours). Invariant,
+    no constant: flag car_distance / foot_distance > 3 over random medium pairs."""
+    print("== car-vs-foot detour parity: graph holes (#503/#478) ==")
+    rng = random.Random(478)
+    pairs = []
+    for _ in range(60):
+        lon, lat = rng.uniform(3.5, 5.8), rng.uniform(50.3, 51.2)
+        d, a = rng.uniform(0.01, 0.05), rng.uniform(0, 6.283)
+        pairs.append((lon, lat, lon + d * math.cos(a), lat + d * math.sin(a)))
+
+    def probe(p):
+        try:
+            _, cdist = route(base, p[0], p[1], p[2], p[3], "car")
+            _, fdist = route(base, p[0], p[1], p[2], p[3], "foot")
+        except Exception as e:
+            return ("unroutable" if is_no_route(e) else "error", None, None)
+        return ("ok", cdist, fdist)
+
+    with cf.ThreadPoolExecutor(16) as ex:
+        res = list(ex.map(probe, pairs))
+    tested = errors = unroutable = 0
+    holes = []
+    worst = 0.0
+    for p, (kind, cdist, fdist) in zip(pairs, res):
+        if kind == "error":
+            errors += 1
+            continue
+        if kind == "unroutable":
+            unroutable += 1
+            continue
+        if fdist <= 1.0:
+            continue
+        tested += 1
+        ratio = cdist / fdist
+        worst = max(worst, ratio)
+        if ratio > THRESHOLDS["car_foot_detour_max"]:
+            holes.append((round(p[0], 4), round(p[1], 4), round(ratio, 1)))
+    for h in holes[:5]:
+        print(f"    car/foot hole: {h}")
+    # allow ≤2 legit one-way detours out of ~60.
+    passed = check(f"car detour ≤ {THRESHOLDS['car_foot_detour_max']:.0f}× foot",
+        len(holes) <= THRESHOLDS["car_foot_holes_max"],
+        f"{len(holes)} holes of {tested} pairs, worst ×{worst:.1f}")
+    passed &= check_errors("graph holes", errors, unroutable)
+    return passed
+
+
+def gate_motorway_speed_floor(base):
+    """#450: the motorway/N-road hierarchy de-rated (E411 ~56 km/h vs 120) and
+    emptied motorway corridors. A long inter-city car route is motorway-dominated;
+    its implied MEAN speed must clear a floor — a physical invariant for a
+    motorway corridor, not a measured target. Catches a hierarchy regression that
+    the aggregate ground-truth p50 can hide."""
+    print("== motorway corridor speed floor (#450) ==")
+    corridors = [("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
+        ("Bxl→Liège (E40)", 4.3517, 50.8503, 5.5671, 50.6326),
+        ("Bxl→Arlon (E411)", 4.3517, 50.8503, 5.8109, 49.6833) ]
+    floor = THRESHOLDS["motorway_floor_kmh"]
+    passed = True
+    for name, olon, olat, dlon, dlat in corridors:
+        try:
+            dur, dist = route(base, olon, olat, dlon, dlat, "car")
+        except Exception as e:
+            passed &= check(name, False, f"route failed: {e}")
+            continue
+        kmh = dist / max(dur, 0.001) * 3.6
+        passed &= check(name, kmh >= floor, f"{kmh:.0f} km/h (floor {floor:.0f})")
+    return passed
+
+
+# ---------------------------------------------------------------------------
+# Gates — isochrone geometry (all five share iso_bundle's fetches, #550)
+# ---------------------------------------------------------------------------
+def gate_isochrone(base):
+    print("== isochrone snapped-origin containment (#497/#506) ==")
+    passed = True
+    for mode, time_s in (("car", 600), ("foot", 1800)):
+        ok = 0
+        fails = []
+        for name, lon, lat in ISO_POINTS:
+            b = iso_bundle(base, lon, lat, mode, time_s)
+            try:
+                rings, sp = b.rings, b.snap
+            except Exception as e:
+                fails.append(f"{name}: {e}")
+                continue
+            if any(point_in_ring(sp, r) for r in rings):
+                ok += 1
+            else:
+                fails.append(name)
+        for f in fails[:5]:
+            print(f"    not contained: {f}")
+        passed &= check(f"containment {mode}", ok == len(ISO_POINTS),
+            f"{ok}/{len(ISO_POINTS)} ({time_s}s)")
+    return passed
+
+
+def gate_isochrone_topology(base):
+    """2026-09-03 (#535/#542 root cause): the contour used to keep ONE ring —
+    every hole and every detached reachable component was silently dropped,
+    and 1-cell corridors traced as zero-width spikes. Invariants, no measured
+    constants:
+      * PRODUCT RULE — the WKB is ONE simple Polygon: never a MultiPolygon,
+        never a hole (an isochrone is one polygon by definition);
+      * every ring is closed, has ≥ 4 points, no consecutive duplicates, no
+        immediate backtrack (a,b,a) — the zero-width-spur signature;
+      * outer rings CCW, holes CW (RFC 7946), each hole strictly inside its
+        outer ring and never containing the origin;
+      * the snapped origin lies in the PRIMARY (first) polygon;
+      * self-consistency: the engine's own reachable network (include=network)
+        is represented — at most 1.5% of its vertices lie > 150 m outside every
+        polygon (sub-300 m detached stubs are deliberately not drawn);
+      * every EXTRA component holds reachable network (confetti guard);
+      * `geometries=geojson` carries a `geometry` object whose ring count
+        matches the WKB."""
+    print("== isochrone topology: ONE simple polygon, no spurs, faithful to the network (2026-09-03) ==")
+    mode, time_s = "car", 600
+    far_m = THRESHOLDS["topology_outside_m"]
+    far_frac = THRESHOLDS["topology_outside_frac"]
+    n_ok = n = far_total = verts_total = 0
+    details = []
+    for name, lon, lat in ISO_POINTS:
+        b = iso_bundle(base, lon, lat, mode, time_s)
+        try:
+            wkb, polys, sp, net, gj = b.wkb, b.polys, b.snap, b.network, b.geojson
+        except Exception as ex:
+            details.append(f"{name}: {ex}")
+            continue
+        n += 1
+        why = []  # non-empty ⇒ this origin FAILS
+        # Product rule (2026-09-03): an isochrone IS one simple polygon —
+        # a MultiPolygon of fragments or a polygon with holes is a defect.
+        if not polys:
+            why.append("no polygon in the WKB")
+        elif wkb_type(wkb) != 3 or len(polys) != 1:
+            why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
+        elif len(polys[0]) != 1:
+            why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
+        for pi, rings in enumerate(polys):
+            for ri, ring in enumerate(rings):
+                if len(ring) < 4 or ring[0] != ring[-1]:
+                    why.append(f"p{pi}r{ri}: not a closed ring of ≥4 points")
+                body = ring[:-1]
+                if any(body[i] == body[(i + 1) % len(body)] for i in range(len(body))):
+                    why.append(f"p{pi}r{ri}: consecutive duplicate vertex")
+                if any(body[i] == body[(i + 2) % len(body)] for i in range(len(body))):
+                    why.append(f"p{pi}r{ri}: zero-width spur (a,b,a)")
+                a2 = ring_area2(body)
+                if ri == 0 and a2 <= 0:
+                    why.append(f"p{pi}: outer ring not CCW")
+                if ri > 0:
+                    if a2 >= 0:
+                        why.append(f"p{pi}r{ri}: hole not CW")
+                    if not point_in_ring(body[0], rings[0][:-1]):
+                        why.append(f"p{pi}r{ri}: hole outside its outer ring")
+                    if point_in_ring(sp, body):
+                        why.append(f"p{pi}r{ri}: hole contains the origin")
+        if polys and not point_in_ring(sp, polys[0][0][:-1]):
+            why.append("origin not in the primary polygon")
+        # self-consistency vs the engine's own reachable network
+        pts = [tuple(p) for seg in net for p in seg][::3]
+        far = 0
+        for p in pts:
+            inside = any(point_in_ring(p, rings[0][:-1])
+                and not any(point_in_ring(p, h[:-1]) for h in rings[1:])
+                for rings in polys)
+            if inside:
+                continue
+            if min((dist_to_ring_m(p, rings[0]) for rings in polys), default=1e9) > far_m:
+                far += 1
+        far_total += far
+        verts_total += len(pts)
+        # 1.5 %: detached reach smaller than ~300 m across (crumb filter,
+        # COMPONENT_MIN_AREA_CELLS) is deliberately not drawn — measured
+        # 1.07-1.12 % at rural origins, 0.0-0.2 % urban. The pre-fix engine
+        # lost 0.62 % beyond 150 m AND 9.57 % within 150 m of the boundary.
+        if pts and far / len(pts) > far_frac:
+            why.append(f"{far}/{len(pts)} reachable vertices > {far_m:.0f} m outside")
+        # every EXTRA component must hold reachable network — a polygon with
+        # no reachable road inside is confetti (a mis-oriented frontier
+        # fragment, #542), not a place you drove to.
+        for pi, rings in enumerate(polys[1:], start=1):
+            if not any(point_in_ring(p, rings[0][:-1]) for p in pts):
+                why.append(f"p{pi}: component without any reachable network")
+                break
+        g = (gj.get("contours") or [{}])[0].get("geometry")
+        if not g:
+            why.append("geojson: no `geometry` object")
+        else:
+            gr = (sum(len(p) for p in g["coordinates"]) if g["type"] == "MultiPolygon"
+                  else len(g["coordinates"]))
+            wr = sum(len(rings) for rings in polys)
+            if gr != wr:
+                why.append(f"geojson rings {gr} != wkb rings {wr}")
+        if why:
+            details.append(f"{name}: " + "; ".join(why[:3]))
+        else:
+            n_ok += 1
+    for d in details[:6]:
+        print(f"    {d}")
+    return check(f"{mode} {time_s}s: valid topology at every origin", n > 0 and n_ok == n,
+        f"{n_ok}/{n} origins; network vertices > {far_m:.0f} m outside: "
+        f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)")
+
+
+def gate_isochrone_reach_truth(base):
+    """2026-09-03: the polygon must reproduce the ENGINE's reach — both ways —
+    with `/table` as the independent truth (found via #543: PHAST labels are
+    HEAD arrivals; the stamp counted an edge's weight twice, cut every fast
+    boundary edge one weight early and never drew the true frontier: 4-6 % of
+    rural road points >150 m outside the polygon were reachable within T).
+      (a) inside: the exposed vertices of the served network (last point of
+          each polyline) are reachable within 1.02 T (≥ 99 %; the rest is
+          /table snapping onto a neighbouring edge);
+      (b) outside: road points > 150 m outside the polygon (taken from the
+          1.4 T network) are NOT reachable within 0.95 T (≤ 0.5 %).
+    depart = origin→point, arrive = point→origin."""
+    print("== isochrone ≡ engine reach (/table truth, depart + arrive) (2026-09-03) ==")
+    passed = True
+    mode, T = "car", 600
+    t = THRESHOLDS
+    far_m = t["topology_outside_m"]
+
+    def durations(origins, dests):
+        return table(base, origins, dests, mode=mode, annotations="duration")["durations"]
+
+    for direction in ("depart", "arrive"):
+        n_in = n_in_over = n_out = n_out_reached = 0
+        worst_out = None
+        details = []
+        for name, lon, lat in ISO_POINTS:
+            b = iso_bundle(base, lon, lat, mode, T, direction)
+            wide = iso_bundle(base, lon, lat, mode, int(T * 1.4), direction)
+            try:
+                ring = b.polys[0][0]
+                net = b.network
+                big = wide.network
+            except Exception as ex:
+                details.append(f"{name}: {ex}")
+                continue
+            rnd = random.Random(7)
+            ends = [tuple(s[-1]) for s in net]
+            rnd.shuffle(ends)
+            ends = ends[:150]
+            pts = [tuple(p) for s in big for p in s]
+            rnd.shuffle(pts)
+            far = []
+            for p in pts:
+                if len(far) >= 150:
+                    break
+                if point_in_ring(p, ring[:-1]):
+                    continue
+                if dist_to_ring_m(p, ring) > far_m:
+                    far.append(p)
+            if direction == "depart":
+                d_in = durations([[lon, lat]], [list(e) for e in ends])[0]
+                d_out = durations([[lon, lat]], [list(p) for p in far])[0] if far else []
+            else:
+                d_in = [row[0] for row in durations([list(e) for e in ends], [[lon, lat]])]
+                d_out = [row[0] for row in durations([list(p) for p in far], [[lon, lat]])] if far else []
+            d_in = [x for x in d_in if x is not None]
+            d_out = [x for x in d_out if x is not None]
+            n_in += len(d_in)
+            n_in_over += sum(1 for x in d_in if x > t["reach_in_tol"] * T)
+            n_out += len(d_out)
+            reached = [x for x in d_out if x <= t["reach_out_tol"] * T]
+            n_out_reached += len(reached)
+            if reached:
+                m = min(reached)
+                if worst_out is None or m < worst_out[0]:
+                    worst_out = (m, name)
+                details.append(f"{name}: {len(reached)}/{len(d_out)} outside road points reachable "
+                               f"≤ {t['reach_out_tol']}T (min {m:.0f} s)")
+        for d in details[:4]:
+            print(f"    {d}")
+        passed &= check(f"{direction} {T}s: served network reachable within {t['reach_in_tol']}T",
+                        n_in > 0 and n_in_over <= max(1, int(n_in * t["reach_in_over_frac"])),
+                        f"{n_in - n_in_over}/{n_in} vertices")
+        passed &= check(
+            f"{direction} {T}s: nothing reachable ≤ {t['reach_out_tol']}T lies > {far_m:.0f} m outside",
+            n_out_reached <= max(1, int(n_out * t["reach_out_frac"])),
+            f"{n_out_reached}/{n_out} road points"
+            + (f", earliest {worst_out[0]:.0f} s at {worst_out[1]}" if worst_out else ""))
+    return passed
+
+
+def gate_isochrone_upper_bound(base):
+    """#430/#495/#431: isochrones were too LARGE/lenient (a short interval
+    covering a far-too-big area), and #431 bounds residual over-extension. Two
+    invariants, no reference dataset:
+      * max reach — the farthest polygon vertex (crow-fly) from the SNAPPED
+        origin ≤ v_max(mode) × time × slack (crow-fly ≤ road distance ≤
+        v_max×time; a gross leniency regression blows this);
+      * nested monotonicity — contour(600s) ⊇ contour(300s) for the same
+        origin (rings nest; the #431 balanced-closing / multi-contour order)."""
+    print("== isochrone upper bound + nested monotonicity (#430/#431) ==")
+    # v_max in m/s: physical ceilings, not measured values.
+    vmax = {"car": 36.1, "foot": 1.9}  # 130 km/h, ~6.8 km/h
+    slack = THRESHOLDS["iso_reach_slack"]
+    nest_tol = THRESHOLDS["iso_nest_tol"]
+    passed = True
+    for mode in ("car", "foot"):
+        time_s = 600 if mode == "car" else 1800
+        reach_ok = nest_ok = n = 0
+        for name, lon, lat in ISO_POINTS:
+            b = iso_bundle(base, lon, lat, mode, time_s)
+            try:
+                sp = b.snap
+                # `contours=A,B` returns rings in request order (the `interval`
+                # field is currently unlabelled). Ring 0 = inner (time_s/2),
+                # ring -1 = outer (time_s).
+                rings = b.contour_rings((time_s // 2, time_s))
+            except Exception:
+                continue
+            if not rings:
+                continue
+            n += 1
+            reach = [max((haversine_m(sp[0], sp[1], v[0], v[1]) for v in r), default=0.0)
+                for r in rings]
+            outer_reach = reach[-1]
+            if outer_reach <= vmax[mode] * time_s * slack:
+                reach_ok += 1
+            # Nested MONOTONICITY via max reach: more time must reach at least
+            # as far (robust to per-contour boundary-tracing jitter, which makes
+            # a strict point-in-ring test flap on jagged rural rings). The #431
+            # regression — a short contour over-extending past the long one —
+            # violates this.
+            if len(rings) >= 2:
+                if outer_reach >= reach[0] * nest_tol:
+                    nest_ok += 1
+            else:
+                nest_ok += 1
+        passed &= check(f"{mode}: max reach ≤ v_max×time", n > 0 and reach_ok == n,
+            f"{reach_ok}/{n} within {vmax[mode]:.1f}m/s×{time_s}s×{slack}")
+        passed &= check(f"{mode}: contours nest (600⊇300)", n > 0 and nest_ok == n, f"{nest_ok}/{n}")
+    return passed
+
+
+def gate_ticket_invariants(base):
+    """One named invariant per user ticket, so none of them can regress
+    silently (2026-09-03). Where an existing gate already IS the invariant it
+    is named here and not duplicated:
+      #535 isochrone off-centre / origin not covered → this gate: from a
+           pedestrian city centre the pin itself lies in (or ≤ 30 m from) the
+           ONE polygon (the pin→snap access leg is stamped), snap ≤ 300 m;
+      #536 square lasso, missing clients        → gate_catchment_containment;
+      #541 clip to the border                   → consumer-side (the map
+           dashboard / the MCP layer); the engine stays generic;
+      #542 islands / confetti                    → gate_isochrone_topology
+           (one simple polygon) + gate_isochrone_reach_truth + gate_graph_holes;
+      #543 isochrones too big vs a traffic-aware reference → gate_bands
+           (typical/best/worst levels, like-for-like, never > 2 % fast;
+           Brussels and coast regions) + the weekly window-bias report;
+      #495/#497 (closed) size / foot origin     → gate_isochrone_upper_bound,
+           gate_isochrone (snapped-origin containment)."""
+    print("== ticket invariants: #535 pin inside from pedestrian centres (others named above) ==")
+    centres = [("Namur centre", 4.8667, 50.4632), ("Ghent Korenmarkt", 3.7234, 51.0543),
+        ("Leuven Grote Markt", 4.7009, 50.8792) ]
+    near_m = THRESHOLDS["pin_near_ring_m"]
+    snap_max = THRESHOLDS["pin_snap_max_m"]
+    n_ok = 0
+    for name, lon, lat in centres:
+        b = iso_bundle(base, lon, lat, "car", 600)
+        try:
+            polys, snap = b.polys, b.snap
+        except Exception as ex:
+            print(f"    {name}: {ex}")
+            continue
+        ring = polys[0][0]
+        snap_m = haversine_m(lon, lat, snap[0], snap[1])
+        pin_ok = point_in_ring((lon, lat), ring[:-1]) or dist_to_ring_m((lon, lat), ring) <= near_m
+        # PRODUCT RULE again: exactly one polygon, exactly one ring.
+        ok = len(polys) == 1 and len(polys[0]) == 1 and pin_ok and snap_m <= snap_max
+        n_ok += ok
+        if not ok:
+            print(f"    {name}: parts={len(polys)} pin inside/near={pin_ok} snap {snap_m:.0f} m")
+    return check("#535: 10-min car isochrone from a pedestrian centre contains the pin "
+        f"(one polygon, snap ≤ {snap_max:.0f} m)",
+        n_ok == len(centres),
+        f"{n_ok}/{len(centres)} centres")
+
+
+# ---------------------------------------------------------------------------
+# Gates — level vs the reference sets (share ref_trip_routes, #550)
+# ---------------------------------------------------------------------------
+def gate_ground_truth(base, trips_path, checks="all"):
+    """checks: "all" | "duration" (errors + duration only) | "distance".
+    Routes come from ref_trip_routes — the SAME /route responses gate_bands
+    uses for its `typical` level, so each reference trip is routed once."""
+    print(f"== ground truth: reference trips ({trips_path}, {checks}) ==")
+    rows, res = ref_trip_routes(base, trips_path)
+    t = THRESHOLDS
+    ok_res = []
+    errors = 0
+    for r, trip in zip(res, rows):
+        if r is None:
+            errors += 1
+            continue
+        try:
+            ref_min, ref_km = float(trip["ref_min"]), float(trip["ref_km"])
+            if ref_min <= 0 or ref_km <= 0:
+                raise ValueError("non-positive reference")
+            ok_res.append((r["min"] / ref_min, r["km"] / ref_km))
+        except (KeyError, TypeError, ValueError):
+            errors += 1
+    if not ok_res:
+        return check("trip errors", False, f"{errors} of {len(rows)} trips unusable")
+    # Duration is judged like-for-like (2026-09-03): the reference OD trips are
+    # pinned corridors, so a trip whose engine route length is >10 % off the
+    # measured one compares two different routes, not two levels.
+    lfl = t["like_for_like_km_tol"]
+    dur = [x[0] for x in ok_res if checks != "duration" or abs(x[1] - 1.0) <= lfl]
+    dist = [x[1] for x in ok_res]
+    outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
+    # #550: errors are checked on EVERY invocation (the distance pass used to
+    # skip the count entirely).
+    passed = check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
+    if checks in ("all", "duration"):
+        p50d, p90d = pct(dur, 0.5), pct(dur, 0.9)
+        passed &= check("duration p50", t["dur_p50"][0] <= p50d <= t["dur_p50"][1],
+                        f"{p50d:.3f} (bounds {t['dur_p50']})")
+        passed &= check("duration p90", p90d <= t["dur_p90_max"], f"{p90d:.3f} (max {t['dur_p90_max']})")
+    if checks in ("all", "distance"):
+        p50m, p90m = pct(dist, 0.5), pct(dist, 0.9)
+        passed &= check("distance p50", t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
+                        f"{p50m:.3f} (bounds {t['dist_p50']})")
+        passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
+        passed &= check("distance outliers", outliers <= t["dist_outliers_max"],
+                        f"{outliers} (max {t['dist_outliers_max']})")
+    print(f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
+        f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}")
+    return passed
+
+
+def gate_bands(base, refs_prefix):
+    """best / typical / worst (2026-09-03). ONE public car profile = typical
+    (weekday 07-19 h), two opt-in bands on the same artefact: best = nights
+    (free-flow), worst = weekday peaks. Invariants:
+      (a) every API serves the bands on request: REST /route, /table (1×n,
+          n×1, n×n), /trip, /isochrone; Flight matrix, route_batch,
+          isochrone (`band` column, typical rows first);
+      (b) ordering with a REAL spread: best ≤ typical ≤ worst per cell /
+          route; isochrone best ⊇ typical ⊇ worst (areas); median
+          worst/best over the reference trips ≥ 1.10;
+      (c) level: median(engine/reference) within the band bounds for each
+          profile against its own TIME-STAMPED reference set (observed
+          historic times in the same window; the old 1 000 trips carried no
+          hour and were free-flow), and typical within the regional bounds on
+          Brussels-internal / coast pairs.
+    """
+    print("== best / typical / worst bands: every API, ordering, level (2026-09-03) ==")
+    passed = True
+    t = THRESHOLDS
+
+    # ---- (a)+(b) REST surfaces on a few fixture pairs
+    pairs = [((4.3517, 50.8503), (4.4025, 51.2194)), ((4.85, 50.55), (4.79, 50.60)),
+             ((3.7174, 51.0543), (3.65, 51.02)), ((5.65, 50.1), (5.60, 50.15))]
+    ok_route, n_route = True, 0
+    for a, b in pairs:
+        try:
+            r = route_json(base, a[0], a[1], b[0], b[1], mode="car", uncertainty="bands")
+            bt, tp, wt = r.get("duration_best_s"), r.get("duration_s"), r.get("duration_worst_s")
+            n_route += 1
+            ok_route &= bool(bt and wt and bt <= tp + 0.5 and tp <= wt + 0.5)
+        except Exception as ex:
+            ok_route = False
+            print(f"    /route bands: {ex}")
+    passed &= check("/route uncertainty=bands: duration_best_s ≤ duration_s ≤ duration_worst_s",
+                    ok_route and n_route == len(pairs), f"{n_route} pairs")
+    # /table 1×n, n×1, n×n
+    pts = [[4.3517, 50.8503], [4.4025, 51.2194], [3.7174, 51.0543], [4.85, 50.55], [5.65, 50.1]]
+    ok_table = True
+    for shape, origins, dests in (("1×n", pts[:1], pts), ("n×1", pts, pts[:1]), ("n×n", pts, pts)):
+        try:
+            r = table(base, origins, dests, annotations="duration", uncertainty="bands")
+            d, bt, wt = r["durations"], r.get("durations_best"), r.get("durations_worst")
+            if not bt or not wt:
+                ok_table = False
+                print(f"    /table {shape}: no band grids")
+                continue
+            for i in range(len(origins)):
+                for j in range(len(dests)):
+                    if d[i][j] is not None and not (bt[i][j] <= d[i][j] + 0.5 and d[i][j] <= wt[i][j] + 0.5):
+                        ok_table = False
+        except Exception as ex:
+            ok_table = False
+            print(f"    /table {shape}: {ex}")
+    passed &= check("/table uncertainty=bands (1×n, n×1, n×n): best ≤ typical ≤ worst per cell",
+                    ok_table, "3 shapes")
+    # /trip
+    try:
+        r = post_json(f"{base}/trip", {"points": pts[:4], "mode": "car", "uncertainty": "bands"})
+        tr = (r.get("trips") or [r])[0]  # OSRM-shaped: {code, waypoints, trips:[{duration,...}]}
+        bt, tp, wt = tr.get("duration_best"), tr.get("duration_s") or tr.get("duration"), tr.get("duration_worst")
+        ok_trip = bool(bt and wt and tp and bt <= tp + 0.5 and tp <= wt + 0.5)
+        detail = (f"best {bt:.0f} ≤ typical {tp:.0f} ≤ worst {wt:.0f}" if ok_trip
+                  else str({k: tr.get(k) for k in ("duration_best", "duration_s", "duration_worst")}))
+    except Exception as ex:
+        ok_trip, detail = False, str(ex)
+    passed &= check("/trip uncertainty=bands: duration_best ≤ duration ≤ duration_worst", ok_trip, detail)
+    # /isochrone: areas ordered
+    ok_iso, n_iso = True, 0
+    for lon, lat in ((4.3517, 50.8503), (4.85, 50.55)):
+        try:
+            r = http_json(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=600&mode=car"
+                          "&uncertainty=bands&geometries=geojson", timeout=120)
+            areas = {}
+            for f in r.get("contours") or []:
+                g = f.get("geometry") or {}
+                if g.get("type") == "Polygon":
+                    areas[f.get("band") or "typical"] = ring_area(g["coordinates"][0])
+            n_iso += 1
+            if not (areas.keys() >= {"best", "typical", "worst"}
+                    and areas["best"] >= areas["typical"] * 0.999
+                    and areas["typical"] >= areas["worst"] * 0.999):
+                ok_iso = False
+                print(f"    /isochrone bands areas: {areas}")
+        except Exception as ex:
+            ok_iso = False
+            print(f"    /isochrone bands: {ex}")
+    passed &= check("/isochrone uncertainty=bands: best ⊇ typical ⊇ worst (areas)",
+                    ok_iso and n_iso == 2, f"{n_iso} origins")
+
+    # ---- Flight (same client / port convention as every other Flight gate)
+    if not flight_enabled():
+        print("  [SKIP] Flight bands: --no-flight")
+    else:
+        def get(action, params):
+            return flight_table(base, action, "car", params).to_pandas()
+
+        m = get("matrix", {"origins": pts, "destinations": pts, "uncertainty": "bands"})
+        okm = ("band" in m.columns and sorted(m["band"].unique()) == ["best", "typical", "worst"]
+               and len(m) == 3 * len(pts) ** 2)
+        if okm:
+            piv = m.pivot_table(index=["source_idx", "target_idx"], columns="band", values="duration_ms")
+            okm = bool(((piv["best"] <= piv["typical"] + 1) & (piv["typical"] <= piv["worst"] + 1)).all())
+        passed &= check("Flight matrix uncertainty=bands: band column, 3 passes, best ≤ typical ≤ worst",
+                        okm, f"{len(m)} rows")
+        rb = get("route_batch", {"pairs": [[a[0], a[1], b[0], b[1]] for a, b in pairs],
+                                 "uncertainty": "bands"})
+        okr = "band" in rb.columns and len(rb) == 3 * len(pairs)
+        if okr:
+            piv = rb.pivot_table(index="pair_idx", columns="band", values="duration_s")
+            okr = bool(((piv["best"] <= piv["typical"] + 0.5) & (piv["typical"] <= piv["worst"] + 0.5)).all())
+        passed &= check("Flight route_batch uncertainty=bands: band column, best ≤ typical ≤ worst",
+                        okr, f"{len(rb)} rows")
+        iso = get("isochrone", {"lon": 4.85, "lat": 50.55, "intervals": [600], "uncertainty": "bands"})
+        oki = "band" in iso.columns and len(iso) == 3
+        if oki:
+            # one NON-EMPTY polygon per band
+            oki = {row["band"] for _, row in iso.iterrows() if len(row["polygon_wkb"] or b"")} >= {
+                "best", "typical", "worst"}
+        passed &= check("Flight isochrone uncertainty=bands: one polygon per band", oki, f"{len(iso)} rows")
+
+    # ---- (c) level per profile against its time-stamped reference set
+    lo, hi = t["band_level"]
+    for name, field in (("typical", "min"), ("best", "best_min"), ("worst", "worst_min")):
+        path = f"{refs_prefix}_{name}.csv"
+        try:
+            trips, res = ref_trip_routes(base, path)
+        except Exception as ex:
+            passed &= check(f"{name} level vs reference", False, f"cannot read reference set: {ex}")
+            continue
+        ratios = sorted(r[field] / float(trip["ref_min"])
+            for r, trip in zip(res, trips)
+            if like_for_like(r, trip) and r[field] > 0 and float(trip["ref_min"]) > 0)
+        if len(ratios) < t["band_min_trips"]:
+            passed &= check(f"{name} level vs reference", False,
+                            f"only {len(ratios)} like-for-like trips (need {t['band_min_trips']})")
+            continue
+        med = statistics.median(ratios)
+        # Pierre 2026-09-03: "mieux vaut trop lent que trop rapide" — never more
+        # than 2 % fast, up to 9 % slow (the anchor lands the median at +3 %).
+        passed &= check(f"{name}: median(engine/{name} reference) in [{lo}, {hi}] (like-for-like routes)",
+                        lo <= med <= hi,
+                        f"{med:.3f} (p10 {ratios[len(ratios) // 10]:.3f}, "
+                        f"p90 {ratios[9 * len(ratios) // 10]:.3f}, n={len(ratios)})")
+        if name != "typical":
+            continue
+        # Regional levels (#543: "too optimistic, especially Brussels"): the
+        # national median can hide a region. One end inside the box is enough
+        # for the coast (trips leave it); both for Brussels.
+        rlo, rhi = t["band_regional"]
+        for rname, box, both in (("Brussels-internal", (4.25, 50.76, 4.50, 50.92), True),
+                                 ("coast (West Flanders)", (2.50, 51.00, 3.35, 51.40), False)):
+            x0, y0, x1, y1 = box
+
+            def inside(trip, k1, k2, x0=x0, y0=y0, x1=x1, y1=y1):
+                return x0 <= float(trip[k1]) <= x1 and y0 <= float(trip[k2]) <= y1
+
+            sel = [(r, trip) for r, trip in zip(res, trips) if like_for_like(r, trip)
+                   and ((inside(trip, "long_1", "lat_1") and inside(trip, "long_2", "lat_2")) if both
+                        else (inside(trip, "long_1", "lat_1") or inside(trip, "long_2", "lat_2")))]
+            if len(sel) >= t["band_min_regional"]:
+                mr = statistics.median(r["min"] / float(trip["ref_min"]) for r, trip in sel)
+                passed &= check(f"typical: {rname} like-for-like pairs in [{rlo}, {rhi}] (#543)",
+                                rlo <= mr <= rhi, f"{mr:.3f} (n={len(sel)})")
+            else:
+                print(f"    ({rname} typical pairs: {len(sel)} — not enough to check)")
+        wb = [r["worst_min"] / r["best_min"] for r, trip in zip(res, trips)
+              if like_for_like(r, trip) and r["best_min"] > 0]
+        if wb:
+            ms = statistics.median(wb)
+            passed &= check(f"spread: median(worst/best) over the typical trips ≥ {t['band_spread_min']}",
+                            ms >= t["band_spread_min"], f"{ms:.3f}")
+    return passed
+
+
+# ---------------------------------------------------------------------------
+# Gates — matrix / table
+# ---------------------------------------------------------------------------
 def gate_lopsided(base):
     """#526: lopsided (1xN) matrices must take a sublinear plan (seeded
     PHAST) and stay cell-for-cell consistent with /route. Guards BOTH the
     selection (scaling ratio — linear bucket would be ~16x) and the
     correctness of the PHAST field evaluation (route==table equality)."""
-    import time as _t
-
     print("== lopsided matrix 1xN: sublinear plan + route==table (#526) ==")
     rng = random.Random(31)
     origin = (4.3517, 50.8503)
-    dests = [
-        (origin[0] + rng.uniform(-0.25, 0.25), origin[1] + rng.uniform(-0.15, 0.15))
-        for _ in range(800)
-    ]
+    dests = [(origin[0] + rng.uniform(-0.25, 0.25), origin[1] + rng.uniform(-0.15, 0.15))
+             for _ in range(800)]
 
-    def table(dsts):
-        body = json.dumps(
-            {
-                "origins": [list(origin)],
-                "destinations": [list(d) for d in dsts],
-                "mode": "foot",
-            }
-        ).encode()
-        t0 = _t.time()
-        r = http_json(
-            f"{base}/table",
-            timeout=300,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        return r, _t.time() - t0
+    def timed(dsts, **kw):
+        t0 = time.time()
+        r = table(base, [list(origin)], [list(d) for d in dsts], mode="foot", timeout=300, **kw)
+        return r, time.time() - t0
 
-    def table_dd(dsts):
-        body = json.dumps(
-            {
-                "origins": [list(origin)],
-                "destinations": [list(d) for d in dsts],
-                "mode": "foot",
-                "annotations": "duration,distance",
-            }
-        ).encode()
-        return http_json(
-            f"{base}/table",
-            timeout=300,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-
-    table(dests[:50])  # warm + calibrate the router's measured constants
-    big, tb = table(dests)
-    small, ts = table(dests[:50])
+    timed(dests[:50])  # warm + calibrate the router's measured constants
+    big, tb = timed(dests)
+    _small, ts = timed(dests[:50])
     ratio = tb / max(ts, 1e-3)
-    ok_scale = check(
-        "lopsided scaling",
-        ratio < 6.0,
-        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} (linear bucket ~x16, PHAST ~x1)",
-    )
-    mism = 0
-    checked = 0
-    worst = 0.0
-    for i in rng.sample(range(800), 25):
-        d_t = big["durations"][0][i]
-        if d_t is None:
-            continue
-        try:
-            d_r, _ = route(base, origin[0], origin[1], dests[i][0], dests[i][1], mode="foot")
-        except Exception:
-            continue
-        checked += 1
-        delta = abs(d_r - d_t)
-        worst = max(worst, delta)
-        if delta > THRESHOLDS["consistency_tolerance_s"]:
-            mism += 1
-    ok_eq = check(
-        "lopsided route==table",
-        mism == 0 and checked >= 15,
-        f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s",
-    )
+    ok_scale = check("lopsided scaling", ratio < THRESHOLDS["lopsided_scaling_max"],
+        f"1x800 {tb:.2f}s vs 1x50 {ts:.2f}s ratio x{ratio:.1f} (linear bucket ~x16, PHAST ~x1)")
+
+    def compare(tab, idxs, channel, relative):
+        """Sampled table cells vs /route on the SAME mode → (checked, over-tol
+        count, worst). `relative` picks the distance channel (relative error)
+        over the duration channel (absolute seconds)."""
+        def one(i):
+            v = tab[channel][0][i]
+            if v is None or tab["durations"][0][i] is None:
+                return None
+            try:
+                dur_r, dist_r = route(base, origin[0], origin[1], dests[i][0], dests[i][1], mode="foot")
+            except Exception:
+                return None
+            return abs(v - dist_r) / max(dist_r, 1.0) if relative else abs(v - dur_r)
+
+        with cf.ThreadPoolExecutor(16) as ex:
+            ds = [d for d in ex.map(one, idxs) if d is not None]
+        tol = THRESHOLDS["matrix_cell_tol"] if relative else THRESHOLDS["consistency_tolerance_s"]
+        return len(ds), sum(1 for d in ds if d > tol), max(ds, default=0.0)
+
+    checked, mism, worst = compare(big, rng.sample(range(800), 25), "durations", False)
+    ok_eq = check("lopsided route==table", mism == 0 and checked >= 15,
+                  f"{checked} cells sampled, {mism} mismatches, worst {worst:.1f}s")
     # #527: 2-channel lopsided — distance channel must equal /route distance_m.
-    dd = table_dd(dests[:300])
-    dmis = 0
-    dchecked = 0
-    dworst = 0.0
-    for i in rng.sample(range(300), 25):
-        d_t = dd["durations"][0][i]
-        m_t = dd["distances"][0][i]
-        if d_t is None or m_t is None:
-            continue
-        try:
-            r = http_json(
-                f"{base}/route?"
-                + urllib.parse.urlencode(
-                    {
-                        "origin_lon": origin[0],
-                        "origin_lat": origin[1],
-                        "destination_lon": dests[i][0],
-                        "destination_lat": dests[i][1],
-                        "mode": "foot",
-                    }
-                )
-            )
-        except Exception:
-            continue
-        dchecked += 1
-        rel = abs(m_t - r["distance_m"]) / max(r["distance_m"], 1.0)
-        dworst = max(dworst, rel)
-        if rel > 0.02:
-            dmis += 1
-    ok_dist = check(
-        "lopsided 2-channel distance==route",
-        dmis == 0 and dchecked >= 15,
-        f"{dchecked} cells, {dmis} mismatches, worst {dworst*100:.2f}%",
-    )
+    dd, _ = timed(dests[:300], annotations="duration,distance")
+    dchecked, dmis, dworst = compare(dd, rng.sample(range(300), 25), "distances", True)
+    ok_dist = check("lopsided 2-channel distance==route", dmis == 0 and dchecked >= 15,
+                    f"{dchecked} cells, {dmis} mismatches, worst {dworst * 100:.2f}%")
     return ok_scale and ok_eq and ok_dist
 
 
@@ -256,31 +1532,16 @@ def _distance_channel_vs_route(base, mode):
     400s are a SKIP, not a FAIL — variants are deploy-dependent)."""
     rng = random.Random(528)
     o = (4.3517, 50.8503)
-    dests = [
-        (o[0] + rng.uniform(-0.3, 0.3), o[1] + rng.uniform(-0.2, 0.2))
-        for _ in range(200)
-    ]
-    body = json.dumps(
-        {
-            "origins": [list(o)],
-            "destinations": [list(d) for d in dests],
-            "mode": mode,
-            "annotations": "duration,distance",
-        }
-    ).encode()
+    dests = [(o[0] + rng.uniform(-0.3, 0.3), o[1] + rng.uniform(-0.2, 0.2)) for _ in range(200)]
     try:
-        tab = http_json(
-            f"{base}/table",
-            timeout=200,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
+        tab = table(base, [list(o)], [list(d) for d in dests], mode=mode, timeout=200,
+            annotations="duration,distance")
     except urllib.error.HTTPError as e:
         if e.code in (400, 404):
             return None  # mode not served — skip
         raise
-    mism = 0
-    checked = 0
+    cell_tol = THRESHOLDS["matrix_cell_tol"]
+    mism = checked = 0
     worst = 0.0
     for i in rng.sample(range(200), 30):
         m = tab["distances"][0][i]
@@ -295,7 +1556,7 @@ def _distance_channel_vs_route(base, mode):
         checked += 1
         rel = abs(m - dist_r) / dist_r
         worst = max(worst, rel)
-        if rel > 0.02:
+        if rel > cell_tol:
             mism += 1
     return checked, mism, worst
 
@@ -321,7 +1582,7 @@ def gate_recustomized_distance(base):
     itself and its env cannot be set from the gate, so forcing PHAST here is
     not feasible — that surface is locked by the Rust unit test
     `phast_2ch_lex_tests` and can be re-verified live with a dedicated serve
-    run under `BUTTERFLY_MATRIX_ALGO=phast`."""
+    run under a matrix-algo override."""
     print("== recustomized-mode 2-channel distance==route (#528/#529) ==")
     passed = True
     for mode in ("car", "car_nodir"):
@@ -332,12 +1593,8 @@ def gate_recustomized_distance(base):
         checked, mism, worst = res
         # `car` is always present (hard requirement); a served variant must
         # also hold. checked>=20 guards against a probe that snapped nothing.
-        need_coverage = checked >= 20 if mode in ("car", "car_nodir") else checked >= 10
-        passed &= check(
-            f"{mode} 2-channel distance==route",
-            mism == 0 and need_coverage,
-            f"{checked} cells, {mism} mismatches, worst {worst*100:.2f}%",
-        )
+        passed &= check(f"{mode} 2-channel distance==route", mism == 0 and checked >= 20,
+            f"{checked} cells, {mism} mismatches, worst {worst * 100:.2f}%")
     return passed
 
 
@@ -351,268 +1608,33 @@ def gate_radius_prune(base):
     # ~1.1 / 2.2 / 3.3 km due east at this latitude.
     dests = [[o[0] + 0.0157, o[1]], [o[0] + 0.0314, o[1]], [o[0] + 0.0471, o[1]]]
 
-    def table(origins, radius):
-        body = json.dumps(
-            {
-                "origins": origins,
-                "destinations": dests,
-                "mode": "foot",
-                "annotations": "duration",
-                "radius_km": radius,
-            }
-        ).encode()
-        r = http_json(
-            f"{base}/table", data=body, headers={"Content-Type": "application/json"}
-        )
-        return r["durations"]
+    def durations(origins, radius):
+        return table(base, origins, dests, mode="foot", annotations="duration", radius_km=radius,
+        )["durations"]
 
     def kept(row):
         return [i for i, v in enumerate(row) if v is not None]
 
-    scalar = kept(table([o], 1.5)[0])
-    ok_scalar = check(
-        "scalar radius_km=1.5 prunes",
-        scalar == [0],
-        f"kept {scalar} (want [0] — the ~2.2/3.3 km targets pruned)",
-    )
-    per = table([o, o, o], [1.5, 3.0, 0])
+    scalar = kept(durations([o], 1.5)[0])
+    ok_scalar = check("scalar radius_km=1.5 prunes", scalar == [0],
+        f"kept {scalar} (want [0] — the ~2.2/3.3 km targets pruned)")
+    per = durations([o, o, o], [1.5, 3.0, 0])
     rows = [kept(per[i]) for i in range(3)]
-    ok_per = check(
-        "per-origin radius_km prunes each origin",
-        rows == [[0], [0, 1], [0, 1, 2]],
-        f"kept {rows} (want [[0],[0,1],[0,1,2]])",
-    )
+    ok_per = check("per-origin radius_km prunes each origin", rows == [[0], [0, 1], [0, 1, 2]],
+        f"kept {rows} (want [[0],[0,1],[0,1,2]])")
     return ok_scalar and ok_per
 
 
-# Route-choice reference: the 1 000 long inter-city trips. Their ref_min is
-# free-flow (no hour) so DURATIONS are judged on od_typical; their ref_km is
-# a solid route-length truth (motorway-dominated), which the ~40-min regional
-# od_typical pairs are not (the reference router and the engine pick
-# different regional routes on ~17 % of them, identically on a free-flow
-# engine — see #545).
-LEGACY_TRIPS_DISTANCE = os.path.join(REFS_DIR, "od.csv")
-
-
-def gate_ground_truth(base, trips_path, checks="all"):
-    """checks: "all" | "duration" (errors + duration only) | "distance"."""
-    print(f"== ground truth: reference trips ({trips_path}, {checks}) ==")
-    rows = _ref_trips(trips_path)  # local path or s3:// (mc)
-
-    def one(r):
-        try:
-            dur_s, dist_m = route(base, r["long_1"], r["lat_1"], r["long_2"], r["lat_2"])
-            return (
-                dur_s / 60 / float(r["ref_min"]),
-                dist_m / 1000 / float(r["ref_km"]),
-            )
-        except Exception:
-            return None
-
-    with cf.ThreadPoolExecutor(16) as ex:
-        res = list(ex.map(one, rows))
-    ok_res = [x for x in res if x]
-    errors = len(rows) - len(ok_res)
-    # Duration is judged like-for-like (2026-09-03): the reference OD trips are
-    # pinned corridors, so a trip whose engine route length is >10 % off the
-    # measured one compares two different routes, not two levels.
-    dur = [x[0] for x in ok_res if checks != "duration" or abs(x[1] - 1.0) <= 0.10]
-    dist = [x[1] for x in ok_res]
-    outliers = sum(1 for d in dist if d < 0.85 or d > 1.2)
-    t = THRESHOLDS
-    passed = True
-    if checks in ("all", "duration"):
-        passed &= check("trip errors", errors <= t["max_errors"], f"{errors} (max {t['max_errors']})")
-    p50d = pct(dur, 0.5)
-    if checks in ("all", "duration"):
-        passed &= check(
-            "duration p50",
-            t["dur_p50"][0] <= p50d <= t["dur_p50"][1],
-            f"{p50d:.3f} (bounds {t['dur_p50']})",
-        )
-    p90d = pct(dur, 0.9)
-    if checks in ("all", "duration"):
-        passed &= check("duration p90", p90d <= t["dur_p90_max"], f"{p90d:.3f} (max {t['dur_p90_max']})")
-    p50m = pct(dist, 0.5)
-    if checks in ("all", "distance"):
-        passed &= check(
-            "distance p50",
-            t["dist_p50"][0] <= p50m <= t["dist_p50"][1],
-            f"{p50m:.3f} (bounds {t['dist_p50']})",
-        )
-    p90m = pct(dist, 0.9)
-    if checks in ("all", "distance"):
-        passed &= check("distance p90", p90m <= t["dist_p90_max"], f"{p90m:.3f} (max {t['dist_p90_max']})")
-    if checks in ("all", "distance"):
-        passed &= check(
-            "distance outliers",
-            outliers <= t["dist_outliers_max"],
-            f"{outliers} (max {t['dist_outliers_max']})",
-        )
-    print(
-        f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
-        f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}"
-    )
-    return passed
-
-
-def gate_symmetry(base, n_pairs=150):
-    print(f"== symmetry invariant ({n_pairs} seeded random pairs) ==")
-    rng = random.Random(99)
-    t = THRESHOLDS
-    violations = []
-    tested = 0
-    worst = 1.0
-    for _ in range(n_pairs):
-        a, b = round(rng.uniform(3.0, 6.2), 5), round(rng.uniform(49.6, 51.4), 5)
-        c, d = round(rng.uniform(3.0, 6.2), 5), round(rng.uniform(49.6, 51.4), 5)
-        try:
-            f, _ = route(base, a, b, c, d)
-            r, _ = route(base, c, d, a, b)
-        except Exception:
-            continue
-        if f < 60:
-            continue
-        tested += 1
-        ratio = max(f, r) / max(min(f, r), 1)
-        worst = max(worst, ratio)
-        if ratio > t["symmetry_ratio_max"]:
-            violations.append((ratio, (a, b, c, d)))
-    ok = len(violations) <= t["symmetry_violations_max"] and tested >= 50
-    for v in violations[:5]:
-        print(f"    violation: ratio {v[0]:.2f} @ {v[1]}")
-    return check(
-        "fwd/rev symmetry",
-        ok,
-        f"{tested} pairs, {len(violations)} >{t['symmetry_ratio_max']}x, worst {worst:.2f}",
-    )
-
-
-def _haversine_m(lon1, lat1, lon2, lat2):
-    import math
-    r = 6371000.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    a = (
-        math.sin((p2 - p1) / 2) ** 2
-        + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
-    )
-    return 2 * r * math.asin(math.sqrt(a))
-
-
-def _polyline_len_m(coords):
-    return sum(
-        _haversine_m(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
-        for i in range(len(coords) - 1)
-    )
-
-
-def gate_fixtures(base):
-    print("== sentinel pairs (#502/#503) — invariant checks, no expected constants ==")
-    passed = True
-    lo_kmh, hi_kmh = CAR_SPEED_BOUNDS_KMH
-    for name, olon, olat, dlon, dlat in FIXTURES:
-        max_detour = SENTINEL_MAX_DETOUR
-        q = urllib.parse.urlencode(
-            {
-                "origin_lon": olon,
-                "origin_lat": olat,
-                "destination_lon": dlon,
-                "destination_lat": dlat,
-                "mode": "car",
-                "geometries": "polyline6",
-                "annotations": "distance,duration",
-            }
-        )
-        try:
-            d = http_json(f"{base}/route?{q}")
-        except Exception as e:
-            passed &= check(name, False, f"request failed: {e}")
-            continue
-        dur_s, dist_m = d["duration_s"], d["distance_m"]
-        crow = _haversine_m(olon, olat, dlon, dlat)
-        detour = dist_m / max(crow, 1.0)
-        kmh = dist_m / max(dur_s, 0.001) * 3.6
-        geom = d.get("geometry", {})
-        poly = geom.get("polyline") or geom.get("coordinates_polyline6") or ""
-        geom_m = _polyline_len_m(_decode_polyline6(poly)) if poly else None
-        ann = d.get("annotations") or {}
-        ann_dist = sum(ann.get("distance") or [])
-        ann_dur = sum(ann.get("duration") or [])
-        ok_detour = detour <= max_detour
-        ok_speed = lo_kmh <= kmh <= hi_kmh
-        ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
-        # annotations may legitimately differ from duration_s by the turn/
-        # junction costs the summary carries; require them within 15%.
-        ok_ann = (
-            ann_dist == 0
-            or (
-                abs(ann_dist - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
-                and abs(ann_dur - dur_s) <= dur_s * 0.15
-            )
-        )
-        ok = ok_detour and ok_speed and ok_geom and ok_ann
-        gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
-        passed &= check(
-            name,
-            ok,
-            f"{dur_s:.0f}s/{dist_m:.0f}m detour×{detour:.2f}(≤{max_detour}) "
-            f"{kmh:.0f}km/h geom={gtxt} annΣ={ann_dist:.0f}m/{ann_dur:.0f}s",
-        )
-    return passed
-
-
-def gate_mode_coherence(base):
-    """#522 / #493: foot and bike routes must be internally coherent —
-    distance_m ≡ polyline length ≡ Σ annotation distances (within tol), and the
-    IMPLIED mean speed (distance/duration) must be physically plausible for the
-    mode. Catches #522 (foot routes reporting up to 5.3 m/s ≈ 19 km/h) and #493
-    (foot/bike geometry_wkb ~2× the reported distance — polyline doubled/zigzag).
-    Same invariant the car sentinel gate enforces, extended to the modes where
-    the bugs actually landed."""
-    print("== foot/bike geometry ≡ distance ≡ annotations + plausible speed (#522/#493) ==")
-    passed = True
-    for mode, (lo_kmh, hi_kmh) in (
-        ("foot", FOOT_SPEED_BOUNDS_KMH),
-        ("bike", BIKE_SPEED_BOUNDS_KMH),
-    ):
-        for name, olon, olat, dlon, dlat in FIXTURES:
-            q = urllib.parse.urlencode(
-                {
-                    "origin_lon": olon,
-                    "origin_lat": olat,
-                    "destination_lon": dlon,
-                    "destination_lat": dlat,
-                    "mode": mode,
-                    "geometries": "polyline6",
-                    "annotations": "distance,duration",
-                }
-            )
-            try:
-                d = http_json(f"{base}/route?{q}")
-            except Exception as e:
-                passed &= check(f"{mode} {name}", False, f"request failed: {e}")
-                continue
-            dur_s, dist_m = d["duration_s"], d["distance_m"]
-            if dist_m <= 0 or dur_s <= 0:
-                passed &= check(f"{mode} {name}", False, f"degenerate {dist_m}m/{dur_s}s")
-                continue
-            kmh = dist_m / dur_s * 3.6
-            geom = d.get("geometry", {})
-            poly = geom.get("polyline") or geom.get("coordinates_polyline6") or ""
-            geom_m = _polyline_len_m(_decode_polyline6(poly)) if poly else None
-            ann = d.get("annotations") or {}
-            ann_dist = sum(ann.get("distance") or [])
-            ok_speed = lo_kmh <= kmh <= hi_kmh
-            ok_geom = geom_m is None or abs(geom_m - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
-            ok_ann = ann_dist == 0 or abs(ann_dist - dist_m) <= dist_m * GEOM_CONSISTENCY_TOL
-            gtxt = f"{geom_m:.0f}m" if geom_m is not None else "n/a"
-            passed &= check(
-                f"{mode} {name}",
-                ok_speed and ok_geom and ok_ann,
-                f"{dur_s:.0f}s/{dist_m:.0f}m {kmh:.1f}km/h "
-                f"(bound {lo_kmh:.0f}-{hi_kmh:.0f}) geom={gtxt} annΣ={ann_dist:.0f}m",
-            )
-    return passed
+def _streaming_grid():
+    """A deterministic ~34×31 grid kept INSIDE Belgium's routable box = 1054
+    points; 1054² ≈ 1.11M cells > the 1M bucket-M2M threshold, so do_matrix
+    takes the tiled stream. Coordinates stay clear of the borders: a point
+    OUTSIDE the BE region hard-errors the matrix request (region dispatch),
+    whereas an in-region off-network point is silently dropped — we want the
+    latter, never the former."""
+    lons = [3.6 + 0.0606 * i for i in range(34)]  # ~3.60–5.60
+    lats = [50.50 + 0.020 * j for j in range(31)]  # ~50.50–51.10
+    return [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
 
 
 def gate_bounded_matrix_exactness(base):
@@ -626,16 +1648,6 @@ def gate_bounded_matrix_exactness(base):
     filtered-equality invariant. No stored constant — the unbounded run is the
     ground truth."""
     print("== seeded bounded matrix == unbounded filtered (#534/#415) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    MAX = 4294967295
     # Points span short + long-edge fixtures (large phantom shifts) so the
     # forward bound is actually exercised.
     pts = [[p[1], p[2]] for p in ISO_POINTS] + [[f[3], f[4]] for f in FIXTURES]
@@ -644,218 +1656,25 @@ def gate_bounded_matrix_exactness(base):
         params = {"origins": pts, "destinations": pts}
         if max_minutes is not None:
             params["max_minutes"] = max_minutes
-        tb = fl.connect(f"grpc://{host}:{port}").do_get(
-            fl.Ticket(f"matrix:{mode}:{json.dumps(params)}".encode())
-        ).read_all()
-        s, t, dur = tb.column("source_idx"), tb.column("target_idx"), tb.column("duration_ms")
-        return {(s[i].as_py(), t[i].as_py()): dur[i].as_py() for i in range(tb.num_rows)}
+        return flight_matrix_cells(base, mode, params)[0]
 
-    passed = True
-    try:
-        for mode in ("car", "foot"):
-            unb = matrix(mode, None)
-            # threshold in minutes; ms → minutes for the compare.
-            T_MIN = 15
-            thr_ms = T_MIN * 60 * 1000
-            bnd = matrix(mode, T_MIN)
-            in_bound = {k: v for k, v in unb.items() if v != MAX and v <= thr_ms}
-            missing = [k for k in in_bound if bnd.get(k, MAX) == MAX]
-            wrong = [k for k in in_bound if bnd.get(k, MAX) != MAX and bnd[k] != in_bound[k]]
-            passed &= check(
-                f"{mode}: fixture exercises the bound",
-                len(in_bound) > 0,
-                f"{len(in_bound)} cells ≤ {T_MIN}min",
-            )
-            passed &= check(
-                f"{mode}: no in-bound cell falsely dropped",
-                len(missing) == 0,
-                f"{len(missing)} in-bound cells came back u32::MAX (#534 forward-bound bug)",
-            )
-            passed &= check(
-                f"{mode}: in-bound values identical to unbounded",
-                len(wrong) == 0,
-                f"{len(wrong)} cells differ from the unbounded value",
-            )
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
-    return passed
-
-
-# Long inter-city car pairs (endpoints = ISO_POINTS cities) — used by the
-# one-way-routability and motorway-floor gates.
-def _city_pairs():
-    cities = [(n, lo, la) for (n, lo, la) in ISO_POINTS]
-    out = []
-    for i in range(0, len(cities) - 1, 2):
-        a, b = cities[i], cities[i + 1]
-        out.append((f"{a[0]}→{b[0]}", a[1], a[2], b[1], b[2]))
-    return out
-
-
-def gate_one_way_routable(base):
-    """#197: on a bidirectional-dominant road network, a car pair that routes
-    one way MUST route the other — a one-directional `No route found` (the #197
-    fingerprint: A→B ok, B→A 404) is a directed-graph / snap-role regression.
-    `gate_symmetry` `continue`s past exceptions, so a 404 is invisible there;
-    this asserts BOTH directions return a route."""
-    print("== car one-way routability: no directional 404 (#197) ==")
-    passed = True
-    n_ok = 0
-    n_pairs = 0
-    fails = []
-    for name, olon, olat, dlon, dlat in _city_pairs():
-        n_pairs += 1
-        fwd = rev = True
-        try:
-            route(base, olon, olat, dlon, dlat, "car")
-        except Exception:
-            fwd = False
-        try:
-            route(base, dlon, dlat, olon, olat, "car")
-        except Exception:
-            rev = False
-        if fwd and rev:
-            n_ok += 1
-        else:
-            fails.append(f"{name} (fwd={fwd} rev={rev})")
-    for f in fails[:5]:
-        print(f"    directional gap: {f}")
-    passed &= check(
-        "both directions route",
-        n_ok == n_pairs,
-        f"{n_ok}/{n_pairs} pairs route both ways",
-    )
-    return passed
-
-
-def gate_isochrone_upper_bound(base):
-    """#430/#495/#431: isochrones were too LARGE/lenient (a short interval
-    covering a far-too-big area), and #431 bounds residual over-extension. Two
-    invariants, no reference dataset:
-      * max reach — the farthest polygon vertex (crow-fly) from the SNAPPED
-        origin ≤ v_max(mode) × time × slack (crow-fly ≤ road distance ≤
-        v_max×time; a gross leniency regression blows this);
-      * nested monotonicity — contour(600s) ⊇ contour(300s) for the same
-        origin (rings nest; the #431 balanced-closing / multi-contour order)."""
-    print("== isochrone upper bound + nested monotonicity (#430/#431) ==")
-    # v_max in m/s: physical ceilings, not measured values.
-    vmax = {"car": 36.1, "foot": 1.9}  # 130 km/h, ~6.8 km/h
-    slack = 1.20
     passed = True
     for mode in ("car", "foot"):
-        time_s = 600 if mode == "car" else 1800
-        reach_ok = 0
-        nest_ok = 0
-        n = 0
-        for name, lon, lat in ISO_POINTS:
-            try:
-                sp_j = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
-                sp = tuple(sp_j["waypoints"][0]["location"])
-                d = http_json(
-                    f"{base}/isochrone?lon={lon}&lat={lat}&mode={mode}&contours={time_s // 2},{time_s}"
-                )
-                # `contours=A,B` returns rings in request order (the `interval`
-                # field is currently unlabelled). Ring 0 = inner (time_s/2),
-                # ring -1 = outer (time_s).
-                rings = [_decode_polyline6(c["polygon"]) for c in d.get("contours", []) if c.get("polygon")]
-            except Exception:
-                continue
-            if not rings:
-                continue
-            n += 1
-            reach = [
-                max((_haversine_m(sp[0], sp[1], v[0], v[1]) for v in r), default=0.0)
-                for r in rings
-            ]
-            outer_reach = reach[-1]
-            if outer_reach <= vmax[mode] * time_s * slack:
-                reach_ok += 1
-            # Nested MONOTONICITY via max reach: more time must reach at least
-            # as far (robust to per-contour boundary-tracing jitter, which makes
-            # a strict point-in-ring test flap on jagged rural rings). The #431
-            # regression — a short contour over-extending past the long one —
-            # violates this.
-            if len(rings) >= 2:
-                inner_reach = reach[0]
-                if outer_reach >= inner_reach * 0.98:
-                    nest_ok += 1
-            else:
-                nest_ok += 1
-        passed &= check(
-            f"{mode}: max reach ≤ v_max×time",
-            n > 0 and reach_ok == n,
-            f"{reach_ok}/{n} within {vmax[mode]:.1f}m/s×{time_s}s×{slack}",
-        )
-        passed &= check(
-            f"{mode}: contours nest (600⊇300)",
-            n > 0 and nest_ok == n,
-            f"{nest_ok}/{n}",
-        )
+        unb = matrix(mode, None)
+        # threshold in minutes; ms → minutes for the compare.
+        T_MIN = 15
+        thr_ms = T_MIN * 60 * 1000
+        bnd = matrix(mode, T_MIN)
+        in_bound = {k: v for k, v in unb.items() if v != MAX_U32 and v <= thr_ms}
+        missing = [k for k in in_bound if bnd.get(k, MAX_U32) == MAX_U32]
+        wrong = [k for k in in_bound if bnd.get(k, MAX_U32) != MAX_U32 and bnd[k] != in_bound[k]]
+        passed &= check(f"{mode}: fixture exercises the bound", len(in_bound) > 0,
+                        f"{len(in_bound)} cells ≤ {T_MIN}min")
+        passed &= check(f"{mode}: no in-bound cell falsely dropped", len(missing) == 0,
+                        f"{len(missing)} in-bound cells came back u32::MAX (#534 forward-bound bug)")
+        passed &= check(f"{mode}: in-bound values identical to unbounded", len(wrong) == 0,
+                        f"{len(wrong)} cells differ from the unbounded value")
     return passed
-
-
-def gate_graph_holes(base):
-    """#503/#478: a car graph hole shows up as car routing 3–4× further than
-    foot between the same coordinates (foot uses the missing connection). Car ≥
-    foot is legitimate (one-ways), but a large ratio is the hole fingerprint
-    (#478: 645 unroutable expressway edges; #503: Berloz/Heers detours). Invariant,
-    no constant: flag car_distance / foot_distance > 3 over random medium pairs."""
-    print("== car-vs-foot detour parity: graph holes (#503/#478) ==")
-    import math
-
-    rng = random.Random(478)
-    tested = 0
-    holes = []
-    worst = 0.0
-    for _ in range(60):
-        lon, lat = rng.uniform(3.5, 5.8), rng.uniform(50.3, 51.2)
-        d, a = rng.uniform(0.01, 0.05), rng.uniform(0, 6.283)
-        dlon, dlat = lon + d * math.cos(a), lat + d * math.sin(a)
-        try:
-            _, cdist = route(base, lon, lat, dlon, dlat, "car")
-            _, fdist = route(base, lon, lat, dlon, dlat, "foot")
-        except Exception:
-            continue
-        if fdist <= 1.0:
-            continue
-        tested += 1
-        ratio = cdist / fdist
-        worst = max(worst, ratio)
-        if ratio > 3.0:
-            holes.append((round(lon, 4), round(lat, 4), round(ratio, 1)))
-    for h in holes[:5]:
-        print(f"    car/foot hole: {h}")
-    # allow ≤2 legit one-way detours out of ~60.
-    passed = check(
-        "car detour ≤ 3× foot",
-        len(holes) <= 2,
-        f"{len(holes)} holes of {tested} pairs, worst ×{worst:.1f}",
-    )
-    return passed
-
-
-def _wkb_linestring_len_m(buf):
-    """Length (metres) of a WKB LineString, for the #493 geometry check."""
-    import struct
-
-    if not buf or len(buf) < 9:
-        return None
-    little = buf[0] == 1
-    e = "<" if little else ">"
-    gtype = struct.unpack_from(e + "I", buf, 1)[0]
-    if gtype & 0xFF != 2:  # 2 = LineString (ignore SRID/Z flags in high bits)
-        return None
-    npts = struct.unpack_from(e + "I", buf, 5)[0]
-    off = 9
-    pts = []
-    for _ in range(npts):
-        if off + 16 > len(buf):
-            break
-        x, y = struct.unpack_from(e + "dd", buf, off)
-        pts.append((x, y))
-        off += 16
-    return _polyline_len_m(pts)
 
 
 def gate_matrix_distance_consistency(base):
@@ -868,65 +1687,38 @@ def gate_matrix_distance_consistency(base):
     reachable rows, so simply: no returned row may have distance_m == MAX while
     duration_ms is real. Cross-checked against /route on a sample."""
     print("== streamed matrix distance_m computed (not column-wide MAX) (#534) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    MAX = 4294967295
-    # >1M-cell grid → streamed path; sparse → only reachable rows come back.
-    lons = [3.6 + 0.0606 * i for i in range(34)]
-    lats = [50.50 + 0.020 * j for j in range(31)]
-    grid = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+    grid = _streaming_grid()
+    cell_tol = THRESHOLDS["matrix_cell_tol"]
     passed = True
     for mode in ("car", "foot"):
         params = {"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True}
-        try:
-            rd = fl.connect(f"grpc://{host}:{port}").do_get(
-                fl.Ticket(f"matrix:{mode}:{json.dumps(params)}".encode())
-            )
-            rows = 0
-            dur_max = 0
-            dist_max = 0
-            sample = None
-            cells = []  # (src_idx, tgt_idx, dur_ms, dist_m) for /route cross-check
-            for chunk in rd:
-                b = chunk.data
-                if b is None:
+        rows = dur_max = dist_max = 0
+        sample = None
+        cells = []  # (src_idx, tgt_idx, dur_ms, dist_m) for /route cross-check
+        for chunk in flight_reader(base, "matrix", mode, params):
+            b = chunk.data
+            if b is None:
+                continue
+            du = b.column("duration_ms").to_pylist()
+            di = b.column("distance_m").to_pylist()
+            s = b.column("source_idx").to_pylist()
+            t = b.column("target_idx").to_pylist()
+            for k in range(b.num_rows):
+                rows += 1
+                if du[k] == MAX_U32:
+                    dur_max += 1
                     continue
-                du = b.column("duration_ms").to_pylist()
-                di = b.column("distance_m").to_pylist()
-                s = b.column("source_idx").to_pylist()
-                t = b.column("target_idx").to_pylist()
-                for k in range(b.num_rows):
-                    rows += 1
-                    if du[k] == MAX:
-                        dur_max += 1
-                        continue
-                    if di[k] == MAX:
-                        dist_max += 1  # reachable (duration real) but no distance
-                        if sample is None:
-                            sample = (s[k], t[k])
-                    elif s[k] != t[k] and len(cells) < 8 and rows % 137 == 0:
-                        cells.append((s[k], t[k], du[k], di[k]))
-        except Exception as e:
-            print(f"  [SKIP] flight unreachable ({e})")
-            return True
-        passed &= check(
-            f"{mode}: streamed path returns rows",
-            rows > 1000,
-            f"{rows} reachable rows over {len(grid)}² cells",
-        )
-        passed &= check(
-            f"{mode}: every reachable cell has a distance",
-            dist_max == 0,
+                if di[k] == MAX_U32:
+                    dist_max += 1  # reachable (duration real) but no distance
+                    if sample is None:
+                        sample = (s[k], t[k])
+                elif s[k] != t[k] and len(cells) < 8 and rows % 137 == 0:
+                    cells.append((s[k], t[k], du[k], di[k]))
+        passed &= check(f"{mode}: streamed path returns rows", rows > 1000,
+                        f"{rows} reachable rows over {len(grid)}² cells")
+        passed &= check(f"{mode}: every reachable cell has a distance", dist_max == 0,
             f"{dist_max}/{rows} rows have duration but distance_m==MAX (#534 column-wide MAX)"
-            + (f" e.g. {sample}" if sample else ""),
-        )
+            + (f" e.g. {sample}" if sample else ""))
         # CROSS-PATH: streamed matrix cell values must match /route (the small
         # single-query path) — duration AND distance — within tolerance. Catches
         # any streamed-path value divergence (bucket/PHAST/2-channel), not just
@@ -940,342 +1732,13 @@ def gate_matrix_distance_consistency(base):
                 r = route(base, o[0], o[1], d[0], d[1], mode)  # (dur_s, dist_m)
             except Exception:
                 continue
-            dur_ok = abs(dur_ms / 1000.0 - r[0]) <= max(r[0] * 0.02, 1.0)
-            dist_ok = abs(dist_m - r[1]) <= max(r[1] * 0.02, 5.0)
+            dur_ok = abs(dur_ms / 1000.0 - r[0]) <= max(r[0] * cell_tol, 1.0)
+            dist_ok = abs(dist_m - r[1]) <= max(r[1] * cell_tol, 5.0)
             worst = max(worst, abs(dist_m - r[1]) / max(r[1], 1.0))
             if not (dur_ok and dist_ok):
                 bad += 1
-        passed &= check(
-            f"{mode}: streamed cell values == /route",
-            bad == 0 and len(cells) > 0,
-            f"{len(cells)} cells checked, {bad} mismatch (worst dist {worst * 100:.2f}%)",
-        )
-    return passed
-
-
-def gate_all_endpoints_smoke(base):
-    """COVERAGE: ping EVERY REST endpoint and EVERY Flight action so a change
-    that breaks one surface entirely is caught even if you were only touching
-    another. Each must return a valid (non-error) response of the right shape.
-    Optional surfaces (transit, /height) are skipped, not failed, when absent."""
-    print("== all-endpoints smoke: every REST route + Flight action responds ==")
-    import urllib.parse as up
-
-    passed = True
-    o = (4.3517, 50.8503)
-    d = (4.4025, 51.2194)
-
-    # ---- REST ----
-    rest = {
-        "/health": f"{base}/health",
-        "/version": f"{base}/version",
-        "/route": f"{base}/route?origin_lon={o[0]}&origin_lat={o[1]}&destination_lon={d[0]}&destination_lat={d[1]}&mode=car",
-        "/nearest": f"{base}/nearest?lon={o[0]}&lat={o[1]}&mode=car",
-        "/isochrone": f"{base}/isochrone?lon={o[0]}&lat={o[1]}&time_s=300&mode=car",
-    }
-    for name, url in rest.items():
-        try:
-            http_json(url)
-            passed &= check(f"REST {name}", True, "ok")
-        except Exception as e:
-            passed &= check(f"REST {name}", False, f"{e}")
-    # POST /table
-    try:
-        http_json(
-            f"{base}/table",
-            data=json.dumps(
-                {"origins": [list(o), list(d)], "destinations": [list(o), list(d)], "mode": "car", "annotations": "duration,distance"}
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        passed &= check("REST /table", True, "ok")
-    except Exception as e:
-        passed &= check("REST /table", False, f"{e}")
-    # POST /trip
-    try:
-        http_json(
-            f"{base}/trip",
-            data=json.dumps({"points": [list(o), list(d), [4.35, 50.9]], "mode": "car"}).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        passed &= check("REST /trip", True, "ok")
-    except Exception as e:
-        passed &= check("REST /trip", False, f"{e}")
-
-    # ---- Flight ----
-    try:
-        import pyarrow as pa
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available for Flight actions")
-        return passed
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    c = fl.connect(f"grpc://{host}:{port}")
-    pairs = [[o[0], o[1], d[0], d[1]]]
-
-    def do_get_ok(name, ticket):
-        try:
-            tb = c.do_get(fl.Ticket(ticket.encode())).read_all()
-            return check(f"Flight {name}", tb.num_rows >= 0, f"{tb.num_rows} rows")
-        except Exception as e:
-            return check(f"Flight {name}", False, f"{str(e)[:80]}")
-
-    passed &= do_get_ok("matrix", f"matrix:car:{json.dumps({'origins': [list(o)], 'destinations': [list(d)]})}")
-    passed &= do_get_ok("route_batch", f"route_batch:car:{json.dumps({'pairs': pairs})}")
-    passed &= do_get_ok("edges_batch", f"edges_batch:car:{json.dumps({'pairs': pairs})}")
-    passed &= do_get_ok("isochrone", f"isochrone:car:{json.dumps({'lon': o[0], 'lat': o[1], 'intervals': [300], 'interval_type': 'time'})}")
-    # transit_bulk — optional (needs transit subsystem)
-    try:
-        q = {"queries": [{"origin_lon": o[0], "origin_lat": o[1], "destination_lon": d[0], "destination_lat": d[1]}]}
-        c.do_get(fl.Ticket(f"transit_bulk:transit:{json.dumps(q)}".encode())).read_all()
-        passed &= check("Flight transit_bulk", True, "ok")
-    except Exception as e:
-        msg = str(e)
-        if "not loaded" in msg or "FailedPrecondition" in msg or "transit" in msg.lower():
-            print("  [SKIP] Flight transit_bulk: transit subsystem not loaded")
-        else:
-            passed &= check("Flight transit_bulk", False, f"{msg[:80]}")
-    # do_exchange: catchment + edges_flow
-    try:
-        tbl = pa.table({
-            "store_id": pa.array(["s1"]), "store_lon": pa.array([o[0]]), "store_lat": pa.array([o[1]]),
-            "client_lon": pa.array([d[0]]), "client_lat": pa.array([d[1]]),
-        })
-        params = {"percentiles": [50], "hull_shape": "isochrone", "remove_outliers": False, "radius_km": "auto"}
-        w, r = c.do_exchange(fl.FlightDescriptor.for_command(f"catchment:car:{json.dumps(params)}".encode()))
-        w.begin(tbl.schema); w.write_table(tbl); w.done_writing(); r.read_all(); w.close()
-        passed &= check("Flight catchment", True, "ok")
-    except Exception as e:
-        passed &= check("Flight catchment", False, f"{str(e)[:80]}")
-    try:
-        tbl = pa.table({"src_lon": pa.array([o[0]]), "src_lat": pa.array([o[1]]), "dst_lon": pa.array([d[0]]), "dst_lat": pa.array([d[1]])})
-        w, r = c.do_exchange(fl.FlightDescriptor.for_command(b"edges_flow:car"))
-        w.begin(tbl.schema); w.write_table(tbl); w.done_writing(); r.read_all(); w.close()
-        passed &= check("Flight edges_flow", True, "ok")
-    except Exception as e:
-        passed &= check("Flight edges_flow", False, f"{str(e)[:80]}")
-    return passed
-
-
-def gate_route_batch_geometry(base):
-    """#493: foot/bike `route_batch` emitted `geometry_wkb` ~2× the reported
-    distance (polyline doubled/zigzag) while car was fine — a Flight-only
-    regression the REST `/route` coherence gate would miss. Assert the WKB
-    LineString length ≈ distance_m within tol for foot and bike."""
-    print("== route_batch foot/bike geometry_wkb ≈ distance (#493) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
-    passed = True
-    for mode in ("foot", "bike"):
-        try:
-            tb = fl.connect(f"grpc://{host}:{port}").do_get(
-                fl.Ticket(f"route_batch:{mode}:{json.dumps({'pairs': pairs})}".encode())
-            ).read_all()
-        except Exception as e:
-            print(f"  [SKIP] flight unreachable ({e})")
-            return True
-        names = tb.column_names
-        dist_col = "distance_m" if "distance_m" in names else "distance_meters"
-        wkb_col = "geometry_wkb" if "geometry_wkb" in names else "polyline_wkb"
-        if dist_col not in names or wkb_col not in names:
-            passed &= check(f"{mode} schema", False, f"cols={names}")
-            continue
-        d = tb.column(dist_col).to_pylist()
-        w = tb.column(wkb_col).to_pylist()
-        bad = 0
-        worst = 0.0
-        for i in range(tb.num_rows):
-            if d[i] is None or w[i] is None or d[i] <= 0:
-                continue
-            glen = _wkb_linestring_len_m(bytes(w[i]))
-            if glen is None:
-                continue
-            ratio = glen / d[i]
-            worst = max(worst, abs(ratio - 1.0))
-            if abs(glen - d[i]) > d[i] * 0.05:
-                bad += 1
-        passed &= check(
-            f"{mode}: wkb length ≈ distance_m",
-            bad == 0,
-            f"{bad} rows off >5% (worst {worst * 100:.1f}%)",
-        )
-    return passed
-
-
-def gate_route_batch_max_meters(base):
-    """#482/#487: `route_batch` `max_meters` is a server-side prune that DROPS
-    over-bound pairs. Invariant, no constant: the bounded result set must equal
-    exactly {pairs whose unbounded distance ≤ B}, every returned distance ≤ B,
-    and pair_idx preserved (gaps visible)."""
-    print("== route_batch max_meters prune == unbounded ≤ B (#482/#487) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    import math
-
-    rng = random.Random(482)
-    pairs = []
-    for _ in range(120):
-        lon, lat = rng.uniform(3.6, 5.6), rng.uniform(50.5, 51.1)
-        dd, a = rng.uniform(0.01, 0.06), rng.uniform(0, 6.283)
-        pairs.append([lon, lat, round(lon + dd * math.cos(a), 6), round(lat + dd * math.sin(a), 6)])
-
-    def run(extra):
-        params = {"pairs": pairs}
-        params.update(extra)
-        tb = fl.connect(f"grpc://{host}:{port}").do_get(
-            fl.Ticket(f"route_batch:car:{json.dumps(params)}".encode())
-        ).read_all()
-        names = tb.column_names
-        dc = "distance_m" if "distance_m" in names else "distance_meters"
-        pi = tb.column("pair_idx").to_pylist()
-        di = tb.column(dc).to_pylist()
-        return {pi[i]: di[i] for i in range(tb.num_rows) if di[i] is not None}
-
-    try:
-        unb = run({})
-        B = pct([v for v in unb.values()], 0.5)  # median → ~half pruned
-        bnd = run({"max_meters": B})
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
-
-    expected = {k for k, v in unb.items() if v <= B}
-    got = set(bnd.keys())
-    over = [k for k, v in bnd.items() if v > B]
-    passed = True
-    passed &= check("bound actually prunes", 0 < len(got) < len(unb), f"{len(got)}/{len(unb)} kept (B={B:.0f}m)")
-    passed &= check("bounded set == unbounded ≤ B", got == expected, f"got {len(got)} vs expected {len(expected)}")
-    passed &= check("every returned pair ≤ B", len(over) == 0, f"{len(over)} over-bound leaked")
-    return passed
-
-
-def gate_motorway_speed_floor(base):
-    """#450: the motorway/N-road hierarchy de-rated (E411 ~56 km/h vs 120) and
-    emptied motorway corridors. A long inter-city car route is motorway-dominated;
-    its implied MEAN speed must clear a floor — a physical invariant for a
-    motorway corridor, not a measured target. Catches a hierarchy regression that
-    the aggregate ground-truth p50 can hide."""
-    print("== motorway corridor speed floor (#450) ==")
-    # (name, o_lon,o_lat, d_lon,d_lat) — motorway-dominated corridors.
-    corridors = [
-        ("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
-        ("Bxl→Liège (E40)", 4.3517, 50.8503, 5.5671, 50.6326),
-        ("Bxl→Arlon (E411)", 4.3517, 50.8503, 5.8109, 49.6833),
-    ]
-    FLOOR_KMH = 50.0  # conservative floor; #450 pushed corridors to ~40
-    passed = True
-    for name, olon, olat, dlon, dlat in corridors:
-        try:
-            dur, dist = route(base, olon, olat, dlon, dlat, "car")
-            kmh = dist / max(dur, 0.001) * 3.6
-            passed &= check(name, kmh >= FLOOR_KMH, f"{kmh:.0f} km/h (floor {FLOOR_KMH:.0f})")
-        except Exception as e:
-            passed &= check(name, False, f"route failed: {e}")
-    return passed
-
-
-def _decode_polyline6(s):
-    coords, idx, lat, lon = [], 0, 0, 0
-    while idx < len(s):
-        for which in (0, 1):
-            shift = result = 0
-            while True:
-                b = ord(s[idx]) - 63
-                idx += 1
-                result |= (b & 0x1F) << shift
-                shift += 5
-                if b < 0x20:
-                    break
-            d = ~(result >> 1) if result & 1 else result >> 1
-            if which == 0:
-                lat += d
-            else:
-                lon += d
-        coords.append((lon / 1e6, lat / 1e6))
-    return coords
-
-
-def _point_in_ring(pt, ring):
-    x, y = pt
-    inside = False
-    j = len(ring) - 1
-    for i in range(len(ring)):
-        xi, yi = ring[i]
-        xj, yj = ring[j]
-        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
-            inside = not inside
-        j = i
-    return inside
-
-
-# Origins chosen to cover urban, rural, long-edge (#502 Robertville) and
-# off-network snaps. Containment is checked against the SNAPPED point.
-ISO_POINTS = [
-    ("Brussels", 4.3517, 50.8503),
-    ("Antwerp", 4.4025, 51.2194),
-    ("Rixensart", 4.5286, 50.7115),
-    ("Robertville #502", 6.008464, 50.428652),
-    ("Heers #503", 5.30708, 50.75161),
-    ("rural WB", 4.85, 50.55),
-    ("Ardennes", 5.65, 50.10),
-    ("coast", 2.95, 51.20),
-    ("Ghent", 3.7174, 51.0543),
-    ("Berloz #503", 5.211554, 50.709124),
-]
-
-
-def gate_edges_batch(base):
-    """#512: edges_batch per-edge duration sums must match /route (plus the
-    documented full first/last-edge emission — bounded by 2 edges' worth)."""
-    print("== edges_batch vs /route (ticket fixtures) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    # Flight port convention: REST port + 1 (dev container maps 3011).
-    import urllib.parse as up
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    try:
-        client = fl.connect(f"grpc://{host}:{port}")
-        pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
-        t = fl.Ticket(f"edges_batch:car:{json.dumps({'pairs': pairs})}".encode())
-        tb = client.do_get(t).read_all()
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
-    sums = {}
-    qi, du = tb.column("query_idx"), tb.column("duration_ms")
-    for i in range(tb.num_rows):
-        k = qi[i].as_py()
-        sums[k] = sums.get(k, 0.0) + du[i].as_py() / 1000.0
-    passed = True
-    for idx, f in enumerate(FIXTURES):
-        got = sums.get(idx)
-        # Invariant, no stored constant: the per-edge sum must agree with the
-        # LIVE /route duration for the same pair — >= route (edges are whole,
-        # the route clips partials) but within +45% (2 extra rural edge
-        # halves); the #502 detour fingerprint was 2-3.5x.
-        exp, _ = route(base, f[1], f[2], f[3], f[4])
-        ok = got is not None and exp * 0.9 <= got <= exp * 1.45
-        passed &= check(f"{f[0]} edges", ok, f"sum {got:.0f}s (route {exp:.0f}s)" if got else "no rows")
+        passed &= check(f"{mode}: streamed cell values == /route", bad == 0 and len(cells) > 0,
+                        f"{len(cells)} cells checked, {bad} mismatch (worst dist {worst * 100:.2f}%)")
     return passed
 
 
@@ -1290,59 +1753,25 @@ def gate_matrix_sparse(base):
     A regression that dropped a reachable row, kept a sentinel, or changed a
     value would break one of these."""
     print("== Flight matrix sparse == dense minus sentinels (#532) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    MAX = 4294967295
     pts = [[p[1], p[2]] for p in ISO_POINTS]  # 10 spread-out Belgium points
 
     def fetch(sparse):
-        params = {
-            "origins": pts,
-            "destinations": pts,
-            "radius_km": 20,
-            "sparse": sparse,
-        }
-        t = fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
-        tb = fl.connect(f"grpc://{host}:{port}").do_get(t).read_all()
-        s, d, dur = tb.column("source_idx"), tb.column("target_idx"), tb.column("duration_ms")
-        cells = {(s[i].as_py(), d[i].as_py()): dur[i].as_py() for i in range(tb.num_rows)}
-        return cells, tb.num_rows
+        return flight_matrix_cells(base, "car",
+            {"origins": pts, "destinations": pts, "radius_km": 20, "sparse": sparse})
 
-    try:
-        dense, dense_n = fetch(False)
-        sp, _sp_n = fetch(True)
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
-
+    dense, dense_n = fetch(False)
+    sp, _sp_n = fetch(True)
     n = len(pts)
-    dense_real = {k: v for k, v in dense.items() if v != MAX}
-    passed = True
-    passed &= check("dense is full grid", dense_n == n * n, f"{dense_n} rows (expect {n * n})")
-    passed &= check(
-        "fixture actually prunes",
-        0 < len(dense_real) < dense_n,
-        f"{dense_n - len(dense_real)} sentinels, {len(dense_real)} real of {dense_n}",
-    )
-    leaked = sum(1 for v in sp.values() if v == MAX)
+    dense_real = {k: v for k, v in dense.items() if v != MAX_U32}
+    passed = check("dense is full grid", dense_n == n * n, f"{dense_n} rows (expect {n * n})")
+    passed &= check("fixture actually prunes", 0 < len(dense_real) < dense_n,
+        f"{dense_n - len(dense_real)} sentinels, {len(dense_real)} real of {dense_n}")
+    leaked = sum(1 for v in sp.values() if v == MAX_U32)
     passed &= check("sparse emits no sentinels", leaked == 0, f"{leaked} sentinel rows leaked")
-    passed &= check(
-        "sparse keys == dense non-sentinel keys",
-        set(sp.keys()) == set(dense_real.keys()),
-        f"sparse {len(sp)} vs dense-real {len(dense_real)}",
-    )
-    passed &= check(
-        "sparse values identical to dense",
-        all(sp.get(k) == v for k, v in dense_real.items()),
-        "all surviving pairs match dense",
-    )
+    passed &= check("sparse keys == dense non-sentinel keys", set(sp.keys()) == set(dense_real.keys()),
+        f"sparse {len(sp)} vs dense-real {len(dense_real)}")
+    passed &= check("sparse values identical to dense", all(sp.get(k) == v for k, v in dense_real.items()),
+        "all surviving pairs match dense")
     return passed
 
 
@@ -1356,60 +1785,27 @@ def gate_matrix_sparse_streaming(base):
     No dense comparison here (1M+ dense rows over the wire is the very cost this
     ticket removes) — the unit tests carry the full dense/sparse equivalence."""
     print("== Flight matrix sparse STREAMING path (>1M cells, #532) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
-    MAX = 4294967295
-    # A deterministic ~34×31 grid kept INSIDE Belgium's routable box = 1054
-    # points; 1054² ≈ 1.11M cells > the 1M bucket-M2M threshold, so do_matrix
-    # takes the tiled stream. Coordinates stay clear of the borders: a point
-    # OUTSIDE the BE region hard-errors the matrix request (region dispatch),
-    # whereas an in-region off-network point is silently dropped — we want the
-    # latter, never the former.
-    lons = [3.6 + 0.0606 * i for i in range(34)]  # ~3.60–5.60
-    lats = [50.50 + 0.020 * j for j in range(31)]  # ~50.50–51.10
-    pts = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
+    pts = _streaming_grid()
     n = len(pts)
     params = {"origins": pts, "destinations": pts, "radius_km": 6, "sparse": True}
-    try:
-        rd = fl.connect(f"grpc://{host}:{port}").do_get(
-            fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
-        )
-        rows = 0
-        sentinels = 0
-        batches = 0
-        empty = 0
-        for chunk in rd:
-            b = chunk.data
-            if b is None:
-                # #533 completeness trailer: app_metadata-only, no data body.
-                # Chunk-iterating clients MUST skip it (read_all ignores it).
-                continue
-            batches += 1
-            if b.num_rows == 0:
-                empty += 1
-            rows += b.num_rows
-            sentinels += sum(1 for v in b.column("duration_ms").to_pylist() if v == MAX)
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
-
+    rows = sentinels = batches = empty = 0
+    for chunk in flight_reader(base, "matrix", "car", params):
+        b = chunk.data
+        if b is None:
+            # #533 completeness trailer: app_metadata-only, no data body.
+            # Chunk-iterating clients MUST skip it (read_all ignores it).
+            continue
+        batches += 1
+        if b.num_rows == 0:
+            empty += 1
+        rows += b.num_rows
+        sentinels += sum(1 for v in b.column("duration_ms").to_pylist() if v == MAX_U32)
     cells = n * n
-    passed = True
-    passed &= check("took the streaming path", batches > 1, f"{batches} batches for {cells} cells")
+    passed = check("took the streaming path", batches > 1, f"{batches} batches for {cells} cells")
     passed &= check("no sentinels streamed", sentinels == 0, f"{sentinels} sentinel rows")
     passed &= check("no empty batches streamed", empty == 0, f"{empty} empty batches")
-    passed &= check(
-        "sparse << dense",
-        0 < rows < cells // 2,
-        f"{rows} rows of {cells} cells ({100 * (1 - rows / cells):.1f}% dropped)",
-    )
+    passed &= check("sparse << dense", 0 < rows < cells // 2,
+        f"{rows} rows of {cells} cells ({100 * (1 - rows / cells):.1f}% dropped)")
     return passed
 
 
@@ -1422,66 +1818,27 @@ def gate_matrix_completeness(base):
     path, and a sparse response — the trailer must be present in all three and
     its count must reconcile with the decoded rows."""
     print("== Flight matrix completeness trailer (#533/#532) ==")
-    try:
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
-
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
     pts = [[p[1], p[2]] for p in ISO_POINTS]
 
     def probe(params, label, want_contract):
-        # Iterate chunks so we see BOTH the record batches and the trailing
-        # app_metadata (read_all() would discard the metadata).
-        reader = fl.connect(f"grpc://{host}:{port}").do_get(
-            fl.Ticket(f"matrix:car:{json.dumps(params)}".encode())
-        )
-        rows = 0
-        meta = None
-        for chunk in reader:
-            if getattr(chunk, "data", None) is not None:
-                rows += chunk.data.num_rows
-            am = getattr(chunk, "app_metadata", None)
-            if am:
-                meta = json.loads(bytes(am))
-        ok_present = meta is not None
-        ok_complete = bool(meta and meta.get("complete") is True)
-        ok_count = bool(meta and meta.get("total_rows") == rows)
-        ok_contract = bool(meta and meta.get("contract") == want_contract)
-        p = True
-        p &= check(f"{label}: trailer present", ok_present, f"meta={meta}")
-        p &= check(f"{label}: complete:true", ok_complete, f"meta={meta}")
-        p &= check(f"{label}: total_rows=={rows} decoded", ok_count, f"meta={meta}")
-        p &= check(f"{label}: contract={want_contract}", ok_contract, f"meta={meta}")
+        rows, meta = flight_rows_meta(base, "matrix", "car", params)
+        p = check(f"{label}: trailer present", meta is not None, f"meta={meta}")
+        p &= check(f"{label}: complete:true", bool(meta and meta.get("complete") is True), f"meta={meta}")
+        p &= check(f"{label}: total_rows=={rows} decoded", bool(meta and meta.get("total_rows") == rows),
+            f"meta={meta}")
+        p &= check(f"{label}: contract={want_contract}",
+            bool(meta and meta.get("contract") == want_contract),
+            f"meta={meta}")
         return p
 
-    try:
-        passed = True
-        # small path, dense
-        passed &= probe(
-            {"origins": pts, "destinations": pts}, "small dense", "dense"
-        )
-        # small path, sparse
-        passed &= probe(
-            {"origins": pts, "destinations": pts, "radius_km": 20, "sparse": True},
-            "small sparse",
-            "sparse",
-        )
-        # streaming path (>1M cells), dense — the #533 repro shape
-        lons = [3.6 + 0.0606 * i for i in range(34)]
-        lats = [50.50 + 0.020 * j for j in range(31)]
-        grid = [[round(lo, 5), round(la, 5)] for lo in lons for la in lats]
-        passed &= probe(
-            {"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True},
-            "streaming sparse",
-            "sparse",
-        )
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
+    passed = probe({"origins": pts, "destinations": pts}, "small dense", "dense")
+    passed &= probe({"origins": pts, "destinations": pts, "radius_km": 20, "sparse": True}, "small sparse",
+        "sparse")
+    # streaming path (>1M cells) — the #533 repro shape
+    grid = _streaming_grid()
+    passed &= probe({"origins": grid, "destinations": grid, "radius_km": 6, "sparse": True},
+        "streaming sparse",
+        "sparse")
     return passed
 
 
@@ -1493,757 +1850,125 @@ def gate_flight_completeness(base):
     reconciles the trailer's row/pair count against what was decoded. matrix is
     covered by gate_matrix_completeness."""
     print("== Flight completeness trailer: route_batch / edges_batch / edges_flow (#533) ==")
-    try:
-        import pyarrow as pa
-        import pyarrow.flight as fl
-    except ImportError:
-        print("  [SKIP] pyarrow not available")
-        return True
-    import urllib.parse as up
+    import pyarrow as pa
 
-    host = up.urlparse(base).hostname or "localhost"
-    port = (up.urlparse(base).port or 8080) + 1
     pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
 
     def probe_do_get(action, params, label):
-        reader = fl.connect(f"grpc://{host}:{port}").do_get(
-            fl.Ticket(f"{action}:car:{json.dumps(params)}".encode())
-        )
-        rows = 0
-        meta = None
-        for chunk in reader:
-            if getattr(chunk, "data", None) is not None:
-                rows += chunk.data.num_rows
-            am = getattr(chunk, "app_metadata", None)
-            if am:
-                meta = json.loads(bytes(am))
-        p = True
-        p &= check(f"{label}: trailer present", meta is not None, f"meta={meta}")
+        rows, meta = flight_rows_meta(base, action, "car", params)
+        p = check(f"{label}: trailer present", meta is not None, f"meta={meta}")
         p &= check(f"{label}: complete:true", bool(meta and meta.get("complete")), f"meta={meta}")
-        p &= check(
-            f"{label}: total_rows=={rows}",
-            bool(meta and meta.get("total_rows") == rows),
-            f"meta={meta}",
-        )
+        p &= check(f"{label}: total_rows=={rows}", bool(meta and meta.get("total_rows") == rows),
+            f"meta={meta}")
         return p
 
-    try:
-        passed = True
-        passed &= probe_do_get("route_batch", {"pairs": pairs}, "route_batch")
-        passed &= probe_do_get("edges_batch", {"pairs": pairs}, "edges_batch")
+    passed = probe_do_get("route_batch", {"pairs": pairs}, "route_batch")
+    passed &= probe_do_get("edges_batch", {"pairs": pairs}, "edges_batch")
 
-        # edges_flow (do_exchange): the summary carries complete:true and is
-        # sent only after every chunk streamed.
-        tbl = pa.table(
-            {
-                "src_lon": pa.array([p[0] for p in pairs]),
-                "src_lat": pa.array([p[1] for p in pairs]),
-                "dst_lon": pa.array([p[2] for p in pairs]),
-                "dst_lat": pa.array([p[3] for p in pairs]),
-            }
-        )
-        desc = fl.FlightDescriptor.for_command(b"edges_flow:car")
-        client = fl.connect(f"grpc://{host}:{port}")
-        writer, reader = client.do_exchange(desc)
-        writer.begin(tbl.schema)
-        writer.write_table(tbl)
-        writer.done_writing()
-        meta = None
-        for chunk in reader:
-            am = getattr(chunk, "app_metadata", None)
-            if am:
-                meta = json.loads(bytes(am))
-        writer.close()
-        passed &= check(
-            "edges_flow: complete:true summary",
-            bool(meta and meta.get("complete")),
-            f"meta={meta}",
-        )
-    except Exception as e:
-        print(f"  [SKIP] flight unreachable ({e})")
-        return True
+    # edges_flow (do_exchange): the summary carries complete:true and is
+    # sent only after every chunk streamed.
+    tbl = pa.table({"src_lon": pa.array([p[0] for p in pairs]), "src_lat": pa.array([p[1] for p in pairs]),
+                    "dst_lon": pa.array([p[2] for p in pairs]), "dst_lat": pa.array([p[3] for p in pairs])})
+    _rows, meta = _exchange(base, b"edges_flow:car", tbl)
+    passed &= check("edges_flow: complete:true summary", bool(meta and meta.get("complete")), f"meta={meta}")
     return passed
 
 
-def gate_close_pairs(base, n_pairs=150):
-    import math
-
-    print(f"== close-pair route==table ({n_pairs} pairs, 50-400 m) ==")
-    rng = random.Random(123)
-    tol = THRESHOLDS["consistency_tolerance_s"]
-    worst = 0.0
-    tested = 0
-    zeros = 0
-    mism = 0
-    for _ in range(n_pairs):
-        lon, lat = rng.uniform(3.5, 5.8), rng.uniform(50.3, 51.2)
-        d, a = rng.uniform(0.0005, 0.004), rng.uniform(0, 6.283)
-        p = (
-            round(lon, 6),
-            round(lat, 6),
-            round(lon + d * math.cos(a), 6),
-            round(lat + d * math.sin(a), 6),
-        )
-        try:
-            dur_r, _ = route(base, p[0], p[1], p[2], p[3])
-            body = json.dumps(
-                {
-                    "origins": [[p[0], p[1]]],
-                    "destinations": [[p[2], p[3]]],
-                    "mode": "car",
-                    "annotations": "duration",
-                }
-            ).encode()
-            tab = http_json(
-                f"{base}/table", data=body, headers={"Content-Type": "application/json"}
-            )
-            dur_t = tab["durations"][0][0]
-        except Exception:
-            continue
-        if dur_t is None:
-            continue
-        tested += 1
-        delta = abs(dur_r - dur_t)
-        worst = max(worst, delta)
-        if delta > tol:
-            mism += 1
-        # a sub-second answer while the other side needs >10 s is the
-        # fingerprint of the 0-second bug class
-        if (dur_r < 1 and dur_t > 10) or (dur_t is not None and dur_t < 1 and dur_r > 10):
-            zeros += 1
-    ok = zeros == 0 and mism <= 2 and tested >= 80
-    return check(
-        "close pairs",
-        ok,
-        f"{tested} pairs, {zeros} zero-bugs, {mism} >{tol}s (max 2), worst {worst:.1f}s",
-    )
-
-
-def gate_isochrone(base):
-    print("== isochrone snapped-origin containment (#497/#506) ==")
+def gate_edges_batch(base):
+    """#512: edges_batch per-edge duration sums must match /route (plus the
+    documented full first/last-edge emission — bounded by 2 edges' worth)."""
+    print("== edges_batch vs /route (ticket fixtures) ==")
+    pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
+    tb = flight_table(base, "edges_batch", "car", {"pairs": pairs})
+    sums = {}
+    qi, du = tb.column("query_idx"), tb.column("duration_ms")
+    for i in range(tb.num_rows):
+        k = qi[i].as_py()
+        sums[k] = sums.get(k, 0.0) + du[i].as_py() / 1000.0
+    lo, hi = THRESHOLDS["edges_sum_bounds"]
     passed = True
-    for mode, time_s in (("car", 600), ("foot", 1800)):
-        ok = 0
-        fails = []
-        for name, lon, lat in ISO_POINTS:
-            try:
-                d = http_json(
-                    f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}"
-                )
-                rings = [
-                    _decode_polyline6(c["polygon"])
-                    for c in d.get("contours", [])
-                    if c.get("polygon")
-                ]
-                n = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
-                sp = tuple(n["waypoints"][0]["location"])
-            except Exception as e:
-                fails.append(f"{name}: {e}")
-                continue
-            if any(_point_in_ring(sp, r) for r in rings):
-                ok += 1
-            else:
-                fails.append(name)
-        for f in fails[:5]:
-            print(f"    not contained: {f}")
-        passed &= check(
-            f"containment {mode}",
-            ok == len(ISO_POINTS),
-            f"{ok}/{len(ISO_POINTS)} ({time_s}s)",
-        )
+    for idx, f in enumerate(FIXTURES):
+        got = sums.get(idx)
+        # Invariant, no stored constant: the per-edge sum must agree with the
+        # LIVE /route duration for the same pair — >= route (edges are whole,
+        # the route clips partials) but within +45% (2 extra rural edge
+        # halves); the #502 detour fingerprint was 2-3.5x.
+        exp, _ = route(base, f[1], f[2], f[3], f[4])
+        ok = got is not None and exp * lo <= got <= exp * hi
+        passed &= check(f"{f[0]} edges", ok, f"sum {got:.0f}s (route {exp:.0f}s)" if got else "no rows")
     return passed
 
 
-def _wkb_multipolygon(buf):
-    """Parse WKB Polygon (3) or MultiPolygon (6) into
-    [[outer, hole, hole, ...], ...] of (lon, lat) rings. Stdlib-only."""
-    def rd_poly(off, e):
-        nrings = struct.unpack_from(e + "I", buf, off)[0]
-        off += 4
-        rings = []
-        for _ in range(nrings):
-            npts = struct.unpack_from(e + "I", buf, off)[0]
-            off += 4
-            ring = [struct.unpack_from(e + "dd", buf, off + 16 * i) for i in range(npts)]
-            off += 16 * npts
-            rings.append(ring)
-        return rings, off
-    e = "<" if buf[0] == 1 else ">"
-    gtype = struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
-    if gtype == 3:
-        return [rd_poly(5, e)[0]]
-    if gtype == 6:
-        n = struct.unpack_from(e + "I", buf, 5)[0]
-        off = 9
-        polys = []
-        for _ in range(n):
-            e2 = "<" if buf[off] == 1 else ">"
-            t2 = struct.unpack_from(e2 + "I", buf, off + 1)[0] & 0xFF
-            assert t2 == 3, f"MultiPolygon part of type {t2}"
-            rings, off = rd_poly(off + 5, e2)
-            polys.append(rings)
-        return polys
-    return []
-
-
-def _ring_area2(ring):
-    s = 0.0
-    n = len(ring)
-    for i in range(n):
-        x1, y1 = ring[i]
-        x2, y2 = ring[(i + 1) % n]
-        s += x1 * y2 - x2 * y1
-    return s
-
-
-def _dist_to_ring_m(p, ring):
-    """Metres from (lon, lat) `p` to the nearest SIDE of `ring` — not to its
-    vertices: after Douglas-Peucker a straight 450 m side has no vertex near a
-    road that grazes it, and a vertex-distance reports ~200 m for a point
-    5 m off the boundary."""
-    kx = 111_320.0 * math.cos(math.radians(p[1]))
-    ky = 110_540.0
-    best = float("inf")
-    px, py = 0.0, 0.0
-    for i in range(len(ring) - 1):
-        ax, ay = (ring[i][0] - p[0]) * kx, (ring[i][1] - p[1]) * ky
-        bx, by = (ring[i + 1][0] - p[0]) * kx, (ring[i + 1][1] - p[1]) * ky
-        dx, dy = bx - ax, by - ay
-        l2 = dx * dx + dy * dy
-        t = 0.0 if l2 == 0.0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / l2))
-        cx, cy = ax + t * dx - px, ay + t * dy - py
-        d = math.hypot(cx, cy)
-        if d < best:
-            best = d
-    return best
-
-
-def gate_isochrone_topology(base):
-    """2026-09-03 (#535/#542 root cause): the contour used to keep ONE ring —
-    every hole and every detached reachable component was silently dropped,
-    and 1-cell corridors traced as zero-width spikes. Invariants, no measured
-    constants:
-      * WKB parses as Polygon/MultiPolygon; every ring is closed, has ≥ 4
-        points, no consecutive duplicates, no immediate backtrack (a,b,a) —
-        the zero-width-spur signature;
-      * outer rings CCW, holes CW (RFC 7946), each hole strictly inside its
-        outer ring and never containing the origin;
-      * the snapped origin lies in the PRIMARY (first) polygon;
-      * self-consistency: the engine's own reachable network (include=network)
-        is represented — at most 1.5% of its vertices lie > 150 m outside every
-        polygon (sub-300 m detached stubs are deliberately not drawn);
-      * `geometries=geojson` carries a `geometry` object whose ring count
-        matches the WKB."""
-    print("== isochrone topology: ONE simple polygon, no spurs, faithful to the network (2026-09-03) ==")
+def gate_route_batch_geometry(base):
+    """#493: foot/bike `route_batch` emitted `geometry_wkb` ~2× the reported
+    distance (polyline doubled/zigzag) while car was fine — a Flight-only
+    regression the REST `/route` coherence gate would miss. Assert the WKB
+    LineString length ≈ distance_m within tol for foot and bike."""
+    print("== route_batch foot/bike geometry_wkb ≈ distance (#493) ==")
+    pairs = [[f[1], f[2], f[3], f[4]] for f in FIXTURES]
+    tol = THRESHOLDS["wkb_len_tol"]
     passed = True
-    mode, time_s = "car", 600
-    n_ok = 0
-    n = 0
-    far_total = 0
-    verts_total = 0
-    details = []
-    for name, lon, lat in ISO_POINTS:
-        try:
-            req = urllib.request.Request(
-                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}",
-                headers={"Accept": "application/octet-stream"},
-            )
-            with urllib.request.urlopen(req, timeout=120) as r:
-                wkb = r.read()
-            polys = _wkb_multipolygon(wkb)
-            sp_j = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode={mode}")
-            sp = tuple(sp_j["waypoints"][0]["location"])
-            net = http_json(
-                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}&include=network"
-            ).get("network", [])
-            gj = http_json(
-                f"{base}/isochrone?lon={lon}&lat={lat}&time_s={time_s}&mode={mode}&geometries=geojson"
-            )
-        except Exception as ex:
-            details.append(f"{name}: {ex}")
+    for mode in ("foot", "bike"):
+        tb = flight_table(base, "route_batch", mode, {"pairs": pairs})
+        names = tb.column_names
+        dist_col = "distance_m" if "distance_m" in names else "distance_meters"
+        wkb_col = "geometry_wkb" if "geometry_wkb" in names else "polyline_wkb"
+        if dist_col not in names or wkb_col not in names:
+            passed &= check(f"{mode} schema", False, f"cols={names}")
             continue
-        n += 1
-        ok = bool(polys)
-        why = []
-        # Product rule (2026-09-03): an isochrone IS one simple polygon —
-        # a MultiPolygon of fragments or a polygon with holes is a defect.
-        e = "<" if wkb[0] == 1 else ">"
-        if (struct.unpack_from(e + "I", wkb, 1)[0] & 0xFF) != 3 or len(polys) != 1:
-            ok = False; why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
-        elif len(polys[0]) != 1:
-            ok = False; why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
-        for pi, rings in enumerate(polys):
-            for ri, ring in enumerate(rings):
-                if len(ring) < 4 or ring[0] != ring[-1]:
-                    ok = False; why.append(f"p{pi}r{ri}: not a closed ring of ≥4 points")
-                body = ring[:-1]
-                if any(body[i] == body[(i + 1) % len(body)] for i in range(len(body))):
-                    ok = False; why.append(f"p{pi}r{ri}: consecutive duplicate vertex")
-                if any(body[i] == body[(i + 2) % len(body)] for i in range(len(body))):
-                    ok = False; why.append(f"p{pi}r{ri}: zero-width spur (a,b,a)")
-                a2 = _ring_area2(body)
-                if ri == 0 and a2 <= 0:
-                    ok = False; why.append(f"p{pi}: outer ring not CCW")
-                if ri > 0:
-                    if a2 >= 0:
-                        ok = False; why.append(f"p{pi}r{ri}: hole not CW")
-                    if not _point_in_ring(body[0], rings[0][:-1]):
-                        ok = False; why.append(f"p{pi}r{ri}: hole outside its outer ring")
-                    if _point_in_ring(sp, body):
-                        ok = False; why.append(f"p{pi}r{ri}: hole contains the origin")
-        if polys and not _point_in_ring(sp, polys[0][0][:-1]):
-            ok = False; why.append("origin not in the primary polygon")
-        # self-consistency vs the engine's own reachable network
-        pts = [tuple(p) for seg in net for p in seg][::3]
-        far = 0
-        for p in pts:
-            inside = any(
-                _point_in_ring(p, rings[0][:-1]) and not any(_point_in_ring(p, h[:-1]) for h in rings[1:])
-                for rings in polys
-            )
-            if inside:
+        d = tb.column(dist_col).to_pylist()
+        w = tb.column(wkb_col).to_pylist()
+        bad = 0
+        worst = 0.0
+        for i in range(tb.num_rows):
+            if d[i] is None or w[i] is None or d[i] <= 0:
                 continue
-            dmin = min((_dist_to_ring_m(p, rings[0]) for rings in polys), default=1e9)
-            if dmin > 150.0:
-                far += 1
-        far_total += far
-        verts_total += len(pts)
-        # 1.5 %: detached reach smaller than ~300 m across (crumb filter,
-        # COMPONENT_MIN_AREA_CELLS) is deliberately not drawn — measured
-        # 1.07-1.12 % at rural origins, 0.0-0.2 % urban. The pre-fix engine
-        # lost 0.62 % beyond 150 m AND 9.57 % within 150 m of the boundary.
-        if pts and far / len(pts) > 0.015:
-            ok = False; why.append(f"{far}/{len(pts)} reachable vertices > 150 m outside")
-        # every EXTRA component must hold reachable network — a polygon with
-        # no reachable road inside is confetti (a mis-oriented frontier
-        # fragment, #542), not a place you drove to.
-        for pi, rings in enumerate(polys[1:], start=1):
-            if not any(_point_in_ring(p, rings[0][:-1]) for p in pts):
-                ok = False; why.append(f"p{pi}: component without any reachable network")
-                break
-        g = (gj.get("contours") or [{}])[0].get("geometry")
-        if not g:
-            ok = False; why.append("geojson: no `geometry` object")
-        else:
-            gr = sum(len(p) for p in g["coordinates"]) if g["type"] == "MultiPolygon" else len(g["coordinates"])
-            wr = sum(len(rings) for rings in polys)
-            if gr != wr:
-                ok = False; why.append(f"geojson rings {gr} != wkb rings {wr}")
-        if ok:
-            n_ok += 1
-        else:
-            details.append(f"{name}: " + "; ".join(why[:3]))
-    for d in details[:6]:
-        print(f"    {d}")
+            glen = wkb_linestring_len_m(bytes(w[i]))
+            if glen is None:
+                continue
+            worst = max(worst, abs(glen / d[i] - 1.0))
+            if abs(glen - d[i]) > d[i] * tol:
+                bad += 1
+        passed &= check(f"{mode}: wkb length ≈ distance_m", bad == 0,
+            f"{bad} rows off >{tol * 100:.0f}% (worst {worst * 100:.1f}%)")
+    return passed
+
+
+def gate_route_batch_max_meters(base):
+    """#482/#487: `route_batch` `max_meters` is a server-side prune that DROPS
+    over-bound pairs. Invariant, no constant: the bounded result set must equal
+    exactly {pairs whose unbounded distance ≤ B}, every returned distance ≤ B,
+    and pair_idx preserved (gaps visible)."""
+    print("== route_batch max_meters prune == unbounded ≤ B (#482/#487) ==")
+    rng = random.Random(482)
+    pairs = []
+    for _ in range(120):
+        lon, lat = rng.uniform(3.6, 5.6), rng.uniform(50.5, 51.1)
+        dd, a = rng.uniform(0.01, 0.06), rng.uniform(0, 6.283)
+        pairs.append([lon, lat, round(lon + dd * math.cos(a), 6), round(lat + dd * math.sin(a), 6)])
+
+    def run(extra):
+        params = {"pairs": pairs}
+        params.update(extra)
+        tb = flight_table(base, "route_batch", "car", params)
+        names = tb.column_names
+        dc = "distance_m" if "distance_m" in names else "distance_meters"
+        pi = tb.column("pair_idx").to_pylist()
+        di = tb.column(dc).to_pylist()
+        return {pi[i]: di[i] for i in range(tb.num_rows) if di[i] is not None}
+
+    unb = run({})
+    B = pct(list(unb.values()), 0.5)  # median → ~half pruned
+    bnd = run({"max_meters": B})
+    expected = {k for k, v in unb.items() if v <= B}
+    got = set(bnd.keys())
+    over = [k for k, v in bnd.items() if v > B]
+    passed = check(
+        "bound actually prunes", 0 < len(got) < len(unb), f"{len(got)}/{len(unb)} kept (B={B:.0f}m)")
     passed &= check(
-        f"{mode} {time_s}s: valid topology at every origin",
-        n > 0 and n_ok == n,
-        f"{n_ok}/{n} origins; network vertices > 150 m outside: "
-        f"{far_total}/{verts_total} ({100.0 * far_total / max(verts_total, 1):.2f}%)",
-    )
+        "bounded set == unbounded ≤ B", got == expected, f"got {len(got)} vs expected {len(expected)}")
+    passed &= check("every returned pair ≤ B", len(over) == 0, f"{len(over)} over-bound leaked")
     return passed
-
-
-def gate_isochrone_reach_truth(base):
-    """2026-09-03: the polygon must reproduce the ENGINE's reach — both ways —
-    with `/table` as the independent truth (found via #543: PHAST labels are
-    HEAD arrivals; the stamp counted an edge's weight twice, cut every fast
-    boundary edge one weight early and never drew the true frontier: 4-6 % of
-    rural road points >150 m outside the polygon were reachable within T).
-      (a) inside: the exposed vertices of the served network (last point of
-          each polyline) are reachable within 1.02 T (≥ 99 %; the rest is
-          /table snapping onto a neighbouring edge);
-      (b) outside: road points > 150 m outside the polygon (taken from the
-          1.4 T network) are NOT reachable within 0.95 T (≤ 0.5 %).
-    depart = origin→point, arrive = point→origin."""
-    import json as _json, random as _random
-    print("== isochrone ≡ engine reach (/table truth, depart + arrive) (2026-09-03) ==")
-    passed = True
-    mode, T = "car", 600
-
-    def table(origins, dests):
-        body = _json.dumps({"origins": origins, "destinations": dests, "mode": mode,
-                            "annotations": "duration"}).encode()
-        req = urllib.request.Request(f"{base}/table", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return _json.load(r)["durations"]
-
-    for direction in ("depart", "arrive"):
-        n_in = n_in_over = n_out = n_out_reached = 0
-        worst_out = None
-        details = []
-        for name, lon, lat in ISO_POINTS:
-            try:
-                q = f"lon={lon}&lat={lat}&mode={mode}&direction={direction}"
-                req = urllib.request.Request(f"{base}/isochrone?{q}&time_s={T}",
-                                             headers={"Accept": "application/octet-stream"})
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    polys = _wkb_multipolygon(r.read())
-                ring = polys[0][0]
-                net = http_json(f"{base}/isochrone?{q}&time_s={T}&include=network").get("network", [])
-                big = http_json(f"{base}/isochrone?{q}&time_s={int(T * 1.4)}&include=network").get("network", [])
-            except Exception as ex:
-                details.append(f"{name}: {ex}")
-                continue
-            rnd = _random.Random(7)
-            ends = [tuple(s[-1]) for s in net]
-            rnd.shuffle(ends)
-            ends = ends[:150]
-            pts = [tuple(p) for s in big for p in s]
-            rnd.shuffle(pts)
-            far = []
-            for p in pts:
-                if len(far) >= 150:
-                    break
-                if _point_in_ring(p, ring[:-1]):
-                    continue
-                if _dist_to_ring_m(p, ring) > 150.0:
-                    far.append(p)
-            if direction == "depart":
-                d_in = table([[lon, lat]], [list(e) for e in ends])[0]
-                d_out = table([[lon, lat]], [list(p) for p in far])[0] if far else []
-            else:
-                d_in = [row[0] for row in table([list(e) for e in ends], [[lon, lat]])]
-                d_out = [row[0] for row in table([list(p) for p in far], [[lon, lat]])] if far else []
-            d_in = [x for x in d_in if x is not None]
-            d_out = [x for x in d_out if x is not None]
-            n_in += len(d_in)
-            n_in_over += sum(1 for x in d_in if x > 1.02 * T)
-            n_out += len(d_out)
-            reached = [x for x in d_out if x <= 0.95 * T]
-            n_out_reached += len(reached)
-            if reached:
-                m = min(reached)
-                if worst_out is None or m < worst_out[0]:
-                    worst_out = (m, name)
-                details.append(f"{name}: {len(reached)}/{len(d_out)} outside road points reachable ≤ 0.95T (min {m:.0f} s)")
-        for d in details[:4]:
-            print(f"    {d}")
-        ok_in = n_in > 0 and n_in_over <= max(1, n_in // 100)
-        ok_out = n_out_reached <= max(1, n_out // 200)
-        passed &= check(
-            f"{direction} {T}s: served network reachable within 1.02T",
-            ok_in, f"{n_in - n_in_over}/{n_in} vertices",
-        )
-        passed &= check(
-            f"{direction} {T}s: nothing reachable ≤ 0.95T lies > 150 m outside",
-            ok_out,
-            f"{n_out_reached}/{n_out} road points" + (f", earliest {worst_out[0]:.0f} s at {worst_out[1]}" if worst_out else ""),
-        )
-    return passed
-
-
-def _ref_trips(path):
-    """Reference trips CSV (local file under $BUTTERFLY_REFS_DIR) → list of dicts."""
-    import csv as _csv
-    with open(path) as f:
-        return list(_csv.DictReader(f))
-
-
-def gate_bands(base, refs_prefix, flight_base=None):
-    """best / typical / worst (2026-09-03). ONE public car profile = typical
-    (weekday 07-19 h), two opt-in bands on the same artefact: best = nights
-    (free-flow), worst = weekday peaks. Invariants:
-      (a) every API serves the bands on request: REST /route, /table (1×n,
-          n×1, n×n), /trip, /isochrone; Flight matrix, route_batch,
-          isochrone (`band` column, typical rows first);
-      (b) ordering with a REAL spread: best ≤ typical ≤ worst per cell /
-          route; isochrone best ⊇ typical ⊇ worst (areas); median
-          worst/best over the reference trips ≥ 1.10;
-      (c) level: median(engine/reference) within ±6 % for each profile
-          against its own TIME-STAMPED reference set (observed historic times
-          in the same window; the old 1 000 trips carried no hour and were
-          free-flow), and typical within ±10 % on Brussels-internal pairs.
-    """
-    import json as _json, statistics as _st
-    print("== best / typical / worst bands: every API, ordering, level (2026-09-03) ==")
-    passed = True
-
-    # ---- (a)+(b) REST surfaces on a few fixture pairs
-    pairs = [((4.3517, 50.8503), (4.4025, 51.2194)), ((4.85, 50.55), (4.79, 50.60)),
-             ((3.7174, 51.0543), (3.65, 51.02)), ((5.65, 50.1), (5.60, 50.15))]
-    ok_route, n_route, spread = True, 0, []
-    for (a, b) in pairs:
-        try:
-            r = http_json(f"{base}/route?origin_lon={a[0]}&origin_lat={a[1]}&destination_lon={b[0]}&destination_lat={b[1]}&mode=car&uncertainty=bands")
-            bt, t, wt = r.get("duration_best_s"), r.get("duration_s"), r.get("duration_worst_s")
-            n_route += 1
-            if not (bt and wt and bt <= t + 0.5 and t <= wt + 0.5):
-                ok_route = False
-            if bt:
-                spread.append(wt / bt)
-        except Exception as ex:
-            ok_route = False
-            print(f"    /route bands: {ex}")
-    passed &= check("/route uncertainty=bands: duration_best_s ≤ duration_s ≤ duration_worst_s",
-                    ok_route and n_route == len(pairs), f"{n_route} pairs")
-    # /table 1×n, n×1, n×n
-    pts = [[4.3517, 50.8503], [4.4025, 51.2194], [3.7174, 51.0543], [4.85, 50.55], [5.65, 50.1]]
-    ok_table = True
-    for shape, origins, dests in (("1×n", pts[:1], pts), ("n×1", pts, pts[:1]), ("n×n", pts, pts)):
-        try:
-            r = http_json(f"{base}/table", data=_json.dumps({"origins": origins, "destinations": dests, "mode": "car",
-                                                              "annotations": "duration", "uncertainty": "bands"}).encode(),
-                          headers={"Content-Type": "application/json"})
-            d, bt, wt = r["durations"], r.get("durations_best"), r.get("durations_worst")
-            if not bt or not wt:
-                ok_table = False
-                print(f"    /table {shape}: no band grids")
-                continue
-            for i in range(len(origins)):
-                for j in range(len(dests)):
-                    if d[i][j] is None:
-                        continue
-                    if not (bt[i][j] <= d[i][j] + 0.5 and d[i][j] <= wt[i][j] + 0.5):
-                        ok_table = False
-        except Exception as ex:
-            ok_table = False
-            print(f"    /table {shape}: {ex}")
-    passed &= check("/table uncertainty=bands (1×n, n×1, n×n): best ≤ typical ≤ worst per cell", ok_table, "3 shapes")
-    # /trip
-    try:
-        r = http_json(f"{base}/trip", data=_json.dumps({"points": pts[:4], "mode": "car", "uncertainty": "bands"}).encode(),
-                      headers={"Content-Type": "application/json"})
-        tr = (r.get("trips") or [r])[0]  # OSRM-shaped: {code, waypoints, trips:[{duration,...}]}
-        bt, t, wt = tr.get("duration_best"), tr.get("duration_s") or tr.get("duration"), tr.get("duration_worst")
-        ok_trip = bool(bt and wt and t and bt <= t + 0.5 and t <= wt + 0.5)
-        detail = f"best {bt:.0f} ≤ typical {t:.0f} ≤ worst {wt:.0f}" if ok_trip else str({k: tr.get(k) for k in ('duration_best', 'duration_s', 'duration_worst')})
-    except Exception as ex:
-        ok_trip, detail = False, str(ex)
-    passed &= check("/trip uncertainty=bands: duration_best ≤ duration ≤ duration_worst", ok_trip, detail)
-    # /isochrone: areas ordered
-    def _area(ring):
-        return abs(sum(ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1] for i in range(len(ring) - 1))) / 2
-    ok_iso, n_iso = True, 0
-    for lon, lat in ((4.3517, 50.8503), (4.85, 50.55)):
-        try:
-            r = http_json(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=600&mode=car&uncertainty=bands&geometries=geojson")
-            feats = r.get("contours") or []
-            areas = {}
-            for f in feats:
-                tag = f.get("band") or "typical"
-                g = f.get("geometry") or {}
-                if g.get("type") == "Polygon":
-                    areas[tag] = _area(g["coordinates"][0])
-            n_iso += 1
-            if not ("best" in areas and "worst" in areas and "typical" in areas
-                    and areas["best"] >= areas["typical"] * 0.999 and areas["typical"] >= areas["worst"] * 0.999):
-                ok_iso = False
-                print(f"    /isochrone bands areas: {areas}")
-        except Exception as ex:
-            ok_iso = False
-            print(f"    /isochrone bands: {ex}")
-    passed &= check("/isochrone uncertainty=bands: best ⊇ typical ⊇ worst (areas)", ok_iso and n_iso == 2, f"{n_iso} origins")
-
-    # ---- Flight
-    try:
-        import pyarrow.flight as fl
-        fb = flight_base or base.replace("http://", "grpc://").replace(":3901", ":3902")
-        cl = fl.FlightClient(fb)
-        def get(action, params):
-            return cl.do_get(fl.Ticket(f"{action}:car:{_json.dumps(params)}".encode())).read_all().to_pandas()
-        m = get("matrix", {"origins": pts, "destinations": pts, "uncertainty": "bands"})
-        okm = "band" in m.columns and sorted(m["band"].unique()) == ["best", "typical", "worst"] and len(m) == 3 * len(pts) ** 2
-        if okm:
-            piv = m.pivot_table(index=["source_idx", "target_idx"], columns="band", values="duration_ms")
-            okm = bool(((piv["best"] <= piv["typical"] + 1) & (piv["typical"] <= piv["worst"] + 1)).all())
-        passed &= check("Flight matrix uncertainty=bands: band column, 3 passes, best ≤ typical ≤ worst", okm, f"{len(m)} rows")
-        rb = get("route_batch", {"pairs": [[a[0], a[1], b[0], b[1]] for a, b in pairs], "uncertainty": "bands"})
-        okr = "band" in rb.columns and len(rb) == 3 * len(pairs)
-        if okr:
-            piv = rb.pivot_table(index="pair_idx", columns="band", values="duration_s")
-            okr = bool(((piv["best"] <= piv["typical"] + 0.5) & (piv["typical"] <= piv["worst"] + 0.5)).all())
-        passed &= check("Flight route_batch uncertainty=bands: band column, best ≤ typical ≤ worst", okr, f"{len(rb)} rows")
-        iso = get("isochrone", {"lon": 4.85, "lat": 50.55, "intervals": [600], "uncertainty": "bands"})
-        oki = "band" in iso.columns and len(iso) == 3
-        if oki:
-            sizes = {r["band"]: len(r["polygon_wkb"]) for _, r in iso.iterrows()}
-            oki = all(k in sizes for k in ("best", "typical", "worst"))
-        passed &= check("Flight isochrone uncertainty=bands: one polygon per band", oki, f"{len(iso)} rows")
-    except ImportError:
-        print("  [SKIP] pyarrow not available for Flight bands")
-    except Exception as ex:
-        passed &= check("Flight bands", False, str(ex)[:160])
-
-    # ---- (c) level per profile against its time-stamped reference set
-    import concurrent.futures as _cf
-    def route_bands(t):
-        q = (f"{base}/route?origin_lon={t['long_1']}&origin_lat={t['lat_1']}&destination_lon={t['long_2']}"
-             f"&destination_lat={t['lat_2']}&mode=car&uncertainty=bands")
-        try:
-            d = http_json(q, timeout=60)
-            return (d["duration_s"] / 60.0, (d.get("duration_best_s") or 0) / 60.0,
-                    (d.get("duration_worst_s") or 0) / 60.0, d["distance_m"] / 1000.0)
-        except Exception:
-            return None
-
-    def like_for_like(r, t):
-        # The reference OD trips are PINNED corridors: only compare where the
-        # engine's free route has the same length (±10 %) — elsewhere a faster
-        # engine time is a better route, not a level error (Brussels, 2026-09-03).
-        km = float(t.get("ref_km") or 0)
-        return r is not None and km > 0 and abs(r[3] / km - 1.0) <= 0.10
-    levels = {}
-    for name, field in (("typical", 0), ("best", 1), ("worst", 2)):
-        try:
-            trips = _ref_trips(f"{refs_prefix}_{name}.csv")
-        except Exception as ex:
-            passed &= check(f"{name} level vs reference", False, f"cannot read reference set: {ex}")
-            continue
-        with _cf.ThreadPoolExecutor(8) as ex:
-            res = list(ex.map(route_bands, trips))
-        ratios = sorted(r[field] / float(t["ref_min"]) for r, t in zip(res, trips)
-                        if like_for_like(r, t) and r[field] > 0 and float(t["ref_min"]) > 0)
-        if len(ratios) < 100:
-            passed &= check(f"{name} level vs reference", False, f"only {len(ratios)} like-for-like trips")
-            continue
-        med = _st.median(ratios)
-        levels[name] = med
-        # Pierre 2026-09-03: "mieux vaut trop lent que trop rapide" — never more
-        # than 2 % fast, up to 9 % slow (the anchor lands the median at +3 %).
-        lo, hi = 0.98, 1.09
-        passed &= check(f"{name}: median(engine/{name} reference) in [{lo}, {hi}] (like-for-like routes)", lo <= med <= hi,
-                        f"{med:.3f} (p10 {ratios[len(ratios)//10]:.3f}, p90 {ratios[9*len(ratios)//10]:.3f}, n={len(ratios)})")
-        if name == "typical":
-            # Regional levels (#543: "too optimistic, especially Brussels"): the
-            # national median can hide a region. One end inside the box is
-            # enough for the coast (trips leave it); both for Brussels.
-            regions = [("Brussels-internal", (4.25, 50.76, 4.50, 50.92), True),
-                       ("coast (West Flanders)", (2.50, 51.00, 3.35, 51.40), False)]
-            for rname, (x0, y0, x1, y1), both in regions:
-                inside = lambda t, k1, k2: x0 <= float(t[k1]) <= x1 and y0 <= float(t[k2]) <= y1
-                sel = [(r, t) for r, t in zip(res, trips) if like_for_like(r, t)
-                       and ((inside(t, "long_1", "lat_1") and inside(t, "long_2", "lat_2")) if both
-                            else (inside(t, "long_1", "lat_1") or inside(t, "long_2", "lat_2")))]
-                if len(sel) >= 10:
-                    mr = _st.median(r[0] / float(t["ref_min"]) for r, t in sel)
-                    passed &= check(f"typical: {rname} like-for-like pairs in [0.98, 1.12] (#543)", 0.98 <= mr <= 1.12, f"{mr:.3f} (n={len(sel)})")
-                else:
-                    print(f"    ({rname} typical pairs: {len(sel)} — not enough to check)")
-            wb = [r[2] / r[1] for r, t in zip(res, trips) if like_for_like(r, t) and r[1] > 0]
-            if wb:
-                ms = _st.median(wb)
-                passed &= check("spread: median(worst/best) over the typical trips ≥ 1.10", ms >= 1.10, f"{ms:.3f}")
-    return passed
-
-
-def gate_ticket_invariants(base):
-    """One named invariant per user ticket, so none of them can regress
-    silently (2026-09-03). Where an existing gate already IS the invariant it
-    is named here and not duplicated:
-      #535 isochrone off-centre / origin not covered → this gate: from a
-           pedestrian city centre the pin itself lies in (or ≤ 30 m from) the
-           ONE polygon (the pin→snap access leg is stamped), snap ≤ 300 m;
-      #536 square lasso, missing clients        → gate_catchment_containment;
-      #541 clip to the border                   → consumer-side (the map
-           dashboard / the MCP layer); the engine stays generic;
-      #542 islands / confetti                    → gate_isochrone_topology
-           (one simple polygon) + gate_isochrone_reach_truth + gate_graph_holes;
-      #543 isochrones too big vs a traffic-aware reference → gate_bands
-           (typical/best/worst levels, like-for-like, never > 2 % fast;
-           Brussels and coast regions) + the weekly window-bias report;
-      #495/#497 (closed) size / foot origin     → gate_isochrone_upper_bound,
-           gate_isochrone (snapped-origin containment)."""
-    print("== ticket invariants: #535 pin inside from pedestrian centres (others named above) ==")
-    passed = True
-    centres = [("Namur centre", 4.8667, 50.4632), ("Ghent Korenmarkt", 3.7234, 51.0543),
-               ("Leuven Grote Markt", 4.7009, 50.8792)]
-    n_ok = 0
-    for name, lon, lat in centres:
-        try:
-            req = urllib.request.Request(f"{base}/isochrone?lon={lon}&lat={lat}&time_s=600&mode=car",
-                                         headers={"Accept": "application/octet-stream"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                polys = _wkb_multipolygon(r.read())
-            snap = http_json(f"{base}/nearest?lon={lon}&lat={lat}&mode=car")["waypoints"][0]["location"]
-            ring = polys[0][0]
-            snap_m = _haversine_m(lon, lat, snap[0], snap[1])
-            pin_ok = _point_in_ring((lon, lat), ring[:-1]) or _dist_to_ring_m((lon, lat), ring) <= 30.0
-            ok = len(polys) == 1 and len(polys[0]) == 1 and pin_ok and snap_m <= 300.0  # car-free centres snap 100-200 m
-            n_ok += ok
-            if not ok:
-                print(f"    {name}: parts={len(polys)} pin inside/near={pin_ok} snap {snap_m:.0f} m")
-        except Exception as ex:
-            print(f"    {name}: {ex}")
-    passed &= check("#535: 10-min car isochrone from a pedestrian centre contains the pin (one polygon, snap ≤ 300 m)",
-                    n_ok == len(centres), f"{n_ok}/{len(centres)} centres")
-    return passed
-
-
-def gate_consistency(base, n_pairs=15):
-    print(f"== /route vs /table consistency ({n_pairs} pairs) ==")
-    rng = random.Random(7)
-    tol = THRESHOLDS["consistency_tolerance_s"]
-    passed = True
-    worst = 0.0
-    tested = 0
-    for _ in range(n_pairs):
-        a, b = round(rng.uniform(3.5, 5.8), 5), round(rng.uniform(50.2, 51.2), 5)
-        c, d = round(rng.uniform(3.5, 5.8), 5), round(rng.uniform(50.2, 51.2), 5)
-        try:
-            dur_r, _ = route(base, a, b, c, d)
-            body = json.dumps(
-                {
-                    "origins": [[a, b]],
-                    "destinations": [[c, d]],
-                    "mode": "car",
-                    "annotations": "duration",
-                }
-            ).encode()
-            tab = http_json(
-                f"{base}/table", data=body, headers={"Content-Type": "application/json"}
-            )
-            dur_t = tab["durations"][0][0]
-        except Exception:
-            continue
-        if dur_t is None:
-            continue
-        tested += 1
-        worst = max(worst, abs(dur_r - dur_t))
-    ok = worst <= tol and tested >= 8
-    return check("route==table", ok, f"{tested} pairs, worst delta {worst:.1f}s (max {tol}s)")
-
-
-
-def _wkb_polygon_rings(buf):
-    """Parse a little/big-endian WKB Polygon (or the first polygon of a
-    MultiPolygon) into rings of (lon, lat). Minimal, stdlib-only."""
-    e = "<" if buf[0] == 1 else ">"
-    gtype = struct.unpack_from(e + "I", buf, 1)[0] & 0xFF
-    off = 5
-    if gtype == 6:  # MultiPolygon: descend into the first polygon
-        off += 4  # n_polygons
-        e = "<" if buf[off] == 1 else ">"
-        gtype = struct.unpack_from(e + "I", buf, off + 1)[0] & 0xFF
-        off += 5
-    if gtype != 3:
-        return []
-    nrings = struct.unpack_from(e + "I", buf, off)[0]
-    off += 4
-    rings = []
-    for _ in range(nrings):
-        npts = struct.unpack_from(e + "I", buf, off)[0]
-        off += 4
-        ring = []
-        for _ in range(npts):
-            x, y = struct.unpack_from(e + "dd", buf, off)
-            off += 16
-            ring.append((x, y))
-        rings.append(ring)
-    return rings
-
-
-def _pip(lon, lat, ring):
-    inside = False
-    j = len(ring) - 1
-    for i in range(len(ring)):
-        xi, yi = ring[i]
-        xj, yj = ring[j]
-        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
-            inside = not inside
-        j = i
-    return inside
 
 
 def gate_catchment_containment(base):
@@ -2254,111 +1979,231 @@ def gate_catchment_containment(base):
     18-sector lasso could ever emit)."""
     print("== catchment: road hull covers its percentile + nests (#536) ==")
     import pyarrow as pa
-    import pyarrow.flight as fl
-    up = urllib.parse.urlparse(base)
-    host = up.hostname or "localhost"
-    port = (up.port or 8080) + 1
+
     ok = True
     store = (4.4025, 51.2194)  # Antwerp
     rng = random.Random(536)
     clients = [(store[0] + rng.uniform(-0.12, 0.12), store[1] + rng.uniform(-0.08, 0.08))
                for _ in range(300)]
     n = len(clients)
-    tbl = pa.table({
-        "store_id": pa.array(["s"] * n),
-        "store_lon": pa.array([store[0]] * n), "store_lat": pa.array([store[1]] * n),
-        "client_lon": pa.array([c[0] for c in clients]), "client_lat": pa.array([c[1] for c in clients]),
-    })
+    tbl = pa.table({"store_id": pa.array(["s"] * n),
+                    "store_lon": pa.array([store[0]] * n), "store_lat": pa.array([store[1]] * n),
+                    "client_lon": pa.array([c[0] for c in clients]),
+                    "client_lat": pa.array([c[1] for c in clients])})
     params = {"percentiles": [50, 80], "hull_shape": "road", "remove_outliers": False, "radius_km": 0}
     try:
-        c = fl.connect(f"grpc://{host}:{port}")
-        w, r = c.do_exchange(fl.FlightDescriptor.for_command(f"catchment:car:{json.dumps(params)}".encode()))
-        w.begin(tbl.schema); w.write_table(tbl); w.done_writing()
-        rows = r.read_all().to_pylist(); w.close()
+        rows, _meta = _exchange(base, f"catchment:car:{json.dumps(params)}".encode(), tbl)
     except Exception as e:
         return check("catchment road hull", False, f"{str(e)[:100]}")
     rows.sort(key=lambda x: x["percentile"])
+    min_v = THRESHOLDS["catchment_min_vertices"]
     rings = {}
     for row in rows:
-        pct = row["percentile"]
-        ok &= check(f"p{pct:.0f}: all within-threshold clients covered",
-                    row["clients_covered"] == row["clients_total"] and row["clients_total"] > 0,
-                    f"{row['clients_covered']}/{row['clients_total']}")
-        rr = _wkb_polygon_rings(bytes(row["polygon_wkb"]))
-        ok &= check(f"p{pct:.0f}: polygon parses + road-contour vertex count",
-                    bool(rr) and len(rr[0]) > 50,
-                    f"{len(rr[0]) if rr else 0} vertices (sector lasso capped at 18 extremes)")
-        rings[pct] = rr[0] if rr else []
+        p = row["percentile"]
+        ok &= check(f"p{p:.0f}: all within-threshold clients covered",
+            row["clients_covered"] == row["clients_total"] and row["clients_total"] > 0,
+            f"{row['clients_covered']}/{row['clients_total']}")
+        rr = wkb_polygons(bytes(row["polygon_wkb"]))
+        ok &= check(f"p{p:.0f}: polygon parses + road-contour vertex count",
+            bool(rr) and len(rr[0][0]) > min_v,
+            f"{len(rr[0][0]) if rr else 0} vertices (the retired sector lasso capped at 18 extremes)")
+        rings[p] = rr[0][0] if rr else []
     if rings.get(50.0) and rings.get(80.0):
         # Vertex-in-ring is too strict against contour-simplification jitter
         # (same lesson as gate_isochrone_upper_bound): assert directional
         # max-reach monotonicity + area ordering instead — jitter-proof, still
         # catches any gross inversion.
-        import math
         def reach(ring, bearing_deg):
             b = math.radians(bearing_deg)
             ux, uy = math.sin(b), math.cos(b)
             mx = math.cos(math.radians(store[1])) * 111320.0
-            return max((v[0] - store[0]) * mx * ux + (v[1] - store[1]) * 111320.0 * uy
-                       for v in ring)
-        bad = [br for br in range(0, 360, 45)
-               if reach(rings[80.0], br) < reach(rings[50.0], br) * 0.98]
+            return max((v[0] - store[0]) * mx * ux + (v[1] - store[1]) * 111320.0 * uy for v in ring)
+
+        bad = [br
+            for br in range(0, 360, 45)
+            if reach(rings[80.0], br) < reach(rings[50.0], br) * 0.98]
         ok &= check("nesting: p80 reach >= p50 reach in all directions", not bad,
-                    f"violated bearings: {bad}" if bad else "8/8 directions monotone")
-        def area(ring):
-            a = 0.0
-            for i in range(len(ring) - 1):
-                a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1]
-            return abs(a) / 2
-        ok &= check("nesting: area(p80) >= area(p50)", area(rings[80.0]) >= area(rings[50.0]),
-                    f"{area(rings[80.0]):.2e} vs {area(rings[50.0]):.2e}")
+            f"violated bearings: {bad}" if bad else "8/8 directions monotone")
+        ok &= check("nesting: area(p80) >= area(p50)", ring_area(rings[80.0]) >= ring_area(rings[50.0]),
+            f"{ring_area(rings[80.0]):.2e} vs {ring_area(rings[50.0]):.2e}")
     return ok
+
+
+def gate_all_endpoints_smoke(base):
+    """COVERAGE: ping EVERY REST endpoint and EVERY Flight action so a change
+    that breaks one surface entirely is caught even if you were only touching
+    another. Each must return a valid (non-error) response of the right shape.
+    Optional surfaces (transit, /height) are skipped, not failed, when absent."""
+    print("== all-endpoints smoke: every REST route + Flight action responds ==")
+    passed = True
+    o = (4.3517, 50.8503)
+    d = (4.4025, 51.2194)
+
+    # ---- REST ----
+    rest = {
+        "/health": f"{base}/health",
+        "/version": f"{base}/version",
+        "/route": f"{base}/route?origin_lon={o[0]}&origin_lat={o[1]}"
+                  f"&destination_lon={d[0]}&destination_lat={d[1]}&mode=car",
+        "/nearest": f"{base}/nearest?lon={o[0]}&lat={o[1]}&mode=car",
+        "/isochrone": f"{base}/isochrone?lon={o[0]}&lat={o[1]}&time_s=300&mode=car"}
+    probes = [(f"REST {n}", (lambda u=u: http_json(u))) for n, u in rest.items()]
+    probes.append(("REST /table", lambda: table(
+        base, [list(o), list(d)], [list(o), list(d)], annotations="duration,distance")))
+    probes.append(("REST /trip", lambda: post_json(
+        f"{base}/trip", {"points": [list(o), list(d), [4.35, 50.9]], "mode": "car"})))
+    for name, fn in probes:
+        try:
+            fn()
+            passed &= check(name, True, "ok")
+        except Exception as e:
+            passed &= check(name, False, f"{e}")
+
+    # ---- Flight ----
+    if not flight_enabled():
+        print("  [SKIP] Flight actions: --no-flight")
+        return passed
+    import pyarrow as pa
+
+    pairs = [[o[0], o[1], d[0], d[1]]]
+
+    def do_get_ok(action, params, mode="car"):
+        try:
+            tb = flight_table(base, action, mode, params)
+            return check(f"Flight {action}", tb.num_rows >= 0, f"{tb.num_rows} rows")
+        except Exception as e:
+            return check(f"Flight {action}", False, f"{str(e)[:80]}")
+
+    passed &= do_get_ok("matrix", {"origins": [list(o)], "destinations": [list(d)]})
+    passed &= do_get_ok("route_batch", {"pairs": pairs})
+    passed &= do_get_ok("edges_batch", {"pairs": pairs})
+    passed &= do_get_ok("isochrone", {"lon": o[0], "lat": o[1], "intervals": [300], "interval_type": "time"})
+    # transit_bulk — optional (needs transit subsystem)
+    try:
+        flight_table(base, "transit_bulk", "transit", {"queries": [
+            {"origin_lon": o[0], "origin_lat": o[1], "destination_lon": d[0], "destination_lat": d[1]}]})
+        passed &= check("Flight transit_bulk", True, "ok")
+    except Exception as e:
+        msg = str(e)
+        if "not loaded" in msg or "FailedPrecondition" in msg or "transit" in msg.lower():
+            print("  [SKIP] Flight transit_bulk: transit subsystem not loaded")
+        else:
+            passed &= check("Flight transit_bulk", False, f"{msg[:80]}")
+    # do_exchange: catchment + edges_flow
+    catchment_params = {"percentiles": [50], "hull_shape": "isochrone",
+                        "remove_outliers": False, "radius_km": "auto"}
+    for label, command, tbl in (("catchment", f"catchment:car:{json.dumps(catchment_params)}".encode(),
+         pa.table({"store_id": pa.array(["s1"]), "store_lon": pa.array([o[0]]),
+                   "store_lat": pa.array([o[1]]), "client_lon": pa.array([d[0]]),
+                   "client_lat": pa.array([d[1]])})),
+        ("edges_flow", b"edges_flow:car",
+         pa.table({"src_lon": pa.array([o[0]]), "src_lat": pa.array([o[1]]),
+                   "dst_lon": pa.array([d[0]]), "dst_lat": pa.array([d[1]])})) ):
+        try:
+            _exchange(base, command, tbl)
+            passed &= check(f"Flight {label}", True, "ok")
+        except Exception as e:
+            passed &= check(f"Flight {label}", False, f"{str(e)[:80]}")
+    return passed
+
+
+# ---------------------------------------------------------------------------
+# Registry + entrypoint
+# ---------------------------------------------------------------------------
+def build_gates(args):
+    """(name, needs_flight, thunk). ONE list — `--list-gates` prints it, main
+    runs it, CI smoke-tests it."""
+    b = getattr(args, "base", None)
+    gates = [
+        ("fixtures", False, lambda: gate_fixtures(b)),
+        ("symmetry", False, lambda: gate_symmetry(b)),
+        ("route_table_agreement", False, lambda: gate_route_table_agreement(b)),
+        ("isochrone_containment", False, lambda: gate_isochrone(b)),
+        ("isochrone_topology", False, lambda: gate_isochrone_topology(b)),
+        ("isochrone_reach_truth", False, lambda: gate_isochrone_reach_truth(b)),
+        ("isochrone_upper_bound", False, lambda: gate_isochrone_upper_bound(b)),
+        ("bands", False, lambda: gate_bands(b, args.refs_prefix)),
+        ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
+        ("lopsided_matrix", False, lambda: gate_lopsided(b)),
+        ("radius_prune", False, lambda: gate_radius_prune(b)),
+        ("recustomized_distance", False, lambda: gate_recustomized_distance(b)),
+        ("mode_coherence", False, lambda: gate_mode_coherence(b)),
+        ("one_way_routable", False, lambda: gate_one_way_routable(b)),
+        ("graph_holes", False, lambda: gate_graph_holes(b)),
+        ("motorway_speed_floor", False, lambda: gate_motorway_speed_floor(b)),
+        ("edges_batch", True, lambda: gate_edges_batch(b)),
+        ("matrix_sparse", True, lambda: gate_matrix_sparse(b)),
+        ("matrix_sparse_streaming", True, lambda: gate_matrix_sparse_streaming(b)),
+        ("matrix_completeness", True, lambda: gate_matrix_completeness(b)),
+        ("flight_completeness", True, lambda: gate_flight_completeness(b)),
+        ("matrix_distance_consistency", True, lambda: gate_matrix_distance_consistency(b)),
+        ("bounded_matrix_exactness", True, lambda: gate_bounded_matrix_exactness(b)),
+        ("route_batch_geometry", True, lambda: gate_route_batch_geometry(b)),
+        ("route_batch_max_meters", True, lambda: gate_route_batch_max_meters(b)),
+        ("catchment_containment", True, lambda: gate_catchment_containment(b)),
+        ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),
+    ]
+    if not args.quick:
+        gates.append(("ground_truth_duration", False, lambda: gate_ground_truth(b, args.trips, "duration")))
+        gates.append(("ground_truth_distance", False,
+                      lambda: gate_ground_truth(b, args.distance_trips, "distance")))
+    return gates
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", required=True, help="e.g. http://localhost:3001")
+    ap.add_argument("--base", help="e.g. http://localhost:3001")
     ap.add_argument("--trips", default=DEFAULT_TRIPS)
+    ap.add_argument("--distance-trips", default=LEGACY_TRIPS_DISTANCE)
     ap.add_argument("--refs-prefix", default=os.path.join(REFS_DIR, "od"),
-                    help="time-stamped reference sets <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR")
+        help="time-stamped reference sets <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DIR")
     ap.add_argument("--quick", action="store_true", help="skip the 1000-trip ground truth")
+    ap.add_argument("--no-flight", action="store_true",
+        help="skip every Arrow Flight gate (the ONLY way to run without pyarrow/pandas)")
+    ap.add_argument("--flight-base", help="override the Flight URI (default: REST host, port+1)")
+    ap.add_argument("--list-gates", action="store_true", help="print the gate names and exit 0 (CI smoke)")
     args = ap.parse_args()
-    base = args.base.rstrip("/")
 
-    print(f"post-deploy gate against {base}")
+    if args.list_gates:
+        for name, needs_flight, _ in build_gates(args):
+            print(f"{name}{' [flight]' if needs_flight else ''}")
+        sys.exit(0)
+    if not args.base:
+        ap.error("--base is required")
+
+    CONFIG["flight"] = not args.no_flight
+    CONFIG["flight_base"] = args.flight_base
+    base = args.base.rstrip("/")
+    args.base = base
+
+    # PREFLIGHT (#550): eleven gates used to return PASS on ImportError, so a
+    # runner without pyarrow green-lit a deploy with every Flight invariant
+    # unchecked. Missing deps are now a FAIL unless --no-flight says so.
+    if CONFIG["flight"]:
+        missing = require_pyarrow()
+        if missing:
+            print("post-deploy gate PREFLIGHT FAILED — Flight gates cannot run:")
+            for m in missing:
+                print(f"  missing: {m}")
+            print("  install pyarrow + pandas, or pass --no-flight to skip those gates knowingly.")
+            print("\nGATE: FAIL")
+            sys.exit(1)
+
+    print(f"post-deploy gate against {base}" + ("" if CONFIG["flight"] else " (--no-flight)"))
     ok = True
-    ok &= gate_fixtures(base)
-    ok &= gate_symmetry(base)
-    ok &= gate_consistency(base)
-    ok &= gate_isochrone(base)
-    ok &= gate_isochrone_topology(base)
-    ok &= gate_isochrone_reach_truth(base)
-    ok &= gate_bands(base, args.refs_prefix)
-    ok &= gate_ticket_invariants(base)
-    ok &= gate_close_pairs(base)
-    ok &= gate_lopsided(base)
-    ok &= gate_radius_prune(base)
-    ok &= gate_recustomized_distance(base)
-    ok &= gate_edges_batch(base)
-    ok &= gate_matrix_sparse(base)
-    ok &= gate_matrix_sparse_streaming(base)
-    ok &= gate_matrix_completeness(base)
-    ok &= gate_flight_completeness(base)
-    ok &= gate_matrix_distance_consistency(base)
-    ok &= gate_mode_coherence(base)
-    ok &= gate_bounded_matrix_exactness(base)
-    ok &= gate_one_way_routable(base)
-    ok &= gate_isochrone_upper_bound(base)
-    ok &= gate_graph_holes(base)
-    ok &= gate_motorway_speed_floor(base)
-    ok &= gate_route_batch_geometry(base)
-    ok &= gate_route_batch_max_meters(base)
-    ok &= gate_catchment_containment(base)
-    ok &= gate_all_endpoints_smoke(base)
-    if not args.quick:
-        ok &= gate_ground_truth(base, args.trips, checks="duration")
-        ok &= gate_ground_truth(base, LEGACY_TRIPS_DISTANCE, checks="distance")
-    print("\nGATE:", "PASS" if ok else "FAIL")
+    t0 = time.time()
+    for name, needs_flight, fn in build_gates(args):
+        if needs_flight and not flight_enabled():
+            print(f"== {name} ==")
+            print("  [SKIP] --no-flight")
+            continue
+        started = time.time()
+        try:
+            ok &= bool(fn())
+        except Exception as e:
+            ok &= check(name, False, f"raised {type(e).__name__}: {str(e)[:200]}")
+        print(f"  ({name}: {time.time() - started:.1f}s)")
+    print(f"\nGATE: {'PASS' if ok else 'FAIL'} ({time.time() - t0:.1f}s)")
     sys.exit(0 if ok else 1)
 
 
