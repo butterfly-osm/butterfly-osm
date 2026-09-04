@@ -562,18 +562,31 @@ impl SeedExpansion {
 }
 
 /// #506: seeded PHAST init `(seeds, exact snapped anchor)` for a center.
-pub type CenterSeeds = (Vec<(u32, u32)>, Option<(f64, f64)>);
+/// #506/#544: multi-seed PHAST init `(seeds, shift, exact snapped anchor)`
+/// for an isochrone/catchment center.
+pub type CenterSeeds = (Vec<(u32, u32)>, u32, Option<(f64, f64)>);
 
 /// #506: multi-seed PHAST init for an isochrone/catchment center.
 ///
-/// Snaps `(lon, lat)` with K=8 role-aware candidates and converts the phantom
-/// seeds into `(rank, cost)` pairs for the seeded PHAST variants:
+/// Snaps `(lon, lat)` with K=8 role-aware candidates and hands the phantom
+/// end to `PhantomEnd::query_seeds_and_shift` — the SAME `(rank, cost)` +
+/// shift convention `/route` and the many-to-one matrix field already use,
+/// so a depart isochrone is seeded like a source and an arrive isochrone
+/// like a destination:
 /// - depart (`is_reverse == false`): cost = remainder of the edge past the
-///   snap point (`part_time`)
-/// - arrive (`is_reverse == true`): cost = entry-to-snap prefix
-///   (`w(edge) − part_time`)
+///   snap point (`part_time`), shift = 0.
+/// - arrive (`is_reverse == true`): a path reaching the seed edge pays the
+///   edge's FULL weight but the journey stops at the snap, so the seed must
+///   refund `part_time`. Negative labels are not representable: cost =
+///   `shift − part_time` with `shift = max part_time`, and the caller
+///   subtracts `shift` from every label (#544).
 ///
-/// Returns the seeds plus the exact snapped point (the #497 contour anchor).
+/// Before #544 the arrive cost was `w(edge) − part_time` with no shift,
+/// which is `shift − part_time` plus `w(edge)`: EVERY arrive label came out
+/// one full seed-edge weight too large, so the polygon served the
+/// `T − w(seed edge)` isochrone. On a rural motorway snap that is tens of
+/// seconds — the under-reach #544 was opened for.
+///
 /// Falls back to a single zero-cost seed at `fallback_rank` when no phantom
 /// end can be built (isolated candidates, filtered edges).
 #[allow(clippy::too_many_arguments)]
@@ -591,21 +604,14 @@ pub fn isochrone_center_seeds(
     match phantom_for(state, mode_data, mode, lon, lat, role, snap_mask) {
         Some(pe) => {
             let anchor = Some((pe.snapped_lon, pe.snapped_lat));
-            let seeds = pe
-                .seeds
-                .iter()
-                .map(|sd| {
-                    let cost = if is_reverse {
-                        mode_data.node_weights[sd.ebg_id as usize].saturating_sub(sd.part_time)
-                    } else {
-                        sd.part_time
-                    };
-                    (sd.rank, cost)
-                })
-                .collect();
-            (seeds, anchor)
+            let (seeds, shift) = pe.query_seeds_and_shift(if is_reverse {
+                SnapRole::Dst
+            } else {
+                SnapRole::Src
+            });
+            (seeds, shift, anchor)
         }
-        None => (vec![(fallback_rank, 0)], None),
+        None => (vec![(fallback_rank, 0)], 0, None),
     }
 }
 

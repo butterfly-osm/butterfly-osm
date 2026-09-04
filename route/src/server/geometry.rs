@@ -380,11 +380,14 @@ pub fn build_isochrone_topology(
 ///   beyond it (reached, shorter) became detached islands, and the true
 ///   frontier was never drawn. Measured on dev: 4-6 % of road points >150 m
 ///   outside the polygon were reachable within T (up to 178 s early).
-/// * **Arrive**: the seed is the prefix up to the snap and the label of `x`
-///   is the cost from x's tail to the target; the settled edge itself is the
-///   partial: whole iff `label + w ≤ T`, else its head-side fraction
-///   `(T − label)/w`. Verified against `/table` (no outside road point
-///   reached before 0.98 T).
+/// * **Arrive**: the exact mirror. A reverse label is the cost from the
+///   HEAD of `x` to the snap (`isochrone_polygons` removes the seed shift,
+///   #544), so `x` is entered from its tail at `label + w(x)` and the
+///   partially reachable edges are the SETTLED ones — no successor scan and
+///   no reverse-UP adjacency: `arrive_reach` is the whole rule. Whole iff
+///   `label + w ≤ T`, else the head-side fraction `(T − label)/w`, nothing
+///   at all once `label ≥ T`. Truth is `/table`'s many-to-one column, which
+///   seeds the same reverse field with the same shift.
 pub enum ReachModel<'a> {
     /// `(original EBG id, fraction of the edge driven from its tail before T)`
     Depart {
@@ -402,6 +405,30 @@ impl<'a> ReachModel<'a> {
             ReachModel::Depart { frontier }
         }
     }
+}
+
+/// ONE definition of the ARRIVE field's reach, the mirror of
+/// `depart_frontier` (#544).
+///
+/// A normalised arrive label is the cost from the HEAD of the edge to the
+/// snap, so driving the edge from a point at fraction `φ` of its length
+/// costs `(1 − φ)·w + label`: the reachable part of the edge is its
+/// head-side `(T − label)/w`, capped at the whole edge. Everything with a
+/// reachable part is therefore ALREADY in the settled set — an edge the
+/// field never labelled cannot have one — which is why the arrive direction
+/// needs no predecessor scan and no reverse-UP adjacency.
+///
+/// Returns the reachable head-side fraction in `(0, 1]`, or `None` when no
+/// point of the edge is reachable before `threshold`.
+pub fn arrive_reach(label: u32, weight: u32, threshold: u32) -> Option<f32> {
+    if label >= threshold || weight == 0 {
+        return None;
+    }
+    let budget = threshold - label;
+    if budget >= weight {
+        return Some(1.0);
+    }
+    Some(budget as f32 / weight as f32)
 }
 
 /// Lat-first e7 polylines plus the legacy anchor fallback.
@@ -448,14 +475,14 @@ pub fn reachable_polylines(
             anchor_dist = dist;
             anchor = Some(polyline.at_lat_lon_e7(0));
         }
-        let whole = match model {
-            ReachModel::Depart { .. } => true,
-            ReachModel::Arrive => dist.saturating_add(weight) <= max_threshold,
+        let reach = match model {
+            ReachModel::Depart { .. } => Some(1.0),
+            ReachModel::Arrive => arrive_reach(dist, weight, max_threshold),
         };
-        if whole {
-            out.push(polyline.iter_lat_lon_e7().collect());
-        } else {
-            partial.push((ebg_id, (max_threshold - dist) as f32 / weight as f32));
+        match reach {
+            None => continue,
+            Some(f) if f >= 1.0 => out.push(polyline.iter_lat_lon_e7().collect()),
+            Some(f) => partial.push((ebg_id, f)),
         }
     }
     if let ReachModel::Depart { frontier } = model {
@@ -706,7 +733,9 @@ pub fn isochrone_polygons(
     // parallel edges) so the polygon isn't committed to one departure /
     // arrival direction of the snapped edge. Custom-weight paths
     // (avoid/exclude) keep the legacy single seed.
-    let (seeds, anchor) = if q.flats.is_none() {
+    // `shift` is the arrive field's seed offset (#544): every label comes
+    // back as `true cost + shift`, and is normalised below. Depart: 0.
+    let (seeds, shift, anchor) = if q.flats.is_none() {
         crate::server::phantom::isochrone_center_seeds(
             state,
             mode_data,
@@ -719,7 +748,7 @@ pub fn isochrone_polygons(
             center_rank,
         )
     } else {
-        (vec![(center_rank, 0)], None)
+        (vec![(center_rank, 0)], 0, None)
     };
 
     let up = q.flats.map_or(&mode_data.up_adj_flat, |f| f.up);
@@ -730,11 +759,14 @@ pub fn isochrone_polygons(
     // One PHAST run at the MAX threshold; every contour is a slice of it.
     let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
     let phast_settled = if q.reverse {
+        // The field carries the seed shift, so the bound must too: a state
+        // whose TRUE cost to the snap is `max_threshold` is labelled
+        // `max_threshold + shift` (#544).
         crate::range::phast_seeded::run_phast_bounded_fast_reverse_seeded(
             up,
             down_rev,
             &seeds,
-            max_threshold,
+            max_threshold.saturating_add(shift),
             mode,
         )
     } else {
@@ -747,11 +779,19 @@ pub fn isochrone_polygons(
         )
     };
 
-    // Rank → original EBG id (ranks are kept: the depart frontier scans arcs).
+    // Rank → original EBG id, and (arrive) label → true cost by removing the
+    // seed shift, so `settled` means the same thing in both directions: the
+    // cost of the road part of the journey between the snap and the edge's
+    // far end. Only the seed edges themselves can sit before the snap
+    // (their true cost is negative, `-part_time`); they clamp to 0 and are
+    // drawn whole, exactly as the depart seed edge is.
     let mut settled: Vec<(u32, u32)> = Vec::with_capacity(phast_settled.len());
     for &(rank, dist) in &phast_settled {
         let filtered_id = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        settled.push((mode_data.filtered_to_original[filtered_id as usize], dist));
+        settled.push((
+            mode_data.filtered_to_original[filtered_id as usize],
+            dist.saturating_sub(shift),
+        ));
     }
 
     let mut frontiers = FrontierCache {
