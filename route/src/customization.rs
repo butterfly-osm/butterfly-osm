@@ -852,16 +852,129 @@ fn unpack_middle(packed: u64) -> u32 {
     packed as u32
 }
 
+/// Where the closing edge `x→y` of a relaxation triangle lives: the index is
+/// into the UP arrays when `y` outranks `x`, into the DOWN arrays otherwise.
+#[derive(Clone, Copy)]
+enum ClosingEdge {
+    Up(usize),
+    Down(usize),
+}
+
+/// True for a packed value whose PRIMARY key is infinite, i.e. "no path".
+///
+/// Both packings this module uses put their primary key in the high 32 bits —
+/// [`pack_wm`] the weight, [`pack_tl`] the time — so one predicate serves
+/// both, exactly as one `fetch_min` serves both.
+#[inline]
+fn packed_is_inf(packed: u64) -> bool {
+    (packed >> 32) as u32 == u32::MAX
+}
+
+/// THE enumeration of CCH relaxation triangles — the single place that knows
+/// which edges form one and where the closing edge lives.
+///
+/// For each apex `m` in parallel, for each DOWN edge `x→m`, for each UP edge
+/// `m→y` with `y != x`, calls `visit(m, packed(x→m), packed(m→y), closing)`.
+/// Halves with an infinite primary key are skipped, and so is a triangle whose
+/// closing edge is absent from the topology — a visitor only ever sees a
+/// complete, finite triangle.
+///
+/// The relaxation passes and the #529 middle-recovery pass differ ONLY in what
+/// they do with those four values, never in which triangles they walk.
+fn for_each_triangle<F>(
+    topo: &CchTopo,
+    rev_down: &ReverseDownAdj,
+    atomic_up: &[AtomicU64],
+    atomic_down: &[AtomicU64],
+    visit: F,
+) where
+    F: Fn(u32, u64, u64, ClosingEdge) + Sync + Send,
+{
+    let n_nodes = topo.n_nodes as usize;
+    (0..n_nodes).into_par_iter().for_each(|m| {
+        let rev_start = rev_down.offsets[m] as usize;
+        let rev_end = rev_down.offsets[m + 1] as usize;
+        let up_start = topo.up_offsets[m] as usize;
+        let up_end = topo.up_offsets[m + 1] as usize;
+        // The apex's UP edges: targets and packed values share one index.
+        let up_targets = &topo.up_targets[up_start..up_end];
+        let up_packed = &atomic_up[up_start..up_end];
+
+        for i_rev in rev_start..rev_end {
+            let x = rev_down.sources[i_rev] as usize;
+            let p_xm = atomic_down[rev_down.edge_idx[i_rev]].load(Ordering::Relaxed);
+            if packed_is_inf(p_xm) {
+                continue;
+            }
+
+            for (&y, slot) in up_targets.iter().zip(up_packed) {
+                let y = y as usize;
+                if y == x {
+                    continue;
+                }
+                let p_my = slot.load(Ordering::Relaxed);
+                if packed_is_inf(p_my) {
+                    continue;
+                }
+
+                let closing = if y > x {
+                    find_edge_index(x, y, &topo.up_offsets, &topo.up_targets).map(ClosingEdge::Up)
+                } else {
+                    find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
+                        .map(ClosingEdge::Down)
+                };
+                if let Some(closing) = closing {
+                    visit(m as u32, p_xm, p_my, closing);
+                }
+            }
+        }
+    });
+}
+
+/// One relaxation pass over every triangle: `combine(p_xm, p_my, m)` builds the
+/// candidate packed value and the closing edge takes it by `fetch_min`.
+/// Returns how many closing edges the pass improved (0 ⇒ converged).
+fn triangle_relax_pass<C>(
+    topo: &CchTopo,
+    rev_down: &ReverseDownAdj,
+    atomic_up: &[AtomicU64],
+    atomic_down: &[AtomicU64],
+    combine: C,
+) -> u64
+where
+    C: Fn(u64, u64, u32) -> u64 + Sync + Send,
+{
+    let updates = AtomicU64::new(0);
+    for_each_triangle(
+        topo,
+        rev_down,
+        atomic_up,
+        atomic_down,
+        |m, p_xm, p_my, closing| {
+            let candidate = combine(p_xm, p_my, m);
+            let slot = match closing {
+                ClosingEdge::Up(i) => &atomic_up[i],
+                ClosingEdge::Down(i) => &atomic_down[i],
+            };
+            let old = slot.fetch_min(candidate, Ordering::Relaxed);
+            if candidate < old {
+                updates.fetch_add(1, Ordering::Relaxed);
+            }
+        },
+    );
+    updates.into_inner()
+}
+
 /// Parallel triangle relaxation using atomic fetch_min on packed (weight, middle).
 ///
-/// For each apex m (processed in parallel), relaxes edges x→y where:
-///   - x→m is a DOWN edge from x (rank[x] > rank[m])
-///   - m→y is an UP edge from m (rank[y] > rank[m])
-///   - w(x,y) = min(w(x,y), w(x,m) + w(m,y))
+/// Relaxes `w(x,y) = min(w(x,y), w(x,m) + w(m,y))` over every triangle
+/// [`for_each_triangle`] yields, repeating until a pass improves nothing.
 ///
-/// CRITICAL: When a better weight is found through apex m, the middle node is
-/// updated atomically alongside the weight. This ensures path unpacking follows
-/// the OPTIMAL middle, not the original contraction middle.
+/// CRITICAL: when a better weight is found through apex m, the middle node is
+/// updated atomically alongside the weight — they are the two halves of ONE
+/// packed u64, so `fetch_min` can never pair a weight with a stale apex. This
+/// is what makes path unpacking follow the OPTIMAL middle rather than the
+/// original contraction middle.
 ///
 /// Returns (up_weights, down_weights, up_middles, down_middles, total_relaxations, passes).
 fn triangle_relax_parallel(
@@ -870,8 +983,6 @@ fn triangle_relax_parallel(
     down_weights: Vec<u32>,
     rev_down: &ReverseDownAdj,
 ) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
-    let n_nodes = topo.n_nodes as usize;
-
     // Pack (weight, middle) into AtomicU64 for lock-free update of both.
     // `topo.{up,down}_middle` are now [`WeightArray`] whose iterator
     // yields `u32` by value (not `&u32`), so the lambda binds `m` plain.
@@ -891,64 +1002,9 @@ fn triangle_relax_parallel(
 
     loop {
         pass += 1;
-        let pass_updates = AtomicU64::new(0);
-
-        // Process all apexes in parallel
-        (0..n_nodes).into_par_iter().for_each(|m| {
-            let rev_start = rev_down.offsets[m] as usize;
-            let rev_end = rev_down.offsets[m + 1] as usize;
-
-            for i_rev in rev_start..rev_end {
-                let x = rev_down.sources[i_rev] as usize;
-                let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let w_xm = unpack_weight(atomic_down[edge_idx_xm].load(Ordering::Relaxed));
-
-                if w_xm == u32::MAX {
-                    continue;
-                }
-
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    let y = topo.up_targets[i_my] as usize;
-                    if y == x {
-                        continue;
-                    }
-
-                    let w_my = unpack_weight(atomic_up[i_my].load(Ordering::Relaxed));
-                    if w_my == u32::MAX {
-                        continue;
-                    }
-
-                    let new_weight = w_xm.saturating_add(w_my);
-                    let new_packed = pack_wm(new_weight, m as u32);
-
-                    if y > x {
-                        // UP edge from x
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                        {
-                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
-                            if new_packed < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    } else {
-                        // DOWN edge from x
-                        if let Some(idx) =
-                            find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                        {
-                            let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
-                            if new_packed < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-            }
+        let pu = triangle_relax_pass(topo, rev_down, &atomic_up, &atomic_down, |p_xm, p_my, m| {
+            pack_wm(unpack_weight(p_xm).saturating_add(unpack_weight(p_my)), m)
         });
-
-        let pu = pass_updates.into_inner();
         println!("  Pass {}: {} updates", pass, pu);
         total_relaxations += pu;
 
@@ -1000,6 +1056,18 @@ fn tl_len(packed: u64) -> u32 {
     packed as u32
 }
 
+/// Fold the two halves of a triangle in the (time, length) packing.
+///
+/// Components are summed SEPARATELY (each `saturating_add`) and only packed
+/// for the comparison, so a length sum can never carry into the time field.
+#[inline]
+fn combine_tl(p_xm: u64, p_my: u64) -> u64 {
+    pack_tl(
+        tl_time(p_xm).saturating_add(tl_time(p_my)),
+        tl_len(p_xm).saturating_add(tl_len(p_my)),
+    )
+}
+
 /// #529: TIME triangle relaxation with a (time, then length-along-time)
 /// lexicographic middle election.
 ///
@@ -1042,8 +1110,6 @@ fn triangle_relax_lex_parallel(
     len_down: &[u32],
     rev_down: &ReverseDownAdj,
 ) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
-    let n_nodes = topo.n_nodes as usize;
-
     let atomic_up: Vec<AtomicU64> = time_up
         .iter()
         .zip(len_up.iter())
@@ -1060,63 +1126,13 @@ fn triangle_relax_lex_parallel(
 
     loop {
         pass += 1;
-        let pass_updates = AtomicU64::new(0);
-
-        (0..n_nodes).into_par_iter().for_each(|m| {
-            let rev_start = rev_down.offsets[m] as usize;
-            let rev_end = rev_down.offsets[m + 1] as usize;
-
-            for i_rev in rev_start..rev_end {
-                let x = rev_down.sources[i_rev] as usize;
-                let edge_idx_xm = rev_down.edge_idx[i_rev];
-                let p_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
-                let t_xm = tl_time(p_xm);
-                if t_xm == u32::MAX {
-                    continue;
-                }
-                let l_xm = tl_len(p_xm);
-
-                let up_start = topo.up_offsets[m] as usize;
-                let up_end = topo.up_offsets[m + 1] as usize;
-
-                for i_my in up_start..up_end {
-                    let y = topo.up_targets[i_my] as usize;
-                    if y == x {
-                        continue;
-                    }
-                    let p_my = atomic_up[i_my].load(Ordering::Relaxed);
-                    let t_my = tl_time(p_my);
-                    if t_my == u32::MAX {
-                        continue;
-                    }
-
-                    // Components summed separately (no cross-field carry),
-                    // then packed only for the lexicographic comparison.
-                    let new_time = t_xm.saturating_add(t_my);
-                    let new_len = l_xm.saturating_add(tl_len(p_my));
-                    let new_packed = pack_tl(new_time, new_len);
-
-                    if y > x {
-                        if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                        {
-                            let old = atomic_up[idx].fetch_min(new_packed, Ordering::Relaxed);
-                            if new_packed < old {
-                                pass_updates.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    } else if let Some(idx) =
-                        find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                    {
-                        let old = atomic_down[idx].fetch_min(new_packed, Ordering::Relaxed);
-                        if new_packed < old {
-                            pass_updates.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-            }
-        });
-
-        let pu = pass_updates.into_inner();
+        let pu = triangle_relax_pass(
+            topo,
+            rev_down,
+            &atomic_up,
+            &atomic_down,
+            |p_xm, p_my, _m| combine_tl(p_xm, p_my),
+        );
         println!("  Pass {}: {} updates", pass, pu);
         total_relaxations += pu;
 
@@ -1135,50 +1151,30 @@ fn triangle_relax_lex_parallel(
     let mid_up: Vec<AtomicU32> = (0..n_up).map(|_| AtomicU32::new(u32::MAX)).collect();
     let mid_down: Vec<AtomicU32> = (0..n_down).map(|_| AtomicU32::new(u32::MAX)).collect();
 
-    (0..n_nodes).into_par_iter().for_each(|m| {
-        let rev_start = rev_down.offsets[m] as usize;
-        let rev_end = rev_down.offsets[m + 1] as usize;
-        for i_rev in rev_start..rev_end {
-            let x = rev_down.sources[i_rev] as usize;
-            let edge_idx_xm = rev_down.edge_idx[i_rev];
-            let p_xm = atomic_down[edge_idx_xm].load(Ordering::Relaxed);
-            let t_xm = tl_time(p_xm);
-            if t_xm == u32::MAX {
-                continue;
+    for_each_triangle(
+        topo,
+        rev_down,
+        &atomic_up,
+        &atomic_down,
+        |m, p_xm, p_my, closing| {
+            let cand = combine_tl(p_xm, p_my);
+            let (is_shortcut, converged, mid) = match closing {
+                ClosingEdge::Up(i) => (
+                    topo.up_is_shortcut.bit(i),
+                    atomic_up[i].load(Ordering::Relaxed),
+                    &mid_up[i],
+                ),
+                ClosingEdge::Down(i) => (
+                    topo.down_is_shortcut.bit(i),
+                    atomic_down[i].load(Ordering::Relaxed),
+                    &mid_down[i],
+                ),
+            };
+            if is_shortcut && cand == converged {
+                mid.fetch_min(m, Ordering::Relaxed);
             }
-            let l_xm = tl_len(p_xm);
-
-            let up_start = topo.up_offsets[m] as usize;
-            let up_end = topo.up_offsets[m + 1] as usize;
-            for i_my in up_start..up_end {
-                let y = topo.up_targets[i_my] as usize;
-                if y == x {
-                    continue;
-                }
-                let p_my = atomic_up[i_my].load(Ordering::Relaxed);
-                let t_my = tl_time(p_my);
-                if t_my == u32::MAX {
-                    continue;
-                }
-                let cand = pack_tl(t_xm.saturating_add(t_my), l_xm.saturating_add(tl_len(p_my)));
-
-                if y > x {
-                    if let Some(idx) = find_edge_index(x, y, &topo.up_offsets, &topo.up_targets)
-                        && topo.up_is_shortcut.bit(idx)
-                        && cand == atomic_up[idx].load(Ordering::Relaxed)
-                    {
-                        mid_up[idx].fetch_min(m as u32, Ordering::Relaxed);
-                    }
-                } else if let Some(idx) =
-                    find_edge_index(x, y, &topo.down_offsets, &topo.down_targets)
-                    && topo.down_is_shortcut.bit(idx)
-                    && cand == atomic_down[idx].load(Ordering::Relaxed)
-                {
-                    mid_down[idx].fetch_min(m as u32, Ordering::Relaxed);
-                }
-            }
-        }
-    });
+        },
+    );
 
     let up: Vec<u32> = atomic_up
         .iter()
@@ -2257,6 +2253,42 @@ mod len_along_time_middle_tests {
         assert_eq!(a_mid[2], 0, "equal (time,length): smallest apex index wins");
         assert_eq!(a_up, b_up, "time weights must be reproducible");
         assert_eq!(a_mid, b_mid, "elected middles must be reproducible");
+    }
+
+    /// #575: both relaxations now walk ONE shared triangle enumeration
+    /// ([`for_each_triangle`]), so the property `triangle_relax_lex_parallel`
+    /// documents — its TIME weights are what `triangle_relax_parallel`
+    /// produces, the length channel only ever breaking a middle tie — is a
+    /// property of that shared walk. Pinning it here keeps a future edit from
+    /// silently diverging the two callers.
+    #[test]
+    fn lex_and_plain_relaxation_agree_on_every_time_weight() {
+        let topo = topo_4node();
+        let rev_down = build_reverse_down_adj_for_relax(&topo);
+        // The three seed sets of the election tests above: apex 0 shorter,
+        // apex 1 shorter, and a full (time, length) tie.
+        // One run's seeds: (time_up, time_down, len_up, len_down).
+        type Seeds = (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>);
+        let seeds: [Seeds; 3] = [
+            (vec![7, 5, 10], vec![3, 5], vec![10, 100, 105], vec![3, 5]),
+            (vec![5, 5, 10], vec![5, 5], vec![100, 10, 999], vec![5, 3]),
+            (vec![7, 5, 999], vec![3, 5], vec![6, 6, 999], vec![4, 4]),
+        ];
+        for (time_up, time_down, len_up, len_down) in seeds {
+            let (plain_up, plain_down, _, _, _, _) =
+                triangle_relax_parallel(&topo, time_up.clone(), time_down.clone(), &rev_down);
+            let (lex_up, lex_down, _, _, _, _) = triangle_relax_lex_parallel(
+                &topo, time_up, time_down, &len_up, &len_down, &rev_down,
+            );
+            assert_eq!(
+                plain_up, lex_up,
+                "the length tie-break must never change an UP duration"
+            );
+            assert_eq!(
+                plain_down, lex_down,
+                "the length tie-break must never change a DOWN duration"
+            );
+        }
     }
 }
 
