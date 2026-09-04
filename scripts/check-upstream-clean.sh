@@ -49,18 +49,45 @@ scan "data provider" \
   'tomtom|telraam|\bwaze\b' \
   "${FILES_NO_MKT[@]}"
 
-# Commit MESSAGES are published too. Scan every commit not yet on the
-# upstream branch (the pre-push range); files alone let a message leak through
-# on 2026-09-03.
-if upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null); then
-  msg_hits=$(git log "$upstream..HEAD" --format='%h %s%n%b' 2>/dev/null |
-    grep -niE 'kubectl|argocd|registry\.lan|\bminio\b|staging\.lan|10\.0\.[0-9]+\.[0-9]+|butterfly-deploy|butterfly-speeds|drivetimes-survey|sirius_map|tomtom|telraam|\bwaze\b|s3://' || true)
-  if [[ -n "$msg_hits" ]]; then
-    echo "❌ upstream leak — commit message(s) in $upstream..HEAD:"
-    echo "$msg_hits" | sed 's/^/    /'
-    fail=1
-  fi
+# Commit MESSAGES are published too. Scan every commit that is not yet
+# upstream; files alone let a message leak through on 2026-09-03.
+#
+# #592: the range must ALWAYS resolve. Keying it on @{upstream} alone made the
+# scan a silent no-op on every branch without a tracking ref — a fresh feature
+# branch, a worktree branch, anything not yet pushed — which is exactly where
+# commit messages are written. The base is now the first of:
+#   @{upstream}  →  origin/HEAD  →  origin/main  →  origin/master  →  main  →  master
+# and when NONE of them resolves the script FAILS instead of printing OK.
+msg_base=""
+msg_range=""
+if upstream=$(git rev-parse --verify --quiet '@{upstream}'); then
+  msg_base="$upstream"
+  msg_range="$(git rev-parse --abbrev-ref '@{upstream}')..HEAD"
+else
+  origin_head=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  for ref in $origin_head origin/main origin/master main master; do
+    if base=$(git merge-base HEAD "$ref" 2>/dev/null); then
+      msg_base="$base"
+      msg_range="$ref(merge-base)..HEAD"
+      break
+    fi
+  done
 fi
+if [[ -z "$msg_base" ]]; then
+  echo "❌ upstream guard cannot resolve a commit range to scan:"
+  echo "    no @{upstream}, and no merge-base with origin/HEAD, origin/main,"
+  echo "    origin/master, main or master. Refusing to report success on an"
+  echo "    unscanned history (#592)."
+  exit 1
+fi
+msg_hits=$(git log "$msg_base..HEAD" --format='%h %s%n%b' 2>/dev/null |
+  grep -niE 'kubectl|argocd|registry\.lan|\bminio\b|staging\.lan|10\.0\.[0-9]+\.[0-9]+|butterfly-deploy|butterfly-speeds|drivetimes-survey|sirius_map|tomtom|telraam|\bwaze\b|s3://' || true)
+if [[ -n "$msg_hits" ]]; then
+  echo "❌ upstream leak — commit message(s) in $msg_range:"
+  echo "$msg_hits" | sed 's/^/    /'
+  fail=1
+fi
+msg_count=$(git rev-list --count "$msg_base..HEAD" 2>/dev/null || echo 0)
 if [[ $fail -ne 0 ]]; then
   echo
   echo "This repo is PUBLIC. The above belongs in the private repos"
@@ -68,4 +95,5 @@ if [[ $fail -ne 0 ]]; then
   echo "Reword the leak (generic terms) or move it, then re-run."
   exit 1
 fi
-echo "✓ upstream clean — no infra / provider / client leaks"
+echo "✓ upstream clean — no infra / provider / client leaks" \
+     "(files: ${#FILES[@]}; messages: $msg_range, $msg_count commit(s))"
