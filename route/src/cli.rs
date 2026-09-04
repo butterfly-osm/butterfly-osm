@@ -226,6 +226,10 @@ fn resolve_mode(mode_name: &str, data_dir: &Path) -> Result<Mode> {
 #[derive(Parser)]
 #[command(name = "butterfly-route")]
 #[command(about = "High-performance OSM routing engine", long_about = None)]
+// `--version` from the crate version. The shipped binary is stripped (#573),
+// so `strings`/symbols no longer identify a container's build — asking the
+// binary is the way, and it matches the `GET /version` endpoint (#516).
+#[command(version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -1366,6 +1370,24 @@ pub enum Commands {
         /// Output `*.traffic.json` path.
         #[arg(long)]
         out: PathBuf,
+    },
+
+    /// Probe a running server's `/health` and exit 0 (healthy) or 1.
+    ///
+    /// This is the container `HEALTHCHECK` (#573): it replaces `curl` in the
+    /// runtime image, so the image carries one static binary and no libcurl
+    /// CVE surface, while `docker run` / Compose / Swarm keep the liveness
+    /// signal they had. Kubernetes uses its own `httpGet` probe and ignores
+    /// this either way.
+    Healthcheck {
+        /// Endpoint to probe. Must be `http://` — the probe is a loopback
+        /// call with no TLS.
+        #[arg(long, default_value = crate::healthcheck::DEFAULT_URL)]
+        url: String,
+
+        /// Connect/read timeout in seconds.
+        #[arg(long, default_value_t = 5)]
+        timeout_secs: u64,
     },
 }
 
@@ -3126,6 +3148,9 @@ impl Cli {
                     .with_context(|| format!("writing profile to {}", out.display()))?;
                 println!("✅ wrote calibrated traffic profile: {}", out.display());
                 Ok(())
+            }
+            Commands::Healthcheck { url, timeout_secs } => {
+                crate::healthcheck::run(&url, timeout_secs)
             }
         }
     }
