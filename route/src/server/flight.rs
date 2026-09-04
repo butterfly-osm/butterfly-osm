@@ -38,7 +38,8 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::matrix::MatrixPlan;
 use crate::matrix::bucket_ch::table_bucket_full_flat;
 use crate::matrix::neighbors::{
-    RadiusParam, build_radius_mask, parse_radius, radius_compute_cap_s,
+    RadiusParam, RadiusRescue, build_radius_mask, parse_radius, radius_compute_cap_s,
+    rescue_radius_cut_cells,
 };
 use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
@@ -1019,79 +1020,28 @@ fn do_matrix(
         // cannot relabel a PHAST-served matrix as `mixed`.
         plan_cell.record(stats.plan);
 
-        // #538 rescue: the radius cap is a heuristic COMPUTE bound, not an
-        // output contract — any in-radius cell it cut (MAX under
-        // eff_threshold < user threshold) is recomputed exactly here, per
-        // affected source via the bucket engine (1 × its cut targets), under
-        // the USER bound only. Sources/targets emptied above can't appear
-        // (their cells are out-of-radius by construction).
-        if let Some(nm) = &neighbor_mask
-            && eff_threshold < threshold
-        {
-            use rayon::prelude::*;
-            let in_radius = |i: usize, j: usize| -> bool {
-                nm[valid_origin[i]]
-                    .binary_search(&(valid_dst[j] as u32))
-                    .is_ok()
-            };
-            let rescue_work: Vec<(usize, Vec<usize>)> = (0..n_valid_origin)
-                .filter_map(|i| {
-                    if src_seedsets[i].is_empty() {
-                        return None;
-                    }
-                    // A cell > eff_threshold is EITHER cut (MAX) or a
-                    // non-minimal bounded-join artifact (#415) — both need
-                    // the exact recompute; only values ≤ eff_threshold are
-                    // trustworthy under the cap.
-                    let cut: Vec<usize> = (0..n_valid_dst)
-                        .filter(|&j| {
-                            !tgt_seedsets[j].is_empty()
-                                && matrix[i * n_valid_dst + j] > eff_threshold
-                                && in_radius(i, j)
-                        })
-                        .collect();
-                    if cut.is_empty() { None } else { Some((i, cut)) }
-                })
-                .collect();
-            if !rescue_work.is_empty() {
-                let n_cells: usize = rescue_work.iter().map(|(_, c)| c.len()).sum();
-                tracing::debug!(
-                    sources = rescue_work.len(),
-                    cells = n_cells,
+        // #538/#602 rescue: the radius cap is a heuristic COMPUTE bound, not
+        // an output contract — every in-radius cell it cut is recomputed
+        // exactly. ONE body with REST /table, so a caller who sets a radius
+        // gets the same cells whichever transport it used.
+        if let Some(nm) = &neighbor_mask {
+            rescue_radius_cut_cells(
+                &RadiusRescue {
+                    n_nodes,
+                    up,
+                    down,
+                    lat_flats,
+                    src_seedsets: &src_seedsets,
+                    tgt_seedsets: &tgt_seedsets,
+                    neighbor_mask: nm,
+                    src_ix: &valid_origin,
+                    dst_ix: &valid_dst,
                     eff_threshold,
-                    "radius cap rescue (#538): exact recompute of cut in-radius cells"
-                );
-                type RescuePatch = (usize, Vec<usize>, Vec<u32>, Option<Vec<u32>>);
-                let patches: Vec<RescuePatch> = rescue_work
-                    .par_iter()
-                    .map(|(i, cut)| {
-                        let one_src = vec![src_seedsets[*i].clone()];
-                        let sel_tgts: Vec<Vec<(u32, u32, u32, bool)>> =
-                            cut.iter().map(|&j| tgt_seedsets[j].clone()).collect();
-                        if let Some((up_lat, dn_lat)) = lat_flats {
-                            let (t, l, _) =
-                                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
-                                    n_nodes, up, down, up_lat, dn_lat, None, &one_src, &sel_tgts,
-                                    threshold,
-                                );
-                            (*i, cut.clone(), t, Some(l))
-                        } else {
-                            let (t, _) = crate::matrix::bucket_ch::table_seeded_bounded_routed(
-                                n_nodes, up, down, None, &one_src, &sel_tgts, threshold,
-                            );
-                            (*i, cut.clone(), t, None)
-                        }
-                    })
-                    .collect();
-                for (i, cut, t, l) in patches {
-                    for (k, &j) in cut.iter().enumerate() {
-                        matrix[i * n_valid_dst + j] = t[k];
-                        if let (Some(lm), Some(lv)) = (lat_matrix_opt.as_mut(), l.as_ref()) {
-                            lm[i * n_valid_dst + j] = lv[k];
-                        }
-                    }
-                }
-            }
+                    threshold,
+                },
+                &mut matrix,
+                lat_matrix_opt.as_mut(),
+            );
         }
 
         // Per-cell K-best fallback for INF cells (mirrors /table POST).
