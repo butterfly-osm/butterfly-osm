@@ -18,6 +18,11 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 # label <TAB> command
 STEPS=(
   "upstream-clean (public repo)|bash scripts/check-upstream-clean.sh"
+  # #592: the guard's OWN tests. The commit-message half was a silent no-op on
+  # every branch without a tracking ref — and still printed its success line —
+  # for as long as nobody tested the guard itself. A guard that reports OK
+  # without scanning is worse than no guard, so it gets a test like any other.
+  "upstream-clean guard tests|bash scripts/test-check-upstream-clean.sh"
   "rustfmt --check|cargo fmt --all -- --check"
   "clippy (deny warnings)|cargo clippy --workspace --all-targets --all-features"
   # No separate `cargo build --workspace` step (#591). Verified: delete
