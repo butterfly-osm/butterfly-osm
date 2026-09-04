@@ -5122,6 +5122,111 @@ mod edges_batch_grouping_tests {
     }
 }
 
+/// #580: the per-pair driver. `route_batch` (bounded and unbounded) and
+/// `edges_batch` used to carry a private copy of the phantom-seeded fast
+/// path and the K=64 escalation — four copies of the first, three of the
+/// second — and a divergence in any one of them meant two surfaces
+/// answering differently for the same pair. They are now one
+/// [`drive_pair`] shaped by a named [`PairPlan`]; these tests pin both the
+/// single body and the two plans, so a re-divergence fails here.
+#[cfg(test)]
+mod pair_driver_tests {
+    use super::{EDGES_BATCH_MAX_COMBOS, EDGES_PAIR_PLAN, route_pair_plan};
+
+    /// The ENGINE half of this file — everything before the first test
+    /// module. The scans below look for call sites in shipped code, and the
+    /// tests themselves quote those call sites verbatim.
+    fn engine_source() -> &'static str {
+        let src = include_str!("flight.rs");
+        let end = src
+            .find("\n#[cfg(test)]\n")
+            .expect("flight.rs has test modules");
+        &src[..end]
+    }
+
+    /// The phantom-seeded fast path (#502/#506/#509) exists EXACTLY ONCE in
+    /// this file. It is the reason `/route`, `route_batch` and `edges_batch`
+    /// return the same route for the same pair; three hand-copies of it is
+    /// how they drifted apart before. Read from the source, so a fourth copy
+    /// fails here rather than in production traffic nobody diffs.
+    #[test]
+    fn one_phantom_seeded_fast_path() {
+        let calls = engine_source().matches("query.query_seeded(").count();
+        assert_eq!(
+            calls, 1,
+            "the phantom-seeded pair query must live in phantom_pair() alone; \
+             found {calls} call sites"
+        );
+    }
+
+    /// Every per-pair surface enters through [`drive_pair`]. Read from the
+    /// source: a surface that re-rolls snap → query → escalate privately
+    /// would compile and pass every other test while silently answering
+    /// differently from its siblings.
+    #[test]
+    fn every_pair_surface_goes_through_drive_pair() {
+        let src = engine_source();
+        for (name, sig) in [
+            ("compute_route_pair", "\nfn compute_route_pair("),
+            (
+                "compute_route_distance_bounded",
+                "\nfn compute_route_distance_bounded(",
+            ),
+            ("edges_for_pair", "\npub(crate) fn edges_for_pair("),
+        ] {
+            let at = src
+                .find(sig)
+                .unwrap_or_else(|| panic!("{name} present in flight.rs"));
+            // The function body ends at the next top-level `}` on column 0.
+            let body_end = at + src[at..].find("\n}\n").expect("function body closes");
+            let body = &src[at..body_end];
+            assert!(
+                body.contains("drive_pair("),
+                "{name} must route through drive_pair (#580), not a private copy"
+            );
+            assert!(
+                !body.contains("query_seeded(") && !body.contains("p2p_with_kbest_fallback("),
+                "{name} re-rolls a routing tier instead of using the shared driver"
+            );
+        }
+    }
+
+    /// The two plans differ ONLY where they are documented to. `route_batch`
+    /// carries the fallback-rate counter and no K=1 shortcut; `edges_batch`
+    /// carries the shortcut and no counter.
+    #[test]
+    fn the_two_plans_differ_only_where_documented() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let route = route_pair_plan(&counter);
+        assert!(route.fallback_count.is_some(), "route_batch instruments");
+        assert!(EDGES_PAIR_PLAN.fallback_count.is_none(), "edges does not");
+        assert!(!route.k1_shortcut, "route_batch has no K=1 shortcut");
+        const { assert!(EDGES_PAIR_PLAN.k1_shortcut, "edges_batch has one (#438)") };
+    }
+
+    /// #548 set the escalation cap to 400 on every surface so two of them
+    /// could not disagree on whether a pair is routable at all.
+    /// `edges_batch` is the one surface still outside that: it caps at 16 to
+    /// bound the worst case on disconnected pairs. Pinned so the
+    /// disagreement stays a deliberate, visible number rather than an
+    /// accident — and so closing it is a decision someone makes here.
+    #[test]
+    fn edges_batch_caps_escalation_below_the_org_wide_value() {
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        assert_eq!(
+            route_pair_plan(&counter).max_combos,
+            super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS
+        );
+        assert_eq!(EDGES_PAIR_PLAN.max_combos, EDGES_BATCH_MAX_COMBOS);
+        const {
+            assert!(
+                EDGES_BATCH_MAX_COMBOS < super::super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                "edges_batch is the narrower cap; if that changed, say so on #580"
+            )
+        };
+    }
+}
+
 #[cfg(test)]
 mod route_batch_prune_tests {
     use super::{RouteBatchParams, route_batch_schema};
