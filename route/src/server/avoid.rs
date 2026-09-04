@@ -23,6 +23,7 @@ use parking_lot::RwLock;
 use super::exclude::{self, ExcludeWeights};
 use super::snap_index::PackedSnapIndex;
 use super::state::{ModeData, ServerState};
+use crate::profile_abi::Mode;
 
 /// Default LRU capacity. Each full entry is ~100-200 MB on Belgium, so 8
 /// entries cap memory at ~1.6 GB. Override at boot via the
@@ -551,7 +552,10 @@ fn find_avoided_edges(
 
 /// Build a snap mask that excludes edges inside avoid polygons.
 /// Combines with optional exclude mask.
-pub fn build_avoid_mask(
+///
+/// Private since #566: the handlers no longer build masks by hand, they
+/// call [`resolve_weights`].
+fn build_avoid_mask(
     base_mask: &[u64],
     avoid_flags: &[u8],
     exclude_flags: Option<(&[u8], u8)>, // (edge_exclude_flags, exclude_mask) if exclude is also active
@@ -678,7 +682,8 @@ fn get_or_compute_avoid_entry(
 /// Both time-only (P2P /route) and full (PHAST batch) consumers go
 /// through this single entry point. Time-only callers read
 /// `entry.weights.time_weights`; full callers read `entry.weights`.
-pub fn compute_avoid_weights(
+/// Reached only via [`resolve_weights`] since #566.
+fn compute_avoid_weights(
     state: &ServerState,
     mode_data: &ModeData,
     avoid_json: &str,
@@ -686,17 +691,6 @@ pub fn compute_avoid_weights(
 ) -> Result<Arc<AvoidEntry>, String> {
     let mode_idx = mode_index_in_state(state, mode_data)? as u8;
     get_or_compute_avoid_entry(state, mode_data, mode_idx, avoid_json, exclude_mask)
-}
-
-/// Compatibility shim: /route only needs the time field but reuses
-/// the cache via the unified entry. Same `Arc<AvoidEntry>` shape.
-pub fn compute_avoid_weights_time_only(
-    state: &ServerState,
-    mode_data: &ModeData,
-    avoid_json: &str,
-    exclude_mask: Option<u8>,
-) -> Result<Arc<AvoidEntry>, String> {
-    compute_avoid_weights(state, mode_data, avoid_json, exclude_mask)
 }
 
 /// Look up the mode index by comparing the `ModeData` pointer against
@@ -725,6 +719,216 @@ pub fn parse_avoid_option(avoid: &Option<String>) -> Result<Option<String>, Stri
         Some(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
         _ => Ok(None),
     }
+}
+
+// ===========================================================================
+// #566 / #561 — ONE resolution of `exclude` + `avoid_polygons` per query.
+// ===========================================================================
+
+/// The resolved `exclude=` / `avoid_polygons=` plan for ONE query (#566).
+///
+/// Every query surface (/route, /table, /trip, /isochrone,
+/// /isochrone/bulk, /match) needs the same four things, derived by the
+/// same priority rule — **avoid wins over exclude**, because the avoid
+/// recustomization already folds the exclude flags into its own weights:
+///
+/// * `snap_mask` — the edge bitset snapping is allowed to pick from;
+/// * the avoid recustomization, when an avoid polygon is active;
+/// * the exclude recustomization, when `exclude=` is the ONLY option;
+/// * `exclude_mask` — the parsed bits, still needed by callers that pick
+///   a legacy (non-phantom) seeding flow when custom weights are in play.
+///
+/// Two properties this type exists to keep true everywhere at once:
+///
+/// 1. **`snap_mask` is `Cow::Borrowed(&mode_data.mask)` when neither
+///    option is present** — the 99 % path. `/table` and `/isochrone/bulk`
+///    used to clone the whole bitset there (#561: one bit per EBG node,
+///    `ceil(n / 64)` words — 80 639 words = 630 KiB for Belgium's
+///    5 160 848, per request, on the two highest-throughput surfaces)
+///    while `/route` borrowed it. One resolution, one answer.
+/// 2. **The exclude weights resolve on FIRST USE, not at plan time.**
+///    `ServerState::get_exclude_weights` is a multi-second
+///    recustomization on a cold cache, and `/route` reaches several early
+///    returns (degenerate same-edge snap, snap failure, GPX shortcut)
+///    before it ever needs them — it therefore computed them late, by
+///    hand, ~400 lines below the mask. The `OnceLock` keeps `/route`
+///    exactly as lazy as it was and makes the other five lazy too.
+pub struct WeightPlan<'a> {
+    /// Edge bitset for snapping. Borrowed unless an option filters it.
+    pub snap_mask: std::borrow::Cow<'a, [u64]>,
+    /// Parsed `exclude=` bits (`None` when absent or empty).
+    pub exclude_mask: Option<u8>,
+    avoid_entry: Option<Arc<AvoidEntry>>,
+    /// `Some` only when exclude is active AND avoid is not — i.e. exactly
+    /// when the exclude weight set is the one the query must run on.
+    exclude_weights_mask: Option<u8>,
+    exclude_weights: std::sync::OnceLock<Option<Arc<ExcludeWeights>>>,
+    state: &'a ServerState,
+    mode: Mode,
+}
+
+impl<'a> WeightPlan<'a> {
+    /// True when neither option is active: base weights, base mask, and
+    /// the phantom-seeded fast paths are allowed to run (their partial
+    /// edge costs assume base weights).
+    pub fn is_base(&self) -> bool {
+        self.avoid_entry.is_none() && self.exclude_mask.is_none()
+    }
+
+    /// True when an avoid polygon produced a recustomized weight set.
+    pub fn has_avoid(&self) -> bool {
+        self.avoid_entry.is_some()
+    }
+
+    /// The custom weight set this query must run on, or `None` for the
+    /// mode's base weights. THE priority rule (avoid > exclude), in one
+    /// place. Resolving the exclude branch may recustomize on a cold
+    /// cache, so call it only where the weights are actually needed.
+    pub fn weights(&self) -> Option<&ExcludeWeights> {
+        if let Some(ref entry) = self.avoid_entry {
+            return Some(&entry.weights);
+        }
+        self.exclude_weights
+            .get_or_init(|| {
+                self.exclude_weights_mask
+                    .map(|exc| self.state.get_exclude_weights(self.mode, exc))
+            })
+            .as_deref()
+    }
+
+    /// Time metric of [`WeightPlan::weights`].
+    pub fn time_weights(&self) -> Option<&crate::formats::CchWeights> {
+        self.weights().map(|w| &w.time_weights)
+    }
+}
+
+/// Pick the snap mask for one query — THE #561 decision, in one place.
+///
+/// `Cow::Borrowed(base_mask)` unless an option actually filters it, so
+/// the 99 % path (no `avoid_polygons`, no `exclude`) copies nothing.
+/// Owned otherwise: the avoid build already folds the exclude flags in,
+/// which is why the two arms never compose.
+fn select_snap_mask<'a>(
+    base_mask: &'a [u64],
+    edge_exclude_flags: &[u8],
+    avoid_flags: Option<&[u8]>,
+    exclude_mask: Option<u8>,
+) -> std::borrow::Cow<'a, [u64]> {
+    match (avoid_flags, exclude_mask) {
+        (Some(flags), exc) => std::borrow::Cow::Owned(build_avoid_mask(
+            base_mask,
+            flags,
+            exc.map(|e| (edge_exclude_flags, e)),
+        )),
+        (None, Some(exc)) => std::borrow::Cow::Owned(exclude::build_exclude_mask(
+            base_mask,
+            edge_exclude_flags,
+            exc,
+        )),
+        (None, None) => std::borrow::Cow::Borrowed(base_mask),
+    }
+}
+
+/// Plan for a query with no (usable) avoid polygon. Infallible: the
+/// exclude bits are already parsed and the mask build cannot fail.
+fn plan_without_avoid<'a>(
+    state: &'a ServerState,
+    mode_data: &'a ModeData,
+    mode: Mode,
+    exclude_mask: Option<u8>,
+) -> WeightPlan<'a> {
+    WeightPlan {
+        snap_mask: select_snap_mask(
+            &mode_data.mask,
+            &state.edge_exclude_flags,
+            None,
+            exclude_mask,
+        ),
+        exclude_mask,
+        avoid_entry: None,
+        exclude_weights_mask: exclude_mask,
+        exclude_weights: std::sync::OnceLock::new(),
+        state,
+        mode,
+    }
+}
+
+/// Plan for a query whose avoid polygon must be honoured. The avoid
+/// recustomization already folds `exclude_mask` in, so the exclude
+/// weight set is never consulted on this branch.
+fn plan_with_avoid<'a>(
+    state: &'a ServerState,
+    mode_data: &'a ModeData,
+    mode: Mode,
+    exclude_mask: Option<u8>,
+    avoid_json: &str,
+) -> Result<WeightPlan<'a>, String> {
+    let entry = compute_avoid_weights(state, mode_data, avoid_json, exclude_mask)?;
+    let snap_mask = select_snap_mask(
+        &mode_data.mask,
+        &state.edge_exclude_flags,
+        Some(&entry.flags),
+        exclude_mask,
+    );
+    Ok(WeightPlan {
+        snap_mask,
+        exclude_mask,
+        avoid_entry: Some(entry),
+        exclude_weights_mask: None,
+        exclude_weights: std::sync::OnceLock::new(),
+        state,
+        mode,
+    })
+}
+
+/// Resolve the weight plan for one query (#566).
+///
+/// Inputs are the ALREADY-PARSED options: every surface renders a parse
+/// error in its own response shape (`{"error": …}` on /route, /table,
+/// /isochrone; `{"code","message"}` on /trip, /match) and /route must
+/// reject a bad `exclude=` token before it validates `uncertainty=`, so
+/// the two `parse_*_option` calls stay at the call sites where their
+/// 400s belong. Everything after them — the avoid recustomization, the
+/// snap mask, the avoid-over-exclude priority — is here, once.
+///
+/// `mode_data` must be `state.get_mode(mode)`: the avoid cache keys on
+/// the mode slot that owns it.
+pub fn resolve_weights<'a>(
+    state: &'a ServerState,
+    mode_data: &'a ModeData,
+    mode: Mode,
+    exclude_mask: Option<u8>,
+    avoid_json: Option<&str>,
+) -> Result<WeightPlan<'a>, String> {
+    match avoid_json {
+        Some(json) => plan_with_avoid(state, mode_data, mode, exclude_mask, json),
+        None => Ok(plan_without_avoid(state, mode_data, mode, exclude_mask)),
+    }
+}
+
+/// Same plan, but an unusable avoid polygon is DROPPED instead of
+/// failing the request.
+///
+/// This is not a nicety: `/trip` and `/match` have always resolved their
+/// avoid polygon inside `spawn_blocking` with a bare
+/// `compute_avoid_weights(..).ok()`, so a polygon that covers no edge
+/// (or fails to parse past the emptiness check) silently degrades to a
+/// plain query there, while `/route`, `/table` and `/isochrone` answer
+/// 400. Consolidation preserves that difference rather than trading it
+/// away; see #566 for the divergence.
+pub fn resolve_weights_lenient_avoid<'a>(
+    state: &'a ServerState,
+    mode_data: &'a ModeData,
+    mode: Mode,
+    exclude_mask: Option<u8>,
+    avoid_json: Option<&str>,
+) -> WeightPlan<'a> {
+    if let Some(json) = avoid_json
+        && let Ok(plan) = plan_with_avoid(state, mode_data, mode, exclude_mask, json)
+    {
+        return plan;
+    }
+    plan_without_avoid(state, mode_data, mode, exclude_mask)
 }
 
 #[cfg(test)]

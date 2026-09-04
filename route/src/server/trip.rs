@@ -673,37 +673,18 @@ pub async fn trip_handler(
         let mode_data = state_clone.get_mode(mode);
         let n_nodes = mode_data.cch_topo.n_nodes as usize;
 
-        // Compute avoid weights (includes exclude if both present)
-        let avoid_entry = if let Some(ref avoid_str) = avoid_json {
-            super::avoid::compute_avoid_weights(&state_clone, &mode_data, avoid_str, exclude_mask)
-                .ok()
-        } else {
-            None
-        };
-
-        // Get exclude weights if only exclude (no avoid)
-        let exclude_weights = if avoid_entry.is_none() {
-            exclude_mask.map(|exc| state_clone.get_exclude_weights(mode, exc))
-        } else {
-            None
-        };
-
-        // Build snap mask
-        let snap_mask: std::borrow::Cow<'_, [u64]> = if let Some(ref entry) = avoid_entry {
-            std::borrow::Cow::Owned(super::avoid::build_avoid_mask(
-                &mode_data.mask,
-                &entry.flags,
-                exclude_mask.map(|exc| (state_clone.edge_exclude_flags.as_slice(), exc)),
-            ))
-        } else if let Some(exc) = exclude_mask {
-            std::borrow::Cow::Owned(super::exclude::build_exclude_mask(
-                &mode_data.mask,
-                &state_clone.edge_exclude_flags,
-                exc,
-            ))
-        } else {
-            std::borrow::Cow::Borrowed(&mode_data.mask)
-        };
+        // #566: one resolution of exclude + avoid_polygons. `_lenient_avoid`
+        // keeps /trip's long-standing behaviour: an avoid polygon that
+        // cannot be honoured is DROPPED here rather than failing the
+        // request (the options themselves were parsed, and 400'd, above).
+        let weight_plan = super::avoid::resolve_weights_lenient_avoid(
+            &state_clone,
+            &mode_data,
+            mode,
+            exclude_mask,
+            avoid_json.as_deref(),
+        );
+        let snap_mask: &[u64] = &weight_plan.snap_mask;
 
         // Snap all coordinates and convert to rank space.
         // For TSP each waypoint participates in two legs (arrives from
@@ -781,7 +762,7 @@ pub async fn trip_handler(
         // previous), so it gets TWO role-specific seed sets. Custom-weight
         // runs (avoid/exclude) keep single zero-part seeds — the expansion
         // then reduces to an identity copy.
-        let phantom_ok = avoid_entry.is_none() && exclude_weights.is_none();
+        let phantom_ok = weight_plan.is_base();
         let mut src_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(n);
         let mut dst_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::with_capacity(n);
         for (i, &[lon, lat]) in coordinates.iter().enumerate() {
@@ -796,7 +777,7 @@ pub async fn trip_handler(
                     lat,
                     mode.0,
                     8,
-                    Some(&snap_mask),
+                    Some(snap_mask),
                     role.role_filter(&mode_data),
                 );
                 match super::phantom::phantom_from_candidates(
@@ -806,7 +787,7 @@ pub async fn trip_handler(
                     lon,
                     lat,
                     role,
-                    Some(&snap_mask),
+                    Some(snap_mask),
                 ) {
                     Some(pe) => pe
                         .seeds
@@ -821,19 +802,13 @@ pub async fn trip_handler(
         }
 
         // Select flat adjacencies (avoid takes priority, then exclude)
-        let (time_up, time_down) = if let Some(ref entry) = avoid_entry {
-            (&entry.weights.time_up_flat, &entry.weights.time_down_flat)
-        } else if let Some(ref ew) = exclude_weights {
-            (&ew.time_up_flat, &ew.time_down_flat)
-        } else {
-            (&mode_data.up_adj_flat, &mode_data.down_rev_flat)
+        let (time_up, time_down) = match weight_plan.weights() {
+            Some(w) => (&w.time_up_flat, &w.time_down_flat),
+            None => (&mode_data.up_adj_flat, &mode_data.down_rev_flat),
         };
-        let (dist_up, dist_down) = if let Some(ref entry) = avoid_entry {
-            (&entry.weights.dist_up_flat, &entry.weights.dist_down_flat)
-        } else if let Some(ref ew) = exclude_weights {
-            (&ew.dist_up_flat, &ew.dist_down_flat)
-        } else {
-            (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
+        let (dist_up, dist_down) = match weight_plan.weights() {
+            Some(w) => (&w.dist_up_flat, &w.dist_down_flat),
+            None => (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist),
         };
 
         // #372: if length-along-time flats are loaded AND no custom
@@ -842,8 +817,7 @@ pub async fn trip_handler(
         // shortest path the duration is timed against. Falls back to
         // the legacy two-pass distance-shortest path otherwise.
         let use_2channel = want_distance
-            && avoid_entry.is_none()
-            && exclude_weights.is_none()
+            && weight_plan.is_base()
             && mode_data.up_adj_flat_len_along_time.is_some()
             && mode_data.down_rev_flat_len_along_time.is_some();
 
@@ -934,20 +908,14 @@ pub async fn trip_handler(
 
             if any_dur_inf || any_dist_inf {
                 let time_query = if any_dur_inf {
-                    let query = match (&avoid_entry, &exclude_weights) {
-                        (Some(entry), _) => CchQuery::with_custom_weights(
+                    let query = match weight_plan.weights() {
+                        Some(w) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
-                            &entry.weights.time_up_flat,
-                            &entry.weights.time_down_flat,
-                            &entry.weights.time_weights,
+                            &w.time_up_flat,
+                            &w.time_down_flat,
+                            &w.time_weights,
                         ),
-                        (None, Some(ew)) => CchQuery::with_custom_weights(
-                            &mode_data.cch_topo,
-                            &ew.time_up_flat,
-                            &ew.time_down_flat,
-                            &ew.time_weights,
-                        ),
-                        (None, None) => CchQuery::new(&mode_data),
+                        None => CchQuery::new(&mode_data),
                     };
                     Some(query)
                 } else {
@@ -958,20 +926,14 @@ pub async fn trip_handler(
                     // topo_edge_idx) and override with the distance
                     // metric weights — distance-only flats omit
                     // topo_edge_idx so they cannot back a CchQuery.
-                    let query = match (&avoid_entry, &exclude_weights) {
-                        (Some(entry), _) => CchQuery::with_custom_weights(
+                    let query = match weight_plan.weights() {
+                        Some(w) => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
-                            &entry.weights.time_up_flat,
-                            &entry.weights.time_down_flat,
-                            &entry.weights.dist_weights,
+                            &w.time_up_flat,
+                            &w.time_down_flat,
+                            &w.dist_weights,
                         ),
-                        (None, Some(ew)) => CchQuery::with_custom_weights(
-                            &mode_data.cch_topo,
-                            &ew.time_up_flat,
-                            &ew.time_down_flat,
-                            &ew.dist_weights,
-                        ),
-                        (None, None) => CchQuery::with_custom_weights(
+                        None => CchQuery::with_custom_weights(
                             &mode_data.cch_topo,
                             &mode_data.up_adj_flat,
                             &mode_data.down_rev_flat,
