@@ -55,13 +55,70 @@ Belgium, same host, same artifact, before → after:
 The residual few per cent is genuine non-motorway expressway — the N4 to
 Arlon is tagged `trunk` at 120 km/h and is correctly not excluded.
 
-**The honest price is latency, and it is reported rather than traded away.**
-A cold `exclude=motorway` recustomization on Belgium costs **245 s** (it was
-1.8 s and wrong); it is cached per `(mode, mask)` and every later request is
-~15 ms. `/route` deliberately has no `spawn_blocking` because "route
-computation is fast (<10 ms typical)", so the cold recustomization now runs
-through `avoid::off_runtime` (`block_in_place`) — leaving 245 s of pure CPU
-inline on a tokio worker is the #539 failure exactly.
+**The honest price is latency, and it is now bounded rather than reported.**
+Correcting the floor makes the recustomization do the work it always should
+have done, and that work is not small. It moved BOTH options, not just the
+motorway one — `avoid_polygons` recustomizes through the same function, so a
+street-sized polygon went from 1.0 s to 17.7 s and `exclude=motorway` from
+1.0 s to 228.1 s. Neither of the old numbers was a baseline worth keeping:
+they are what a recustomization costs when it stops one level above its seeds.
+
+Measured on Belgium (car, 20-core, both metrics concurrent, same host, same
+artifact), with `BUTTERFLY_EXCLUDE_SHAPE` forcing each shape in turn:
+
+| mask | seeded CCH arcs | before | incremental | from scratch |
+|---|---|---|---|---|
+| ~900 m avoid polygon over central Brussels | 938 | 1.0 s | **17.7 s** | 68.6 s |
+| `exclude=motorway` | 20 835 | 1.0 s | 228.1 s | **59.1 s** |
+
+So neither shape is right for both ends, and the engine now picks per mask.
+The incremental walk is bounded by what the mask reaches; the from-scratch
+shape is the pipeline's own step 8 — `bottom_up_customize` then
+`triangle_relax_parallel`, the SAME two functions, so there is one triangle
+relaxation in the engine and the serve path cannot drift from the build — and
+costs the same whatever the mask is, because every core works. Its cost even
+FALLS as the mask widens (59 s for the class mask against 69 s for the
+polygon: a wider mask converges in fewer passes).
+
+`SCRATCH_SEED_THRESHOLD` is derived from those two points, not fitted to them.
+The incremental cost runs 0.011-0.019 s per seeded arc, so the shapes cross
+between ~3 200 and ~6 300 seeds; the threshold takes the conservative end
+(3 500) so that the incremental path's own worst case (~66 s) sits at the
+from-scratch cost. **No mask can then cost more than about 70 s**, and the
+common street-sized polygon still pays 17.7 s rather than 68.6 s.
+`both_recustomization_shapes_agree` asserts the two shapes return identical
+weights on the lattice, so the switch can only change the cost, never the
+answer.
+
+**What the 120 s `TimeoutLayer` actually does: nothing, here.** A cold
+`exclude=motorway` request measured 228.1 s and returned **HTTP 200**, not a
+408. `tokio::time::timeout` can only elapse when it is polled, and it cannot
+be polled while the inner handler is blocked inside its own `poll` — a
+synchronous computation in an axum handler runs to completion whatever the
+layer says. That is not a reason to relax: it means the request budget cannot
+be enforced from the outside, so it has to be met by the work itself, which is
+what the switch does. Two further changes make the cold path behave:
+
+* `/route` deliberately has no `spawn_blocking` ("route computation is fast,
+  <10 ms typical"). The cold recustomization now runs through
+  `avoid::off_runtime` (`block_in_place`), which does not shorten it but hands
+  the worker's other tasks to a sibling thread, so the rest of the server
+  stays responsive while it runs (#539).
+* Identical cold requests collapse. The exclude cache used to document
+  duplicate concurrent computation as "benign racy semantics" — true at 1 s,
+  false at a minute, and the realistic burst is the SAME mask arriving twice
+  because a client gave up and retried. Both caches now single-flight on their
+  own key: the first caller computes, the rest wait on its result.
+
+**Precomputing the class masks at boot was measured and rejected.** They are a
+closed set — seven non-empty combinations of toll/ferry/motorway — but each
+weight set is ~1.5 GB resident (measured as the server's RSS step, not the
+"5-8 GB" the cache comment used to guess) and costs ~60 s to build. Warming
+all seven would add ~10 GB and ~7 minutes of boot **per mode**, i.e. ~31 GB
+and ~21 minutes for car+bike+foot, on every deploy, for an option most traffic
+never touches. Paying it once per `(mode, mask)` on first use, single-flighted,
+is the better trade; an operator who needs first-call latency can warm the
+masks deliberately.
 
 **`annotations=nodes` returned internal graph ids.** The parameter is part of
 the OSRM-parity set (P4) and OSRM's `nodes` annotation is OSM node ids;
