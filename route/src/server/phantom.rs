@@ -25,6 +25,8 @@
 use crate::model::types::Mode;
 
 use super::edge_geom::EdgeGeometry;
+use super::geometry::Point;
+use super::query::QueryResult;
 use super::state::{ModeData, ServerState};
 use super::types::SnapRole;
 use crate::formats::EbgNodes;
@@ -47,6 +49,12 @@ pub struct PhantomSeed {
     /// Arc-length fraction of the snap point along THIS directed edge's
     /// traversal (0 = at its tail, 1 = at its head). For geometry clipping.
     pub frac: f64,
+    /// The same snap as a fraction along the edge's STORED polyline, which
+    /// both twins share (step 4 gives the forward and reverse EBG nodes one
+    /// `geom_idx`). Equal to `frac` for the stored direction and `1 - frac`
+    /// for its twin. Kept so geometry consumers can walk the stored vertices
+    /// without re-projecting the point (#605).
+    pub frac_stored: f64,
     /// Whether this seed may participate in SAME-EDGE direct/zero-move
     /// evaluations. True for the primary (geometrically best) edge and for
     /// secondary edges the point projects ONTO (interior). False for
@@ -111,6 +119,257 @@ impl PhantomEnd {
             ),
         }
     }
+}
+
+/// #605: both endpoints landed on the SAME directed edge, with the
+/// destination ahead of the origin along it — the answer is a partial
+/// traversal of that ONE edge, not a path through the network.
+///
+/// [`super::query::CchQuery::query_seeded`] cannot return this move: at the
+/// shared seed rank the two pure phantom labels dominate every via-network
+/// label, and its pure⊕pure guard then rejects the only meet there (a pure
+/// meet can also encode an INVALID backward same-edge move, so the guard has
+/// to stay). The valid forward move is therefore computed here and offered
+/// alongside the seeded answer — the cheaper of the two wins.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectMove {
+    /// The shared directed edge, as an original EBG node id.
+    pub ebg_id: u32,
+    /// Its rank in this mode's CCH.
+    pub rank: u32,
+    /// `(f_dst - f_src)·w(edge)`, rounded — the exact partial traversal cost.
+    pub cost_s: u32,
+    /// `(f_dst - f_src)·length_m` — billed on the same fractions as `cost_s`,
+    /// so duration and distance describe the same stretch of road.
+    pub distance_m: f64,
+    /// Arc-length fractions of the two snaps along the edge's traversal.
+    pub f_src: f64,
+    pub f_dst: f64,
+    /// The same two snaps along the edge's STORED polyline — what
+    /// [`Self::points_into`] walks. See [`PhantomSeed::frac_stored`].
+    pub stored_src: f64,
+    pub stored_dst: f64,
+    /// The two SNAP points (nearest stored sample of the edge). Used as the
+    /// latitude reference for the planar arc measure, and as the only thing
+    /// left to draw for an edge with no usable polyline — the served ends
+    /// are interpolated from the fractions, see [`Self::points_into`].
+    pub src_lon: f64,
+    pub src_lat: f64,
+    pub dst_lon: f64,
+    pub dst_lat: f64,
+}
+
+impl DirectMove {
+    /// The served polyline: the origin's projection → the destination's
+    /// projection along the edge's own geometry, so the drawn road has the
+    /// same length as [`Self::distance_m`] instead of cutting the corner.
+    /// Appended to `out`, which is cleared first — the batch surface hands
+    /// its scratch buffer, so a direct pair costs no allocation.
+    ///
+    /// Both ends are INTERPOLATED from `stored_src`/`stored_dst`, never taken
+    /// from `PhantomEnd::snapped_*`: the snap index answers with the nearest
+    /// stored SAMPLE of the edge, and two query points a few metres apart
+    /// routinely share one, which drew a zero-length line under a 25 m
+    /// distance. Orientation is read off the two fractions, never off an id
+    /// convention.
+    pub fn points_into(
+        &self,
+        ebg_nodes: &EbgNodes,
+        edge_geom: &EdgeGeometry,
+        out: &mut Vec<Point>,
+    ) {
+        out.clear();
+        let node = &ebg_nodes.nodes[self.ebg_id as usize];
+        let poly = edge_geom.polyline(node.geom_idx);
+        let n = poly.len();
+        // Planar arc lengths, the measure `projection_fraction` used to
+        // produce `frac_stored` — so the two are comparable.
+        let mlat = 111_320.0_f64;
+        let mlon = 111_320.0 * (self.src_lat.to_radians().cos());
+        let seg = |i: usize| -> f64 {
+            let (a, b) = (poly.at(i - 1), poly.at(i));
+            let (dx, dy) = ((b.0 - a.0) * mlon, (b.1 - a.1) * mlat);
+            (dx * dx + dy * dy).sqrt()
+        };
+        let total: f64 = if n >= 2 { (1..n).map(seg).sum() } else { 0.0 };
+        if total <= 0.0 {
+            // No usable geometry: the snap points are all there is to draw.
+            out.push(Point {
+                lon: self.src_lon,
+                lat: self.src_lat,
+            });
+            out.push(Point {
+                lon: self.dst_lon,
+                lat: self.dst_lat,
+            });
+            return;
+        }
+        let at_arc = |target: f64| -> Point {
+            let mut acc = 0.0_f64;
+            for i in 1..n {
+                let l = seg(i);
+                if acc + l >= target || i == n - 1 {
+                    let t = if l > 0.0 {
+                        ((target - acc) / l).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let (a, b) = (poly.at(i - 1), poly.at(i));
+                    return Point {
+                        lon: a.0 + (b.0 - a.0) * t,
+                        lat: a.1 + (b.1 - a.1) * t,
+                    };
+                }
+                acc += l;
+            }
+            let (lon, lat) = poly.at(0);
+            Point { lon, lat }
+        };
+        let (lo, hi) = (
+            self.stored_src.min(self.stored_dst) * total,
+            self.stored_src.max(self.stored_dst) * total,
+        );
+        out.push(at_arc(lo));
+        let mut acc = 0.0_f64;
+        for i in 1..n {
+            acc += seg(i);
+            if acc > lo && acc < hi {
+                let (lon, lat) = poly.at(i);
+                out.push(Point { lon, lat });
+            }
+        }
+        out.push(at_arc(hi));
+        if self.stored_src > self.stored_dst {
+            out.reverse();
+        }
+    }
+
+    /// [`Self::points_into`] into a fresh `Vec`.
+    pub fn points(&self, ebg_nodes: &EbgNodes, edge_geom: &EdgeGeometry) -> Vec<Point> {
+        let mut out = Vec::new();
+        self.points_into(ebg_nodes, edge_geom, &mut out);
+        out
+    }
+}
+
+/// #605: how a phantom-seeded pair resolved. ONE shape for every surface —
+/// `/route`, Flight `route_batch` and `edges_batch` all consume this, so a
+/// tier one of them forgets cannot silently make it answer a different route
+/// from the others (which is exactly what #605 was).
+pub enum PhantomPair {
+    /// Both endpoints on the same directed edge — see [`DirectMove`].
+    Direct(DirectMove),
+    /// A path through the network. `result.distance` is already de-shifted;
+    /// `end_clip` is the `(src_frac, dst_frac)` pair the caller bills the
+    /// partial first and last edges with.
+    Network {
+        src_rank: u32,
+        dst_rank: u32,
+        result: QueryResult,
+        end_clip: (f64, f64),
+    },
+}
+
+/// #605: the same-physical-edge direct move between two phantom endpoints,
+/// or `None` when they share no edge they may both claim to be ON.
+///
+/// Only PRIMARY-edge seeds (`direct_ok`) take part: a secondary candidate
+/// says "the search may depart from here", not "the point is on this edge",
+/// and two clamped secondaries on a shared side street fabricate a ~0 s move
+/// between points a real drive apart.
+pub fn direct_move(
+    node_weights: &[u32],
+    ebg_nodes: &EbgNodes,
+    src: &PhantomEnd,
+    dst: &PhantomEnd,
+) -> Option<DirectMove> {
+    let mut best: Option<DirectMove> = None;
+    for s in &src.seeds {
+        if !s.direct_ok {
+            continue;
+        }
+        let Some(d) = dst.seed_of(s.ebg_id) else {
+            continue;
+        };
+        // The destination must lie AHEAD of the origin along this direction;
+        // behind is the twin's move, not this one's.
+        if !d.direct_ok || d.frac < s.frac {
+            continue;
+        }
+        let w = node_weights[s.ebg_id as usize] as f64;
+        let len = ebg_nodes.nodes[s.ebg_id as usize].length_m as f64;
+        let cost_s = ((d.frac - s.frac) * w).round() as u32;
+        if best.is_some_and(|b| b.cost_s <= cost_s) {
+            continue;
+        }
+        best = Some(DirectMove {
+            ebg_id: s.ebg_id,
+            rank: s.rank,
+            cost_s,
+            distance_m: (d.frac - s.frac) * len,
+            f_src: s.frac,
+            f_dst: d.frac,
+            stored_src: s.frac_stored,
+            stored_dst: d.frac_stored,
+            src_lon: src.snapped_lon,
+            src_lat: src.snapped_lat,
+            dst_lon: dst.snapped_lon,
+            dst_lat: dst.snapped_lat,
+        });
+    }
+    best
+}
+
+/// #605: resolve one phantom-seeded pair — the seeded network query plus the
+/// same-edge [`direct_move`] recovery, cheapest wins.
+///
+/// This is the WHOLE phantom tier, in one body, for every surface. `/route`
+/// carried the direct move and Flight's per-pair driver did not, so pairs
+/// with two snaps on one edge — always short ones — came back several
+/// minutes slower on the batch surface than on `/route` (measured on
+/// Belgium: 52 of 1 080 short pairs across the three modes).
+///
+/// `None` ⇒ the seeded query did not connect and there is no same-edge move;
+/// the caller escalates.
+pub fn resolve_phantom_pair(
+    state: &ServerState,
+    mode_data: &ModeData,
+    query: &super::query::CchQuery<'_>,
+    src: &PhantomEnd,
+    dst: &PhantomEnd,
+    debug: bool,
+) -> Option<PhantomPair> {
+    let (src_seeds, _) = src.query_seeds_and_shift(SnapRole::Src);
+    let (dst_seeds, dst_shift) = dst.query_seeds_and_shift(SnapRole::Dst);
+    let seeded = query.query_seeded(&src_seeds, &dst_seeds, debug);
+    let seeded_cost = seeded
+        .as_ref()
+        .map(|r| r.distance.saturating_sub(dst_shift));
+    let direct = direct_move(&mode_data.node_weights, &state.ebg_nodes, src, dst);
+    if let Some(dm) = direct
+        && seeded_cost.is_none_or(|sc| dm.cost_s <= sc)
+    {
+        return Some(PhantomPair::Direct(dm));
+    }
+    let r = seeded?;
+    let to_ebg = |rank: u32| -> u32 {
+        let f = mode_data.cch_topo.rank_to_filtered[rank as usize];
+        mode_data.filtered_to_original[f as usize]
+    };
+    Some(PhantomPair::Network {
+        src_rank: r.src_root,
+        dst_rank: r.dst_root,
+        end_clip: (
+            src.frac_of(to_ebg(r.src_root)).unwrap_or(0.0),
+            dst.frac_of(to_ebg(r.dst_root)).unwrap_or(1.0),
+        ),
+        result: QueryResult {
+            distance: r.distance.saturating_sub(dst_shift),
+            meeting_node: r.meeting_node,
+            forward_parent: r.forward_parent,
+            backward_parent: r.backward_parent,
+        },
+    })
 }
 
 /// Project (lon, lat) onto the edge's stored polyline; return the arc-length
@@ -396,6 +655,7 @@ fn phantom_from_primary_inner(
                 part_time: (rem * w).round() as u32,
                 part_len: (rem * len).round() as u32,
                 frac: frac_along_self,
+                frac_stored: f_stored,
                 direct_ok,
             });
         }
@@ -795,6 +1055,7 @@ mod tests {
             part_time,
             part_len: part_time, // irrelevant to the time-channel tests
             frac: 0.0,
+            frac_stored: 0.0,
             direct_ok,
         }
     }
