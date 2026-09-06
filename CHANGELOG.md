@@ -10,6 +10,89 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-06 — The calibration was landing, then being subtracted away (#608, #609)
+
+**Where a row dies is now counted, per road class.** The boot
+recustomization reported one number, `matched`, and `matched` counts an edge
+that FOUND a row — not an edge that ends up SERVING one. Between the two sit
+four different deaths, and #608 was diagnosed only because someone probed the
+served weights from outside. `landing_census` makes the engine say it itself
+at every cold boot: inaccessible / no OSM id / no row / matched (via the OSM
+segment chain or via the junction pair) / **floored** — a value found and
+then thrown away by the free-flow floor, which nothing was counting — plus
+the median observed ratio and the median served ratio per class. The level
+anchor is a uniform multiplier applied afterwards, so it cannot change their
+ratio: `served / observed` at 1.00 means that class is replicated.
+
+**The alignment is not where the loss is.** Belgium, typical column, an
+observed table keyed to the container being served: 2 833 039 car-accessible
+directed edges on the network, **2 830 619 matched (99.91 %)**, 2 420 with no
+row (0.09 %), **0** with no OSM id. Both re-keying paths work — 1 197 926
+edges resolve through their OSM id chain, 1 632 693 through the junction
+pair — and neither can distort a value: every multi-segment edge in Belgium
+(1 602 834 of them) matches no segment pair at all and falls through to its
+junction pair, and every single-segment edge matches its one pair whole, so
+the segment-average never runs on a partial set. A table keyed to a
+DIFFERENT container is a different problem, an operational one, and it shows
+up in this same census as `no_row` — a missing row serves an edge at
+free-flow, which is why a class can read far faster than its own labels
+without a single line of engine code being wrong.
+
+**The loss was the turn subtraction.** A door-to-door measurement already
+contains the junction delay the engine charges separately as a turn penalty,
+so #481 subtracts that charge before setting the link weight and floors the
+result at legal free-flow. What it subtracted was the MEAN penalty over every
+successor of the edge — a number no traversal ever pays: it averages in the
+u-turn (turn + 20 s) and every branch a shortest path declines. It routinely
+exceeded the whole measured slowdown, and the floor then discarded that
+edge's measurement outright and served it at free-flow, unmeasured. Measured:
+27 991 edges floored, 70 689 s of measurement dropped, concentrated exactly
+where route time is spent — 20.3 % of motorway links, 21.8 % of trunk links,
+8.1 % of trunk, 5.1 % of motorway against 0.14 % of residential — and those
+classes served 5-16 % faster than the table said.
+
+So the subtraction is bounded to the charge every traversal NECESSARILY pays:
+the **cheapest allowed continuation**. Still zero fitted parameters (it is
+read off the engine's own turn table), and also the better estimate of what
+is actually charged, since a shortest path leaves an edge by its cheapest
+turn unless a dearer one pays for itself. The independent measurement agrees
+on the magnitude: turn cost is 0.5 % of route duration at the median
+(`bench/route_choice.py`), not the tens of percent the mean removed from
+short edges.
+
+| | before | after |
+|---|---|---|
+| edges floored | 27 991 (0.99 %) | **247 (0.01 %)** |
+| measurement discarded | 70 689 s | **442 s** |
+| motorway served / observed | 1.065 | **1.044** |
+| motorway_link | 1.125 | **1.013** |
+| trunk | 1.054 | **0.966** |
+| trunk_link | 1.116 | **0.989** |
+
+The free-flow floor stays — a car does not beat its own legal limit — but it
+is no longer silent: `land_observed_ratio` returns what it clamps and the
+census prints it per class. On the classes now reading just under 1.00 the
+residual is the integer-second quantisation of short links, and it errs slow,
+which is the direction the product asks for.
+
+**The level.** Replicating the measurement instead of discarding it makes the
+engine slower, so the global level anchor that had been standing in for the
+loss shrinks toward 1.0. The artifact ships 1.052; the anchor its own
+like-for-like level implies goes **1.029 → 1.013** (and by the producer's
+documented rule, which deliberately aims 3 % slow, 1.060 → 1.043). The
+like-for-like duration median moves 1.022 → 1.039, i.e. onto that 3 % target
+rather than past it, and distance p50 is unchanged at 1.001.
+
+**Route choice does not degrade.** The #545 divergent share is 0.186 →
+**0.181** on the same 414 pairs (ceiling 0.25, untouched) and route length
+p50 1.000 → 0.999 — the shift lands on urban arterials, which were the
+classes being floored (`secondary` 7 581 floored edges → 11, `tertiary`
+7 349 → 6), so Brussels-internal pairs slow by 5 % while the coast set moves
+1 %.
+
+Cache tag v8 → v9: the derivation changes, and a stale HIT would serve the
+old weights.
+
 ### 2026-09-06 — Two promises on `/route` that did not hold (#606)
 
 **`exclude=motorway` was close to a no-op.** Measured on five inter-city pairs
