@@ -324,9 +324,10 @@ pub fn direct_move(
 /// same-edge [`direct_move`] recovery, cheapest wins.
 ///
 /// This is the WHOLE phantom tier, in one body, for every surface. `/route`
-/// carried the direct move and Flight's per-pair driver did not, so 5 of
-/// 1 080 measured pairs — all short, all with two snaps on one edge — came
-/// back several minutes slower on the batch surface than on `/route`.
+/// carried the direct move and Flight's per-pair driver did not, so pairs
+/// with two snaps on one edge — always short ones — came back several
+/// minutes slower on the batch surface than on `/route` (measured on
+/// Belgium: 52 of 1 080 short pairs across the three modes).
 ///
 /// `None` ⇒ the seeded query did not connect and there is no same-edge move;
 /// the caller escalates.
