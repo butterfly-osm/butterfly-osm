@@ -10,6 +10,82 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-06 — Two promises on `/route` that did not hold (#606)
+
+**`exclude=motorway` was close to a no-op.** Measured on five inter-city pairs
+it moved the returned duration by at most 0.9 % and the share of route length
+on fast links by under one point; on a short motorway hop it came back
+0.3 % **quicker** with the option on, which is impossible for a strict
+subgraph. Two candidate causes had to be separated — the exclusion not
+reaching the edges, or the classification not matching what the route
+traverses. It was the first, and the classification is right: `exclude=motorway`
+keys on `highway_class` 1-2, i.e. `motorway` and `motorway_link` in the car
+model's own schema.
+
+`recompute_edge_weight` seeded EVERY CCH edge with its build-time relaxed
+weight and then took the minimum over triangles. For a base edge that is its
+own arc's cost and is correct. For a SHORTCUT it is a floor no exclusion can
+raise: a shortcut summarising a corridor through an excluded arc kept the
+corridor's weight and, having "not changed", never enqueued its own
+dependents, so the propagation died one level above the seeds. Long routes
+ride high-level shortcuts almost exclusively — which is exactly why the effect
+was largest on the shortest hop. `avoid_polygons` recustomizes through the
+same function and had the same hole.
+
+A shortcut owns no arc: it is defined as the best two-hop through a
+lower-ranked apex, so it is now recomputed from infinity and the triangle scan
+IS its definition. Correcting the floor makes far more edges move, so the FIFO
+became a min-heap on LEVEL = min(rank(source), rank(target)); every triangle
+leg runs through an apex ranked strictly below both endpoints, so popping in
+level order settles every leg before the edge that reads it — one
+recomputation per touched edge, and the same fixed point a from-scratch
+bottom-up customization reaches.
+
+Belgium, same host, same artifact, before → after:
+
+| pair | Δ duration before | Δ duration after | route length ≥ 90 km/h, excluded, before → after |
+|---|---|---|---|
+| Bxl→Antwerp (E19) | +0.7 % | **+90.4 %** | 63.5 % → **0.9 %** |
+| Bxl→Liège (E40) | +0.1 % | +126.8 % | 83.5 % → 4.7 % |
+| Bxl→Ghent (E40) | +0.0 % | +81.9 % | 70.2 % → 1.4 % |
+| Antwerp→Liège (E313) | +0.1 % | +123.4 % | 89.5 % → 1.4 % |
+| Bxl→Charleroi (A54) | +0.9 % | +27.6 % | 55.7 % → 5.5 % |
+| Mechelen→Antwerp, 24.8 km | **−0.3 %** | +68.0 % | 52.3 % → 0.4 % |
+
+The residual few per cent is genuine non-motorway expressway — the N4 to
+Arlon is tagged `trunk` at 120 km/h and is correctly not excluded.
+
+**The honest price is latency, and it is reported rather than traded away.**
+A cold `exclude=motorway` recustomization on Belgium costs **245 s** (it was
+1.8 s and wrong); it is cached per `(mode, mask)` and every later request is
+~15 ms. `/route` deliberately has no `spawn_blocking` because "route
+computation is fast (<10 ms typical)", so the cold recustomization now runs
+through `avoid::off_runtime` (`block_in_place`) — leaving 245 s of pure CPU
+inline on a tokio worker is the #539 failure exactly.
+
+**`annotations=nodes` returned internal graph ids.** The parameter is part of
+the OSRM-parity set (P4) and OSRM's `nodes` annotation is OSM node ids;
+`docs/api.md` never said otherwise, and the README contrasts it with
+`edges_batch`'s "unnested OSM node ids" as if the two named the same thing. It
+served the engine's EBG node ids, which are meaningless outside the process
+and change on every artifact rebuild — which is why the investigation above
+had to attribute road class through link speeds instead. It is a genuine
+mismatch on a documented output, not a documentation error, so `nodes` now
+returns **OSM node ids** (`i64`), in order of travel, one per OSM node the
+route passes through. It is geometry-shaped, not per-edge like `duration` /
+`distance` / `speed` — the same shape OSRM gives it — and `docs/api.md` now
+says so.
+
+**Guards.** `route/tests/synthetic_topology.rs` pins the mechanism with no
+artifact: a lattice with a fast corridor row and a slow street grid, an
+independent Dijkstra over the corridor-free graph as the truth, every routable
+source × a spread of targets. Before the fix the exclusion returned 201 s
+where the corridor-free shortest path costs 330 s and the served route still
+ran down the corridor. `bench/postdeploy_gate.py` gains `gate_exclude_motorway`
+over real geography: a restriction is never faster, the mask is monotone,
+`/route` ≡ `/table` under the same mask (all three exact, no constants), and
+the motorway corridor is actually left.
+
 ### 2026-09-06 — The batch route and `/route` answered short pairs differently (#605)
 
 `/route` computed the same-physical-edge direct move and offered it against the
