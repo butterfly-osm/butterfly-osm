@@ -954,11 +954,15 @@ impl ServerState {
             return weights;
         }
 
-        // Miss: compute, then insert (evicting the LRU entry if at cap).
-        // Two simultaneous misses on the same mask may both compute and
-        // the second insert wins — the same benign racy semantics
-        // AvoidWeightCache documents; the only cost is a rare duplicate
-        // recustomization, never a correctness issue.
+        // Miss. #606: take the mask's single-flight slot and re-check —
+        // a duplicate recustomization used to be waved through as "benign",
+        // which was true when it cost a second and is not when it costs a
+        // minute and holds a blocking thread throughout.
+        let _flight = mode_data.exclude_cache.flight_guard(exclude_mask);
+        if let Some(weights) = mode_data.exclude_cache.get(exclude_mask) {
+            return weights;
+        }
+
         let mode_name = &self.mode_names[mode.index()];
         tracing::info!(
             mode = mode_name.as_str(),
