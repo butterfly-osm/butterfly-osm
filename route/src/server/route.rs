@@ -51,7 +51,8 @@ pub struct RouteRequest {
     /// Include turn-by-turn step instructions
     #[serde(default)]
     steps: bool,
-    /// Per-edge annotations: comma-separated list of "duration", "distance", "speed", "nodes"
+    /// Annotations: comma-separated list of "duration", "distance", "speed"
+    /// (one entry per route edge) and "nodes" (OSM node ids along the route)
     #[serde(default)]
     annotations: Option<String>,
     /// Bearing hints per waypoint: "angle,range;angle,range" (0-360 degrees).
@@ -121,9 +122,14 @@ pub struct RouteAnnotations {
     /// Per-edge speed in km/h
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<Vec<f64>>,
-    /// Per-edge EBG node IDs
+    /// OSM node ids along the route, in order (#606). One entry per OSM
+    /// node the route passes through — junctions and shape points alike —
+    /// so this array is geometry-shaped, NOT per-edge like the three
+    /// above, exactly as OSRM's `nodes` annotation is. It used to serve
+    /// the engine's internal EBG ids, which are meaningless outside the
+    /// process and unstable across artifact rebuilds.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nodes: Option<Vec<u32>>,
+    pub nodes: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -222,7 +228,7 @@ pub struct StepManeuver {
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
         ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
         ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions with road names", example = true),
-        ("annotations" = Option<String>, Query, description = "Per-edge annotations: comma-separated list of 'duration', 'distance', 'speed', 'nodes'", example = json!(null)),
+        ("annotations" = Option<String>, Query, description = "Comma-separated list of 'duration', 'distance', 'speed' (one entry per route edge) and 'nodes' (OSM node ids along the route, geometry-shaped)", example = json!(null)),
         ("bearings" = Option<String>, Query, description = "Bearing hints: 'angle,range;angle,range' (source;destination). Filters snap by edge bearing.", example = json!(null)),
         ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
         ("uncertainty" = Option<String>, Query, description = "Set to 'bands' to also return duration_best_s/duration_worst_s (best = nights/free-flow, worst = weekday peaks; car only; 2 extra queries)", example = json!(null)),
@@ -235,6 +241,8 @@ pub struct StepManeuver {
 )]
 // Note: route computation is fast (<10ms typical) and bounded by ConcurrencyLimitLayer(32),
 // so spawn_blocking is not needed here. /match and /trip use spawn_blocking for long computations.
+// The ONE slow thing this handler can reach is a COLD exclude/avoid
+// recustomization; `avoid::off_runtime` takes that off the tokio worker (#539).
 pub async fn route_handler(
     State(regions): State<Arc<RegionsState>>,
     Query(req): Query<RouteRequest>,
@@ -1134,7 +1142,12 @@ pub async fn route_handler(
                 );
             }
             if want_nds {
-                ann.nodes = Some(ebg_path.clone());
+                ann.nodes = Some(super::edge_osm::osm_nodes_along_path(
+                    &state.edge_osm,
+                    &state.ebg_nodes.nodes,
+                    &state.nbg_node_to_osm,
+                    &ebg_path,
+                ));
             }
             Some(ann)
         } else {
