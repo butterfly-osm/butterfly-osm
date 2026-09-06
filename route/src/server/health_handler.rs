@@ -13,7 +13,10 @@ use super::regions::RegionsState;
     summary = "Health check",
     description = "Liveness probe: status, version, uptime, loaded modes and dataset \
                    counts — O(1), no section walk (#551). Per-region lazy-CRC \
-                   verification status is on `/regions`; cache gauges on `/metrics`.",
+                   verification status is on `/regions`; cache gauges on `/metrics`. \
+                   `transit_feeds` names the operators the loaded timetable holds, the \
+                   ones knowingly excluded with their reason, and any undeclared gap \
+                   (#603); null when transit is not installed.",
     responses(
         (status = 200, description = "Server is healthy"),
     )
@@ -44,6 +47,15 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
     // Primary-region stats only if already loaded (no lazy load from /health).
     let primary_loaded = regions.regions.first().and_then(|r| r.state_loaded());
 
+    // #603: a merged timetable that is one operator short looks exactly
+    // like a complete one from the outside. It says which operators it
+    // holds, which are knowingly excluded (with the reason) and which are
+    // an undeclared gap. O(1): three short id lists built at load.
+    let transit = primary_loaded
+        .as_ref()
+        .and_then(|p| p.transit.as_ref())
+        .map(|t| t.snapshot.feeds.clone());
+
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -61,5 +73,6 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         "regions": regions.region_ids(),
         "total_nodes_count": total_nodes,
         "total_edges_count": total_edges,
+        "transit_feeds": transit,
     }))
 }

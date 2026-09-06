@@ -264,7 +264,87 @@ class Registry(unittest.TestCase):
         full = set(g.gate_names())
         quick_args = argparse.Namespace(**dict(g.GATE_ARGS_DEFAULTS, quick=True))
         quick = set(g.gate_names(quick_args))
-        self.assertEqual(full - quick, {"ground_truth_duration", "ground_truth_distance"})
+        self.assertEqual(full - quick,
+                         {"ground_truth_duration", "ground_truth_distance", "route_choice"})
+
+
+class RouteChoice(unittest.TestCase):
+    """#545: the route-CHOICE statistic and the bound over it, offline."""
+
+    @staticmethod
+    def _pairs(ratios):
+        """(rows, res) as ref_trip_routes returns them, for the given engine/
+        observed length ratios. A `None` ratio is an unroutable trip."""
+        rows = [{"route_id": str(i), "ref_km": "10.0", "ref_min": "12.0"}
+                for i, _ in enumerate(ratios)]
+        res = [None if x is None else {"km": 10.0 * x, "min": 12.0, "best_min": 0.0,
+                                       "worst_min": 0.0}
+               for x in ratios]
+        return rows, res
+
+    def test_ratio_is_engine_over_observed_length(self):
+        rows, res = self._pairs([1.0, 1.5, 0.5])
+        ratios, errors = g.route_choice_stats(rows, res)
+        self.assertEqual(errors, 0)
+        self.assertEqual([round(x, 6) for x in ratios], [1.0, 1.5, 0.5])
+
+    def test_the_divergence_multiple_is_the_files_existing_one(self):
+        """1.20 is not a new constant: it is `dist_p90_max`, the same bound
+        `outlier_frac` calls materially longer."""
+        self.assertEqual(g.THRESHOLDS["dist_p90_max"], 1.20)
+        _, share = g.outlier_frac([1.0, 1.21], lo=0.85, hi=g.THRESHOLDS["dist_p90_max"])
+        self.assertEqual(share, 0.5)
+
+    def test_boundary_pair_counts_as_divergent(self):
+        rows, res = self._pairs([1.199999, 1.20, 1.2001])
+        ratios, _ = g.route_choice_stats(rows, res)
+        hi = g.THRESHOLDS["dist_p90_max"]
+        self.assertEqual(sum(1 for x in ratios if x >= hi), 2)
+
+    def test_unroutable_and_broken_reference_are_errors_not_silent_drops(self):
+        rows, res = self._pairs([1.0, None, 1.0])
+        rows[2]["ref_km"] = "0"
+        rows.append({"route_id": "x", "ref_min": "5"})  # no ref_km at all
+        res.append({"km": 5.0, "min": 5.0, "best_min": 0.0, "worst_min": 0.0})
+        ratios, errors = g.route_choice_stats(rows, res)
+        self.assertEqual(len(ratios), 1)
+        self.assertEqual(errors, 3)
+
+    def test_no_like_for_like_filter(self):
+        """The like-for-like filter keeps only routes within +/-10 % of the
+        observed length — it would drop every divergent pair, which is how
+        #545 stayed invisible. This statistic must see all of them."""
+        rows, res = self._pairs([1.4] * 50)
+        ratios, errors = g.route_choice_stats(rows, res)
+        self.assertEqual(errors, 0)
+        self.assertEqual(len(ratios), 50)
+        lfl = g.THRESHOLDS["like_for_like_km_tol"]
+        self.assertEqual([t for t, r in zip(rows, res) if g.like_for_like(r, t)], [],
+                         f"like-for-like (+/-{lfl}) would have dropped the whole population")
+
+    def test_bound_is_a_share_and_a_ceiling_not_a_measurement(self):
+        bound = g.THRESHOLDS["choice_divergent_frac"]
+        self.assertEqual(bound, 0.25, "one pair in four: divergence stops being a tail")
+        self.assertLess(bound, 0.5, "a majority-divergent engine must never pass")
+
+    def test_todays_defect_passes_but_a_worse_one_fails(self):
+        """The bound must not fail every deploy on the KNOWN #545 defect
+        (~0.186), and must fail when choice degrades materially further."""
+        bound = g.THRESHOLDS["choice_divergent_frac"]
+        hi = g.THRESHOLDS["dist_p90_max"]
+
+        def share(divergent, n=1000):
+            rows, res = self._pairs([1.4] * divergent + [1.0] * (n - divergent))
+            ratios, _ = g.route_choice_stats(rows, res)
+            return sum(1 for x in ratios if x >= hi) / len(ratios)
+
+        self.assertLessEqual(share(186), bound, "today's known defect must still deploy")
+        self.assertGreater(share(300), bound, "a third worse than today must fail")
+
+    def test_registered_and_owned_by_its_ticket(self):
+        self.assertIn("route_choice", g.gate_names())
+        self.assertEqual(g.TICKET_GATES["#545"], ("route_choice",))
+        self.assertIn("#545", g.TICKET_NOTES)
 
 
 class RestProbeParity(unittest.TestCase):

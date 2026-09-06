@@ -505,6 +505,11 @@ pub enum Commands {
     ///
     /// Reads `<data>/transit/transit.toml` if present; otherwise uses
     /// the default Belgium feed set (SNCB, De Lijn, TEC, STIB).
+    ///
+    /// Any feed that fails to download fails the run. The one way to
+    /// proceed without an operator is to declare it in
+    /// `[[excluded_feeds]]` with a reason (#603); it is then never
+    /// requested, and every run says so.
     TransitFetch {
         /// Data directory (the one you pass to `serve --data-dir`).
         #[arg(short, long)]
@@ -1928,13 +1933,21 @@ impl Cli {
                         data_dir.display()
                     )
                 })?;
+                // #603: a declared exclusion is printed BEFORE the fetch and
+                // counted in the summary. It is the only way a feed is left
+                // out, and it is never quiet about it.
+                let excluded = crate::transit::feeds::format_exclusions(&cfg.excluded_feeds);
+                let n_active = cfg.active_feeds().count();
                 println!(
                     "transit-fetch: {} feed(s) -> {}",
-                    cfg.feeds.len(),
+                    n_active,
                     cfg.gtfs_dir().display()
                 );
-                for feed in &cfg.feeds {
+                for feed in cfg.active_feeds() {
                     println!("  - {} ({})", feed.id, feed.url);
+                }
+                for line in &excluded {
+                    println!("  ! {line}");
                 }
 
                 let rt = tokio::runtime::Runtime::new()?;
@@ -1947,7 +1960,14 @@ impl Cli {
                 // timetable that is silently missing an operator.
                 let ok =
                     crate::transit::feeds::fetch_outcome(&reports, &cfg_dir.join("transit.toml"))?;
-                println!("transit-fetch: {ok} ok");
+                if excluded.is_empty() {
+                    println!("transit-fetch: {ok} ok");
+                } else {
+                    println!(
+                        "transit-fetch: {ok} ok, {} knowingly excluded (see the lines above)",
+                        excluded.len()
+                    );
+                }
                 Ok(())
             }
             Commands::TransitBuildTransfers {

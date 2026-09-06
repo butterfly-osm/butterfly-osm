@@ -23,6 +23,21 @@
 //! url    = "https://example.org/sncb-gtfs.zip"
 //! format = "gtfs"          # or "netex-epip"
 //! ```
+//!
+//! A feed that cannot be fetched fails the whole run — a rotted URL must
+//! never pass unnoticed. When one operator's published address is broken at
+//! the source and there is nothing to correct on our side, the deployment
+//! can proceed WITHOUT it, but only by saying so (#603):
+//!
+//! ```toml
+//! [[excluded_feeds]]
+//! id     = "some-operator"
+//! reason = "published address 404s at the source; tracked upstream"
+//! ```
+//!
+//! A declared operator is not fetched, not merged, and is named on every
+//! run and by the loaded timetable. Every feed that is NOT declared still
+//! fails the run.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +76,25 @@ pub struct FeedConfig {
     pub format: FeedFormat,
 }
 
+/// An operator this deployment knowingly ships WITHOUT (#603).
+///
+/// A feed whose published address is broken at the source cannot be fixed
+/// from this repository, and a failed fetch fails the whole run — correct,
+/// but it also means nothing can be refreshed while one operator is down.
+/// Declaring the operator here is the explicit way to proceed: it is removed
+/// from the fetch and from the merged timetable, the run prints it every
+/// time, and every feed that is NOT declared still fails the run loudly.
+///
+/// `reason` is REQUIRED. A bare on/off flag can be flipped without saying
+/// why, and a silent skip is exactly what let a rotted URL live for months.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExcludedFeed {
+    /// Feed id, which must match one of the configured `feeds`.
+    pub id: String,
+    /// Why this operator is absent — printed on every run that honours it.
+    pub reason: String,
+}
+
 /// Top-level transit configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransitConfig {
@@ -76,6 +110,11 @@ pub struct TransitConfig {
     /// Static feed specifications.
     #[serde(default)]
     pub feeds: Vec<FeedConfig>,
+    /// Operators knowingly excluded from this deployment (#603). Validated
+    /// by [`load`]: every entry must name a configured feed and carry a
+    /// reason, and they may not swallow the entire feed list.
+    #[serde(default)]
+    pub excluded_feeds: Vec<ExcludedFeed>,
     /// Data root (set after parsing, not serialised).
     #[serde(skip)]
     pub data_dir: PathBuf,
@@ -124,6 +163,24 @@ impl TransitConfig {
         }
     }
 
+    /// Why `id` is knowingly absent, if it was declared excluded (#603).
+    pub fn exclusion_reason(&self, id: &str) -> Option<&str> {
+        self.excluded_feeds
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.reason.as_str())
+    }
+
+    /// The feeds this deployment actually uses: every configured feed that
+    /// is not a declared exclusion (#603). Both the fetcher and the loader
+    /// go through here, so a declaration has exactly ONE meaning — the
+    /// operator is not downloaded and not merged.
+    pub fn active_feeds(&self) -> impl Iterator<Item = &FeedConfig> {
+        self.feeds
+            .iter()
+            .filter(|f| self.exclusion_reason(&f.id).is_none())
+    }
+
     /// Local path for the one-shot GTFS-RT snapshot blob for a feed.
     pub fn feed_rt_path(&self, feed: &FeedConfig) -> PathBuf {
         self.transit_dir()
@@ -139,6 +196,7 @@ impl Default for TransitConfig {
             transfer_radius_m: default_transfer_radius(),
             max_access_stops: default_max_access_stops(),
             feeds: Vec::new(),
+            excluded_feeds: Vec::new(),
             data_dir: PathBuf::new(),
         }
     }
@@ -229,7 +287,62 @@ pub fn load(data_dir: &Path) -> Result<Option<TransitConfig>> {
     if cfg.feeds.is_empty() {
         cfg.feeds = default_belgium_feeds();
     }
+    // Exclusions are validated AFTER the defaults are filled in, so an
+    // operator can exclude one feed of the shipped list without restating
+    // the list (restating it is how the two copies drifted in #537).
+    validate_exclusions(&cfg, &toml_path)?;
     Ok(Some(cfg))
+}
+
+/// Check the `[[excluded_feeds]]` declarations (#603).
+///
+/// An exclusion is a deliberate, visible statement, so it must stay true:
+///
+/// * it names a feed that exists — otherwise a rename or a fixed URL would
+///   leave a dead declaration behind, quietly excluding nothing while
+///   claiming to;
+/// * it carries a non-empty reason — the whole point is that the next
+///   person reads WHY;
+/// * it is declared once;
+/// * it does not swallow every feed — an empty active list would fetch
+///   nothing and exit 0, which is the silent success this ticket is about.
+pub fn validate_exclusions(cfg: &TransitConfig, config_path: &Path) -> Result<()> {
+    let mut seen: Vec<&str> = Vec::new();
+    for excluded in &cfg.excluded_feeds {
+        anyhow::ensure!(
+            !excluded.reason.trim().is_empty(),
+            "excluded feed '{}' has no reason in {} — an exclusion without a reason is a \
+             silent skip with extra steps",
+            excluded.id,
+            config_path.display()
+        );
+        anyhow::ensure!(
+            !seen.contains(&excluded.id.as_str()),
+            "feed '{}' is excluded twice in {}",
+            excluded.id,
+            config_path.display()
+        );
+        seen.push(&excluded.id);
+        anyhow::ensure!(
+            cfg.feeds.iter().any(|f| f.id == excluded.id),
+            "excluded feed '{}' is not one of the configured feeds ({}) in {} — a stale \
+             exclusion excludes nothing and hides that it does",
+            excluded.id,
+            cfg.feeds
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            config_path.display()
+        );
+    }
+    anyhow::ensure!(
+        cfg.feeds.is_empty() || cfg.active_feeds().next().is_some(),
+        "every configured feed is excluded in {} — there would be nothing to fetch and \
+         nothing to serve",
+        config_path.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -359,6 +472,137 @@ rt_url = "https://example.com/sncb.rt"
             .find(|f| f.id == "sncb")
             .expect("sncb feed present");
         assert_eq!(sncb.format, FeedFormat::Gtfs);
+    }
+
+    /// #603: an operator can be left out only by DECLARING it, and the
+    /// declaration composes with the shipped feed list — no restating the
+    /// list, which is how the two copies drifted apart in #537.
+    #[test]
+    fn a_declared_exclusion_drops_one_feed_and_keeps_the_shipped_list() {
+        let dir = tempdir().unwrap();
+        let td = dir.path().join("transit");
+        std::fs::create_dir_all(&td).unwrap();
+        std::fs::write(
+            td.join("transit.toml"),
+            r#"
+[[excluded_feeds]]
+id     = "tec"
+reason = "stands in for an operator whose published address is broken"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load(dir.path()).unwrap().unwrap();
+        // The feed list is still the shipped one, untouched.
+        assert_eq!(cfg.feeds.len(), default_belgium_feeds().len());
+        // ... but the declared operator is not one this deployment uses.
+        let active: Vec<&str> = cfg.active_feeds().map(|f| f.id.as_str()).collect();
+        assert!(!active.contains(&"tec"), "declared feed must not be active");
+        assert_eq!(active.len(), cfg.feeds.len() - 1);
+        assert_eq!(
+            cfg.exclusion_reason("tec"),
+            Some("stands in for an operator whose published address is broken")
+        );
+        assert_eq!(cfg.exclusion_reason("sncb"), None);
+    }
+
+    /// The declaration must stay true: an id nobody publishes any more
+    /// excludes nothing while claiming to, which is the silent skip in
+    /// another costume.
+    #[test]
+    fn an_exclusion_naming_no_configured_feed_fails_loudly() {
+        let dir = tempdir().unwrap();
+        let td = dir.path().join("transit");
+        std::fs::create_dir_all(&td).unwrap();
+        std::fs::write(
+            td.join("transit.toml"),
+            r#"
+[[excluded_feeds]]
+id     = "not-a-feed"
+reason = "left behind after a rename"
+"#,
+        )
+        .unwrap();
+        let err = load(dir.path()).expect_err("a stale exclusion must not load");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not-a-feed"), "{msg}");
+        assert!(msg.contains("transit.toml"), "{msg}");
+    }
+
+    /// A bare on/off flag can be flipped without saying why. The reason is
+    /// what the next person reads, so an empty one is not a declaration.
+    #[test]
+    fn an_exclusion_without_a_reason_is_rejected() {
+        let dir = tempdir().unwrap();
+        let td = dir.path().join("transit");
+        std::fs::create_dir_all(&td).unwrap();
+        std::fs::write(
+            td.join("transit.toml"),
+            "[[excluded_feeds]]\nid = \"tec\"\nreason = \"   \"\n",
+        )
+        .unwrap();
+        let err = load(dir.path()).expect_err("an empty reason must not load");
+        assert!(format!("{err:#}").contains("reason"), "{err:#}");
+
+        // A missing `reason` key is a parse error, not a default.
+        std::fs::write(
+            td.join("transit.toml"),
+            "[[excluded_feeds]]\nid = \"tec\"\n",
+        )
+        .unwrap();
+        load(dir.path()).expect_err("reason is required");
+    }
+
+    #[test]
+    fn the_same_feed_cannot_be_excluded_twice() {
+        let cfg = TransitConfig {
+            feeds: default_belgium_feeds(),
+            excluded_feeds: vec![
+                ExcludedFeed {
+                    id: "tec".into(),
+                    reason: "a".into(),
+                },
+                ExcludedFeed {
+                    id: "tec".into(),
+                    reason: "b".into(),
+                },
+            ],
+            ..TransitConfig::default()
+        };
+        let err = validate_exclusions(&cfg, Path::new("/data/transit/transit.toml"))
+            .expect_err("a duplicate declaration must not load");
+        assert!(format!("{err:#}").contains("twice"), "{err:#}");
+    }
+
+    /// Excluding everything would fetch nothing and exit 0 — a silent
+    /// success, which is precisely the failure class #603 is about.
+    #[test]
+    fn excluding_every_feed_is_rejected() {
+        let cfg = TransitConfig {
+            feeds: default_belgium_feeds(),
+            excluded_feeds: default_belgium_feeds()
+                .into_iter()
+                .map(|f| ExcludedFeed {
+                    id: f.id,
+                    reason: "no".into(),
+                })
+                .collect(),
+            ..TransitConfig::default()
+        };
+        assert!(cfg.active_feeds().next().is_none());
+        validate_exclusions(&cfg, Path::new("/data/transit/transit.toml"))
+            .expect_err("a config with nothing left to fetch must not load");
+    }
+
+    /// The shipped default set declares no exclusions: leaving an operator
+    /// out is a deployment decision, never something the binary ships.
+    #[test]
+    fn the_shipped_defaults_exclude_nothing() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("transit")).unwrap();
+        let cfg = load(dir.path()).unwrap().unwrap();
+        assert!(cfg.excluded_feeds.is_empty());
+        assert_eq!(cfg.active_feeds().count(), cfg.feeds.len());
     }
 
     #[test]
