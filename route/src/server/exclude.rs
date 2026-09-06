@@ -522,6 +522,21 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
 // one recomputation per touched edge, no re-visits, and the same fixed point
 // a full bottom-up customization reaches. The FIFO it replaces re-visited an
 // edge once per leg that moved, which (a) made much more expensive.
+//
+// COST, measured (Belgium, car, ≈5 M EBG nodes): a 1 km avoid polygon is ~1 s
+// — it reaches almost nothing. `exclude=motorway` is **245 s**, because
+// removing a whole road class reaches the entire long-distance hierarchy, and
+// the walk is one edge at a time (the two metrics run concurrently via
+// `rayon::join`; the levels themselves are sequential). The result caches per
+// (mode, mask) and every later request is ~15 ms, and the cold call runs off
+// the tokio worker (`avoid::off_runtime`). Parallelising WITHIN a level is
+// sound — a level's edges are independent by the argument above — but a level
+// holds ~13 edges on Belgium, too few to pay for the fan-out. The shape that
+// would actually win on a class-wide mask is the build's: a cheap bottom-up
+// pass over the recorded middles, then the parallel triangle relaxation to a
+// fixed point (~35-40 s for the whole graph). It would cost every SMALL mask
+// that same 40 s, so it belongs behind a seed-count switch, not in place of
+// this walk.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgeDir {
