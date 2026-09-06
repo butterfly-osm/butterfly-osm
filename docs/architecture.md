@@ -309,6 +309,26 @@ flowchart TD
     restrict --> tg[(TransferGraph)]
 ```
 
+Feeds are refreshed at rebuild time (`transit-fetch`), and a feed that does
+not download **fails the run** — a rotted URL once printed a line and exited
+zero, so a rebuild quietly produced a timetable one operator short for
+months. The single way to proceed without an operator is to declare it
+(#603):
+
+```toml
+[[excluded_feeds]]
+id     = "some-operator"
+reason = "published address 404s at the source; tracked upstream"
+```
+
+A declaration has exactly one meaning — the operator is neither fetched nor
+merged — and it is never quiet: `transit-fetch` prints it on every run, the
+server logs it at load, and `/health` reports `transit_feeds` as three
+disjoint lists (`loaded`, `excluded` with the reason, `missing` for an
+UNDECLARED gap). The `reason` is required, the id must match a configured
+feed (a stale declaration excludes nothing while claiming to), and excluding
+every feed is refused. Any feed that is **not** declared still fails the run.
+
 Cross-feed bridges are injected **before** the ULTRA dominance restriction
 so the restriction drops a synthetic bridge cleanly whenever a shorter real
 walking transfer dominates it — no special-casing in the RAPTOR loop.

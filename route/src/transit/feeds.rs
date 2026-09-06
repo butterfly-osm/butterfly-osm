@@ -28,6 +28,12 @@
 //! resilient to a single dead mirror — but the RUN is not: see
 //! [`fetch_outcome`], which turns any failed feed into a failed
 //! command so a rotted URL cannot sit unnoticed.
+//!
+//! The one way to proceed without an operator is to DECLARE it
+//! (`[[excluded_feeds]]` in `transit.toml`, #603): a declared feed is
+//! never requested, is named by [`format_exclusions`] on every run, and
+//! is reported missing by the timetable it is absent from. Nothing else
+//! is skipped, so an undeclared 404 still fails the run.
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +41,7 @@ use anyhow::Result;
 use butterfly_dl::verified::{Outcome, VerifiedOptions, download_verified};
 use futures::future::join_all;
 
-use super::config::TransitConfig;
+use super::config::{ExcludedFeed, TransitConfig};
 
 /// Result of a single feed fetch attempt. Translated from
 /// `butterfly_dl::verified::Outcome` plus the error string.
@@ -163,9 +169,12 @@ pub async fn fetch_all(
         rt_url: Option<String>,
         rt_target: Option<PathBuf>,
     }
+    // #603: a declared exclusion is honoured HERE, so it has one meaning —
+    // the operator is not downloaded (and `load_from_disk` will not merge
+    // it either). Undeclared feeds are all still attempted, and any failure
+    // among them still fails the run via `fetch_outcome`.
     let work: Vec<Work> = config
-        .feeds
-        .iter()
+        .active_feeds()
         .map(|feed| Work {
             feed_id: feed.id.clone(),
             static_url: feed.url.clone(),
@@ -256,6 +265,24 @@ pub fn format_report(report: &FeedFetchReport) -> String {
         Some(FeedFetchOutcome::Failed { error }) => format!(" (rt FAILED: {error})"),
     };
     format!("{}: {}{}", report.feed_id, static_line, rt_line)
+}
+
+/// One line per knowingly-excluded operator (#603), for the run's output.
+///
+/// Printed on EVERY run that honours a declaration. A declaration nobody
+/// ever sees is a silent skip with extra steps — which is how a rotted URL
+/// survived for months — so the exclusion is as loud as the failure it
+/// replaces, just not fatal.
+pub fn format_exclusions(excluded: &[ExcludedFeed]) -> Vec<String> {
+    excluded
+        .iter()
+        .map(|e| {
+            format!(
+                "KNOWINGLY EXCLUDED: {} is not fetched and will be missing from the timetable — {}",
+                e.id, e.reason
+            )
+        })
+        .collect()
 }
 
 /// Compat helper kept so existing callers (`config::compute_provenance`
@@ -355,6 +382,87 @@ mod tests {
             fetch_outcome(&[rt_only], toml).expect("an rt blob is not the schedule"),
             1
         );
+    }
+
+    /// #603: the ONLY way a broken operator stops failing the run is an
+    /// explicit declaration. Undeclared: still fatal. Declared: never even
+    /// requested, so there is no failure to swallow — and the run says so.
+    #[test]
+    fn an_undeclared_failure_still_fails_and_a_declared_one_does_not() {
+        use super::super::config::{ExcludedFeed, FeedConfig, TransitConfig};
+        use std::path::Path;
+
+        let feed = |id: &str| FeedConfig {
+            id: id.to_string(),
+            url: format!("https://example.org/{id}.zip"),
+            rt_url: None,
+            format: Default::default(),
+        };
+        // Whatever the fetcher would attempt, one of these two answers 404.
+        let attempt = |cfg: &TransitConfig| -> Vec<FeedFetchReport> {
+            cfg.active_feeds()
+                .map(|f| FeedFetchReport {
+                    feed_id: f.id.clone(),
+                    url: f.url.clone(),
+                    static_outcome: if f.id == "regional_b" {
+                        FeedFetchOutcome::Failed {
+                            error: "GET returned HTTP 404 Not Found".to_string(),
+                        }
+                    } else {
+                        FeedFetchOutcome::Unchanged
+                    },
+                    rt_outcome: None,
+                })
+                .collect()
+        };
+        let toml = Path::new("/data/transit/transit.toml");
+
+        // Undeclared: the broken operator is attempted and fails the run.
+        let plain = TransitConfig {
+            feeds: vec![feed("national"), feed("regional_b")],
+            ..TransitConfig::default()
+        };
+        let reports = attempt(&plain);
+        assert_eq!(reports.len(), 2, "nothing is skipped without a declaration");
+        let err = fetch_outcome(&reports, toml).expect_err("an undeclared 404 must fail the run");
+        assert!(format!("{err:#}").contains("regional_b"), "{err:#}");
+
+        // Declared: never requested, the run succeeds without it, and the
+        // remaining feeds are still judged exactly as before.
+        let declared = TransitConfig {
+            excluded_feeds: vec![ExcludedFeed {
+                id: "regional_b".to_string(),
+                reason: "published address 404s at the source; tracked upstream".to_string(),
+            }],
+            ..plain.clone()
+        };
+        let reports = attempt(&declared);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].feed_id, "national");
+        assert_eq!(
+            fetch_outcome(&reports, toml).expect("a declared exclusion is not a failure"),
+            1
+        );
+
+        // ... and the declaration is loud: named, with its reason, on every run.
+        let lines = format_exclusions(&declared.excluded_feeds);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("regional_b"), "{}", lines[0]);
+        assert!(lines[0].contains("404s at the source"), "{}", lines[0]);
+        assert!(
+            format_exclusions(&plain.excluded_feeds).is_empty(),
+            "nothing to say when nothing is declared"
+        );
+
+        // Declaring the WRONG operator does not rescue the broken one.
+        let wrong = TransitConfig {
+            excluded_feeds: vec![ExcludedFeed {
+                id: "national".to_string(),
+                reason: "unrelated".to_string(),
+            }],
+            ..plain
+        };
+        fetch_outcome(&attempt(&wrong), toml).expect_err("only the declared operator is exempt");
     }
 
     #[test]

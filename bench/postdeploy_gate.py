@@ -13,6 +13,11 @@ Checks
    route_id,long_1,lat_1,long_2,lat_2,ref_min,ref_km via --trips):
    duration and distance ratio distributions vs the reference. The DISTANCE ratio is
    speed-calibration-independent — it gates pure routing correctness.
+1b. ROUTE CHOICE (#545): on the SAME time-stamped set, the share of pairs
+   whose engine route is materially longer than the route the observations
+   were made on. Duration is judged like-for-like, which drops exactly those
+   pairs; without this check a calibration change can collapse route choice
+   onto the motorway network with every other gate green.
 2. SYMMETRY: route(A→B) vs route(B→A) on seeded random pairs. The #502 snap
    bug's fingerprint was 4× asymmetry; a healthy two-way network stays <1.5×.
 3. TICKET FIXTURES: the #502/#503 cases (Berloz, Heers, Robertville) checked
@@ -166,6 +171,11 @@ THRESHOLDS = {
     "slack_regional": 0.06,  # ... + this slack per region and on the ~40-min typical set → 1.12
     # --- ground truth (reference trips) ---
     "dur_p90_max": 1.30,
+    # --- route CHOICE (#545) — see gate_route_choice for how it was chosen ---
+    # A CEILING on further degradation, not a measurement: today's value on
+    # the time-stamped set is ~0.186 and IS the defect. Ratchet DOWN when
+    # #545 is fixed; a bound at today's value would bless it.
+    "choice_divergent_frac": 0.25,
     "dist_p50": (0.97, 1.06),
     "dist_p90_max": 1.20,
     "dist_outliers_frac": 0.08,  # share of trips with distance ratio <0.85 or >1.2 (baseline 7.3 %)
@@ -1459,6 +1469,7 @@ TICKET_GATES = {
     "#542": ("isochrone_topology", "isochrone_reach_truth", "graph_holes"),
     "#543": ("bands",),
     "#605": ("route_batch_agrees_with_route",),
+    "#545": ("route_choice",),
     "#495/#497": ("isochrone_upper_bound", "isochrone_topology"),
 }
 TICKET_NOTES = {
@@ -1473,6 +1484,7 @@ TICKET_NOTES = {
             "like-for-like, never more than 2 % fast",
     "#605": "batch route \u2260 /route on short pairs: the two surfaces return the same "
             "duration and distance, on a sample that still hits the shared-snap case",
+    "#545": "route CHOICE has no check: durations are judged like-for-like (which drops the\n            divergent pairs) and route length only on the legacy corridor set, so a calibration\n            can collapse choice onto the motorways with every gate green",
     "#495/#497": "size / foot origin: max reach <= v_max x time, snapped origin contained",
 }
 
@@ -1551,6 +1563,107 @@ def gate_ground_truth(base, trips_path, checks="all"):
                         f"{outliers}/{len(dist)} = {out_frac:.3f} (max {t['dist_outliers_frac']})")
     print(f"  stats: dur mean={statistics.mean(dur):.3f} p05={pct(dur, 0.05):.3f} p95={pct(dur, 0.95):.3f}"
         f" | dist mean={statistics.mean(dist):.3f} p05={pct(dist, 0.05):.3f} p95={pct(dist, 0.95):.3f}")
+    return passed
+
+
+def route_choice_stats(rows, res):
+    """(length ratios, errors) for every reference pair: the engine's route
+    length over the length the observations were actually made on.
+
+    Pure — `rows`/`res` are whatever `ref_trip_routes` returned, so this is
+    unit-testable with no server.
+
+    There is deliberately NO `like_for_like` filter here. That filter keeps
+    only the pairs whose engine route length is within ±10 % of the observed
+    one, i.e. it DROPS exactly the pairs this statistic is about; it is the
+    right thing for a LEVEL comparison (a duration measured on another route
+    is not a level error) and it is precisely why the duration gate could not
+    see #545.
+    """
+    ratios, errors = [], 0
+    for trip, r in zip(rows, res):
+        try:
+            ref_km = float(trip["ref_km"])
+            if r is None or ref_km <= 0:
+                raise ValueError("unroutable trip or non-positive reference length")
+            ratios.append(r["km"] / ref_km)
+        except (KeyError, TypeError, ValueError):
+            errors += 1
+    return ratios, errors
+
+
+def gate_route_choice(base, trips_path):
+    """Route CHOICE on the TIME-STAMPED reference set (#545).
+
+    The hole this closes: `gate_ground_truth` judges DURATION on the
+    time-stamped set (like-for-like, so divergent pairs are dropped) and
+    route LENGTH only on the legacy long-trip set — motorway-dominated
+    corridors where a calibration change barely moves the choice. Nothing
+    looked at route length on the regional pairs, so a calibration that made
+    local roads relatively steeper could collapse route choice onto the
+    motorway network with every gate green. That is #545, and it went
+    unnoticed until it was investigated by hand.
+
+    The statistic is the one `bench/route_choice.py` prints: the share of
+    reference pairs whose engine route is at least `dist_p90_max` (1.20×) the
+    observed length. The multiple is NOT a new constant — 1.20 is already
+    this file's definition of "materially longer than the observed route"
+    (`dist_p90_max`, and `outlier_frac`'s upper bound).
+
+    HOW THE BOUND WAS CHOSEN. Today's value is ~0.186; that IS the defect, so
+    the bound cannot be it. It cannot be much tighter either — a gate that
+    fails on every deploy gets switched off, and a WARN is not allowed here.
+    So the bound is the point at which divergence stops being a tail and
+    becomes the engine's normal behaviour: ONE PAIR IN FOUR. It has a meaning
+    that does not depend on any measurement, it leaves the current defect
+    ~6 points of headroom (a third worse than today fails), and #545's own
+    collapse was several times that in size. It is a CEILING on further
+    degradation and says so on every run; the file's standing rule applies —
+    ratchet it DOWN when #545 is fixed, never up.
+
+    THE CONTROL ROW IS NOT PRACTICAL HERE, and that is a deliberate decision.
+    `bench/route_choice.py`'s strength is `--compare`: the same pairs on the
+    same build's UNCALIBRATED base weights, where divergence is ~zero, which
+    separates a weights regression from an engine regression. A post-deploy
+    gate is given ONE `--base`, and that control cannot be had from it:
+      * the container's clean base weights are the hidden `car_freeflow`
+        slot, deliberately absent from `mode_lookup` (ONE public car
+        profile). Publishing it so a gate can read it would change the API
+        to make a test convenient — the wrong direction;
+      * `uncertainty=bands` is not a control: best/worst are recustomized
+        from the SAME edge table by the same pass, so they share the route-
+        choice shape and differ only in level;
+      * anything else means a SECOND instance booted without the calibration
+        input — two containers on two ports, a deploy-side arrangement, not
+        something a gate handed one URL can conjure.
+    So the isolation stays in `bench/route_choice.py`, where a second base is
+    a natural flag and the operator is already looking at both. This gate
+    detects the degradation; that script attributes it.
+
+    Cost: zero extra server work — `ref_trip_routes` already routed every
+    pair for `gate_ground_truth` and `gate_bands` (#550).
+    """
+    t = THRESHOLDS
+    hi, bound = t["dist_p90_max"], t["choice_divergent_frac"]
+    print(f"== route choice: engine route length vs the observed route ({trips_path}, #545) ==")
+    rows, res = ref_trip_routes(base, trips_path)
+    ratios, errors = route_choice_stats(rows, res)
+    passed = check_errors("route choice", errors)
+    # A shrunken or mis-staged reference set must not pass vacuously.
+    if len(ratios) < t["band_min_trips"]:
+        return check("route choice: usable pairs", False,
+                     f"{len(ratios)} (need {t['band_min_trips']})")
+    n_div = sum(1 for x in ratios if x >= hi)
+    frac = n_div / len(ratios)
+    passed &= check(f"share of pairs at or beyond {hi:.2f}x the observed length",
+                    frac <= bound,
+                    f"{n_div}/{len(ratios)} = {frac:.3f} (max {bound}) — KNOWN DEFECT #545: "
+                    f"~0.19 today. The bound is a ceiling on FURTHER degradation, not an "
+                    f"endorsement of the current value; ratchet it down when #545 is fixed.")
+    print(f"  stats: length ratio p50={pct(ratios, 0.5):.3f} p90={pct(ratios, 0.9):.3f} "
+          f"p95={pct(ratios, 0.95):.3f} mean={statistics.mean(ratios):.3f}")
+    print("  attribution (weights vs engine) is bench/route_choice.py --compare <base-weights "
+          "instance>; a single-instance gate cannot carry that control — see this gate's docstring.")
     return passed
 
 
@@ -2866,6 +2979,10 @@ def build_gates(args):
         gates.append(("ground_truth_distance", False,
                       lambda: gate_ground_truth(b, refs_path(LEGACY_TRIPS_DISTANCE, args.distance_trips),
                                                 "distance")))
+        # #545: route CHOICE on the TIME-STAMPED set. Shares ref_trip_routes
+        # with ground_truth_duration, so it costs no extra server work.
+        gates.append(("route_choice", False,
+                      lambda: gate_route_choice(b, refs_path(DEFAULT_TRIPS, args.trips))))
     return gates
 
 

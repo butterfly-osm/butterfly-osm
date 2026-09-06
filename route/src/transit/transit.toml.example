@@ -64,3 +64,34 @@ format = "gtfs"
 # id     = "stib"
 # url    = "https://example.org/stib-epip.xml"
 # format = "netex-epip"
+
+# ============================================================================
+# Knowingly excluded operators
+# ============================================================================
+#
+# A feed that does not download fails the whole run, and that is on purpose:
+# a rotted URL used to be printed and then ignored, so a rebuild quietly
+# produced a timetable one operator short for months.
+#
+# Sometimes there is genuinely nothing to fix on our side — the published
+# address is the broken one, and the alternative is a different format, which
+# is real work rather than a URL change. Shipping without that operator is
+# then a legitimate decision, but it has to be a DECISION, written down here:
+#
+#   [[excluded_feeds]]
+#   id     = "some-operator"
+#   reason = "published address 404s at the source; tracked upstream, no
+#             replacement in this format yet"
+#
+# What a declaration does:
+#
+#   * the operator is not downloaded, and the run succeeds without it;
+#   * it is not merged into the timetable either — one meaning, not two;
+#   * every `transit-fetch` run prints it, and the server's /health names it
+#     under `transit_feeds.excluded` with the reason;
+#   * every feed that is NOT declared still fails the run.
+#
+# `reason` is required, and the id must match a configured feed: a stale
+# declaration left behind after the feed is renamed or fixed is an error, not
+# a no-op. You cannot exclude every feed — that would fetch nothing and
+# succeed, which is the silence this whole mechanism exists to prevent.
