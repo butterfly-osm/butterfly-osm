@@ -1458,6 +1458,7 @@ TICKET_GATES = {
     "#541": (),
     "#542": ("isochrone_topology", "isochrone_reach_truth", "graph_holes"),
     "#543": ("bands",),
+    "#605": ("route_batch_agrees_with_route",),
     "#495/#497": ("isochrone_upper_bound", "isochrone_topology"),
 }
 TICKET_NOTES = {
@@ -1470,6 +1471,8 @@ TICKET_NOTES = {
             "no graph holes",
     "#543": "isochrones too big vs a traffic-aware reference: typical/best/worst levels, "
             "like-for-like, never more than 2 % fast",
+    "#605": "batch route \u2260 /route on short pairs: the two surfaces return the same "
+            "duration and distance, on a sample that still hits the shared-snap case",
     "#495/#497": "size / foot origin: max reach <= v_max x time, snapped origin contained",
 }
 
@@ -2395,6 +2398,77 @@ def gate_route_batch_geometry(base):
     return passed
 
 
+def short_shared_snap_pairs(seed, n_per_centre=14):
+    """Short pairs (20 m … 1.2 km) around the fixture centres — the shape that
+    makes two snapped endpoints share candidate edges. Deterministic."""
+    rng = random.Random(seed)
+    centres = [(p[1], p[2]) for p in ISO_POINTS]
+    pairs = []
+    for clon, clat in centres:
+        for _ in range(n_per_centre):
+            lon = clon + rng.uniform(-0.03, 0.03)
+            lat = clat + rng.uniform(-0.02, 0.02)
+            d_m = rng.uniform(20, 1200)
+            a = rng.uniform(0, 2 * math.pi)
+            pairs.append([
+                round(lon, 6), round(lat, 6),
+                round(lon + d_m * math.cos(a) / (111320.0 * math.cos(math.radians(lat))), 6),
+                round(lat + d_m * math.sin(a) / 110540.0, 6)])
+    return pairs
+
+
+def gate_route_batch_agrees_with_route(base):
+    """#605: the SAME pair must get the SAME route from `/route` and from the
+    Flight `route_batch` batch surface — same duration, same distance.
+
+    They drifted because the phantom tier was hand-copied: `/route` carried
+    the same-edge direct-move recovery and the batch pair driver did not, so a
+    pair whose two snaps land on ONE edge came back from the batch as a loop
+    around the block — measured at 52 of 1 080 short pairs across the three
+    modes, up to several minutes apart. Asserted, not measured: zero
+    disagreement, at metre / half-second resolution.
+
+    The sample is deliberately SHORT, and the gate FAILS if it stops
+    containing shared-snap pairs — a sample that no longer exercises the case
+    would pass this check for the wrong reason."""
+    print("== route_batch == /route, same pair, same answer (#605) ==")
+    pairs = short_shared_snap_pairs(605)
+    passed = True
+    for mode in ("car", "foot", "bike"):
+        tb = flight_table(base, "route_batch", mode, {"pairs": pairs})
+        names = tb.column_names
+        dc = "distance_m" if "distance_m" in names else "distance_meters"
+        du = "duration_s" if "duration_s" in names else "duration_seconds"
+        pi = tb.column("pair_idx").to_pylist()
+        bd = tb.column(du).to_pylist()
+        bm = tb.column(dc).to_pylist()
+        bad, shared, compared, errors = [], 0, 0, 0
+        for i in range(tb.num_rows):
+            p = pairs[pi[i]]
+            try:
+                r = route_json(base, p[0], p[1], p[2], p[3], mode, debug="true")
+            except Exception as e:  # noqa: BLE001
+                errors += 0 if is_no_route(e) else 1
+                continue
+            dbg = r.get("debug") or {}
+            if dbg.get("src_snapped", {}).get("ebg_node_id") == \
+               dbg.get("dst_snapped", {}).get("ebg_node_id"):
+                shared += 1
+            compared += 1
+            if bd[i] is None or bm[i] is None:
+                continue
+            if abs(bd[i] - r["duration_s"]) > 0.5 or abs(bm[i] - r["distance_m"]) > 1.0:
+                bad.append((pi[i], r["duration_s"], r["distance_m"], bd[i], bm[i]))
+        passed &= check(f"{mode}: same duration and distance", not bad,
+            f"{len(bad)}/{compared} pairs disagree" + (
+                f" (worst: /route {bad[0][1]:.0f}s {bad[0][2]:.0f}m vs "
+                f"batch {bad[0][3]:.0f}s {bad[0][4]:.0f}m)" if bad else ""))
+        passed &= check(f"{mode}: sample still hits the shared-snap case",
+            shared > 0, f"{shared}/{compared} pairs snap both ends to one edge")
+        passed &= check_errors(f"{mode}", errors)
+    return passed
+
+
 def gate_route_batch_max_meters(base):
     """#482/#487: `route_batch` `max_meters` is a server-side prune that DROPS
     over-bound pairs. Invariant, no constant: the bounded result set must equal
@@ -2781,6 +2855,7 @@ def build_gates(args):
         ("matrix_distance_consistency", True, lambda: gate_matrix_distance_consistency(b)),
         ("bounded_matrix_exactness", True, lambda: gate_bounded_matrix_exactness(b)),
         ("route_batch_geometry", True, lambda: gate_route_batch_geometry(b)),
+        ("route_batch_agrees_with_route", True, lambda: gate_route_batch_agrees_with_route(b)),
         ("route_batch_max_meters", True, lambda: gate_route_batch_max_meters(b)),
         ("catchment_containment", True, lambda: gate_catchment_containment(b)),
         ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),

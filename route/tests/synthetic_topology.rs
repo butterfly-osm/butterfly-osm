@@ -1851,3 +1851,178 @@ fn the_served_arrive_contour_is_one_simple_ccw_polygon_around_its_target() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// #605 — the same-edge direct move, and why the seeded query alone
+// cannot answer it.
+// ---------------------------------------------------------------------
+
+/// Two phantom endpoints on the SAME street, at `f_src` and `f_dst` along
+/// the twin `seg`. `direct_ok` on both, exactly as the production snapper
+/// marks a primary-edge seed. `rank` comes from the hierarchy.
+fn same_edge_phantoms(
+    net: &Network,
+    seg: u32,
+    seg_to_rank: &[u32],
+    f_src: f64,
+    f_dst: f64,
+) -> (PhantomEnd, PhantomEnd) {
+    let twins = net.twins_of(seg);
+    assert_eq!(twins.len(), 2, "the fixture needs a two-way street");
+    let end = |f_along_seg: f64| -> PhantomEnd {
+        let seeds: Vec<PhantomSeed> = twins
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| {
+                // Twin 0 IS `seg`, so its own fraction is `f_along_seg`;
+                // twin 1 traverses the same geometry backwards.
+                let frac = if i == 0 {
+                    f_along_seg
+                } else {
+                    1.0 - f_along_seg
+                };
+                let w = net.node_weights[e as usize] as f64;
+                PhantomSeed {
+                    ebg_id: e,
+                    rank: seg_to_rank[e as usize],
+                    part_time: ((1.0 - frac) * w).round() as u32,
+                    part_len: 0,
+                    frac,
+                    // This fixture stores every street in `seg`'s orientation.
+                    frac_stored: f_along_seg,
+                    direct_ok: true,
+                }
+            })
+            .collect();
+        let (lon, lat) = net.segment_start(seg);
+        PhantomEnd {
+            seeds,
+            snapped_lon: lon,
+            snapped_lat: lat,
+            snap_distance_m: 0.0,
+            primary_ebg: seg,
+        }
+    };
+    (end(f_src), end(f_dst))
+}
+
+/// #605: a pair whose two snaps land on ONE directed edge is answered by
+/// the same-edge direct move, and by nothing else.
+///
+/// `query_seeded` — the whole of what the batch pair driver used to run —
+/// cannot see that move: at the shared seed rank the two pure phantom
+/// labels dominate every via-network label, and its pure-meet guard then
+/// rejects the only meet there (correctly: a pure meet can also encode an
+/// invalid BACKWARD same-edge move). On the real graph the batch surface
+/// therefore answered such pairs with a loop around the block, minutes
+/// slower than `/route`, which carried the recovery.
+///
+/// Asserted against ground truth this file computes itself: the move costs
+/// `(f_dst - f_src)·w(edge)`, and the seeded query cannot beat it.
+#[test]
+fn the_same_edge_move_is_recovered_and_the_seeded_query_alone_cannot_find_it() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::phantom::direct_move;
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::types::SnapRole;
+
+    let net = hierarchy_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let (_, seg_to_rank) = rank_maps(&h, n);
+    let query = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &h.weights);
+
+    let (f_src, f_dst) = (0.2, 0.7);
+    let mut checked = 0usize;
+    for (row, col) in [(0usize, 0usize), (6, 6), (3, 9), (11, 2)] {
+        let seg = net.segment_from(row, col);
+        if net.twins_of(seg).len() != 2 {
+            continue; // a one-way row has no twin to snap the reverse on
+        }
+        let (sp, dp) = same_edge_phantoms(&net, seg, &seg_to_rank, f_src, f_dst);
+
+        // The recovery, and the ground truth it must reproduce.
+        let dm = direct_move(&net.node_weights, &net.ebg_nodes, &sp, &dp)
+            .expect("two snaps on one edge, destination ahead: a direct move exists");
+        let w = net.node_weights[seg as usize] as f64;
+        assert_eq!(dm.ebg_id, seg, "the move must use the shared edge");
+        assert_eq!(
+            dm.cost_s,
+            ((f_dst - f_src) * w).round() as u32,
+            "the move costs the fraction of the edge actually travelled"
+        );
+
+        // What the batch driver ran on its own. Either it finds nothing, or
+        // it finds a way round the block — never the move along the edge.
+        let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
+        let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
+        let seeded = query
+            .query_seeded(&src_seeds, &dst_seeds, false)
+            .map(|r| r.distance.saturating_sub(dst_shift));
+        assert!(
+            seeded.is_none_or(|sc| sc > dm.cost_s),
+            "the seeded query returned {seeded:?} s for a {} s move along one edge — \
+             if it can see the move, this test no longer proves the recovery is needed",
+            dm.cost_s
+        );
+
+        // The drawn road is as long as the distance billed for it (#605: the
+        // ends used to be the nearest stored SAMPLE of the edge, which two
+        // points metres apart routinely share — a zero-length line under a
+        // real distance).
+        let pts = dm.points(&net.ebg_nodes, &net.edge_geom);
+        assert!(pts.len() >= 2, "a move must draw at least its two ends");
+        let drawn = polyline_length_m(&pts, net.lat.origin_lat);
+        assert!(
+            (drawn - dm.distance_m).abs() <= 0.01 * dm.distance_m.max(1.0),
+            "geometry {drawn:.2} m vs billed {:.2} m on segment {seg}",
+            dm.distance_m
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no two-way segment in the fixture — nothing tested"
+    );
+}
+
+/// #605: the move is DIRECTED. With the destination behind the origin on
+/// the same directed edge there is no move on that twin — the twin
+/// pointing the other way carries it, at the mirror fraction. Billing such
+/// a pair 0 s is the live bug the pure-meet guard exists for.
+#[test]
+fn a_destination_behind_the_origin_is_the_other_twins_move() {
+    use butterfly_route::server::phantom::direct_move;
+
+    let net = hierarchy_lattice();
+    let n = net.n_segments();
+    let seg_to_rank: Vec<u32> = (0..n as u32).collect(); // ranks are irrelevant here
+    let seg = net.segment_from(6, 6);
+    assert_eq!(
+        net.twins_of(seg).len(),
+        2,
+        "the fixture needs a two-way street"
+    );
+
+    // Destination BEHIND the origin along `seg`.
+    let (sp, dp) = same_edge_phantoms(&net, seg, &seg_to_rank, 0.7, 0.2);
+    let dm = direct_move(&net.node_weights, &net.ebg_nodes, &sp, &dp)
+        .expect("the reverse twin carries the move");
+    let twin = *net
+        .twins_of(seg)
+        .get(1)
+        .expect("a two-way street has a second twin");
+    assert_eq!(
+        dm.ebg_id, twin,
+        "the move must run on the twin, not on {seg}"
+    );
+    let w = net.node_weights[twin as usize] as f64;
+    assert_eq!(
+        dm.cost_s,
+        (0.5 * w).round() as u32,
+        "half the edge is half the edge whichever way it is driven"
+    );
+    assert!(dm.cost_s > 0, "a real move must never bill 0 s");
+}
