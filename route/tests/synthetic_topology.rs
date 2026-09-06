@@ -2255,3 +2255,84 @@ fn every_excluded_pair_costs_what_the_motorway_free_graph_costs() {
     }
     assert!(checked > 1000, "only {checked} pairs checked");
 }
+
+#[test]
+fn both_recustomization_shapes_agree() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::exclude::{
+        EXCLUDE_MOTORWAY, count_seeded_edges, recustomize_weights_from_scratch,
+        recustomize_weights_incremental,
+    };
+    use butterfly_route::server::query::CchQuery;
+
+    let (net, flags) = motorway_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let (_, seg_to_rank) = rank_maps(&h, n);
+    let filtered_to_original: Vec<u32> = (0..n as u32).collect();
+    let blocked: Vec<bool> = flags.iter().map(|&f| f != 0).collect();
+
+    // The switch reads this; a fixture whose mask seeds nothing would make
+    // the whole comparison vacuous.
+    let seeds = count_seeded_edges(&h.topo, &flags, EXCLUDE_MOTORWAY, &filtered_to_original);
+    assert!(seeds > 0, "the mask must seed at least one CCH base edge");
+
+    let inc = recustomize_weights_incremental(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+    let scratch = recustomize_weights_from_scratch(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+
+    // The two shapes solve the SAME system: identical weights, edge for edge.
+    // (Middles may differ on edges the incremental walk never visited — both
+    // are then valid decompositions of the same weight — so the query check
+    // below covers what the middles are for.)
+    let inc_up: Vec<u32> = inc.up.iter().collect();
+    let scratch_up: Vec<u32> = scratch.up.iter().collect();
+    let inc_down: Vec<u32> = inc.down.iter().collect();
+    let scratch_down: Vec<u32> = scratch.down.iter().collect();
+    assert_eq!(
+        inc_up, scratch_up,
+        "the two recustomization shapes disagree on the UP weights"
+    );
+    assert_eq!(
+        inc_down, scratch_down,
+        "the two recustomization shapes disagree on the DOWN weights"
+    );
+
+    // …and both must answer the motorway-free Dijkstra, so an agreement on a
+    // shared error could not pass either.
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let targets: Vec<u32> = [(1usize, 11usize), (11, 2), (9, 7)]
+        .into_iter()
+        .map(|(r, c)| net.segment_from(r, c))
+        .filter(|&t| !blocked[t as usize])
+        .collect();
+    for (label, w) in [("incremental", &inc), ("scratch", &scratch)] {
+        let q = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, w);
+        for src in (0..n as u32).step_by(7) {
+            if blocked[src as usize] {
+                continue;
+            }
+            let truth = net.reference_dijkstra_avoiding(src, &blocked);
+            for &dst in &targets {
+                let want = truth[dst as usize];
+                assert_eq!(
+                    q.distance(seg_to_rank[src as usize], seg_to_rank[dst as usize]),
+                    (want != u32::MAX).then_some(want),
+                    "{label}: disagrees with the motorway-free Dijkstra for {src} -> {dst}"
+                );
+            }
+        }
+    }
+}
