@@ -23,6 +23,7 @@ use crate::model::types::Mode;
 
 use super::exclude::{self, ExcludeWeights};
 
+mod landing_census;
 mod recustomize;
 pub use recustomize::{EdgeRecustomizePrep, EdgeTableColumn};
 
