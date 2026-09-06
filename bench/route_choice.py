@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Route-CHOICE diagnostic against the time-stamped reference trips (#545).
 
-The post-deploy gate judges LEVEL (engine duration vs the observed duration).
-This script judges CHOICE: how far the engine's route is from the route the
-observations were actually made on, which the gate deliberately does not gate
-on `od_typical.csv` (see `gate_ground_truth(..., checks=)`).
+The post-deploy gate judges LEVEL (engine duration vs the observed duration)
+and, since #545, the CHOICE statistic below as a pass/fail ceiling
+(`gate_route_choice` in `bench/postdeploy_gate.py`). This script is the
+DIAGNOSTIC behind that check: it prints the same share of divergent pairs,
+and adds what a single-instance gate cannot have — the shape of the divergent
+set, an OSRM control, and above all `--compare`, the same pairs on the same
+build's uncalibrated base weights, which is what separates a weights
+regression from an engine one.
 
 It is read-only: it issues `GET /route` and, optionally, OSRM `route/v1` — it
 never writes to a server and never changes engine behaviour.
