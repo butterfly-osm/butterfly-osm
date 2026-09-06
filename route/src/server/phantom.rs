@@ -278,8 +278,8 @@ pub enum PhantomPair {
 /// and two clamped secondaries on a shared side street fabricate a ~0 s move
 /// between points a real drive apart.
 pub fn direct_move(
-    state: &ServerState,
-    mode_data: &ModeData,
+    node_weights: &[u32],
+    ebg_nodes: &EbgNodes,
     src: &PhantomEnd,
     dst: &PhantomEnd,
 ) -> Option<DirectMove> {
@@ -296,8 +296,8 @@ pub fn direct_move(
         if !d.direct_ok || d.frac < s.frac {
             continue;
         }
-        let w = mode_data.node_weights[s.ebg_id as usize] as f64;
-        let len = state.ebg_nodes.nodes[s.ebg_id as usize].length_m as f64;
+        let w = node_weights[s.ebg_id as usize] as f64;
+        let len = ebg_nodes.nodes[s.ebg_id as usize].length_m as f64;
         let cost_s = ((d.frac - s.frac) * w).round() as u32;
         if best.is_some_and(|b| b.cost_s <= cost_s) {
             continue;
@@ -344,7 +344,7 @@ pub fn resolve_phantom_pair(
     let seeded_cost = seeded
         .as_ref()
         .map(|r| r.distance.saturating_sub(dst_shift));
-    let direct = direct_move(state, mode_data, src, dst);
+    let direct = direct_move(&mode_data.node_weights, &state.ebg_nodes, src, dst);
     if let Some(dm) = direct
         && seeded_cost.is_none_or(|sc| dm.cost_s <= sc)
     {
