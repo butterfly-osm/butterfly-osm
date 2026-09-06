@@ -88,9 +88,9 @@ Point-to-point routing with geometry, optional turn-by-turn steps with road name
 | `geometries` | string | `polyline6` | `polyline6` / `geojson` / `points` |
 | `alternatives` | u32 | `0` | Up to 5 alternative routes (penalty-based) |
 | `steps` | bool | `false` | Include turn-by-turn instructions with road names |
-| `annotations` | string | none | Comma list of `duration`, `distance`, `speed`, `nodes` |
+| `annotations` | string | none | Comma list of `duration`, `distance`, `speed` (one entry per route edge) and `nodes` (OSM node ids along the route, one per geometry node) |
 | `bearings` | string | none | `angle,range;angle,range` (source;destination), angle 0-360, range 0-180 |
-| `exclude` | string | none | Comma list of `toll`, `ferry`, `motorway` |
+| `exclude` | string | none | Comma list of `toll`, `ferry`, `motorway`. Strict: the served route uses none of the excluded class (#606) |
 | `avoid_polygons` | string | none | JSON `[[lon,lat],...]` or `[[[lon,lat],...],...]` |
 | `debug` | bool | `false` | Include snap diagnostics in response |
 | `uncertainty` | string | none | `bands` → adds `duration_q25_s`/`duration_q75_s` (TIME quantiles; car only; 2 extra queries) |
@@ -107,7 +107,7 @@ Content negotiation:
 | `distance_m` | f64 |
 | `geometry` | RouteGeometry (polyline6 string, or GeoJSON LineString, or array of `{lon, lat}`) |
 | `steps` | array of `RouteStep` (if `steps=true`) |
-| `annotations` | object with optional `duration` / `distance` / `speed` / `nodes` arrays |
+| `annotations` | object with optional `duration` / `distance` / `speed` (per route edge) and `nodes` (OSM node ids along the route, geometry-shaped — see the note below) arrays |
 | `alternatives` | array of `RouteAlternative` (if `alternatives>0`) |
 | `debug` | `{ src_snapped, dst_snapped }` (if `debug=true`) |
 
@@ -121,8 +121,24 @@ Content negotiation:
 **Notes**
 
 - K-best snap with `SNAP_K=64` per role + bounded combo fallback (max 400) — see `route.rs:476-498`.
-- Avoid-polygon recustomisation result cached per-region; cache capacity from `BUTTERFLY_AVOID_CACHE_CAP` (default 8), see `route/src/server/avoid.rs`. Hits cost ~22 ms vs ~0.8–1.2 s for a cold recustomise (#240 incremental BFS — polygon-size dependent, was ~37 s pre-#240); surfaced in `/health.avoid_cache`.
+- Avoid-polygon recustomisation result cached per-region; cache capacity from `BUTTERFLY_AVOID_CACHE_CAP` (default 8), see `route/src/server/avoid.rs`. Hits cost ~22 ms; a COLD recustomise costs what the mask actually reaches — ~1 s for a 1 km polygon, **245 s for `exclude=motorway` on Belgium** (#606: it now recomputes the long-distance hierarchy instead of leaving stale shortcuts on the excluded corridor). Cold work runs off the tokio worker (`avoid::off_runtime`, #539), so the rest of the server stays responsive while it runs; surfaced in `/health.avoid_cache` and `/health.exclude_cache`.
 - Same-edge src/dst short-circuits to zero-distance result.
+- `annotations=nodes` returns **OSM node ids** (i64), in order of travel, one
+  per OSM node the route passes through — junctions and shape points alike. It
+  is therefore as long as the geometry, not as long as the per-edge `duration` /
+  `distance` / `speed` arrays; OSRM's `nodes` annotation has the same shape.
+  Until #606 it returned the engine's internal EBG ids, which are meaningless
+  outside the process and change on every artifact rebuild. The two edges at
+  the ends of the route are reported whole: the phantom clipping (#522) that
+  trims `duration_s` / `distance_m` / the geometry has no node to clip to.
+  Containers older than #460 (no OSM id chains) report each edge's two junction
+  ids without its shape points.
+- `exclude=` recustomizes the CCH weights with the flagged arcs blocked, then
+  routes on them, so the answer is the shortest path in the graph without that
+  class — not a penalty and not a post-filter. Cold recustomization is
+  proportional to how much of the hierarchy the mask reaches: a small polygon is
+  local, `exclude=motorway` touches the long-distance hierarchy of the whole
+  extract. Results cache per `(mode, mask)`; see `/health.exclude_cache`.
 - Cross-region routing is handled via the overlay cluster (#91 Phase 2) when multiple regions are loaded; same-region queries take the fast intra-region path.
 - See [Architecture: routing pipeline](architecture.md) for the CCH P2P + path-unpack flow.
 
