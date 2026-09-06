@@ -46,11 +46,31 @@ pub mod transfers_cache;
 
 use std::sync::Arc;
 
-pub use config::{FeedConfig, TransitConfig};
+pub use config::{ExcludedFeed, FeedConfig, TransitConfig};
 pub use raptor::{RaptorJourney, RaptorLeg};
 pub use stop_index::StopSpatialIndex;
 pub use timetable::{RouteIdx, Stop, StopIdx, Timetable, TripIdx};
 pub use transfers::TransferGraph;
+
+/// Which operators a loaded timetable was built from, and which are not in
+/// it (#603).
+///
+/// A merged timetable that is one operator short looks exactly like a
+/// complete one from the outside — that is how a dead feed URL survived for
+/// months. The inventory travels with the snapshot so the gap is a fact the
+/// server can state (logged at load, served on `/health`) rather than
+/// something an operator has to infer from missing journeys.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct FeedInventory {
+    /// Feed ids merged into this timetable.
+    pub loaded: Vec<String>,
+    /// Operators declared excluded in the configuration, with the reason.
+    pub excluded: Vec<ExcludedFeed>,
+    /// Operators that are configured, NOT declared, and were not on disk.
+    /// An UNDECLARED gap — exactly what a declaration exists to distinguish
+    /// itself from.
+    pub missing: Vec<String>,
+}
 
 /// A transit-enabled snapshot: timetable + transfer graph + stop
 /// spatial index. Immutable for the lifetime of the process — to
@@ -63,15 +83,18 @@ pub struct TransitSnapshot {
     /// selection. Built once per snapshot, shared read-only across
     /// every query. See issue #102.
     pub stop_index: Arc<StopSpatialIndex>,
+    /// Which operators this timetable holds, and which it does not (#603).
+    pub feeds: Arc<FeedInventory>,
 }
 
 impl TransitSnapshot {
-    pub fn new(timetable: Timetable, transfers: TransferGraph) -> Self {
+    pub fn new(timetable: Timetable, transfers: TransferGraph, feeds: FeedInventory) -> Self {
         let stop_index = StopSpatialIndex::build(&timetable);
         Self {
             timetable: Arc::new(timetable),
             transfers: Arc::new(transfers),
             stop_index: Arc::new(stop_index),
+            feeds: Arc::new(feeds),
         }
     }
 }
@@ -195,19 +218,9 @@ pub fn load_from_disk(
     // resulting `Timetable` is a single merged multi-feed view.
     let mut gtfs_sources: Vec<FeedSource> = Vec::new();
     let mut epip_paths: Vec<(std::path::PathBuf, String)> = Vec::new();
-    let mut present_feeds: Vec<&FeedConfig> = Vec::new();
-    for feed in &config.feeds {
+    let (present_feeds, inventory) = feed_inventory(config);
+    for feed in &present_feeds {
         let path = config.feed_zip_path(feed);
-        if !path.exists() {
-            tracing::warn!(
-                feed = feed.id.as_str(),
-                format = ?feed.format,
-                path = %path.display(),
-                "transit feed not on disk — skipping (run `butterfly-route transit-fetch` or place manually)"
-            );
-            continue;
-        }
-        present_feeds.push(feed);
         match feed.format {
             FeedFormat::Gtfs => {
                 gtfs_sources.push(FeedSource::namespaced(path, feed.id.clone()));
@@ -302,5 +315,159 @@ pub fn load_from_disk(
         }
     }
 
-    Ok(TransitSnapshot::new(patched, transfers))
+    Ok(TransitSnapshot::new(patched, transfers, inventory))
+}
+
+/// Split the configured feeds into the ones this timetable will be built
+/// from and the [`FeedInventory`] it will report (#603).
+///
+/// Three outcomes per configured feed, and they are NOT the same thing:
+///
+/// * declared excluded -> never loaded, logged with its reason, listed as
+///   `excluded`. This is the deliberate gap;
+/// * not declared and not on disk -> skipped as before (the server still
+///   serves the operators it does have, rather than losing transit
+///   entirely), logged as a warning and listed as `missing`. This is the
+///   accidental gap, and it is now visible instead of being a log line
+///   nobody reads;
+/// * present -> loaded.
+///
+/// Only stats the filesystem, so it is unit-testable without a road graph.
+pub fn feed_inventory(config: &TransitConfig) -> (Vec<&FeedConfig>, FeedInventory) {
+    let mut present: Vec<&FeedConfig> = Vec::new();
+    let mut inventory = FeedInventory::default();
+    for feed in &config.feeds {
+        if let Some(reason) = config.exclusion_reason(&feed.id) {
+            tracing::warn!(
+                feed = feed.id.as_str(),
+                reason,
+                "transit feed KNOWINGLY EXCLUDED — this timetable is missing that operator (#603)"
+            );
+            inventory.excluded.push(ExcludedFeed {
+                id: feed.id.clone(),
+                reason: reason.to_string(),
+            });
+            continue;
+        }
+        let path = config.feed_zip_path(feed);
+        if !path.exists() {
+            tracing::warn!(
+                feed = feed.id.as_str(),
+                format = ?feed.format,
+                path = %path.display(),
+                "transit feed not on disk — skipping (run `butterfly-route transit-fetch` or place manually)"
+            );
+            inventory.missing.push(feed.id.clone());
+            continue;
+        }
+        inventory.loaded.push(feed.id.clone());
+        present.push(feed);
+    }
+    (present, inventory)
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+    use crate::transit::config::FeedConfig;
+
+    fn feed(id: &str) -> FeedConfig {
+        FeedConfig {
+            id: id.to_string(),
+            url: format!("https://example.org/{id}.zip"),
+            rt_url: None,
+            format: Default::default(),
+        }
+    }
+
+    /// #603: a timetable that is one operator short must SAY which one, and
+    /// must distinguish the deliberate gap from the accidental one. Both
+    /// used to look identical from the outside — a warning in the log and
+    /// nothing else — which is how a dead feed URL survived for months.
+    #[test]
+    fn the_timetable_says_which_operator_is_missing_and_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = TransitConfig {
+            feeds: vec![feed("national"), feed("regional_a"), feed("regional_b")],
+            excluded_feeds: vec![ExcludedFeed {
+                id: "regional_b".to_string(),
+                reason: "published address 404s at the source; tracked upstream".to_string(),
+            }],
+            data_dir: dir.path().to_path_buf(),
+            ..TransitConfig::default()
+        };
+        // Only the national feed made it to disk.
+        std::fs::create_dir_all(cfg.gtfs_dir()).unwrap();
+        std::fs::write(cfg.gtfs_dir().join("national.zip"), b"not a real zip").unwrap();
+
+        let (present, inv) = feed_inventory(&cfg);
+        assert_eq!(
+            present.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            ["national"]
+        );
+        assert_eq!(inv.loaded, ["national"]);
+        // The DELIBERATE gap carries its reason ...
+        assert_eq!(inv.excluded.len(), 1);
+        assert_eq!(inv.excluded[0].id, "regional_b");
+        assert!(inv.excluded[0].reason.contains("404s at the source"));
+        // ... and is never confused with the ACCIDENTAL one.
+        assert_eq!(inv.missing, ["regional_a"]);
+
+        // A declared operator is not loaded even if its file IS on disk:
+        // the declaration has one meaning, not two.
+        std::fs::write(cfg.gtfs_dir().join("regional_b.zip"), b"not a real zip").unwrap();
+        let (present, inv) = feed_inventory(&cfg);
+        assert_eq!(
+            present.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            ["national"]
+        );
+        assert_eq!(inv.excluded.len(), 1);
+        assert!(!inv.loaded.contains(&"regional_b".to_string()));
+    }
+
+    /// `/health` serves the inventory verbatim (through the snapshot's
+    /// `Arc`), so the three lists and the reason are part of the public
+    /// answer, not just a log line.
+    #[test]
+    fn the_inventory_serialises_for_health() {
+        let inv = std::sync::Arc::new(FeedInventory {
+            loaded: vec!["national".into()],
+            excluded: vec![ExcludedFeed {
+                id: "regional_b".into(),
+                reason: "published address 404s at the source".into(),
+            }],
+            missing: vec!["regional_a".into()],
+        });
+        let v = serde_json::to_value(&inv).expect("the health handler serialises this");
+        assert_eq!(v["loaded"], serde_json::json!(["national"]));
+        assert_eq!(v["missing"], serde_json::json!(["regional_a"]));
+        assert_eq!(v["excluded"][0]["id"], "regional_b");
+        assert_eq!(
+            v["excluded"][0]["reason"],
+            "published address 404s at the source"
+        );
+    }
+
+    /// With nothing declared, every configured feed is loaded or reported
+    /// missing — the inventory never quietly drops one.
+    #[test]
+    fn every_configured_feed_lands_in_exactly_one_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = TransitConfig {
+            feeds: vec![feed("a"), feed("b"), feed("c")],
+            data_dir: dir.path().to_path_buf(),
+            ..TransitConfig::default()
+        };
+        std::fs::create_dir_all(cfg.gtfs_dir()).unwrap();
+        std::fs::write(cfg.gtfs_dir().join("b.zip"), b"x").unwrap();
+
+        let (_, inv) = feed_inventory(&cfg);
+        assert_eq!(inv.loaded, ["b"]);
+        assert_eq!(inv.missing, ["a", "c"]);
+        assert!(inv.excluded.is_empty());
+        assert_eq!(
+            inv.loaded.len() + inv.missing.len() + inv.excluded.len(),
+            cfg.feeds.len()
+        );
+    }
 }
