@@ -83,6 +83,18 @@ documented rule, which deliberately aims 3 % slow, 1.060 → 1.043). The
 like-for-like duration median moves 1.022 → 1.039, i.e. onto that 3 % target
 rather than past it, and distance p50 is unchanged at 1.001.
 
+**One gate check moves with the anchor, and it is the anchor that has to
+move.** `gate_motorway_speed_floor` asserts a 50 km/h implied mean on
+Brussels→Antwerp — a physical invariant against a hierarchy collapse, not a
+level target. Served at the anchor the artifact currently ships (fitted
+against the OLD landing) the corridor comes back at 49.85 km/h and that one
+check FAILS; served at the anchor the fixed landing implies, by the
+producer's own derivation, it is 50.32 km/h and the whole post-deploy gate
+passes with the like-for-like median at 1.030 — the intended 3 % slow, to
+the digit. No threshold was touched. An anchor measured against one landing
+is not valid for another, so refreshing the artifact's anchor belongs with
+this change.
+
 **Route choice does not degrade.** The #545 divergent share is 0.186 →
 **0.181** on the same 414 pairs (ceiling 0.25, untouched) and route length
 p50 1.000 → 0.999 — the shift lands on urban arterials, which were the
