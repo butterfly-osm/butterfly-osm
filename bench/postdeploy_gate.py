@@ -1214,7 +1214,11 @@ def gate_exclude_motorway(base):
     print("== exclude=motorway is strict (#606) ==")
     corridors = [("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
         ("Bxl→Liège (E40)", 4.3517, 50.8503, 5.5671, 50.6326),
-        ("Bxl→Arlon (E411)", 4.3517, 50.8503, 5.8109, 49.6833)]
+        ("Bxl→Arlon (E411)", 4.3517, 50.8503, 5.8109, 49.6833),
+        # The SHORT motorway hop the ticket measured: a long route rides
+        # high-level shortcuts almost exclusively, a short one uses more base
+        # edges, so the two ends of the hierarchy are both covered.
+        ("Mechelen→Antwerp (E19)", 4.4800, 51.0259, 4.4025, 51.2194)]
     floor_kmh = THRESHOLDS["fast_share_floor_kmh"]
     max_ratio = THRESHOLDS["exclude_fast_share_ratio"]
     cell_tol = THRESHOLDS["matrix_cell_tol"]
