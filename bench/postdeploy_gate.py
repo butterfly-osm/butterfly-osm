@@ -228,6 +228,17 @@ THRESHOLDS = {
     "foot_speed_kmh": (2.0, 8.0),  # #522: foot routes reported up to 19 km/h
     "bike_speed_kmh": (5.0, 32.0),
     "motorway_floor_kmh": 50.0,
+    # #606 `exclude=motorway`. `fast_share_floor_kmh` is the speed above which
+    # the engine's own per-edge annotation means "unobstructed high-speed
+    # link"; `exclude_fast_share_ratio` bounds how much of THAT share may
+    # survive the exclusion, as a fraction of the SAME route's unrestricted
+    # share — a ratio, so it encodes no level and moves with the profile.
+    # Belgium keeps a real floor of non-motorway expressway (`trunk` at
+    # 120 km/h, e.g. the N4), so the honest bound is small-but-nonzero:
+    # measured 0.9-10.7 % after the fix against ~92 % before it, and the
+    # bound sits between with >2x headroom on both sides.
+    "fast_share_floor_kmh": 100.0,
+    "exclude_fast_share_ratio": 0.25,
     "car_foot_detour_max": 3.0,
     "car_foot_holes_max": 2,
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
@@ -1168,6 +1179,98 @@ def gate_motorway_speed_floor(base):
     return passed
 
 
+def gate_exclude_motorway(base):
+    """#606: `exclude=motorway` was close to a no-op — it moved an inter-city
+    duration by under 4 % and left an 18.6 km "motorway-free" route 80 % on
+    links at 90 km/h or more, because the recustomization seeded every CCH
+    edge with its build-time weight, which no exclusion can raise; a shortcut
+    that summarised a motorway corridor kept the corridor.
+
+    Four checks on the corridors `gate_motorway_speed_floor` already asserts
+    ARE motorway-dominated (that gate fails if their unrestricted mean speed
+    drops below `motorway_floor_kmh`), so "the motorway is the route" is not
+    an assumption here — it is a neighbouring gate's assertion:
+
+      1. EXACT, no constant — a restriction can never be FASTER. Before the
+         fix the 18.6 km hop came back 0.3 % QUICKER with the option on, which
+         is impossible for a strict subgraph and is the cheapest possible
+         signature of a recustomization that did not take.
+      2. EXACT, no constant — the mask is monotone: adding `toll,ferry` on top
+         of `motorway` can only cost more time, never less.
+      3. EXACT, no constant — `/route` and `/table` must agree under the SAME
+         mask. Two independent engines (bidirectional CCH, bucket M2M) read
+         the same recustomized weights, so a half-applied mask shows up as a
+         disagreement.
+      4. The corridor is actually abandoned. The unrestricted route runs
+         mostly on links the engine itself annotates at motorway speed; the
+         restricted one must not. The bound is RELATIVE — a fraction of the
+         SAME route's unrestricted share — so it encodes no level and moves
+         with the profile. Belgium leaves a real floor of non-motorway
+         expressway (the N4 to Arlon is `trunk` at 120 km/h and is correctly
+         NOT excluded), which is why the check is a ratio and not "zero":
+         measured 0.9-10.7 % of the unrestricted share after the fix, ~92 %
+         before it.
+    """
+    print("== exclude=motorway is strict (#606) ==")
+    corridors = [("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
+        ("Bxl→Liège (E40)", 4.3517, 50.8503, 5.5671, 50.6326),
+        ("Bxl→Arlon (E411)", 4.3517, 50.8503, 5.8109, 49.6833),
+        # The SHORT motorway hop the ticket measured: a long route rides
+        # high-level shortcuts almost exclusively, a short one uses more base
+        # edges, so the two ends of the hierarchy are both covered.
+        ("Mechelen→Antwerp (E19)", 4.4800, 51.0259, 4.4025, 51.2194)]
+    floor_kmh = THRESHOLDS["fast_share_floor_kmh"]
+    max_ratio = THRESHOLDS["exclude_fast_share_ratio"]
+    cell_tol = THRESHOLDS["matrix_cell_tol"]
+    passed = True
+
+    def fast_share(d):
+        """Share of route LENGTH the engine annotates at >= floor_kmh."""
+        ann = d.get("annotations") or {}
+        dist, spd = ann.get("distance") or [], ann.get("speed") or []
+        total = sum(dist)
+        if total <= 0:
+            return None
+        return sum(x for x, s in zip(dist, spd) if s >= floor_kmh) / total
+
+    for name, olon, olat, dlon, dlat in corridors:
+        try:
+            ann = "distance,duration,speed"
+            plain = route_json(base, olon, olat, dlon, dlat, annotations=ann, timeout=600)
+            excl = route_json(base, olon, olat, dlon, dlat, annotations=ann,
+                exclude="motorway", timeout=600)
+            more = route_json(base, olon, olat, dlon, dlat, annotations=ann,
+                exclude="motorway,toll,ferry", timeout=600)
+            cell = table(base, [[olon, olat]], [[dlon, dlat]], exclude="motorway",
+                annotations="duration", timeout=600)["durations"][0][0]
+        except Exception as e:
+            passed &= check(name, False, f"request failed: {e}")
+            continue
+
+        d0, d1, d2 = plain["duration_s"], excl["duration_s"], more["duration_s"]
+        passed &= check(f"{name}: a restriction is never faster",
+            d1 >= d0, f"{d0:.0f}s -> {d1:.0f}s ({100 * (d1 / d0 - 1):+.1f}%)")
+        passed &= check(f"{name}: the mask is monotone",
+            d2 >= d1, f"motorway {d1:.0f}s -> +toll,ferry {d2:.0f}s")
+        ok_cell = cell is not None and abs(cell - d1) <= max(d1 * cell_tol, 1.0)
+        passed &= check(f"{name}: /table agrees under the same mask",
+            ok_cell, f"/route {d1:.0f}s vs /table {cell if cell is None else f'{cell:.0f}'}s")
+
+        s0, s1 = fast_share(plain), fast_share(excl)
+        if s0 is None or s1 is None:
+            passed &= check(f"{name}: fast-link share", False, "no annotations returned")
+            continue
+        # The corridor must be motorway-dominated for the check to mean
+        # anything — gate_motorway_speed_floor asserts the same thing by speed.
+        passed &= check(f"{name}: the corridor IS motorway",
+            s0 >= 0.25, f"{100 * s0:.0f}% of its length at >= {floor_kmh:.0f} km/h")
+        passed &= check(f"{name}: the excluded route leaves it",
+            s1 <= s0 * max_ratio,
+            f"{100 * s1:.1f}% at >= {floor_kmh:.0f} km/h "
+            f"(<= {100 * s0 * max_ratio:.1f}% = {max_ratio:g} x the unrestricted {100 * s0:.0f}%)")
+    return passed
+
+
 # ---------------------------------------------------------------------------
 # Gates — isochrone geometry (all share iso_bundle's fetches, #550)
 # ---------------------------------------------------------------------------
@@ -1470,6 +1573,7 @@ TICKET_GATES = {
     "#543": ("bands",),
     "#605": ("route_batch_agrees_with_route",),
     "#545": ("route_choice",),
+    "#606": ("exclude_motorway",),
     "#495/#497": ("isochrone_upper_bound", "isochrone_topology"),
 }
 TICKET_NOTES = {
@@ -1485,6 +1589,8 @@ TICKET_NOTES = {
     "#605": "batch route \u2260 /route on short pairs: the two surfaces return the same "
             "duration and distance, on a sample that still hits the shared-snap case",
     "#545": "route CHOICE has no check: durations are judged like-for-like (which drops the\n            divergent pairs) and route length only on the legacy corridor set, so a calibration\n            can collapse choice onto the motorways with every gate green",
+    "#606": "exclude=motorway close to a no-op: a restriction is never faster, the mask "
+            "is monotone, /route == /table under it, and the corridor is left",
     "#495/#497": "size / foot origin: max reach <= v_max x time, snapped origin contained",
 }
 
@@ -2961,6 +3067,7 @@ def build_gates(args):
         ("one_way_routable", False, lambda: gate_one_way_routable(b)),
         ("graph_holes", False, lambda: gate_graph_holes(b)),
         ("motorway_speed_floor", False, lambda: gate_motorway_speed_floor(b)),
+        ("exclude_motorway", False, lambda: gate_exclude_motorway(b)),
         ("edges_batch", True, lambda: gate_edges_batch(b)),
         ("matrix_sparse", True, lambda: gate_matrix_sparse(b)),
         ("matrix_sparse_streaming", True, lambda: gate_matrix_sparse_streaming(b)),
