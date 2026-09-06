@@ -162,6 +162,24 @@ A `transit/` subdirectory (next to the step tree or container files) triggers tr
   level anchor exactly in one step — multiplying it into the ratios instead
   only propagates ~55 % per pass (turn costs are not scaled by ratios) and
   erodes rank correlation.
+- Every cold boot logs a PER-CLASS landing census (`edge recustomize census
+  (#608)`, one line per highway class plus an `ALL` line). It says how many
+  of the mode's edges the table reached (`matched`, split into the ones
+  resolved through their OSM id chain and through the junction pair), how
+  many it did not (`no_row`), how many were discarded by the free-flow floor
+  (`floored`, `floored_lost_s` — see #609), and the median observed against
+  the median served ratio per class. **Read it after every artifact
+  refresh.** A table whose rows are keyed to a DIFFERENT container is not an
+  error and does not fail the boot: it is a large `no_row` count, and every
+  edge it misses is served at uncalibrated free-flow — which reads from
+  outside as a whole road class served far faster than its own labels. On a
+  matching pair, Belgium runs `no_row_frac` ≈ 0.001 and `floored_frac`
+  ≈ 0.0001; a `no_row_frac` in the tens of percent means the table and the
+  container disagree.
+- A level anchor is measured AGAINST a landing. Change the landing — or the
+  table, or the container — and the anchor has to be re-derived, or the
+  engine keeps applying a correction fitted to behaviour it no longer has.
+  #609 moved the same artifact's implied anchor from 1.029 to 1.013.
 - The cache is ONE FILE PER CACHED PASS (#571), written to a scratch name
   and `rename`d into place — a reader sees a whole section or no file, never
   a torn one. Each name carries the derivation key (algo tag ⊕ parquet bytes

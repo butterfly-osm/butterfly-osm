@@ -8,7 +8,7 @@
 //! - [`EdgeRecustomizePrep`] holds everything the three passes have in
 //!   common — the parquet CRC that keys the cache, the per-column #524 level
 //!   anchors, and (only if some pass actually misses the cache) the parsed
-//!   rows, the directed lookup, the turn table, the expected outgoing turn
+//!   rows, the directed lookup, the turn table, the certain outgoing turn
 //!   charge and the filtered EBG. Each of those used to be re-read and
 //!   rebuilt once per pass.
 //! - The cache is one file with one key and three CRC-guarded sections, so a
@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::landing_census::LandingCensus;
 use super::{ModeData, ModeSlot, ServerState, clone_mode_data, refresh_len_along_time};
 use crate::formats::{CchWeights, WeightArray, WeightWidth};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
@@ -42,8 +43,10 @@ use crate::model::types::Mode;
 /// CRC instead of the raw bytes, narrowed weight storage). v7: #563 (the
 /// key derivation gained the base-weights CRC — see [`SectionKey`]). v8:
 /// #571 (one atomic file per section — the base moved from the section CRC
-/// seed into the file name and header).
-const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v8";
+/// seed into the file name and header). v9: #609 (the turn charge
+/// subtracted from an observed door-to-door time is the cheapest allowed
+/// continuation, not the mean over all of them — different weights).
+const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v9";
 
 /// Test-only: how many times the heavy shared inputs were actually built
 /// (parquet body parsed, turn table read, filtered EBG mapped). A WARM boot
@@ -112,12 +115,17 @@ struct EdgeInputs {
     /// The median column carries base-speed ratios (vs absolute km/h).
     /// Band columns are always ratios.
     median_is_ratio: bool,
-    /// Per-EBG-node expected OUTGOING turn penalty (#481), seconds.
-    expected_turn_s: Vec<u32>,
+    /// Per-EBG-node CHEAPEST allowed outgoing turn penalty (#481/#609),
+    /// seconds — the junction charge every traversal of that edge pays.
+    min_turn_s: Vec<u32>,
     /// The mode's turn table (read once — it used to be read twice per pass).
     turn_penalties: Vec<u32>,
     /// The mode's filtered EBG (read once).
     filtered_ebg: crate::formats::FilteredEbg,
+    /// Per-EBG-node highway class, for the landing census (#608) only —
+    /// nothing in the derivation branches on it. Empty when the container
+    /// has no `way_attrs` section (the census then reports one bucket).
+    highway_class: Vec<u16>,
 }
 
 /// Per-boot preparation shared by the per-edge recustomization passes.
@@ -251,6 +259,43 @@ impl EdgeRecustomizePrep {
     }
 }
 
+/// The junction charge every traversal of one edge is certain to pay: the
+/// cheapest turn it is allowed to leave by. `u32::MAX` is the
+/// forbidden-turn sentinel — a movement no route may make charges nothing
+/// — and an edge with no legal continuation at all charges nothing either.
+#[inline]
+fn certain_outgoing_turn_s(penalties: &[u32]) -> u32 {
+    penalties
+        .iter()
+        .copied()
+        .filter(|&p| p != u32::MAX)
+        .min()
+        .unwrap_or(0)
+}
+
+/// Land one observed door-to-door ratio on one edge: returns the link
+/// weight the engine will serve, and how many seconds the free-flow floor
+/// threw away doing so (0 when it did not bind).
+///
+/// `free_flow_s` is the edge's legal-limit time, `observed` the table's
+/// speed ratio, `turn_s` the turn charge the engine will itself add when
+/// leaving this edge — subtracted so the junction delay already inside a
+/// door-to-door measurement is not charged twice (#481). `turn_s` is the
+/// CHEAPEST allowed continuation, not the average one: bounding the
+/// subtraction to what is certainly paid is what keeps the measurement
+/// alive instead of letting the floor below discard it (#609).
+#[inline]
+fn land_observed_ratio(free_flow_s: u32, observed: f32, turn_s: u32) -> (u32, f64) {
+    let w = free_flow_s as f64;
+    let door_to_door = w / (observed as f64).clamp(0.05, 1.0);
+    let adjusted = (door_to_door - turn_s as f64).round();
+    // A car does not beat its own legal limit, whatever the arithmetic
+    // says — but every second of that clamp is a second of measurement
+    // thrown away, so it is counted (#609).
+    let floor = w.round().max(1.0);
+    (adjusted.max(floor) as u32, (floor - adjusted).max(0.0))
+}
+
 /// Stream a file through the CRC digest without loading it whole.
 fn crc_of_file(path: &Path) -> Option<u64> {
     use std::io::Read;
@@ -365,9 +410,49 @@ impl ServerState {
         Ok((Arc::clone(mmap), off, len))
     }
 
+    /// Per-EBG-node highway class from this mode's `way_attrs`, for the
+    /// #608 landing census. Returns an empty vector (census reports one
+    /// bucket) when the section is absent or unreadable — a diagnostic
+    /// never fails a boot. The section is re-evicted afterwards: boot read
+    /// it once for the exclude flags and left it cold.
+    fn edge_highway_classes(&self) -> Vec<u16> {
+        let bytes = match self.car_section_bytes("way_attrs") {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "landing census: no way_attrs, class breakdown disabled");
+                return Vec::new();
+            }
+        };
+        let attrs = match crate::formats::way_attrs::read_all_from_bytes(bytes) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, "landing census: unreadable way_attrs, class breakdown disabled");
+                return Vec::new();
+            }
+        };
+        // Same lower-32-bit way key the exclude flags use (`EbgNode`
+        // stores the primary way truncated).
+        let mut by_way: rustc_hash::FxHashMap<u32, u16> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(attrs.len(), Default::default());
+        for a in &attrs {
+            by_way.insert((a.way_id & 0xFFFF_FFFF) as u32, a.output.highway_class);
+        }
+        drop(attrs);
+        let classes: Vec<u16> = self
+            .ebg_nodes
+            .nodes
+            .iter()
+            .map(|n| by_way.get(&n.primary_way).copied().unwrap_or(0))
+            .collect();
+        if let Err(e) = crate::formats::mmap::madvise_dontneed(bytes) {
+            tracing::warn!(error = %e, "landing census: madvise(DONTNEED) on way_attrs failed");
+        }
+        classes
+    }
+
     /// Build (or load from cache) the heavy per-edge inputs shared by the
     /// three passes: parsed rows → one directed lookup, the turn table, the
-    /// expected outgoing turn charge, and the filtered EBG.
+    /// certain outgoing turn charge, and the filtered EBG.
     fn edge_inputs(&self, prep: &mut EdgeRecustomizePrep) -> Result<Arc<EdgeInputs>> {
         if let Some(i) = &prep.inputs {
             return Ok(Arc::clone(i));
@@ -407,35 +492,34 @@ impl ServerState {
         let n_rows = rows.len();
         drop(rows);
 
-        // 2. #481: sensors measure DOOR-TO-DOOR speed — their slowdown
+        // 2. #481: the table measures DOOR-TO-DOOR speed — its slowdown
         // includes junction dwell that this edge-based engine ALREADY
-        // charges as turn penalties on every transition. Scaling the
-        // link weight by the raw ratio double-counts that dwell,
-        // maximally on urban arterials (measured ~24% pessimism, ring
-        // detours on 68/1000 reference benchmark trips) and not at all on
-        // motorways. Correction (zero fitted parameters): subtract the
-        // edge's own EXPECTED outgoing turn penalty from the observed
-        // door-to-door time before setting the link weight, floored at
-        // legal free-flow: w' = max(w, w/v − E[t_out]).
+        // charges as a turn penalty when a route leaves the edge. So the
+        // engine's own charge is subtracted from the observed time before
+        // the link weight is set: w' = max(w, w/v − t_out).
+        //
+        // #609: `t_out` is the charge every traversal NECESSARILY pays —
+        // the cheapest allowed continuation. It used to be the MEAN over
+        // all successors, which no traversal ever pays: that average
+        // includes the u-turn (turn + 20 s) and every branch a shortest
+        // path declines, and on Belgium it exceeded the whole measured
+        // slowdown often enough that the floor below then threw the
+        // measurement away outright — 20 % of motorway links, 22 % of
+        // trunk links, and those classes came out 5-16 % faster than the
+        // table said (#608, per-class census in `landing_census`). The
+        // minimum is also the better estimate of what is actually
+        // charged: a shortest path leaves an edge by its cheapest turn
+        // unless a dearer one pays for itself. Still zero fitted
+        // parameters — it is read off the engine's own turn table.
         let turns = crate::formats::mod_turns::read_all_from_bytes(
             self.car_section_bytes("node_weights.turn")?,
         )?;
         let n_nodes_csr = self.ebg_csr.n_nodes as usize;
         let csr_offsets = self.ebg_csr.offsets.as_slice();
-        let mut expected_turn_s: Vec<u32> = vec![0; n_nodes_csr];
+        let mut min_turn_s: Vec<u32> = vec![0; n_nodes_csr];
         for i in 0..n_nodes_csr {
             let (a, b) = (csr_offsets[i] as usize, csr_offsets[i + 1] as usize);
-            let mut sum = 0u64;
-            let mut n = 0u64;
-            for &p in &turns.penalties[a..b] {
-                if p != u32::MAX {
-                    sum += p as u64;
-                    n += 1;
-                }
-            }
-            if let Some(mean) = sum.checked_div(n) {
-                expected_turn_s[i] = mean as u32;
-            }
+            min_turn_s[i] = certain_outgoing_turn_s(&turns.penalties[a..b]);
         }
 
         // 3. The mode's filtered EBG (zero-copy view of the container).
@@ -443,14 +527,21 @@ impl ServerState {
         let filtered_ebg =
             crate::formats::FilteredEbgFile::read_from_mmap_unverified(fe_mmap, fe_off, fe_len)?;
 
+        // 4. Per-EBG-node highway class for the #608 landing census. Read
+        //    here rather than kept resident from boot: this whole path is
+        //    cold-boot-only, and a permanently resident class array would
+        //    cost RSS on every deployment to serve a diagnostic.
+        let highway_class = self.edge_highway_classes();
+
         let inputs = Arc::new(EdgeInputs {
             n_rows,
             lut,
             lane_counts,
             median_is_ratio,
-            expected_turn_s,
+            min_turn_s,
             turn_penalties: turns.penalties,
             filtered_ebg,
+            highway_class,
         });
         tracing::info!(
             rows = n_rows,
@@ -520,17 +611,25 @@ impl ServerState {
             "weights/EBG length mismatch"
         );
         let mut matched = 0usize;
+        let mut census = LandingCensus::new(&inputs.highway_class);
         for (i, node) in self.ebg_nodes.nodes.iter().enumerate() {
             if weights[i] == 0 {
+                census.inaccessible(i);
                 continue; // inaccessible sentinel
             }
             let from = match self.nbg_node_to_osm.get(node.tail_nbg as usize) {
                 Some(&v) => v,
-                None => continue,
+                None => {
+                    census.no_osm_id(i);
+                    continue;
+                }
             };
             let to = match self.nbg_node_to_osm.get(node.head_nbg as usize) {
                 Some(&v) => v,
-                None => continue,
+                None => {
+                    census.no_osm_id(i);
+                    continue;
+                }
             };
             // Per-OSM-segment tables (e.g. VDF over assignment flows,
             // #467) key on intermediate nodes — resolve this directed
@@ -539,6 +638,7 @@ impl ServerState {
             // fallback (single-segment edges / chains absent / older
             // junction-keyed tables).
             let mut val: Option<f32> = None;
+            let mut via_segments = false;
             if let Some(segs) = self.edge_osm.directed_segments(node.geom_idx, from) {
                 let mut sum = 0.0f64;
                 let mut n = 0u32;
@@ -550,27 +650,37 @@ impl ServerState {
                 }
                 if n > 0 {
                     val = Some((sum / n as f64) as f32);
+                    via_segments = true;
                 }
             }
             if val.is_none() {
                 val = lookup(from, to);
             }
-            if let Some(v) = val {
-                if table_is_ratio {
-                    // Door-to-door observed time minus the engine's own
-                    // expected junction charge (see #481 note above),
-                    // floored at legal free-flow.
-                    let w = weights[i] as f64;
-                    let door_to_door = w / (v as f64).clamp(0.05, 1.0);
-                    let et = *inputs.expected_turn_s.get(i).unwrap_or(&0) as f64;
-                    weights[i] = (door_to_door - et).round().max(w.round()).max(1.0) as u32;
-                } else {
-                    let secs = (node.length_m as f64 * 3.6 / v as f64).round();
-                    weights[i] = (secs.max(1.0) as u32).max(1);
-                }
-                matched += 1;
+            let Some(v) = val else {
+                census.no_row(i);
+                continue;
+            };
+            let w = weights[i] as f64;
+            let mut floored_lost_s = 0.0f64;
+            if table_is_ratio {
+                let turn_s = *inputs.min_turn_s.get(i).unwrap_or(&0);
+                let (landed, lost) = land_observed_ratio(weights[i], v, turn_s);
+                weights[i] = landed;
+                floored_lost_s = lost;
+            } else {
+                let secs = (node.length_m as f64 * 3.6 / v as f64).round();
+                weights[i] = (secs.max(1.0) as u32).max(1);
             }
+            census.matched(
+                i,
+                via_segments,
+                v,
+                (w / weights[i] as f64) as f32,
+                floored_lost_s,
+            );
+            matched += 1;
         }
+        census.log(&format!("{column:?}"));
         // #524: global end-to-end level anchor — scale link weights AND
         // turn penalties so producer-measured levels propagate exactly
         // (input-ratio scaling reaches ~55%/pass and erodes rank
@@ -1205,6 +1315,62 @@ mod tests {
     /// model a base (the base guard has its own test below).
     fn k(file: u64) -> SectionKey {
         SectionKey { file, base: 0 }
+    }
+
+    /// With no turn to subtract, the served time IS the observed one: a
+    /// ratio of 0.5 doubles the free-flow weight, and nothing is lost.
+    #[test]
+    fn an_observed_ratio_lands_as_the_observed_time() {
+        assert_eq!(land_observed_ratio(100, 0.5, 0), (200, 0.0));
+        assert_eq!(land_observed_ratio(100, 1.0, 0), (100, 0.0));
+        // A ratio above the legal limit is truncated to it (the table's
+        // own upper clamp), never served faster than free-flow.
+        assert_eq!(land_observed_ratio(100, 1.4, 0), (100, 0.0));
+    }
+
+    /// The turn charge the engine adds itself is subtracted, so the
+    /// door-to-door total the table measured is served once, not twice.
+    #[test]
+    fn the_turn_charge_is_subtracted_once() {
+        assert_eq!(land_observed_ratio(100, 0.5, 20), (180, 0.0));
+    }
+
+    /// #609: what gets subtracted is the CHEAPEST allowed continuation —
+    /// the charge a traversal certainly pays — not the mean over every
+    /// successor, which includes the u-turn and each branch a shortest
+    /// path declines. On this junction the mean is 12 s and the certain
+    /// charge 0 s; subtracting 12 s from a 105 s observed time on a 100 s
+    /// edge falls under the floor and loses the measurement whole.
+    #[test]
+    fn only_the_certain_turn_charge_is_subtracted() {
+        let junction = [0, 8, 28, u32::MAX];
+        assert_eq!(certain_outgoing_turn_s(&junction), 0);
+        let mean = 36 / 3;
+        assert_eq!(land_observed_ratio(100, 0.95, mean), (100, 7.0));
+        assert_eq!(
+            land_observed_ratio(100, 0.95, certain_outgoing_turn_s(&junction)),
+            (105, 0.0)
+        );
+    }
+
+    /// A junction where every allowed continuation is charged still pays
+    /// the cheapest of them; one where none is allowed pays nothing.
+    #[test]
+    fn a_certain_charge_survives_and_a_dead_end_charges_nothing() {
+        assert_eq!(certain_outgoing_turn_s(&[6, 8, 28]), 6);
+        assert_eq!(certain_outgoing_turn_s(&[u32::MAX, u32::MAX]), 0);
+        assert_eq!(certain_outgoing_turn_s(&[]), 0);
+    }
+
+    /// The floor never serves faster than free-flow, and every second it
+    /// clamps is reported as thrown away — that count is the whole point
+    /// of #609 (it used to be silent).
+    #[test]
+    fn the_free_flow_floor_reports_what_it_discards() {
+        let (w, lost) = land_observed_ratio(100, 0.95, 40);
+        assert_eq!(w, 100, "never faster than the legal limit");
+        // observed 105 s − 40 s turn = 65 s, clamped up to 100 s.
+        assert_eq!(lost, 35.0);
     }
 
     /// Our files in `dir`, sorted — the whole cache is its directory listing
