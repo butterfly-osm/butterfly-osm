@@ -266,7 +266,7 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
     let tr_start = std::time::Instant::now();
     let (dist_up, dist_down, _du_mid, _dd_mid, dist_relax_count, dist_relax_passes) =
-        triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down);
+        triangle_relax_parallel(&topo, dist_up, dist_down, &rev_down, true);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
         tr_start.elapsed().as_secs_f64(),
@@ -439,7 +439,7 @@ pub fn customize_cch_time_in_memory(
 
     // Triangle relaxation — ALWAYS run (correctness-critical for serving).
     let (time_up, time_down, time_up_mid, time_down_mid, _relax_count, _relax_passes) =
-        triangle_relax_parallel(topo, time_up, time_down, &rev_down);
+        triangle_relax_parallel(topo, time_up, time_down, &rev_down, true);
 
     sanity_check_weights(topo, &time_up, &time_down, "Time", 95.0)?;
 
@@ -458,15 +458,34 @@ pub fn customize_cch_time_in_memory(
 // Reusable customization building blocks
 // ===================================================================
 
+/// DOWN edge indices per node, sorted by target rank — the dependency order
+/// [`bottom_up_customize`] needs. Extracted so the serve-side recustomizer
+/// (`server::exclude`) builds it exactly as the pipeline does.
+pub(crate) fn sorted_down_indices(topo: &CchTopo) -> Vec<Vec<usize>> {
+    (0..topo.n_nodes as usize)
+        .into_par_iter()
+        .map(|u| {
+            let start = topo.down_offsets[u] as usize;
+            let end = topo.down_offsets[u + 1] as usize;
+            if start >= end {
+                return Vec::new();
+            }
+            let mut indices: Vec<usize> = (start..end).collect();
+            indices.sort_unstable_by_key(|&i| topo.down_targets[i]);
+            indices
+        })
+        .collect()
+}
+
 /// Reverse DOWN adjacency for triangle relaxation.
 /// For each node m, stores all incoming DOWN edges x→m.
-struct ReverseDownAdj {
+pub(crate) struct ReverseDownAdj {
     offsets: Vec<u64>,
     sources: Vec<u32>,
     edge_idx: Vec<usize>,
 }
 
-fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
+pub(crate) fn build_reverse_down_adj_for_relax(topo: &CchTopo) -> ReverseDownAdj {
     let n_nodes = topo.n_nodes as usize;
 
     let mut counts = vec![0u64; n_nodes];
@@ -641,7 +660,7 @@ pub fn bottom_up_with_external_middles(
     (up_weights, down_weights)
 }
 
-fn bottom_up_customize(
+pub(crate) fn bottom_up_customize(
     topo: &CchTopo,
     sorted_down_indices: &[Vec<usize>],
     orig_weight_fn: impl Fn(usize, usize) -> u32,
@@ -832,11 +851,17 @@ where
 /// original contraction middle.
 ///
 /// Returns (up_weights, down_weights, up_middles, down_middles, total_relaxations, passes).
-fn triangle_relax_parallel(
+///
+/// `progress` prints one line per pass. The PIPELINE wants that; the SERVE
+/// path must not have it — `println!` from inside a request handler writes
+/// build-shaped text into a server whose logs are structured JSON to stdout
+/// (#606), so `server::exclude` passes `false`.
+pub(crate) fn triangle_relax_parallel(
     topo: &CchTopo,
     up_weights: Vec<u32>,
     down_weights: Vec<u32>,
     rev_down: &ReverseDownAdj,
+    progress: bool,
 ) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, u64, u32) {
     // Pack (weight, middle) into AtomicU64 for lock-free update of both.
     // `topo.{up,down}_middle` are now [`WeightArray`] whose iterator
@@ -860,7 +885,9 @@ fn triangle_relax_parallel(
         let pu = triangle_relax_pass(topo, rev_down, &atomic_up, &atomic_down, |p_xm, p_my, m| {
             pack_wm(unpack_weight(p_xm).saturating_add(unpack_weight(p_my)), m)
         });
-        println!("  Pass {}: {} updates", pass, pu);
+        if progress {
+            println!("  Pass {}: {} updates", pass, pu);
+        }
         total_relaxations += pu;
 
         if pu == 0 {
@@ -1576,7 +1603,7 @@ pub fn customize_cch_hybrid(config: Step8HybridConfig) -> Result<Step8Result> {
     println!("\n🔺 Triangle relaxation (parallel)...");
     let tr_start = std::time::Instant::now();
     let (up_weights, down_weights, _up_middles, _down_middles, relax_count, relax_passes) =
-        triangle_relax_parallel(&topo, up_weights, down_weights, &rev_down);
+        triangle_relax_parallel(&topo, up_weights, down_weights, &rev_down, true);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
         tr_start.elapsed().as_secs_f64(),
@@ -1987,7 +2014,7 @@ mod len_along_time_middle_tests {
         ];
         for (time_up, time_down, len_up, len_down) in seeds {
             let (plain_up, plain_down, _, _, _, _) =
-                triangle_relax_parallel(&topo, time_up.clone(), time_down.clone(), &rev_down);
+                triangle_relax_parallel(&topo, time_up.clone(), time_down.clone(), &rev_down, true);
             let (lex_up, lex_down, _, _, _, _) = triangle_relax_lex_parallel(
                 &topo, time_up, time_down, &len_up, &len_down, &rev_down,
             );

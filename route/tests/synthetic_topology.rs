@@ -2026,3 +2026,313 @@ fn a_destination_behind_the_origin_is_the_other_twins_move() {
     );
     assert!(dm.cost_s > 0, "a real move must never bill 0 s");
 }
+
+// ---------------------------------------------------------------------
+// exclude= / avoid_polygons= — the recustomization (#606).
+//
+// `exclude=motorway` recomputes the CCH weights with every motorway arc
+// blocked. On Belgium it was measured to move an inter-city duration by
+// under 4 % and to leave 80 % of an 18.6 km "motorway-free" route on
+// links at 90 km/h or more. The mechanism is pinned here with no
+// artifact: a lattice whose middle row is a fast corridor, a slow
+// alternative on every other row, and an independent Dijkstra over the
+// corridor-free graph as the truth.
+// ---------------------------------------------------------------------
+
+/// The lattice row that plays the motorway.
+const FAST_ROW: usize = 6;
+
+impl Network {
+    /// The directed segment from intersection `(r0, c0)` to `(r1, c1)`.
+    fn segment_between(&self, (r0, c0): (usize, usize), (r1, c1): (usize, usize)) -> u32 {
+        let tail = self.lat.node_id(r0, c0);
+        let head = self.lat.node_id(r1, c1);
+        self.segments
+            .iter()
+            .position(|s| s.tail == tail && s.head == head)
+            .unwrap_or_else(|| panic!("no segment ({r0},{c0}) -> ({r1},{c1})")) as u32
+    }
+
+    /// [`Network::reference_dijkstra`] over the graph with every segment
+    /// flagged in `blocked` deleted — the truth an honest `exclude=` must
+    /// reproduce.
+    fn reference_dijkstra_avoiding(&self, seed: u32, blocked: &[bool]) -> Vec<u32> {
+        assert!(!blocked[seed as usize], "the seed itself must be routable");
+        let mut dist = vec![u32::MAX; self.n_segments()];
+        let mut heap: BinaryHeap<std::cmp::Reverse<(u32, u32)>> = BinaryHeap::new();
+        dist[seed as usize] = 0;
+        heap.push(std::cmp::Reverse((0, seed)));
+        while let Some(std::cmp::Reverse((d, e))) = heap.pop() {
+            if d > dist[e as usize] {
+                continue;
+            }
+            let start = self.offsets[e as usize] as usize;
+            let end = self.offsets[e as usize + 1] as usize;
+            for slot in start..end {
+                let f = self.heads[slot];
+                if blocked[f as usize] {
+                    continue;
+                }
+                let nd = d + self.node_weights[f as usize] + self.turn_penalties[slot];
+                if nd < dist[f as usize] {
+                    dist[f as usize] = nd;
+                    heap.push(std::cmp::Reverse((nd, f)));
+                }
+            }
+        }
+        dist
+    }
+}
+
+/// A lattice whose row [`FAST_ROW`] is ten times quicker than every other
+/// street and is flagged as motorway. Returns the network and the
+/// per-segment exclude flags the server builds from `way_attrs`.
+fn motorway_lattice() -> (Network, Vec<u8>) {
+    use butterfly_route::server::exclude::EXCLUDE_MOTORWAY;
+
+    let mut net = Lattice {
+        dim: 13,
+        spacing_m: 200.0,
+        edge_cost_s: 30,
+        oneway_row_period: 4,
+        origin_lon: 4.35,
+        origin_lat: 50.85,
+        void_block: None,
+        express: None,
+    }
+    .build();
+
+    let dim = net.lat.dim;
+    let mut flags = vec![0u8; net.n_segments()];
+    for (i, flag) in flags.iter_mut().enumerate() {
+        let s = net.segments[i];
+        let tail_row = s.tail as usize / dim;
+        let head_row = s.head as usize / dim;
+        if tail_row == FAST_ROW && head_row == FAST_ROW {
+            net.node_weights[i] = 3;
+            *flag = EXCLUDE_MOTORWAY;
+        }
+    }
+    assert!(
+        flags.iter().filter(|&&f| f != 0).count() >= 2 * (dim - 1),
+        "the fast corridor must cover both twins of every street on its row"
+    );
+    (net, flags)
+}
+
+#[test]
+fn exclude_motorway_costs_what_the_motorway_free_graph_costs() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::exclude::{EXCLUDE_MOTORWAY, recustomize_weights_incremental};
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::unpack::unpack_path;
+
+    let (net, flags) = motorway_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let (rank_to_seg, seg_to_rank) = rank_maps(&h, n);
+    let filtered_to_original: Vec<u32> = (0..n as u32).collect();
+    let blocked: Vec<bool> = flags.iter().map(|&f| f != 0).collect();
+
+    // Endpoints on the row ABOVE the corridor, so both the fast route (drop
+    // down, run the corridor, come back up) and the slow one (stay on the
+    // ordinary street grid) exist and neither endpoint is itself excluded.
+    let src = net.segment_between((5, 0), (5, 1));
+    let dst = net.segment_between((5, 11), (5, 12));
+    let src_rank = seg_to_rank[src as usize];
+    let dst_rank = seg_to_rank[dst as usize];
+
+    let with_corridor = net.reference_dijkstra(src)[dst as usize];
+    let without_corridor = net.reference_dijkstra_avoiding(src, &blocked)[dst as usize];
+    assert!(
+        with_corridor < without_corridor,
+        "the fixture is pointless unless the corridor is worth taking \
+         ({with_corridor} s vs {without_corridor} s)"
+    );
+    assert!(without_corridor != u32::MAX, "the slow route must exist");
+
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+
+    // Without the option the corridor IS the answer.
+    let base = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &h.weights);
+    assert_eq!(
+        base.distance(src_rank, dst_rank),
+        Some(with_corridor),
+        "the unrestricted route must take the fast corridor"
+    );
+
+    // With it, the answer is the corridor-free shortest path — to the second.
+    let excluded = recustomize_weights_incremental(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+    let restricted = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &excluded);
+    assert_eq!(
+        restricted.distance(src_rank, dst_rank),
+        Some(without_corridor),
+        "exclude=motorway must cost exactly what the motorway-free graph costs"
+    );
+
+    // …and the route it hands back must not touch one excluded segment.
+    let result = restricted
+        .query(src_rank, dst_rank)
+        .expect("the restricted graph is still connected");
+    let path = unpack_path(
+        &h.topo,
+        &excluded,
+        &result.forward_parent,
+        &result.backward_parent,
+        src_rank,
+        dst_rank,
+        result.meeting_node,
+    );
+    let trespassing: Vec<u32> = path
+        .iter()
+        .map(|&r| rank_to_seg[r as usize])
+        .filter(|&s| blocked[s as usize])
+        .collect();
+    assert!(
+        trespassing.is_empty(),
+        "the excluded route traverses {} excluded segments: {:?}",
+        trespassing.len(),
+        trespassing
+    );
+}
+
+#[test]
+fn every_excluded_pair_costs_what_the_motorway_free_graph_costs() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::exclude::{EXCLUDE_MOTORWAY, recustomize_weights_incremental};
+    use butterfly_route::server::query::CchQuery;
+
+    let (net, flags) = motorway_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let (_, seg_to_rank) = rank_maps(&h, n);
+    let filtered_to_original: Vec<u32> = (0..n as u32).collect();
+    let blocked: Vec<bool> = flags.iter().map(|&f| f != 0).collect();
+
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let excluded = recustomize_weights_incremental(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+    let restricted = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &excluded);
+
+    // Every routable segment as a source, a spread of targets: one wrong
+    // shortcut anywhere in the hierarchy shows up as a too-small cell.
+    let targets: Vec<u32> = [(1usize, 11usize), (11, 2), (3, 3), (9, 7), (5, 12)]
+        .into_iter()
+        .map(|(r, c)| net.segment_from(r, c))
+        .filter(|&t| !blocked[t as usize])
+        .collect();
+    assert!(targets.len() >= 4, "the target set must survive the filter");
+
+    let mut checked = 0usize;
+    for src in 0..n as u32 {
+        if blocked[src as usize] {
+            continue;
+        }
+        let truth = net.reference_dijkstra_avoiding(src, &blocked);
+        for &dst in &targets {
+            let want = truth[dst as usize];
+            let got = restricted.distance(seg_to_rank[src as usize], seg_to_rank[dst as usize]);
+            assert_eq!(
+                got,
+                (want != u32::MAX).then_some(want),
+                "exclude=motorway disagrees with the motorway-free Dijkstra for {src} -> {dst}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 1000, "only {checked} pairs checked");
+}
+
+#[test]
+fn both_recustomization_shapes_agree() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::exclude::{
+        EXCLUDE_MOTORWAY, count_seeded_edges, recustomize_weights_from_scratch,
+        recustomize_weights_incremental,
+    };
+    use butterfly_route::server::query::CchQuery;
+
+    let (net, flags) = motorway_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let (_, seg_to_rank) = rank_maps(&h, n);
+    let filtered_to_original: Vec<u32> = (0..n as u32).collect();
+    let blocked: Vec<bool> = flags.iter().map(|&f| f != 0).collect();
+
+    // The switch reads this; a fixture whose mask seeds nothing would make
+    // the whole comparison vacuous.
+    let seeds = count_seeded_edges(&h.topo, &flags, EXCLUDE_MOTORWAY, &filtered_to_original);
+    assert!(seeds > 0, "the mask must seed at least one CCH base edge");
+
+    let inc = recustomize_weights_incremental(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+    let scratch = recustomize_weights_from_scratch(
+        &h.topo,
+        &h.weights,
+        &flags,
+        EXCLUDE_MOTORWAY,
+        &filtered_to_original,
+    );
+
+    // The two shapes solve the SAME system: identical weights, edge for edge.
+    // (Middles may differ on edges the incremental walk never visited — both
+    // are then valid decompositions of the same weight — so the query check
+    // below covers what the middles are for.)
+    let inc_up: Vec<u32> = inc.up.iter().collect();
+    let scratch_up: Vec<u32> = scratch.up.iter().collect();
+    let inc_down: Vec<u32> = inc.down.iter().collect();
+    let scratch_down: Vec<u32> = scratch.down.iter().collect();
+    assert_eq!(
+        inc_up, scratch_up,
+        "the two recustomization shapes disagree on the UP weights"
+    );
+    assert_eq!(
+        inc_down, scratch_down,
+        "the two recustomization shapes disagree on the DOWN weights"
+    );
+
+    // …and both must answer the motorway-free Dijkstra, so an agreement on a
+    // shared error could not pass either.
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let targets: Vec<u32> = [(1usize, 11usize), (11, 2), (9, 7)]
+        .into_iter()
+        .map(|(r, c)| net.segment_from(r, c))
+        .filter(|&t| !blocked[t as usize])
+        .collect();
+    for (label, w) in [("incremental", &inc), ("scratch", &scratch)] {
+        let q = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, w);
+        for src in (0..n as u32).step_by(7) {
+            if blocked[src as usize] {
+                continue;
+            }
+            let truth = net.reference_dijkstra_avoiding(src, &blocked);
+            for &dst in &targets {
+                let want = truth[dst as usize];
+                assert_eq!(
+                    q.distance(seg_to_rank[src as usize], seg_to_rank[dst as usize]),
+                    (want != u32::MAX).then_some(want),
+                    "{label}: disagrees with the motorway-free Dijkstra for {src} -> {dst}"
+                );
+            }
+        }
+    }
+}

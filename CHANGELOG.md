@@ -10,6 +10,139 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-06 — Two promises on `/route` that did not hold (#606)
+
+**`exclude=motorway` was close to a no-op.** Measured on five inter-city pairs
+it moved the returned duration by at most 0.9 % and the share of route length
+on fast links by under one point; on a short motorway hop it came back
+0.3 % **quicker** with the option on, which is impossible for a strict
+subgraph. Two candidate causes had to be separated — the exclusion not
+reaching the edges, or the classification not matching what the route
+traverses. It was the first, and the classification is right: `exclude=motorway`
+keys on `highway_class` 1-2, i.e. `motorway` and `motorway_link` in the car
+model's own schema.
+
+`recompute_edge_weight` seeded EVERY CCH edge with its build-time relaxed
+weight and then took the minimum over triangles. For a base edge that is its
+own arc's cost and is correct. For a SHORTCUT it is a floor no exclusion can
+raise: a shortcut summarising a corridor through an excluded arc kept the
+corridor's weight and, having "not changed", never enqueued its own
+dependents, so the propagation died one level above the seeds. Long routes
+ride high-level shortcuts almost exclusively — which is exactly why the effect
+was largest on the shortest hop. `avoid_polygons` recustomizes through the
+same function and had the same hole.
+
+A shortcut owns no arc: it is defined as the best two-hop through a
+lower-ranked apex, so it is now recomputed from infinity and the triangle scan
+IS its definition. Correcting the floor makes far more edges move, so the FIFO
+became a min-heap on LEVEL = min(rank(source), rank(target)); every triangle
+leg runs through an apex ranked strictly below both endpoints, so popping in
+level order settles every leg before the edge that reads it — one
+recomputation per touched edge, and the same fixed point a from-scratch
+bottom-up customization reaches.
+
+Belgium, same host, same artifact, before → after:
+
+| pair | Δ duration before | Δ duration after | route length ≥ 90 km/h, excluded, before → after |
+|---|---|---|---|
+| Bxl→Antwerp (E19) | +0.7 % | **+90.4 %** | 63.5 % → **0.9 %** |
+| Bxl→Liège (E40) | +0.1 % | +126.8 % | 83.5 % → 4.7 % |
+| Bxl→Ghent (E40) | +0.0 % | +81.9 % | 70.2 % → 1.4 % |
+| Antwerp→Liège (E313) | +0.1 % | +123.4 % | 89.5 % → 1.4 % |
+| Bxl→Charleroi (A54) | +0.9 % | +27.6 % | 55.7 % → 5.5 % |
+| Mechelen→Antwerp, 24.8 km | **−0.3 %** | +68.0 % | 52.3 % → 0.4 % |
+
+The residual few per cent is genuine non-motorway expressway — the N4 to
+Arlon is tagged `trunk` at 120 km/h and is correctly not excluded.
+
+**The honest price is latency, and it is now bounded rather than reported.**
+Correcting the floor makes the recustomization do the work it always should
+have done, and that work is not small. It moved BOTH options, not just the
+motorway one — `avoid_polygons` recustomizes through the same function, so a
+street-sized polygon went from 1.0 s to 17.7 s and `exclude=motorway` from
+1.0 s to 228.1 s. Neither of the old numbers was a baseline worth keeping:
+they are what a recustomization costs when it stops one level above its seeds.
+
+Measured on Belgium (car, 20-core, both metrics concurrent, same host, same
+artifact), with `BUTTERFLY_EXCLUDE_SHAPE` forcing each shape in turn:
+
+| mask | seeded CCH arcs | before | incremental | from scratch |
+|---|---|---|---|---|
+| ~900 m avoid polygon over central Brussels | 938 | 1.0 s | **17.7 s** | 68.6 s |
+| `exclude=motorway` | 20 835 | 1.0 s | 228.1 s | **59.1 s** |
+
+So neither shape is right for both ends, and the engine now picks per mask.
+The incremental walk is bounded by what the mask reaches; the from-scratch
+shape is the pipeline's own step 8 — `bottom_up_customize` then
+`triangle_relax_parallel`, the SAME two functions, so there is one triangle
+relaxation in the engine and the serve path cannot drift from the build — and
+costs the same whatever the mask is, because every core works. Its cost even
+FALLS as the mask widens (59 s for the class mask against 69 s for the
+polygon: a wider mask converges in fewer passes).
+
+`SCRATCH_SEED_THRESHOLD` is derived from those two points, not fitted to them.
+The incremental cost runs 0.011-0.019 s per seeded arc, so the shapes cross
+between ~3 200 and ~6 300 seeds; the threshold takes the conservative end
+(3 500) so that the incremental path's own worst case (~66 s) sits at the
+from-scratch cost. **No mask can then cost more than about 70 s**, and the
+common street-sized polygon still pays 17.7 s rather than 68.6 s.
+`both_recustomization_shapes_agree` asserts the two shapes return identical
+weights on the lattice, so the switch can only change the cost, never the
+answer.
+
+**What the 120 s `TimeoutLayer` actually does: nothing, here.** A cold
+`exclude=motorway` request measured 228.1 s and returned **HTTP 200**, not a
+408. `tokio::time::timeout` can only elapse when it is polled, and it cannot
+be polled while the inner handler is blocked inside its own `poll` — a
+synchronous computation in an axum handler runs to completion whatever the
+layer says. That is not a reason to relax: it means the request budget cannot
+be enforced from the outside, so it has to be met by the work itself, which is
+what the switch does. Two further changes make the cold path behave:
+
+* `/route` deliberately has no `spawn_blocking` ("route computation is fast,
+  <10 ms typical"). The cold recustomization now runs through
+  `avoid::off_runtime` (`block_in_place`), which does not shorten it but hands
+  the worker's other tasks to a sibling thread, so the rest of the server
+  stays responsive while it runs (#539).
+* Identical cold requests collapse. The exclude cache used to document
+  duplicate concurrent computation as "benign racy semantics" — true at 1 s,
+  false at a minute, and the realistic burst is the SAME mask arriving twice
+  because a client gave up and retried. Both caches now single-flight on their
+  own key: the first caller computes, the rest wait on its result.
+
+**Precomputing the class masks at boot was measured and rejected.** They are a
+closed set — seven non-empty combinations of toll/ferry/motorway — but each
+weight set is ~1.5 GB resident (measured as the server's RSS step, not the
+"5-8 GB" the cache comment used to guess) and costs ~60 s to build. Warming
+all seven would add ~10 GB and ~7 minutes of boot **per mode**, i.e. ~31 GB
+and ~21 minutes for car+bike+foot, on every deploy, for an option most traffic
+never touches. Paying it once per `(mode, mask)` on first use, single-flighted,
+is the better trade; an operator who needs first-call latency can warm the
+masks deliberately.
+
+**`annotations=nodes` returned internal graph ids.** The parameter is part of
+the OSRM-parity set (P4) and OSRM's `nodes` annotation is OSM node ids;
+`docs/api.md` never said otherwise, and the README contrasts it with
+`edges_batch`'s "unnested OSM node ids" as if the two named the same thing. It
+served the engine's EBG node ids, which are meaningless outside the process
+and change on every artifact rebuild — which is why the investigation above
+had to attribute road class through link speeds instead. It is a genuine
+mismatch on a documented output, not a documentation error, so `nodes` now
+returns **OSM node ids** (`i64`), in order of travel, one per OSM node the
+route passes through. It is geometry-shaped, not per-edge like `duration` /
+`distance` / `speed` — the same shape OSRM gives it — and `docs/api.md` now
+says so.
+
+**Guards.** `route/tests/synthetic_topology.rs` pins the mechanism with no
+artifact: a lattice with a fast corridor row and a slow street grid, an
+independent Dijkstra over the corridor-free graph as the truth, every routable
+source × a spread of targets. Before the fix the exclusion returned 201 s
+where the corridor-free shortest path costs 330 s and the served route still
+ran down the corridor. `bench/postdeploy_gate.py` gains `gate_exclude_motorway`
+over real geography: a restriction is never faster, the mask is monotone,
+`/route` ≡ `/table` under the same mask (all three exact, no constants), and
+the motorway corridor is actually left.
+
 ### 2026-09-06 — The batch route and `/route` answered short pairs differently (#605)
 
 `/route` computed the same-physical-edge direct move and offered it against the

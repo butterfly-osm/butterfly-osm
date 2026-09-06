@@ -49,6 +49,20 @@ pub struct AvoidEntry {
     pub flags: Vec<u8>,
 }
 
+/// Drops `key`'s single-flight slot on every exit path of
+/// `get_or_compute_avoid_entry`, including the error ones.
+struct FlightRetire<'a> {
+    cache: &'a AvoidWeightCache,
+    key: AvoidKey,
+    slot: Arc<parking_lot::Mutex<()>>,
+}
+
+impl Drop for FlightRetire<'_> {
+    fn drop(&mut self) {
+        self.cache.retire(&self.key, Arc::clone(&self.slot));
+    }
+}
+
 struct AvoidCacheInner {
     map: HashMap<AvoidKey, (Arc<AvoidEntry>, u64)>, // (entry, last-touched generation)
     generation: u64,
@@ -63,6 +77,14 @@ struct AvoidCacheInner {
 /// least-recently-used slot when full.
 pub struct AvoidWeightCache {
     inner: RwLock<AvoidCacheInner>,
+    /// #606 single flight, keyed the same way the cache is. An avoid
+    /// polygon's key space is unbounded (unlike the exclude mask's eight
+    /// values), so this is a map that holds a slot only while someone is
+    /// computing for it. Same reason as the exclude side: a cold
+    /// recustomization is seconds, the same polygon arriving twice used to
+    /// compute twice, and after a 120 s timeout the retry IS the same
+    /// polygon.
+    flight: parking_lot::Mutex<HashMap<AvoidKey, Arc<parking_lot::Mutex<()>>>>,
 }
 
 impl AvoidWeightCache {
@@ -75,6 +97,30 @@ impl AvoidWeightCache {
                 hits: 0,
                 misses: 0,
             }),
+            flight: parking_lot::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The single-flight slot for `key`, created on demand. Dropping the
+    /// returned `Arc` is not enough to free the map entry — [`Self::retire`]
+    /// does that once the computation is over, so the map holds at most one
+    /// entry per key that is genuinely in flight.
+    fn flight_slot(&self, key: AvoidKey) -> Arc<parking_lot::Mutex<()>> {
+        Arc::clone(
+            self.flight
+                .lock()
+                .entry(key)
+                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(()))),
+        )
+    }
+
+    /// Drop `key`'s single-flight slot if this was the last holder.
+    fn retire(&self, key: &AvoidKey, slot: Arc<parking_lot::Mutex<()>>) {
+        let mut flight = self.flight.lock();
+        // 2 = the map's own reference plus `slot`. Anyone else waiting holds
+        // a clone, and then the entry must stay for them to serialise on.
+        if Arc::strong_count(&slot) <= 2 {
+            flight.remove(key);
         }
     }
 
@@ -647,17 +693,34 @@ fn get_or_compute_avoid_entry(
         return Ok(entry);
     }
 
+    // #606 single flight: one recustomization per key, however many callers
+    // ask for it at once. Re-check under the slot — the previous holder has
+    // usually just filled the cache.
+    let slot = state.avoid_cache.flight_slot(key);
+    let _flight = slot.lock();
+    if let Some(entry) = state.avoid_cache.get(&key) {
+        state.avoid_cache.retire(&key, Arc::clone(&slot));
+        return Ok(entry);
+    }
+    let _retire = FlightRetire {
+        cache: &state.avoid_cache,
+        key,
+        slot: Arc::clone(&slot),
+    };
+
     let start = std::time::Instant::now();
     let (avoid_flags, poly_count, avoided_count) =
         prepare_avoid_flags(state, avoid_json, exclude_mask)?;
-    let weights = exclude::compute_exclude_weights(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &mode_data.cch_weights_dist,
-        &avoid_flags,
-        AVOID_BIT,
-        &mode_data.filtered_to_original,
-    );
+    let weights = off_runtime(|| {
+        exclude::compute_exclude_weights(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &mode_data.cch_weights_dist,
+            &avoid_flags,
+            AVOID_BIT,
+            &mode_data.filtered_to_original,
+        )
+    });
     tracing::info!(
         mode_idx,
         polygons = poly_count,
@@ -718,6 +781,26 @@ pub fn parse_avoid_option(avoid: &Option<String>) -> Result<Option<String>, Stri
     match avoid {
         Some(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
         _ => Ok(None),
+    }
+}
+
+/// Run a long synchronous computation without freezing the tokio worker it
+/// was called on (#539 — a sync compute left inline on the runtime is what
+/// froze staging, and `/route` deliberately has no `spawn_blocking` because
+/// "route computation is fast (<10 ms typical)").
+///
+/// A COLD exclude/avoid recustomization is not: it is seconds for a small
+/// polygon and minutes for `exclude=motorway`, which since #606 honestly
+/// recomputes the long-distance hierarchy instead of leaving stale shortcuts
+/// in place. `block_in_place` hands the worker's other tasks to a sibling
+/// thread for the duration, so `/health` and every other request stay
+/// responsive; outside a multi-thread runtime (unit tests, rayon threads)
+/// it would panic, so there we just run the closure.
+fn off_runtime<T>(f: impl FnOnce() -> T) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 
@@ -791,7 +874,7 @@ impl<'a> WeightPlan<'a> {
         self.exclude_weights
             .get_or_init(|| {
                 self.exclude_weights_mask
-                    .map(|exc| self.state.get_exclude_weights(self.mode, exc))
+                    .map(|exc| off_runtime(|| self.state.get_exclude_weights(self.mode, exc)))
             })
             .as_deref()
     }

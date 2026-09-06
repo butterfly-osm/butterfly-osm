@@ -4,16 +4,20 @@
 //! from way attributes. At query time, computes a fresh `CchWeights`
 //! set with the flagged edges treated as INF.
 //!
-//! The recustomization is **incremental BFS** (#240): start from the
+//! The recustomization is **incremental** (#240): start from the
 //! build-time relaxed weights + middles, seed a queue with every CCH
 //! base edge whose underlying OSM edge is flagged, propagate
 //! recomputation to dependent edges via triangle dependencies, and
-//! terminate when the queue is empty. Work is bounded by polygon size,
-//! not graph size — a 1 km Belgium polygon takes ~780 ms instead of
-//! the ~37 s the from-scratch bottom-up used to cost.
+//! terminate when the queue is empty. Work is bounded by the size of
+//! what the mask actually reaches, not by graph size — a 1 km polygon
+//! touches a corner of Belgium, `exclude=motorway` touches the whole
+//! long-distance hierarchy.
 //!
-//! See `recustomize_weights_incremental` for the algorithm and the
-//! BFS dependency walk in `enqueue_dependents`.
+//! The queue pops in increasing LEVEL order (#606) so every triangle
+//! leg settles before the edge that reads it: one recomputation per
+//! touched edge, and the same fixed point a from-scratch bottom-up
+//! customization reaches. See `recustomize_weights_incremental` for the
+//! algorithm and the dependency walk in `enqueue_dependents`.
 
 /// Pack (weight, middle_rank) into a single u64 so the (weight, middle)
 /// pair compares lexicographically as a unit: high 32 bits hold the
@@ -66,13 +70,15 @@ pub struct ExcludeWeights {
 ///
 /// The exclude mask is a `u8` with only three meaningful bits
 /// (toll/ferry/motorway), so at most 8 distinct entries can ever exist
-/// per mode — but **each entry is ~5-8 GB on Belgium** (two
-/// `CchWeights` + six flat adjacencies sized to the CCH). An unbounded
-/// cache therefore pins up to ~8 × 6 GB × n_modes of heap that never
-/// releases. A small bound caps that: cap 3 holds ~15-24 GB worst case
-/// for a single mode and a miss costs one `compute_exclude_weights`
-/// recustomization (incremental BFS, a few seconds), which is the right
-/// RAM/latency trade for a feature most traffic doesn't exercise.
+/// per mode. Each entry is **~1.5 GB of resident memory on Belgium**
+/// (two `CchWeights` + six flat adjacencies sized to the CCH) — measured
+/// as the server's RSS step across a cold computation, #606; the "5-8 GB"
+/// this comment used to claim was an estimate, and wrong by 4x. An
+/// unbounded cache still pins ~7 × 1.5 GB × n_modes of heap that never
+/// releases, so the bound stays: cap 3 holds ~4.5 GB for a single mode,
+/// and a miss costs one `compute_exclude_weights` — which is NOT cheap
+/// (see `recustomize_weights`), so raise the cap rather than lower it if
+/// a deployment actually uses several masks.
 pub const DEFAULT_EXCLUDE_CACHE_CAP: usize = 3;
 
 struct ExcludeCacheInner {
@@ -93,6 +99,16 @@ struct ExcludeCacheInner {
 /// the last clone is released.
 pub struct ExcludeWeightCache {
     inner: parking_lot::RwLock<ExcludeCacheInner>,
+    /// #606 single flight: one lock per possible mask value (the mask is a
+    /// u8 with three meaningful bits, so eight slots cover every key that
+    /// can ever exist). A cold recustomization is seconds to a minute, and
+    /// the realistic burst is the SAME mask arriving repeatedly — a client
+    /// retrying after the 120 s `TimeoutLayer` gave up, or a fleet warming
+    /// together. Without this each of them recomputes the same answer on its
+    /// own blocking thread, which is how a rare option turns into a
+    /// denial of service against ourselves. With it the first caller
+    /// computes and the rest wait on its result.
+    flight: [parking_lot::Mutex<()>; 256],
 }
 
 impl ExcludeWeightCache {
@@ -105,7 +121,15 @@ impl ExcludeWeightCache {
                 hits: 0,
                 misses: 0,
             }),
+            flight: [const { parking_lot::Mutex::new(()) }; 256],
         }
+    }
+
+    /// Hold the single-flight slot for `mask` (see [`ExcludeWeightCache`]).
+    /// The caller MUST re-check the cache after acquiring it: the previous
+    /// holder has usually just filled it.
+    pub fn flight_guard(&self, mask: u8) -> parking_lot::MutexGuard<'_, ()> {
+        self.flight[mask as usize].lock()
     }
 
     /// Return the cached entry for `mask`, bumping its LRU generation
@@ -323,9 +347,10 @@ pub fn compute_exclude_weights_time_only(
 ) -> CchWeights {
     let start = std::time::Instant::now();
 
-    // Incremental BFS recustomization (#240). Walks only edges
-    // transitively dependent on polygon-flagged base edges.
-    let time_weights = recustomize_weights_incremental(
+    // #606: `recustomize_weights` picks the cheaper shape for this mask —
+    // the incremental walk when the mask reaches little, the pipeline's
+    // bottom-up + parallel relax when it reaches a whole road class.
+    let time_weights = recustomize_weights(
         topo,
         base_time,
         edge_exclude_flags,
@@ -336,7 +361,7 @@ pub fn compute_exclude_weights_time_only(
     tracing::info!(
         exclude_mask,
         elapsed_ms = start.elapsed().as_millis(),
-        "computed exclude weights (time-only, incremental)"
+        "computed exclude weights (time-only)"
     );
 
     time_weights
@@ -353,13 +378,13 @@ pub fn compute_exclude_weights(
 ) -> ExcludeWeights {
     let start = std::time::Instant::now();
 
-    // Re-customize time and distance weights in parallel.
-    // Uses the incremental BFS algorithm (#240) — touches only edges
-    // transitively dependent on polygon-flagged base edges, so work
-    // is bounded by polygon size rather than graph size.
+    // Re-customize time and distance weights in parallel. #606:
+    // `recustomize_weights` picks the shape per mask — the incremental walk
+    // is bounded by the mask's reach, the from-scratch one by the graph but
+    // uses every core.
     let (time_weights, dist_weights) = rayon::join(
         || {
-            recustomize_weights_incremental(
+            recustomize_weights(
                 topo,
                 base_time,
                 edge_exclude_flags,
@@ -368,7 +393,7 @@ pub fn compute_exclude_weights(
             )
         },
         || {
-            recustomize_weights_incremental(
+            recustomize_weights(
                 topo,
                 base_dist,
                 edge_exclude_flags,
@@ -467,6 +492,230 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
 }
 
 // ============================================================================
+// #606 Two shapes, one fixed point — and the switch between them
+// ============================================================================
+//
+// Both `recustomize_weights_incremental` and `recustomize_weights_from_scratch`
+// solve the SAME system: every CCH edge's weight is the minimum of its own
+// floor (a base edge's arc cost, INF when that arc is masked; INF for a
+// shortcut, which owns no arc) and every two-hop through a lower-ranked apex.
+// `both_recustomization_shapes_agree` asserts they return identical weights.
+//
+// They differ only in HOW they reach it, and that is a pure cost question:
+//
+//   * INCREMENTAL walks only the edges the mask can reach, one at a time, in
+//     level order. Cost scales with the mask's reach, so a small avoid polygon
+//     is ~1 s — but a whole road class reaches the entire long-distance
+//     hierarchy and the serial walk then costs minutes.
+//   * FROM SCRATCH is the pipeline's own step 8 — a cheap bottom-up pass over
+//     the recorded middles, then the parallel triangle relaxation to a fixed
+//     point. It always touches every edge, so it costs the same whatever the
+//     mask is, but every core works.
+//
+// `SCRATCH_SEED_THRESHOLD` is where one overtakes the other, DERIVED from
+// measurements on Belgium (car, 20-core, both metrics concurrent — the two
+// points and the derivation are in CHANGELOG.md):
+//
+//   | mask                  | seeded arcs | incremental | from scratch |
+//   |-----------------------|-------------|-------------|--------------|
+//   | ~900 m avoid polygon  |         938 |    17.7 s   |     68.6 s   |
+//   | `exclude=motorway`    |      20 835 |   228.1 s   |     59.1 s   |
+//
+// The from-scratch cost barely moves with the mask (59-69 s — a wider mask
+// makes the relaxation converge in FEWER passes); the incremental cost grows
+// with the seed count, 0.011-0.019 s per seed. The two therefore cross
+// somewhere between 60/0.019 ≈ 3 200 and 69/0.011 ≈ 6 300 seeds, and the
+// threshold takes the CONSERVATIVE end: at 3 500 seeds the incremental
+// path's own worst case (~66 s) is still around the from-scratch cost, so
+// **no mask can cost more than about 70 s**. That bound is the property that
+// matters, because a synchronous computation inside an axum handler cannot
+// be interrupted once it starts — the 120 s `TimeoutLayer` never gets polled
+// (measured: a 228 s cold request returned 200, not 408). The common
+// street-sized polygon still takes the incremental path and pays 17.7 s
+// rather than 68.6 s.
+//
+// `BUTTERFLY_EXCLUDE_SHAPE=incremental|scratch` forces one shape (dev only —
+// the point is to be able to measure and compare the two on the same server,
+// never to guess which one ran).
+
+/// Seeded base arcs at or above which the from-scratch shape is cheaper.
+/// Derived, not fitted — see the table above.
+pub const SCRATCH_SEED_THRESHOLD: usize = 3_500;
+
+/// Which shape a recustomization took — logged, and what the shape tests
+/// assert against so a switch regression cannot hide behind equal results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecustomizeShape {
+    Incremental,
+    FromScratch,
+}
+
+impl RecustomizeShape {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::FromScratch => "scratch",
+        }
+    }
+}
+
+/// The forced shape, if `BUTTERFLY_EXCLUDE_SHAPE` names one.
+fn forced_shape() -> Option<RecustomizeShape> {
+    match std::env::var("BUTTERFLY_EXCLUDE_SHAPE").ok()?.as_str() {
+        "incremental" => Some(RecustomizeShape::Incremental),
+        "scratch" => Some(RecustomizeShape::FromScratch),
+        _ => None,
+    }
+}
+
+/// How many CCH BASE edges the mask blocks outright — the seed count the
+/// switch reads, and the only thing that distinguishes a street-sized polygon
+/// from a whole road class.
+pub fn count_seeded_edges(
+    topo: &CchTopo,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+) -> usize {
+    use rayon::prelude::*;
+    (0..topo.n_nodes as usize)
+        .into_par_iter()
+        .map(|source| {
+            let mut n = 0usize;
+            let (s, e) = (
+                topo.up_offsets[source] as usize,
+                topo.up_offsets[source + 1] as usize,
+            );
+            for idx in s..e {
+                if !topo.up_is_shortcut.bit(idx)
+                    && cch_base_edge_excluded(
+                        topo.up_targets[idx] as usize,
+                        topo,
+                        edge_exclude_flags,
+                        exclude_mask,
+                        filtered_to_original,
+                    )
+                {
+                    n += 1;
+                }
+            }
+            let (s, e) = (
+                topo.down_offsets[source] as usize,
+                topo.down_offsets[source + 1] as usize,
+            );
+            for idx in s..e {
+                if !topo.down_is_shortcut.bit(idx)
+                    && cch_base_edge_excluded(
+                        topo.down_targets[idx] as usize,
+                        topo,
+                        edge_exclude_flags,
+                        exclude_mask,
+                        filtered_to_original,
+                    )
+                {
+                    n += 1;
+                }
+            }
+            n
+        })
+        .sum()
+}
+
+/// Recustomize with whichever shape is cheaper for this mask (#606).
+pub fn recustomize_weights(
+    topo: &CchTopo,
+    base_weights: &CchWeights,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+) -> CchWeights {
+    let seeds = count_seeded_edges(topo, edge_exclude_flags, exclude_mask, filtered_to_original);
+    let shape = forced_shape().unwrap_or(if seeds >= SCRATCH_SEED_THRESHOLD {
+        RecustomizeShape::FromScratch
+    } else {
+        RecustomizeShape::Incremental
+    });
+    let start = std::time::Instant::now();
+    let out = match shape {
+        RecustomizeShape::Incremental => recustomize_weights_incremental(
+            topo,
+            base_weights,
+            edge_exclude_flags,
+            exclude_mask,
+            filtered_to_original,
+        ),
+        RecustomizeShape::FromScratch => recustomize_weights_from_scratch(
+            topo,
+            base_weights,
+            edge_exclude_flags,
+            exclude_mask,
+            filtered_to_original,
+        ),
+    };
+    tracing::info!(
+        shape = shape.as_str(),
+        seeded_base_edges = seeds,
+        threshold = SCRATCH_SEED_THRESHOLD,
+        forced = forced_shape().is_some(),
+        elapsed_ms = start.elapsed().as_millis(),
+        "recustomized CCH weights"
+    );
+    out
+}
+
+/// The pipeline's own customization, run over the MASKED graph: bottom-up over
+/// the recorded middles, then the parallel triangle relaxation to a fixed
+/// point. Same primitives as step 8 — `customization::bottom_up_customize` and
+/// `customization::triangle_relax_parallel` — so there is exactly ONE triangle
+/// relaxation in the engine and the serve path cannot drift from the build.
+///
+/// The floor it starts each BASE edge from is the base edge's own weight, or
+/// INF when the arc is masked; a shortcut has no floor, exactly as in the
+/// incremental walk.
+pub fn recustomize_weights_from_scratch(
+    topo: &CchTopo,
+    base_weights: &CchWeights,
+    edge_exclude_flags: &[u8],
+    exclude_mask: u8,
+    filtered_to_original: &[u32],
+) -> CchWeights {
+    let sorted_down = crate::customization::sorted_down_indices(topo);
+    let (up, down) = crate::customization::bottom_up_customize(topo, &sorted_down, |u, v| {
+        if cch_base_edge_excluded(
+            v,
+            topo,
+            edge_exclude_flags,
+            exclude_mask,
+            filtered_to_original,
+        ) {
+            return u32::MAX;
+        }
+        // `bottom_up_customize` calls this for a DOWN edge when rank(v) <
+        // rank(u) and for an UP edge otherwise, so the rank order names the
+        // array without an extra argument.
+        if v > u {
+            find_edge_index(u, v, &topo.up_offsets, &topo.up_targets)
+                .map(|i| base_weights.up.get(i))
+                .unwrap_or(u32::MAX)
+        } else {
+            find_edge_index(u, v, &topo.down_offsets, &topo.down_targets)
+                .map(|i| base_weights.down.get(i))
+                .unwrap_or(u32::MAX)
+        }
+    });
+    drop(sorted_down);
+    let rev_down = crate::customization::build_reverse_down_adj_for_relax(topo);
+    let (up, down, up_middle, down_middle, _relaxations, _passes) =
+        crate::customization::triangle_relax_parallel(topo, up, down, &rev_down, false);
+    CchWeights {
+        up: up.into(),
+        down: down.into(),
+        up_middle: up_middle.into(),
+        down_middle: down_middle.into(),
+    }
+}
+
+// ============================================================================
 // #240 Incremental recustomization
 // ============================================================================
 //
@@ -478,18 +727,61 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
 //   1. Initialise (up_weights, down_weights, up_middle, down_middle) to the
 //      base build-time values — those are already triangle-relaxed for the
 //      no-avoid graph.
-//   2. Seed a BFS queue with every CCH base edge whose underlying OSM edge
+//   2. Seed a queue with every CCH base edge whose underlying OSM edge
 //      is in the polygon. For each, mark it as needing recomputation.
-//   3. Pop edges from the queue, recompute their (weight, middle) by
-//      considering every triangle (x, m, y) where x = edge.source and
-//      y = edge.target. If the result changed, write it and enqueue every
-//      edge that uses this one as a triangle leg.
+//   3. Pop edges in increasing LEVEL order (see below), recompute their
+//      (weight, middle) by considering every triangle (x, m, y) where
+//      x = edge.source and y = edge.target. If the result changed, write it
+//      and enqueue every edge that uses this one as a triangle leg.
 //   4. Terminate when the queue is empty.
 //
-// Correctness: each edge's recomputation considers all incident triangles,
-// so the final (weight, middle) matches what a full triangle relaxation
-// would produce. Convergence is guaranteed because weights only decrease
-// and are bounded by the base value.
+// #606 — the two properties that make this exact, both of which the
+// original BFS lacked:
+//
+//   a) A SHORTCUT is recomputed from INFINITY. A shortcut has no arc of its
+//      own: it is *defined* as the best two-hop through a lower-ranked apex.
+//      Seeding its recomputation with its BASE value (as the first version
+//      did) turned `min(base, triangles)` into a floor no exclusion could
+//      ever raise — a shortcut summarising a corridor through an excluded
+//      edge kept the excluded corridor's weight, and, since nothing changed,
+//      never enqueued its own dependents either, so the propagation died one
+//      level above the seeds. On Belgium that made `exclude=motorway` move an
+//      inter-city duration by under 4 % (long routes ride high-level
+//      shortcuts almost exclusively) while a short hop, which uses more base
+//      edges, moved by 58 %. `avoid_polygons` recustomizes through the same
+//      function and had the same hole.
+//
+//   b) A BASE edge keeps its base value as its floor. `unpack_path` renders
+//      a base CCH edge atomically — its weight IS the cost of that one EBG
+//      arc, which removing OTHER arcs cannot change — so the floor is the
+//      arc's own cost and is exactly right. (Build-time relaxation may lower
+//      a base edge below its arc cost when a turn penalty on it exceeds a
+//      two-hop around it; such an edge keeps a value a few seconds optimistic
+//      here. It cannot put an excluded edge into a served route: unpack still
+//      emits the direct arc.)
+//
+// LEVEL = min(rank(source), rank(target)). Every triangle leg of an edge
+// runs through an apex m with rank(m) < min(rank(source), rank(target)), so a
+// leg's level is STRICTLY below its closing edge's. Popping in increasing
+// level order therefore settles every leg before the edge that reads it —
+// one recomputation per touched edge, no re-visits, and the same fixed point
+// a full bottom-up customization reaches. The FIFO it replaces re-visited an
+// edge once per leg that moved, which (a) made much more expensive.
+//
+// COST, measured (Belgium, car, ≈5 M EBG nodes): a 1 km avoid polygon is ~1 s
+// — it reaches almost nothing. `exclude=motorway` is **245 s**, because
+// removing a whole road class reaches the entire long-distance hierarchy, and
+// the walk is one edge at a time (the two metrics run concurrently via
+// `rayon::join`; the levels themselves are sequential). The result caches per
+// (mode, mask) and every later request is ~15 ms, and the cold call runs off
+// the tokio worker (`avoid::off_runtime`). Parallelising WITHIN a level is
+// sound — a level's edges are independent by the argument above — but a level
+// holds ~13 edges on Belgium, too few to pay for the fan-out. The shape that
+// would actually win on a class-wide mask is the build's: a cheap bottom-up
+// pass over the recorded middles, then the parallel triangle relaxation to a
+// fixed point (~35-40 s for the whole graph). It would cost every SMALL mask
+// that same 40 s, so it belongs behind a seed-count switch, not in place of
+// this walk.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgeDir {
@@ -504,6 +796,52 @@ struct EdgeRef {
     source: usize,
     target: usize,
 }
+
+impl EdgeRef {
+    /// See the LEVEL note above: the lower of the two endpoint ranks.
+    #[inline]
+    fn level(&self) -> usize {
+        self.source.min(self.target)
+    }
+}
+
+/// One heap entry, ordered by [`EdgeRef::level`] ascending. The `(dir, idx)`
+/// tie-break makes the pop order total, so the recustomization is
+/// deterministic for a given input.
+#[derive(Clone, Copy, Debug)]
+struct QueueItem(EdgeRef);
+
+impl QueueItem {
+    #[inline]
+    fn key(&self) -> (usize, u8, usize) {
+        let dir = match self.0.dir {
+            EdgeDir::Up => 0u8,
+            EdgeDir::Down => 1u8,
+        };
+        (self.0.level(), dir, self.0.idx)
+    }
+}
+
+impl PartialEq for QueueItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+impl Eq for QueueItem {}
+impl PartialOrd for QueueItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for QueueItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reversed: `BinaryHeap` is a max-heap and we pop the lowest level.
+        other.key().cmp(&self.key())
+    }
+}
+
+/// The queue the recustomization walks: a min-heap on LEVEL.
+type EdgeQueue = std::collections::BinaryHeap<QueueItem>;
 
 /// Incrementally recustomize CCH weights starting from `base_weights` after
 /// the avoid/exclude mask flags some base edges as INF.
@@ -534,7 +872,7 @@ pub fn recustomize_weights_incremental(
 
     let mut queued_up = vec![false; topo.up_targets.len()];
     let mut queued_down = vec![false; topo.down_targets.len()];
-    let mut queue: std::collections::VecDeque<EdgeRef> = std::collections::VecDeque::new();
+    let mut queue: EdgeQueue = EdgeQueue::new();
     let mut seeded = 0usize;
     let n_nodes = topo.n_nodes as usize;
 
@@ -604,7 +942,7 @@ pub fn recustomize_weights_incremental(
     let mut changed_weight = 0usize;
     let mut changed_middle = 0usize;
 
-    while let Some(edge) = queue.pop_front() {
+    while let Some(QueueItem(edge)) = queue.pop() {
         match edge.dir {
             EdgeDir::Up => queued_up[edge.idx] = false,
             EdgeDir::Down => queued_down[edge.idx] = false,
@@ -677,7 +1015,7 @@ pub fn recustomize_weights_incremental(
 
 #[inline]
 fn push_edge(
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
     edge: EdgeRef,
@@ -688,7 +1026,7 @@ fn push_edge(
     };
     if !*queued {
         *queued = true;
-        queue.push_back(edge);
+        queue.push(QueueItem(edge));
     }
 }
 
@@ -730,8 +1068,18 @@ fn recompute_edge_weight(
         EdgeDir::Down => topo.down_is_shortcut.bit(edge.idx),
     };
 
-    // Start from the base value (or INF if this base edge is itself
-    // excluded). The triangle scan below can only improve it.
+    // #606 — where the scan starts, and why.
+    //
+    // A SHORTCUT starts at INFINITY: it owns no arc, it only ever means
+    // "the best two-hop through a lower-ranked apex", so the triangle scan
+    // below IS its definition. Starting it at its BASE value instead made
+    // the base value an unraisable floor, which is precisely how a corridor
+    // through an excluded edge survived the exclusion.
+    //
+    // A BASE edge starts at its base value — the cost of the one EBG arc it
+    // is, which excluding OTHER arcs cannot change — or at INFINITY when the
+    // arc is itself excluded. The triangle scan can then only find it a
+    // legal detour.
     let base_excluded = !is_shortcut
         && cch_base_edge_excluded(
             edge.target,
@@ -740,7 +1088,7 @@ fn recompute_edge_weight(
             exclude_mask,
             filtered_to_original,
         );
-    let mut best_weight = if base_excluded {
+    let mut best_weight = if is_shortcut || base_excluded {
         u32::MAX
     } else {
         match edge.dir {
@@ -794,7 +1142,7 @@ fn enqueue_dependents(
     edge: EdgeRef,
     topo: &CchTopo,
     rev_down: &ReverseDownAdj,
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
 ) {
@@ -837,7 +1185,7 @@ fn push_existing_edge(
     source: usize,
     target: usize,
     topo: &CchTopo,
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
 ) {

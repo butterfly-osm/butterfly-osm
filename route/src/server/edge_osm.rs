@@ -140,6 +140,52 @@ impl Iterator for DirectedSegments<'_> {
 
 impl ExactSizeIterator for DirectedSegments<'_> {}
 
+/// The OSM node ids a path of EBG edges runs through, in order, with the
+/// junction shared by two consecutive edges emitted once (#606).
+///
+/// This is what `GET /route?annotations=nodes` serves. The chain of an
+/// edge carries every OSM node on it — junctions and shape points alike —
+/// so the result lines up with the route geometry, not with the per-edge
+/// `duration` / `distance` / `speed` arrays; that is also how OSRM shapes
+/// its `nodes` annotation.
+///
+/// Containers that pre-date the id chains (and the rare edge whose chain
+/// endpoints disagree with its EBG tail) fall back to that edge's two NBG
+/// junction ids — still OSM ids, just without the intermediate shape
+/// nodes. `0` marks an id the container cannot resolve.
+pub fn osm_nodes_along_path(
+    chains: &EdgeOsmChains,
+    ebg_nodes: &[crate::formats::ebg_nodes::EbgNode],
+    nbg_node_to_osm: &[i64],
+    path: &[u32],
+) -> Vec<i64> {
+    let osm_of = |nbg: u32| nbg_node_to_osm.get(nbg as usize).copied().unwrap_or(0);
+    let mut out: Vec<i64> = Vec::with_capacity(path.len() + 1);
+    for &ebg_id in path {
+        let Some(node) = ebg_nodes.get(ebg_id as usize) else {
+            continue;
+        };
+        let tail = osm_of(node.tail_nbg);
+        match chains.directed_segments(node.geom_idx, tail) {
+            Some(segments) => {
+                for (a, b) in segments {
+                    if out.last() != Some(&a) {
+                        out.push(a);
+                    }
+                    out.push(b);
+                }
+            }
+            None => {
+                if out.last() != Some(&tail) {
+                    out.push(tail);
+                }
+                out.push(osm_of(node.head_nbg));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +243,57 @@ mod tests {
         let c = chains();
         let it = c.directed_segments(0, 10).unwrap();
         assert_eq!(it.len(), 2);
+    }
+
+    /// EBG node: `geom_idx` names the undirected NBG edge, `tail_nbg` /
+    /// `head_nbg` its two junctions in the traversal's direction.
+    fn ebg(geom_idx: u32, tail_nbg: u32, head_nbg: u32) -> crate::formats::ebg_nodes::EbgNode {
+        crate::formats::ebg_nodes::EbgNode {
+            tail_nbg,
+            head_nbg,
+            geom_idx,
+            length_m: 100,
+            class_bits: 0,
+            primary_way: 0,
+        }
+    }
+
+    /// nbg node 0 -> OSM 10, 1 -> 12, 2 -> 13, 3 -> 20.
+    const NBG_TO_OSM: [i64; 4] = [10, 12, 13, 20];
+
+    #[test]
+    fn path_nodes_are_osm_ids_including_shape_points() {
+        // Edge 0 forward (chain 10,11,12) then edge 1 forward (12,13).
+        let path_nodes = osm_nodes_along_path(
+            &chains(),
+            &[ebg(0, 0, 1), ebg(1, 1, 2)],
+            &NBG_TO_OSM,
+            &[0, 1],
+        );
+        assert_eq!(path_nodes, vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn path_nodes_follow_the_direction_of_travel() {
+        // Edge 0 traversed head-to-tail: the chain reverses.
+        let path_nodes = osm_nodes_along_path(&chains(), &[ebg(0, 1, 0)], &NBG_TO_OSM, &[0]);
+        assert_eq!(path_nodes, vec![12, 11, 10]);
+    }
+
+    #[test]
+    fn a_missing_chain_still_yields_osm_junction_ids() {
+        // Edge 2's chain is degenerate (one id), so the NBG junctions
+        // answer — OSM ids either way, never an internal id.
+        let path_nodes = osm_nodes_along_path(&chains(), &[ebg(2, 0, 3)], &NBG_TO_OSM, &[0]);
+        assert_eq!(path_nodes, vec![10, 20]);
+
+        let absent = EdgeOsmChains::empty();
+        let path_nodes = osm_nodes_along_path(&absent, &[ebg(2, 0, 3)], &NBG_TO_OSM, &[0]);
+        assert_eq!(path_nodes, vec![10, 20]);
+    }
+
+    #[test]
+    fn an_empty_path_yields_no_nodes() {
+        assert!(osm_nodes_along_path(&chains(), &[], &NBG_TO_OSM, &[]).is_empty());
     }
 }
