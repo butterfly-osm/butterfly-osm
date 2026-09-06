@@ -4,16 +4,20 @@
 //! from way attributes. At query time, computes a fresh `CchWeights`
 //! set with the flagged edges treated as INF.
 //!
-//! The recustomization is **incremental BFS** (#240): start from the
+//! The recustomization is **incremental** (#240): start from the
 //! build-time relaxed weights + middles, seed a queue with every CCH
 //! base edge whose underlying OSM edge is flagged, propagate
 //! recomputation to dependent edges via triangle dependencies, and
-//! terminate when the queue is empty. Work is bounded by polygon size,
-//! not graph size — a 1 km Belgium polygon takes ~780 ms instead of
-//! the ~37 s the from-scratch bottom-up used to cost.
+//! terminate when the queue is empty. Work is bounded by the size of
+//! what the mask actually reaches, not by graph size — a 1 km polygon
+//! touches a corner of Belgium, `exclude=motorway` touches the whole
+//! long-distance hierarchy.
 //!
-//! See `recustomize_weights_incremental` for the algorithm and the
-//! BFS dependency walk in `enqueue_dependents`.
+//! The queue pops in increasing LEVEL order (#606) so every triangle
+//! leg settles before the edge that reads it: one recomputation per
+//! touched edge, and the same fixed point a from-scratch bottom-up
+//! customization reaches. See `recustomize_weights_incremental` for the
+//! algorithm and the dependency walk in `enqueue_dependents`.
 
 /// Pack (weight, middle_rank) into a single u64 so the (weight, middle)
 /// pair compares lexicographically as a unit: high 32 bits hold the
@@ -478,18 +482,46 @@ fn build_reverse_down_adj(topo: &CchTopo) -> ReverseDownAdj {
 //   1. Initialise (up_weights, down_weights, up_middle, down_middle) to the
 //      base build-time values — those are already triangle-relaxed for the
 //      no-avoid graph.
-//   2. Seed a BFS queue with every CCH base edge whose underlying OSM edge
+//   2. Seed a queue with every CCH base edge whose underlying OSM edge
 //      is in the polygon. For each, mark it as needing recomputation.
-//   3. Pop edges from the queue, recompute their (weight, middle) by
-//      considering every triangle (x, m, y) where x = edge.source and
-//      y = edge.target. If the result changed, write it and enqueue every
-//      edge that uses this one as a triangle leg.
+//   3. Pop edges in increasing LEVEL order (see below), recompute their
+//      (weight, middle) by considering every triangle (x, m, y) where
+//      x = edge.source and y = edge.target. If the result changed, write it
+//      and enqueue every edge that uses this one as a triangle leg.
 //   4. Terminate when the queue is empty.
 //
-// Correctness: each edge's recomputation considers all incident triangles,
-// so the final (weight, middle) matches what a full triangle relaxation
-// would produce. Convergence is guaranteed because weights only decrease
-// and are bounded by the base value.
+// #606 — the two properties that make this exact, both of which the
+// original BFS lacked:
+//
+//   a) A SHORTCUT is recomputed from INFINITY. A shortcut has no arc of its
+//      own: it is *defined* as the best two-hop through a lower-ranked apex.
+//      Seeding its recomputation with its BASE value (as the first version
+//      did) turned `min(base, triangles)` into a floor no exclusion could
+//      ever raise — a shortcut summarising a corridor through an excluded
+//      edge kept the excluded corridor's weight, and, since nothing changed,
+//      never enqueued its own dependents either, so the propagation died one
+//      level above the seeds. On Belgium that made `exclude=motorway` move an
+//      inter-city duration by under 4 % (long routes ride high-level
+//      shortcuts almost exclusively) while a short hop, which uses more base
+//      edges, moved by 58 %. `avoid_polygons` recustomizes through the same
+//      function and had the same hole.
+//
+//   b) A BASE edge keeps its base value as its floor. `unpack_path` renders
+//      a base CCH edge atomically — its weight IS the cost of that one EBG
+//      arc, which removing OTHER arcs cannot change — so the floor is the
+//      arc's own cost and is exactly right. (Build-time relaxation may lower
+//      a base edge below its arc cost when a turn penalty on it exceeds a
+//      two-hop around it; such an edge keeps a value a few seconds optimistic
+//      here. It cannot put an excluded edge into a served route: unpack still
+//      emits the direct arc.)
+//
+// LEVEL = min(rank(source), rank(target)). Every triangle leg of an edge
+// runs through an apex m with rank(m) < min(rank(source), rank(target)), so a
+// leg's level is STRICTLY below its closing edge's. Popping in increasing
+// level order therefore settles every leg before the edge that reads it —
+// one recomputation per touched edge, no re-visits, and the same fixed point
+// a full bottom-up customization reaches. The FIFO it replaces re-visited an
+// edge once per leg that moved, which (a) made much more expensive.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgeDir {
@@ -504,6 +536,52 @@ struct EdgeRef {
     source: usize,
     target: usize,
 }
+
+impl EdgeRef {
+    /// See the LEVEL note above: the lower of the two endpoint ranks.
+    #[inline]
+    fn level(&self) -> usize {
+        self.source.min(self.target)
+    }
+}
+
+/// One heap entry, ordered by [`EdgeRef::level`] ascending. The `(dir, idx)`
+/// tie-break makes the pop order total, so the recustomization is
+/// deterministic for a given input.
+#[derive(Clone, Copy, Debug)]
+struct QueueItem(EdgeRef);
+
+impl QueueItem {
+    #[inline]
+    fn key(&self) -> (usize, u8, usize) {
+        let dir = match self.0.dir {
+            EdgeDir::Up => 0u8,
+            EdgeDir::Down => 1u8,
+        };
+        (self.0.level(), dir, self.0.idx)
+    }
+}
+
+impl PartialEq for QueueItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+impl Eq for QueueItem {}
+impl PartialOrd for QueueItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for QueueItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reversed: `BinaryHeap` is a max-heap and we pop the lowest level.
+        other.key().cmp(&self.key())
+    }
+}
+
+/// The queue the recustomization walks: a min-heap on LEVEL.
+type EdgeQueue = std::collections::BinaryHeap<QueueItem>;
 
 /// Incrementally recustomize CCH weights starting from `base_weights` after
 /// the avoid/exclude mask flags some base edges as INF.
@@ -534,7 +612,7 @@ pub fn recustomize_weights_incremental(
 
     let mut queued_up = vec![false; topo.up_targets.len()];
     let mut queued_down = vec![false; topo.down_targets.len()];
-    let mut queue: std::collections::VecDeque<EdgeRef> = std::collections::VecDeque::new();
+    let mut queue: EdgeQueue = EdgeQueue::new();
     let mut seeded = 0usize;
     let n_nodes = topo.n_nodes as usize;
 
@@ -604,7 +682,7 @@ pub fn recustomize_weights_incremental(
     let mut changed_weight = 0usize;
     let mut changed_middle = 0usize;
 
-    while let Some(edge) = queue.pop_front() {
+    while let Some(QueueItem(edge)) = queue.pop() {
         match edge.dir {
             EdgeDir::Up => queued_up[edge.idx] = false,
             EdgeDir::Down => queued_down[edge.idx] = false,
@@ -677,7 +755,7 @@ pub fn recustomize_weights_incremental(
 
 #[inline]
 fn push_edge(
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
     edge: EdgeRef,
@@ -688,7 +766,7 @@ fn push_edge(
     };
     if !*queued {
         *queued = true;
-        queue.push_back(edge);
+        queue.push(QueueItem(edge));
     }
 }
 
@@ -730,8 +808,18 @@ fn recompute_edge_weight(
         EdgeDir::Down => topo.down_is_shortcut.bit(edge.idx),
     };
 
-    // Start from the base value (or INF if this base edge is itself
-    // excluded). The triangle scan below can only improve it.
+    // #606 — where the scan starts, and why.
+    //
+    // A SHORTCUT starts at INFINITY: it owns no arc, it only ever means
+    // "the best two-hop through a lower-ranked apex", so the triangle scan
+    // below IS its definition. Starting it at its BASE value instead made
+    // the base value an unraisable floor, which is precisely how a corridor
+    // through an excluded edge survived the exclusion.
+    //
+    // A BASE edge starts at its base value — the cost of the one EBG arc it
+    // is, which excluding OTHER arcs cannot change — or at INFINITY when the
+    // arc is itself excluded. The triangle scan can then only find it a
+    // legal detour.
     let base_excluded = !is_shortcut
         && cch_base_edge_excluded(
             edge.target,
@@ -740,7 +828,7 @@ fn recompute_edge_weight(
             exclude_mask,
             filtered_to_original,
         );
-    let mut best_weight = if base_excluded {
+    let mut best_weight = if is_shortcut || base_excluded {
         u32::MAX
     } else {
         match edge.dir {
@@ -794,7 +882,7 @@ fn enqueue_dependents(
     edge: EdgeRef,
     topo: &CchTopo,
     rev_down: &ReverseDownAdj,
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
 ) {
@@ -837,7 +925,7 @@ fn push_existing_edge(
     source: usize,
     target: usize,
     topo: &CchTopo,
-    queue: &mut std::collections::VecDeque<EdgeRef>,
+    queue: &mut EdgeQueue,
     queued_up: &mut [bool],
     queued_down: &mut [bool],
 ) {
