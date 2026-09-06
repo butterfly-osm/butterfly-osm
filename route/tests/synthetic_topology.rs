@@ -1488,6 +1488,7 @@ impl Network {
                     part_time: ((1.0 - frac) * w).round() as u32,
                     part_len: 0,
                     frac,
+                    frac_stored: ARRIVE_SNAP_FRAC,
                     direct_ok: true,
                 }
             })
