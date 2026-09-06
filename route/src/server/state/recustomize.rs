@@ -611,7 +611,7 @@ impl ServerState {
             "weights/EBG length mismatch"
         );
         let mut matched = 0usize;
-        let mut census = LandingCensus::new(inputs.highway_class.clone());
+        let mut census = LandingCensus::new(&inputs.highway_class);
         for (i, node) in self.ebg_nodes.nodes.iter().enumerate() {
             if weights[i] == 0 {
                 census.inaccessible(i);

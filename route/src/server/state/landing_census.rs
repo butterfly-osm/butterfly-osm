@@ -82,15 +82,15 @@ struct ClassRow {
 }
 
 /// Per-class landing census, indexed by highway class id.
-pub(super) struct LandingCensus {
+pub(super) struct LandingCensus<'a> {
     rows: Vec<ClassRow>,
-    classes: Vec<u16>,
+    classes: &'a [u16],
 }
 
-impl LandingCensus {
-    /// `classes[i]` is the highway class of EBG node `i` (an empty vector
+impl<'a> LandingCensus<'a> {
+    /// `classes[i]` is the highway class of EBG node `i` (an empty slice
     /// disables per-class attribution: everything lands in one bucket).
-    pub(super) fn new(classes: Vec<u16>) -> Self {
+    pub(super) fn new(classes: &'a [u16]) -> Self {
         Self {
             rows: vec![ClassRow::default(); MAX_CLASS + 1],
             classes,
@@ -282,7 +282,8 @@ mod tests {
 
     #[test]
     fn census_counts_are_disjoint_and_medians_are_per_class() {
-        let mut c = LandingCensus::new(vec![1, 1, 12, 12]);
+        let classes = [1u16, 1, 12, 12];
+        let mut c = LandingCensus::new(&classes);
         c.inaccessible(0);
         c.matched(1, true, 0.5, 0.5, 0.0);
         c.matched(2, false, 0.25, 1.0, 7.5);
