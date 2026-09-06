@@ -650,14 +650,16 @@ fn get_or_compute_avoid_entry(
     let start = std::time::Instant::now();
     let (avoid_flags, poly_count, avoided_count) =
         prepare_avoid_flags(state, avoid_json, exclude_mask)?;
-    let weights = exclude::compute_exclude_weights(
-        &mode_data.cch_topo,
-        &mode_data.cch_weights,
-        &mode_data.cch_weights_dist,
-        &avoid_flags,
-        AVOID_BIT,
-        &mode_data.filtered_to_original,
-    );
+    let weights = off_runtime(|| {
+        exclude::compute_exclude_weights(
+            &mode_data.cch_topo,
+            &mode_data.cch_weights,
+            &mode_data.cch_weights_dist,
+            &avoid_flags,
+            AVOID_BIT,
+            &mode_data.filtered_to_original,
+        )
+    });
     tracing::info!(
         mode_idx,
         polygons = poly_count,
@@ -718,6 +720,26 @@ pub fn parse_avoid_option(avoid: &Option<String>) -> Result<Option<String>, Stri
     match avoid {
         Some(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
         _ => Ok(None),
+    }
+}
+
+/// Run a long synchronous computation without freezing the tokio worker it
+/// was called on (#539 — a sync compute left inline on the runtime is what
+/// froze staging, and `/route` deliberately has no `spawn_blocking` because
+/// "route computation is fast (<10 ms typical)").
+///
+/// A COLD exclude/avoid recustomization is not: it is seconds for a small
+/// polygon and minutes for `exclude=motorway`, which since #606 honestly
+/// recomputes the long-distance hierarchy instead of leaving stale shortcuts
+/// in place. `block_in_place` hands the worker's other tasks to a sibling
+/// thread for the duration, so `/health` and every other request stay
+/// responsive; outside a multi-thread runtime (unit tests, rayon threads)
+/// it would panic, so there we just run the closure.
+fn off_runtime<T>(f: impl FnOnce() -> T) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 
@@ -791,7 +813,7 @@ impl<'a> WeightPlan<'a> {
         self.exclude_weights
             .get_or_init(|| {
                 self.exclude_weights_mask
-                    .map(|exc| self.state.get_exclude_weights(self.mode, exc))
+                    .map(|exc| off_runtime(|| self.state.get_exclude_weights(self.mode, exc)))
             })
             .as_deref()
     }
