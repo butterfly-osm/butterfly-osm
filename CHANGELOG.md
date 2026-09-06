@@ -10,6 +10,61 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-06 — The batch route and `/route` answered short pairs differently (#605)
+
+`/route` computed the same-physical-edge direct move and offered it against the
+seeded query; Flight's per-pair driver ran the seeded query alone. That query
+cannot see a move inside one edge — at the shared seed rank the two pure
+phantom labels dominate every via-network label, and its pure-meet guard then
+rejects the only meet there (the guard has to stay: a pure meet can also encode
+an invalid BACKWARD same-edge move). So a short pair whose two snaps share an
+edge came back from `route_batch` as a loop around the block, several minutes
+slower than the same request on `/route`. Silent, and short pairs are common in
+batch workloads.
+
+**Measured on Belgium, 1 080 short pairs across car/foot/bike: 52 disagreed on
+duration AND distance before, 0 after.** Post-deploy gate on the same instance:
+30 disagreeing pairs → GATE FAIL before, 0/420 → GATE PASS after, with the
+ground-truth duration p50 unchanged at 1.022.
+
+The phantom tier now lives ONCE, in `phantom::resolve_phantom_pair` — seeded
+query plus `direct_move`, cheapest wins — and `/route`, `route_batch`,
+`edges_batch` and the band durations all enter through it. It replaced three
+hand-copies of the direct move (`route_handler`, `band_p2p_duration`, and none
+at all on Flight).
+
+The served geometry of a direct move is now the sub-arc of the edge between the
+two projections, interpolated from the fractions. It used to be the two SNAP
+points, and the snap index answers with the nearest stored SAMPLE of an edge:
+two query points metres apart routinely share one, which drew a zero-length
+line under a 25 m distance. Every direct pair now draws its billed distance
+within 0.3 % (measured, 65 pairs). `/route` also honours
+`Accept: application/gpx+xml` on a direct move; it returned JSON regardless
+before.
+
+**Cost** (`route_batch`, 20 000 pairs, min of 9, same host):
+
+| batch shape | before | after |
+|---|---|---|
+| realistic mixed (10 % short) | 6243 ms | 6251 ms |
+| synthetic, every pair 20-300 m | 395 ms | 426 ms (+8 %, ~1.5 µs/pair) |
+
+A build carrying all the plumbing but with the recovery disabled measures
+398 ms on the synthetic shape, i.e. the per-pair seed scan costs nothing and
+the price is paid only by the pairs the recovery actually rescues. Stated
+rather than absorbed: the realistic batch is unchanged.
+
+**Assertions, not measurements.** `synthetic_topology.rs` proves on its own
+contracted lattice that the move is recovered at `(f_dst - f_src)·w`, that the
+seeded query alone cannot find it (so the test cannot pass for the wrong
+reason), that a destination behind the origin is the twin's move and never
+0 s, and that the drawn road measures the billed distance.
+`gate_route_batch_agrees_with_route` drives 140 short pairs per mode through
+both surfaces and requires equal duration and distance at half-second / metre
+resolution — and FAILS if the sample stops containing pairs that snap both ends
+to one edge. A source-shape test pins that no file outside `phantom.rs` calls
+`query_seeded` at all.
+
 ### 2026-09-04 — Three surfaces that disagreed, settled on measurements (#601 #602 #604)
 
 Three tickets were left open earlier today because each needed a number only a
