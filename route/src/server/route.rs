@@ -830,102 +830,66 @@ pub async fn route_handler(
             Some(snap_mask),
         );
         if let (Some(sp), Some(dp)) = (src_ph, dst_ph) {
-            // Same-physical-edge direct move. The seeded query's guard skips
-            // pure seed-to-seed meets (they can encode an invalid backward
-            // same-edge move), so the valid forward move is computed here.
-            let mut direct: Option<(u32, f64, f64, u32)> = None; // (cost, f_s, f_d, ebg)
-            for sseed in &sp.seeds {
-                if !sseed.direct_ok {
-                    continue;
-                }
-                if let Some(dseed) = dp.seed_of(sseed.ebg_id)
-                    && dseed.direct_ok
-                    && dseed.frac >= sseed.frac
-                {
-                    let fd = dseed.frac;
-                    let w = mode_data.node_weights[sseed.ebg_id as usize] as f64;
-                    let c = ((fd - sseed.frac) * w).round() as u32;
-                    if direct.is_none_or(|(bc, _, _, _)| c < bc) {
-                        direct = Some((c, sseed.frac, fd, sseed.ebg_id));
+            // #605: ONE phantom tier for every surface — the seeded network
+            // query plus the same-edge direct-move recovery, cheapest wins.
+            match super::phantom::resolve_phantom_pair(
+                &state, &mode_data, &query, &sp, &dp, req.debug,
+            ) {
+                // Trivial same-edge response when the direct move wins.
+                Some(super::phantom::PhantomPair::Direct(dm)) => {
+                    let pts = dm.points(&state.ebg_nodes, &state.edge_geom);
+                    let debug_info = if req.debug {
+                        Some(RouteDebugInfo {
+                            src_snapped: SnapInfo {
+                                lon: sp.snapped_lon,
+                                lat: sp.snapped_lat,
+                                snap_distance_m: sp.snap_distance_m,
+                                ebg_node_id: dm.ebg_id,
+                            },
+                            dst_snapped: SnapInfo {
+                                lon: dp.snapped_lon,
+                                lat: dp.snapped_lat,
+                                snap_distance_m: dp.snap_distance_m,
+                                ebg_node_id: dm.ebg_id,
+                            },
+                        })
+                    } else {
+                        None
+                    };
+                    super::region_metrics::record_query(
+                        &region_id,
+                        "route",
+                        started_dispatch.elapsed().as_secs_f64(),
+                    );
+                    if wants_gpx(&headers) {
+                        return gpx_response(format_gpx(&pts, "Route"));
                     }
-                }
-            }
-            let (src_seeds, _) = sp.query_seeds_and_shift(super::types::SnapRole::Src);
-            let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(super::types::SnapRole::Dst);
-            let seeded = query.query_seeded(&src_seeds, &dst_seeds, req.debug);
-            let seeded_cost = seeded
-                .as_ref()
-                .map(|r| r.distance.saturating_sub(dst_shift));
-            // Trivial same-edge response when the direct move wins.
-            if let Some((dc, f_s, f_d, ebg)) = direct
-                && seeded_cost.is_none_or(|sc| dc <= sc)
-            {
-                let node = &state.ebg_nodes.nodes[ebg as usize];
-                let dist_m = (f_d - f_s) * node.length_m as f64;
-                let pts = vec![
-                    Point {
-                        lon: sp.snapped_lon,
-                        lat: sp.snapped_lat,
-                    },
-                    Point {
-                        lon: dp.snapped_lon,
-                        lat: dp.snapped_lat,
-                    },
-                ];
-                let geometry = RouteGeometry::from_points(pts, geom_format);
-                let debug_info = if req.debug {
-                    Some(RouteDebugInfo {
-                        src_snapped: SnapInfo {
-                            lon: sp.snapped_lon,
-                            lat: sp.snapped_lat,
-                            snap_distance_m: sp.snap_distance_m,
-                            ebg_node_id: ebg,
-                        },
-                        dst_snapped: SnapInfo {
-                            lon: dp.snapped_lon,
-                            lat: dp.snapped_lat,
-                            snap_distance_m: dp.snap_distance_m,
-                            ebg_node_id: ebg,
-                        },
+                    let geometry = RouteGeometry::from_points(pts, geom_format);
+                    return Json(RouteResponse {
+                        duration_s: dm.cost_s as f64,
+                        distance_m: dm.distance_m,
+                        geometry,
+                        steps: if req.steps { Some(vec![]) } else { None },
+                        annotations: None,
+                        duration_best_s: band_durations.map(|b| b.0),
+                        duration_worst_s: band_durations.map(|b| b.1),
+                        alternatives: None,
+                        debug: debug_info,
                     })
-                } else {
-                    None
-                };
-                super::region_metrics::record_query(
-                    &region_id,
-                    "route",
-                    started_dispatch.elapsed().as_secs_f64(),
-                );
-                return Json(RouteResponse {
-                    duration_s: dc as f64,
-                    distance_m: dist_m,
-                    geometry,
-                    steps: if req.steps { Some(vec![]) } else { None },
-                    annotations: None,
-                    duration_best_s: band_durations.map(|b| b.0),
-                    duration_worst_s: band_durations.map(|b| b.1),
-                    alternatives: None,
-                    debug: debug_info,
-                })
-                .into_response();
-            }
-            if let Some(r) = seeded {
-                src_rank = r.src_root;
-                dst_rank = r.dst_root;
-                let to_ebg = |rank: u32| -> u32 {
-                    let f = mode_data.cch_topo.rank_to_filtered[rank as usize];
-                    mode_data.filtered_to_original[f as usize]
-                };
-                end_clip = Some((
-                    sp.frac_of(to_ebg(r.src_root)).unwrap_or(0.0),
-                    dp.frac_of(to_ebg(r.dst_root)).unwrap_or(1.0),
-                ));
-                result_opt = Some(super::query::QueryResult {
-                    distance: r.distance.saturating_sub(dst_shift),
-                    meeting_node: r.meeting_node,
-                    forward_parent: r.forward_parent,
-                    backward_parent: r.backward_parent,
-                });
+                    .into_response();
+                }
+                Some(super::phantom::PhantomPair::Network {
+                    src_rank: s,
+                    dst_rank: d,
+                    result,
+                    end_clip: clip,
+                }) => {
+                    src_rank = s;
+                    dst_rank = d;
+                    end_clip = Some(clip);
+                    result_opt = Some(result);
+                }
+                None => {}
             }
         }
     }
@@ -1948,33 +1912,13 @@ pub(crate) fn band_p2p_duration(
         super::types::SnapRole::Dst,
         Some(&md.mask),
     )?;
-    let mut direct: Option<u32> = None;
-    for sseed in &sp.seeds {
-        if !sseed.direct_ok {
-            continue;
-        }
-        if let Some(dseed) = dp.seed_of(sseed.ebg_id)
-            && dseed.direct_ok
-            && dseed.frac >= sseed.frac
-        {
-            let w = md.node_weights[sseed.ebg_id as usize] as f64;
-            let c = ((dseed.frac - sseed.frac) * w).round() as u32;
-            if direct.is_none_or(|bc| c < bc) {
-                direct = Some(c);
-            }
-        }
-    }
-    let (src_seeds, _) = sp.query_seeds_and_shift(super::types::SnapRole::Src);
-    let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(super::types::SnapRole::Dst);
+    // #605: the SAME phantom tier every other surface runs — a band that
+    // resolved a shared-snap pair differently from `?mode=car` would report a
+    // band spread that is really a routing disagreement.
     let query = CchQuery::new(&md);
-    let seeded = query
-        .query_seeded(&src_seeds, &dst_seeds, false)
-        .map(|r| r.distance.saturating_sub(dst_shift));
-    match (direct, seeded) {
-        (Some(d), Some(sd)) => Some(d.min(sd) as f64),
-        (Some(d), None) => Some(d as f64),
-        (None, Some(sd)) => Some(sd as f64),
-        (None, None) => None,
+    match super::phantom::resolve_phantom_pair(state, &md, &query, &sp, &dp, false)? {
+        super::phantom::PhantomPair::Direct(dm) => Some(dm.cost_s as f64),
+        super::phantom::PhantomPair::Network { result, .. } => Some(result.distance as f64),
     }
 }
 

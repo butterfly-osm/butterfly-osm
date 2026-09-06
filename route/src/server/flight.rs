@@ -1485,6 +1485,13 @@ struct PairRoute {
     dst_rank: u32,
     result: super::query::QueryResult,
     end_clip: Option<(f64, f64)>,
+    /// #605: `Some` when both endpoints snapped onto the SAME directed edge
+    /// and the destination lies ahead — the answer is a partial traversal of
+    /// that one edge. `result` then describes the same thing as a one-edge
+    /// path (so the rank-path surfaces need no special case), and this field
+    /// carries the exact billing `/route` serves: the partial duration, the
+    /// partial distance and the sub-arc between the two snaps.
+    direct: Option<super::phantom::DirectMove>,
 }
 
 /// #580: how one surface drives a single (src,dst) pair through the CCH.
@@ -1560,6 +1567,12 @@ fn route_pair_plan(fallback_count: &std::sync::atomic::AtomicU64) -> PairPlan<'_
 /// fractions `/route` derives, so the caller can bill the partial first and
 /// last edges in distance and geometry too — not just in the duration the
 /// seeded query already charged exactly.
+///
+/// #605: and the same-edge direct-move recovery, via the shared
+/// [`super::phantom::resolve_phantom_pair`]. Without it this surface answered
+/// the seeded query alone, which cannot see a move inside one edge, so short
+/// pairs whose two snaps share an edge came back as a loop around the block —
+/// a different route from `/route` on the same request.
 fn phantom_pair(
     state: &ServerState,
     mode_data: &super::state::ModeData,
@@ -1572,27 +1585,36 @@ fn phantom_pair(
     // #585: one `phantom_for` per endpoint — snap candidates + build, once.
     let sp = super::phantom::phantom_for(state, mode_data, mode, slon, slat, SnapRole::Src, None)?;
     let dp = super::phantom::phantom_for(state, mode_data, mode, dlon, dlat, SnapRole::Dst, None)?;
-    let (src_seeds, _) = sp.query_seeds_and_shift(SnapRole::Src);
-    let (dst_seeds, dst_shift) = dp.query_seeds_and_shift(SnapRole::Dst);
-    let r = query.query_seeded(&src_seeds, &dst_seeds, false)?;
-    let to_ebg = |rank: u32| -> u32 {
-        let f = mode_data.cch_topo.rank_to_filtered[rank as usize];
-        mode_data.filtered_to_original[f as usize]
-    };
-    Some(PairRoute {
-        src_rank: r.src_root,
-        dst_rank: r.dst_root,
-        result: super::query::QueryResult {
-            distance: r.distance.saturating_sub(dst_shift),
-            meeting_node: r.meeting_node,
-            forward_parent: r.forward_parent,
-            backward_parent: r.backward_parent,
+    Some(
+        match super::phantom::resolve_phantom_pair(state, mode_data, query, &sp, &dp, false)? {
+            super::phantom::PhantomPair::Direct(dm) => PairRoute {
+                src_rank: dm.rank,
+                dst_rank: dm.rank,
+                // The one-edge path, so `edges_batch` and the flow surfaces
+                // unpack it like any other route.
+                result: super::query::QueryResult {
+                    distance: dm.cost_s,
+                    meeting_node: dm.rank,
+                    forward_parent: Vec::new(),
+                    backward_parent: Vec::new(),
+                },
+                end_clip: Some((dm.f_src, dm.f_dst)),
+                direct: Some(dm),
+            },
+            super::phantom::PhantomPair::Network {
+                src_rank,
+                dst_rank,
+                result,
+                end_clip,
+            } => PairRoute {
+                src_rank,
+                dst_rank,
+                result,
+                end_clip: Some(end_clip),
+                direct: None,
+            },
         },
-        end_clip: Some((
-            sp.frac_of(to_ebg(r.src_root)).unwrap_or(0.0),
-            dp.frac_of(to_ebg(r.dst_root)).unwrap_or(1.0),
-        )),
-    })
+    )
 }
 
 /// #580: ONE per-pair routing core. Phantom-seeded fast path
@@ -1641,6 +1663,7 @@ fn route_pair(
                 dst_rank: d,
                 result: r,
                 end_clip: None,
+                direct: None,
             });
         }
     }
@@ -1710,12 +1733,19 @@ fn compute_route_pair(
 /// `/route` uses — the duration was already exact. Before, this surface
 /// reported whole first and last edges, so the same pair got a longer
 /// distance on Flight than on `/route`.
+/// #605: a same-edge direct move is billed from the move itself, not from an
+/// unpacked path — the same two numbers and the same sub-arc `/route` serves,
+/// so the two surfaces answer a shared-snap pair identically.
 fn build_route_distance(
     state: &ServerState,
     mode_data: &super::state::ModeData,
     pr: &PairRoute,
     scratch: &mut RouteScratch,
 ) -> f32 {
+    if let Some(dm) = pr.direct {
+        dm.points_into(&state.ebg_nodes, &state.edge_geom, &mut scratch.points);
+        return dm.distance_m as f32;
+    }
     let raw = super::geometry::build_route_points_into(
         &mode_data.cch_topo,
         &mode_data.cch_weights,
@@ -2667,6 +2697,7 @@ fn escalate_route(
             dst_rank,
             result,
             end_clip: None,
+            direct: None,
         })
 }
 
@@ -5164,25 +5195,52 @@ mod pair_driver_tests {
     /// module. The scans below look for call sites in shipped code, and the
     /// tests themselves quote those call sites verbatim.
     fn engine_source() -> &'static str {
-        let src = include_str!("flight.rs");
-        let end = src
-            .find("\n#[cfg(test)]\n")
-            .expect("flight.rs has test modules");
-        &src[..end]
+        engine_half(include_str!("flight.rs"))
     }
 
-    /// The phantom-seeded fast path (#502/#506/#509) exists EXACTLY ONCE in
-    /// this file. It is the reason `/route`, `route_batch` and `edges_batch`
-    /// return the same route for the same pair; three hand-copies of it is
-    /// how they drifted apart before. Read from the source, so a fourth copy
-    /// fails here rather than in production traffic nobody diffs.
+    /// Everything in a module before its first test module — the shipped
+    /// half. Scanning the whole file would match the quoted call sites in
+    /// the tests themselves.
+    fn engine_half(src: &str) -> &str {
+        match src.find("\n#[cfg(test)]\n") {
+            Some(end) => &src[..end],
+            None => src,
+        }
+    }
+
+    /// The phantom tier (#502/#506/#509 seeded query + #605 same-edge
+    /// recovery) exists EXACTLY ONCE in the whole engine, in
+    /// `phantom::resolve_phantom_pair`. It is the reason `/route`,
+    /// `route_batch` and `edges_batch` return the same route for the same
+    /// pair; hand-copies of it are how they drifted apart before — #605 was a
+    /// copy that had the seeded query but not the same-edge recovery, so a
+    /// short pair whose two snaps shared an edge got a different, worse route
+    /// on the batch surface. Read from the source, so the next copy fails
+    /// here rather than in production traffic nobody diffs.
     #[test]
-    fn one_phantom_seeded_fast_path() {
-        let calls = engine_source().matches("query.query_seeded(").count();
+    fn one_phantom_tier_in_the_whole_engine() {
+        for (name, src) in [
+            ("flight.rs", engine_source()),
+            ("route.rs", engine_half(include_str!("route.rs"))),
+        ] {
+            let calls = src.matches("query_seeded(").count();
+            assert_eq!(
+                calls, 0,
+                "{name} must reach the phantom tier through \
+                 phantom::resolve_phantom_pair, not its own query_seeded call; \
+                 found {calls}"
+            );
+        }
+        let phantom = engine_half(include_str!("phantom.rs"));
         assert_eq!(
-            calls, 1,
-            "the phantom-seeded pair query must live in phantom_pair() alone; \
-             found {calls} call sites"
+            phantom.matches("query.query_seeded(").count(),
+            1,
+            "the seeded pair query lives in resolve_phantom_pair alone"
+        );
+        assert_eq!(
+            phantom.matches("\npub fn direct_move(").count(),
+            1,
+            "the same-edge recovery lives in direct_move alone (#605)"
         );
     }
 
