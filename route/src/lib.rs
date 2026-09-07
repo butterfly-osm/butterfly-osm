@@ -16,6 +16,7 @@
 pub mod calibrate;
 pub mod cli;
 pub mod contraction;
+pub mod cost;
 pub mod customization;
 pub mod density;
 pub mod ebg;
