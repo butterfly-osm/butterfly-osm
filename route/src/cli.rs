@@ -1894,6 +1894,11 @@ impl Cli {
                     mode,
                     mode_name: mode_name_str.clone(),
                     outdir: outdir.clone(),
+                    // #610: no mode expresses a routing preference. The search
+                    // minimises the provider's time, so the searched channel is
+                    // the reported duration. #593 is where a profile-borne
+                    // preference will pick a different one.
+                    cost_model: crate::cost::CostModel::TimeIsCost,
                 };
 
                 let result = customization::customize_cch(config)?;

@@ -145,6 +145,10 @@ pub struct EdgeRecustomizePrep {
     /// The one cache key covering all three sections.
     key: Option<Option<u64>>,
     inputs: Option<Arc<EdgeInputs>>,
+    /// What the car family's search minimises (#610). `TimeIsCost` today, and
+    /// its all-zero fingerprint is deliberately NOT folded into the key, so
+    /// the sections of every artifact customized before #610 stay warm.
+    cost_model: crate::cost::CostModel,
 }
 
 impl EdgeRecustomizePrep {
@@ -166,6 +170,7 @@ impl EdgeRecustomizePrep {
             time_scales: None,
             key: None,
             inputs: None,
+            cost_model: crate::cost::CostModel::TimeIsCost,
         }
     }
 
@@ -246,6 +251,18 @@ impl EdgeRecustomizePrep {
                     }
                     Err(_) => d.update(&[0]),
                 }
+            }
+            // #610: what the search minimises. A preference elects different
+            // apexes, so every channel derived from them changes and a warm
+            // section from another cost model must never satisfy this key —
+            // that is the #528 failure, one layer up. Folded in ONLY when it
+            // is non-zero, so the key of every artifact customized without a
+            // preference — all of them today — keeps the value it has and no
+            // deploy pays for a re-customization that would produce the same
+            // bytes.
+            let cost_fp = self.cost_model.fingerprint();
+            if cost_fp != [0u8; 32] {
+                d.update(&cost_fp);
             }
             Some(d.finalize())
         })();
@@ -728,6 +745,12 @@ impl ServerState {
             &inputs.filtered_ebg,
             &weights,
             turn_penalties,
+            // #610: the car family's search minimises the measured time itself,
+            // so the channel this returns is both what the search uses and what
+            // `/route` reports. `EdgeRecustomizePrep::cache_key` folds the same
+            // model in, so a preference could never hit a key derived without
+            // one.
+            &crate::cost::CostModel::TimeIsCost,
         )?;
 
         if let Some(k) = cache_key {
@@ -1925,9 +1948,14 @@ mod pipeline_tests {
     fn base_mode(node_weights: Vec<u32>) -> ModeData {
         let topo = cch_topo();
         let fe = filtered_ebg();
-        let (cch_weights, adjusted) =
-            crate::customization::customize_cch_time_in_memory(&topo, &fe, &node_weights, &TURNS)
-                .unwrap();
+        let (cch_weights, adjusted) = crate::customization::customize_cch_time_in_memory(
+            &topo,
+            &fe,
+            &node_weights,
+            &TURNS,
+            &crate::cost::CostModel::TimeIsCost,
+        )
+        .unwrap();
         let up = UpAdjFlat::build_with(&topo, &cch_weights, true);
         let down_rev = DownReverseAdjFlat::build_with(&topo, &cch_weights, true);
         let down = DownAdjFlat::build(&topo, &cch_weights);
