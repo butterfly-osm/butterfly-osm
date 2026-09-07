@@ -6033,13 +6033,16 @@ mod matrix_sparse_tests {
 /// matrix, `""` for edges_batch / transit_bulk / route_batch.
 #[cfg(test)]
 mod flight_completeness_tests {
-    use super::{BatchStream, DO_GET_ACTIONS, MatrixPlan, completed_flight_stream, matrix_schema};
+    use super::{
+        BatchStream, DO_GET_ACTIONS, MatrixPlan, ProducerEnd, completed_flight_stream,
+        matrix_schema, spawn_stream_producer,
+    };
     use arrow::array::{ArrayRef, UInt32Array};
     use arrow::record_batch::RecordBatch;
     use arrow_flight::FlightData;
     use futures::StreamExt;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     const DENSE: &str = ",\"contract\":\"dense\"";
     const SPARSE: &str = ",\"contract\":\"sparse\"";
@@ -6212,6 +6215,161 @@ mod flight_completeness_tests {
             assert_eq!(v["complete"], true);
             assert_eq!(v["total_rows"], 2);
         }
+    }
+
+    /// #611: drive one producer end-to-end through the real helper and the
+    /// real trailer, exactly as `do_get` does. Returns the trailer's
+    /// app_metadata, or the refusal message.
+    async fn drive_producer<F>(body: F) -> std::result::Result<String, String>
+    where
+        F: FnOnce(&super::BatchTx) -> ProducerEnd + Send + 'static,
+    {
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, tonic::Status>>(8);
+        let done = Arc::new(AtomicBool::new(false));
+        spawn_stream_producer("test", tx, done.clone(), body);
+        let bs: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+        let items: Vec<_> =
+            completed_flight_stream("test", Arc::new(matrix_schema()), bs, done, NONE, None)
+                .collect()
+                .await;
+        match items
+            .last()
+            .expect("the stream always ends with a trailer arm")
+        {
+            Ok(f) => Ok(String::from_utf8(f.app_metadata.to_vec()).unwrap()),
+            Err(s) => Err(s.message().to_string()),
+        }
+    }
+
+    /// #611: end-of-stream IMPLIES the completion flag is published.
+    ///
+    /// The producer runs on the blocking pool and the trailer is polled on a
+    /// runtime worker: the flag is written and read from different threads,
+    /// and the consumer reaches the trailer the instant the channel closes.
+    /// `route_batch` used to close that channel BEFORE storing the flag (it
+    /// passed its `Sender` by value into the producer body), so a loaded host
+    /// let the worker read a stale `false` on 17-35 % of calls — every row
+    /// emitted, every one of them refused.
+    ///
+    /// The helper's ordering makes that unrepresentable, so this passes
+    /// deterministically. It also BITES: with the store moved back after the
+    /// drop, it failed inside the first 10 of its 200 rounds on 3 runs out of
+    /// 3. Two ingredients are load-bearing — the spinners (a runqueue with no
+    /// idle CPU) and the burn inside the producer, which is what earns the
+    /// producer thread the vruntime that gets it preempted by the very task
+    /// its channel-close wakes. Drop either and the old order sails through.
+    /// Never weaken this into a retry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn completion_is_published_before_the_channel_closes() {
+        // Deliberate contention: the race only shows when the producer thread
+        // can be descheduled between closing the channel and publishing.
+        let stop = Arc::new(AtomicBool::new(false));
+        let spinners: Vec<_> = (0..64)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut x = 0u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        std::hint::black_box(x);
+                    }
+                })
+            })
+            .collect();
+
+        for round in 0..200 {
+            let meta = drive_producer(|tx| {
+                // Burn like a real producer does: a thread that has just used
+                // its slice is the one the scheduler preempts at the wake-up
+                // its own channel-close triggers.
+                let t0 = std::time::Instant::now();
+                let mut x = 0u64;
+                while t0.elapsed() < std::time::Duration::from_micros(500) {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    std::hint::black_box(x);
+                }
+                tx.blocking_send(Ok(batch(3)))
+                    .expect("consumer is alive in this test");
+                ProducerEnd::Complete
+            })
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: complete producer refused: {e}"));
+            assert!(meta.contains("\"complete\":true"), "round {round}: {meta}");
+            assert!(meta.contains("\"total_rows\":3"), "round {round}: {meta}");
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        for s in spinners {
+            s.join().unwrap();
+        }
+    }
+
+    /// #611: a producer that stops early is still refused — the fix publishes
+    /// the flag in time, it never publishes a flag the producer did not earn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_incomplete_producer_is_still_refused() {
+        for end in [ProducerEnd::ClientGone, ProducerEnd::Failed("test failure")] {
+            let err = drive_producer(move |tx| {
+                tx.blocking_send(Ok(batch(1))).unwrap();
+                end
+            })
+            .await
+            .expect_err("an incomplete producer must not get a completeness trailer");
+            assert!(err.contains("truncated"), "msg: {err}");
+        }
+    }
+
+    /// #611: a panicking producer is caught, logged, and leaves the stream
+    /// refused — never a clean OK, and never an invisible failure. (The panic
+    /// message on stderr during this test is the point.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_producer_is_refused() {
+        let err = drive_producer(|tx| {
+            tx.blocking_send(Ok(batch(2))).unwrap();
+            panic!("producer blew up");
+        })
+        .await
+        .expect_err("a panicking producer must not get a completeness trailer");
+        assert!(err.contains("truncated"), "msg: {err}");
+    }
+
+    /// #611: the completion flag is set in exactly ONE place — inside
+    /// [`spawn_stream_producer`], which drops the sender after it. A producer
+    /// that hand-rolls its own `spawn_blocking` + store puts the ordering back
+    /// in play (that IS the bug), so it must fail here.
+    #[test]
+    fn only_the_shared_helper_publishes_completion() {
+        let all = include_str!("flight.rs");
+        // Server code only — the test modules below build their own flags.
+        let src = &all[..all
+            .find("\n#[cfg(test)]\n")
+            .expect("test modules follow the server")];
+        let helper = src
+            .find("fn spawn_stream_producer<F>(")
+            .expect("the shared producer helper is present");
+        let helper_end = helper
+            + src[helper..]
+                .find("\n// ====")
+                .expect("the helper is followed by a section banner");
+
+        for (at, _) in src.match_indices("store(true, Ordering::Release)") {
+            assert!(
+                at > helper && at < helper_end,
+                "a completion flag is published outside spawn_stream_producer \
+                 (byte {at}) — the sender may then close first (#611)"
+            );
+        }
+        // And every streamed producer goes through it: one call site per
+        // producer flag. (`done_all`, the banded chain's flag, is set by
+        // `chain_bands` in the same task that polls the trailer — no channel
+        // between writer and reader, so no ordering to get wrong.)
+        assert_eq!(
+            src.matches("spawn_stream_producer(").count(),
+            src.matches("let done = Arc::new(AtomicBool::new(false))")
+                .count(),
+            "every producer completion flag must be published by the helper (#611)"
+        );
     }
 
     /// #560: the do_get dispatch and [`DO_GET_ACTIONS`] are ONE table, and
