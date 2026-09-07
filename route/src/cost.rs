@@ -103,10 +103,13 @@ impl CostModel {
     /// makes the zero-preference path byte-identical rather than merely equal:
     /// the customization runs on the very same slice it runs on today.
     ///
-    /// A charge that would overflow the weight saturates rather than wrapping;
-    /// `u32::MAX` is the "unreachable" sentinel throughout the hierarchy and an
-    /// edge whose charge pushed it there is unreachable, which is the honest
-    /// reading of an infinite preference.
+    /// An unreachable edge stays unreachable. A reachable one stays reachable:
+    /// `u32::MAX` is the "no edge" sentinel everywhere in the hierarchy, so a
+    /// charge large enough to reach it is clamped one below rather than
+    /// allowed to alias it. A preference makes a road undesirable; only an
+    /// access rule makes one impassable, and turning the first into the second
+    /// behind the caller's back would be a routing decision taken by an
+    /// arithmetic overflow.
     pub fn search_weights<'a>(&self, time: &'a [u32]) -> Cow<'a, [u32]> {
         match self {
             Self::TimeIsCost => Cow::Borrowed(time),
@@ -123,7 +126,7 @@ impl CostModel {
                             if t == u32::MAX {
                                 u32::MAX
                             } else {
-                                t.saturating_add(c)
+                                t.saturating_add(c).min(u32::MAX - 1)
                             }
                         })
                         .collect(),
@@ -644,9 +647,10 @@ mod guard_tests {
         let cost = model.search_weights(&time);
         assert_eq!(
             &*cost,
-            &[15u32, 20, u32::MAX, u32::MAX][..],
-            "an unreachable edge stays unreachable, and a charge that saturates \
-             makes an edge unreachable rather than wrapping to a fast one"
+            &[15u32, 20, u32::MAX, u32::MAX - 1][..],
+            "an unreachable edge stays unreachable; a charge big enough to reach \
+             the sentinel is clamped one below it, so a preference can make an \
+             edge unattractive but never impassable"
         );
         assert!(!model.is_time_only());
         assert_ne!(

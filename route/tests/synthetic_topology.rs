@@ -892,6 +892,7 @@ fn contract(net: &Network) -> Hierarchy {
         &filtered,
         &net.node_weights,
         &net.turn_penalties,
+        &butterfly_route::cost::CostModel::TimeIsCost,
     )
     .expect("step 8 customization");
 

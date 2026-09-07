@@ -37,6 +37,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use crate::cost::CostModel;
 use crate::formats::{
     ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
     HybridStateFile, WeightArray, mod_turns, mod_weights,
@@ -54,6 +55,11 @@ pub struct Step8Config {
     pub mode: Mode,
     pub mode_name: String,
     pub outdir: PathBuf,
+    /// What this mode's search minimises (#610). `TimeIsCost` for every mode
+    /// shipped today: the cost IS the provider's time, so the searched channel
+    /// and the reported duration are one array and nothing can drift between
+    /// them.
+    pub cost_model: CostModel,
 }
 
 /// Result of Step 8 customization
@@ -207,21 +213,32 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // TIME and DIST are independent, so they run concurrently via
     // rayon::join.
     // ===================================================================
+    // #610: the weight of an original edge under a GIVEN set of per-edge
+    // weights. The cost model picks the set for the search channel; the
+    // reported-duration channel always gets the provider's own times.
+    let orig_time_weight = |u_rank: usize, v_rank: usize, node_weights: &[u32]| {
+        compute_original_weight_rank_aligned(
+            u_rank,
+            v_rank,
+            node_weights,
+            &turns.penalties,
+            &sorted_ebg,
+            &filtered_ebg.filtered_to_original,
+            rank_to_filtered,
+        )
+    };
+
     let bu_start = std::time::Instant::now();
-    println!("\n⚡ Bottom-up customization (time + distance in parallel)...");
-    let ((time_up, time_down), (dist_up, dist_down)) = rayon::join(
+    println!("\n⚡ Bottom-up customization (cost + distance in parallel)...");
+    let ((cost_up, cost_down), (dist_up, dist_down)) = rayon::join(
         || {
-            bottom_up_customize(&topo, &sorted_down_indices, |u_rank, v_rank| {
-                compute_original_weight_rank_aligned(
-                    u_rank,
-                    v_rank,
-                    &weights.weights,
-                    &turns.penalties,
-                    &sorted_ebg,
-                    &filtered_ebg.filtered_to_original,
-                    rank_to_filtered,
-                )
-            })
+            bottom_up_search_cost(
+                &topo,
+                &sorted_down_indices,
+                &config.cost_model,
+                &weights.weights,
+                orig_time_weight,
+            )
         },
         || {
             bottom_up_customize(&topo, &sorted_down_indices, |_u_rank, v_rank| {
@@ -246,22 +263,49 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     // loose upper bounds that make the search pick suboptimal corridors
     // (#584 deleted the dev-only skip flag over exactly that).
     // ===================================================================
-    // #529: elect middles by (time, then length-along-time). Seeds the length
+    // #529: elect middles by (cost, then length-along-cost). Seeds the length
     // channel with the pre-relax bottom-up DISTANCE weights (length along the
     // contraction decomposition), which are consumed unchanged by the DISTANCE
-    // relaxation below. TIME weights are byte-identical to a time-only
+    // relaxation below. COST weights are byte-identical to a cost-only
     // relaxation; only the elected middles change (shortest length among
-    // equal-time apexes).
-    println!("\n🔺 Triangle relaxation for TIME (parallel, #529 length tie-break)...");
+    // equal-cost apexes).
+    println!("\n🔺 Triangle relaxation for COST (parallel, #529 length tie-break)...");
     let tr_start = std::time::Instant::now();
-    let (time_up, time_down, time_up_mid, time_down_mid, time_relax_count, time_relax_passes) =
-        triangle_relax_lex_parallel(&topo, time_up, time_down, &dist_up, &dist_down, &rev_down);
+    let (cost_up, cost_down, cost_up_mid, cost_down_mid, time_relax_count, time_relax_passes) =
+        triangle_relax_lex_parallel(&topo, cost_up, cost_down, &dist_up, &dist_down, &rev_down);
     println!(
         "  ✓ {:.2}s, {} updates in {} passes",
         tr_start.elapsed().as_secs_f64(),
         time_relax_count,
         time_relax_passes
     );
+
+    // #610: the duration to report for the path the search just chose. `None`
+    // for every mode shipped today — with no preference the search minimised
+    // the provider's time itself, so the cost channel already IS the duration
+    // and there is nothing to derive, nothing to store and nothing to drift.
+    let reported_time = time_along_cost(
+        &topo,
+        &sorted_down_indices,
+        &config.cost_model,
+        &weights.weights,
+        &cost_up_mid,
+        &cost_down_mid,
+        orig_time_weight,
+    );
+    if reported_time.is_some() {
+        // The derivation is here and is exercised by
+        // `cost_channel_tests::a_preference_swings_the_apex_and_the_guard_holds`,
+        // but step 8's on-disk contract has three channels and no place to put
+        // a fourth. Writing an artifact whose durations silently came from the
+        // cost channel is the one outcome #610 exists to prevent, so refuse.
+        anyhow::bail!(
+            "mode {mode_name} declares a routing preference, so its reported \
+             durations no longer live in the searched channel — the step-8 \
+             artifact cannot carry that fourth channel yet (#593). Customize \
+             it without a preference, or land #593 first."
+        );
+    }
 
     println!("\n🔺 Triangle relaxation for DISTANCE (parallel)...");
     let tr_start = std::time::Instant::now();
@@ -274,22 +318,21 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         dist_relax_passes
     );
 
-    // Length-along-time-shortest (#371/#372). For every CCH edge, the
-    // sum of physical edge lengths along the time-optimal expansion
-    // (using `time_*_mid` as the chosen middles). This is the
-    // metric `/table`, `/trip`, and Flight matrix endpoints must
-    // report as `distance` so the number belongs to the same path as
-    // the duration — matching what `/route` already produces by
-    // per-cell unpacking. The on-disk file `cch.lat.<mode>.u32` is
-    // written alongside the existing `cch.d.<mode>.u32`; consumers
-    // migrate in #372.
-    println!("\n📏 Length-along-time-shortest customization...");
+    // Length along the path the SEARCH chose (#371/#372, #610). For every
+    // CCH edge, the sum of physical edge lengths along the expansion through
+    // `cost_*_mid`. This is the metric `/table`, `/trip`, and Flight matrix
+    // endpoints must report as `distance` so the number belongs to the same
+    // path as the duration — matching what `/route` already produces by
+    // per-cell unpacking. With no preference the search minimises the
+    // provider's time, so these are the length-along-time weights the file
+    // name still says, byte for byte; the name follows in #593.
+    println!("\n📏 Length-along-cost customization...");
     let lat_start = std::time::Instant::now();
     let (lat_up, lat_down) = bottom_up_with_external_middles(
         &topo,
         &sorted_down_indices,
-        &time_up_mid,
-        &time_down_mid,
+        &cost_up_mid,
+        &cost_down_mid,
         |_u_rank, v_rank| {
             compute_distance_weight_rank_aligned(
                 v_rank,
@@ -308,9 +351,9 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     );
 
     // Sanity checks
-    sanity_check_weights(&topo, &time_up, &time_down, "Time", 95.0)?;
+    sanity_check_weights(&topo, &cost_up, &cost_down, "Cost", 95.0)?;
     sanity_check_weights_simple(&dist_up, &dist_down, "Distance", 95.0)?;
-    sanity_check_weights_simple(&lat_up, &lat_down, "Length-along-time", 95.0)?;
+    sanity_check_weights_simple(&lat_up, &lat_down, "Length-along-cost", 95.0)?;
 
     // Write outputs
     std::fs::create_dir_all(&config.outdir)?;
@@ -319,10 +362,10 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     println!("\nWriting time weights...");
     write_cch_weights(
         &output_path,
-        &time_up,
-        &time_down,
-        &time_up_mid,
-        &time_down_mid,
+        &cost_up,
+        &cost_down,
+        &cost_up_mid,
+        &cost_down_mid,
         config.mode,
     )?;
     println!("  ✓ Written {}", output_path.display());
@@ -353,8 +396,8 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
         &lat_path,
         &lat_up,
         &lat_down,
-        &time_up_mid,
-        &time_down_mid,
+        &cost_up_mid,
+        &cost_down_mid,
         config.mode,
     )?;
     println!("  ✓ Written {}", lat_path.display());
@@ -372,14 +415,21 @@ pub fn customize_cch(config: Step8Config) -> Result<Step8Result> {
     })
 }
 
-/// Serve-boot TIME-only CCH recustomization, fully in memory.
+/// Serve-boot CCH recustomization of the SEARCHED channel, fully in memory.
 ///
-/// Mirrors the TIME path of [`customize_cch`] exactly — same bottom-up +
+/// Mirrors the cost path of [`customize_cch`] exactly — same bottom-up +
 /// triangle-relaxation leaf functions — but takes already-parsed inputs and
-/// RETURNS the customized TIME weights as [`CchWeights`] instead of writing
-/// `cch.w.<mode>.u32` to disk. Distance and length-along-time are physical and
+/// RETURNS the customized weights as [`CchWeights`] instead of writing
+/// `cch.w.<mode>.u32` to disk. Distance and length-along-cost are physical and
 /// unaffected by traffic, so the caller keeps the base mode's dist/lat weights
 /// (the serve clones them from the base `ModeData`).
+///
+/// `cost_model` is what the search minimises (#610). Under
+/// [`CostModel::TimeIsCost`] — every mode today — the searched channel is the
+/// provider's own time and the returned weights ARE the durations to report,
+/// which is why this returns one set of weights and not two. A mode with a
+/// preference needs a second channel the boot path cannot yet carry, so it is
+/// refused rather than served with durations taken from the cost.
 ///
 /// The caller's `node_weights_time` slice (a container section) is borrowed
 /// read-only; the returned adjusted vector is a private clone. Triangle
@@ -399,8 +449,15 @@ pub fn customize_cch_time_in_memory(
     filtered_ebg: &crate::formats::FilteredEbg,
     node_weights_time: &[u32],
     turn_penalties: &[u32],
+    cost_model: &CostModel,
 ) -> Result<(CchWeights, Vec<u32>)> {
     let n_nodes = topo.n_nodes as usize;
+    anyhow::ensure!(
+        cost_model.is_time_only(),
+        "a routing preference separates the reported duration from the searched \
+         channel, and the boot recustomizer returns one set of weights for both \
+         — serving it would report the cost as a duration (#593)"
+    );
 
     // Private copy of the node time-weights — the caller's slice (a container
     // section) is borrowed read-only.
@@ -424,31 +481,38 @@ pub fn customize_cch_time_in_memory(
         .collect();
     let rev_down = build_reverse_down_adj_for_relax(topo);
 
-    // Bottom-up TIME customization.
-    let (time_up, time_down) = bottom_up_customize(topo, &sorted_down_indices, |u_rank, v_rank| {
-        compute_original_weight_rank_aligned(
-            u_rank,
-            v_rank,
-            &node_weights,
-            turn_penalties,
-            &sorted_ebg,
-            &filtered_ebg.filtered_to_original,
-            rank_to_filtered,
-        )
-    });
+    // Bottom-up customization of the searched channel — one derivation, shared
+    // with the pipeline (#610).
+    let (cost_up, cost_down) = bottom_up_search_cost(
+        topo,
+        &sorted_down_indices,
+        cost_model,
+        &node_weights,
+        |u_rank, v_rank, nw| {
+            compute_original_weight_rank_aligned(
+                u_rank,
+                v_rank,
+                nw,
+                turn_penalties,
+                &sorted_ebg,
+                &filtered_ebg.filtered_to_original,
+                rank_to_filtered,
+            )
+        },
+    );
 
     // Triangle relaxation — ALWAYS run (correctness-critical for serving).
-    let (time_up, time_down, time_up_mid, time_down_mid, _relax_count, _relax_passes) =
-        triangle_relax_parallel(topo, time_up, time_down, &rev_down, true);
+    let (cost_up, cost_down, cost_up_mid, cost_down_mid, _relax_count, _relax_passes) =
+        triangle_relax_parallel(topo, cost_up, cost_down, &rev_down, true);
 
-    sanity_check_weights(topo, &time_up, &time_down, "Time", 95.0)?;
+    sanity_check_weights(topo, &cost_up, &cost_down, "Cost", 95.0)?;
 
     Ok((
         CchWeights {
-            up: WeightArray::from_vec_u32_narrowed(time_up),
-            down: WeightArray::from_vec_u32_narrowed(time_down),
-            up_middle: ArcCow::from_vec(time_up_mid),
-            down_middle: ArcCow::from_vec(time_down_mid),
+            up: WeightArray::from_vec_u32_narrowed(cost_up),
+            down: WeightArray::from_vec_u32_narrowed(cost_down),
+            up_middle: ArcCow::from_vec(cost_up_mid),
+            down_middle: ArcCow::from_vec(cost_down_mid),
         },
         node_weights,
     ))
@@ -658,6 +722,66 @@ pub fn bottom_up_with_external_middles(
     }
 
     (up_weights, down_weights)
+}
+
+// ===================================================================
+// The cost channel, and the duration along it (#610)
+// ===================================================================
+
+/// Bottom-up customization of the channel the SEARCH minimises.
+///
+/// This is the one place a cost model turns into weights. Every caller —
+/// the pipeline's step 8 and the boot recustomizer alike — comes through
+/// here, so there is exactly one answer to "what does this mode minimise".
+///
+/// `orig_weight(u_rank, v_rank, node_weights)` gives the weight of an
+/// ORIGINAL edge under a given set of per-edge weights; the cost model
+/// chooses which set that is. Under [`CostModel::TimeIsCost`] it chooses the
+/// caller's own time slice, borrowed, so this call is bit-for-bit the call
+/// that was here before #610.
+pub(crate) fn bottom_up_search_cost(
+    topo: &CchTopo,
+    sorted_down_indices: &[Vec<usize>],
+    cost_model: &CostModel,
+    time_node_weights: &[u32],
+    orig_weight: impl Fn(usize, usize, &[u32]) -> u32,
+) -> (Vec<u32>, Vec<u32>) {
+    let search = cost_model.search_weights(time_node_weights);
+    bottom_up_customize(topo, sorted_down_indices, |u, v| orig_weight(u, v, &search))
+}
+
+/// The duration to REPORT for the path the search chose (#610).
+///
+/// `None` when the mode has no preference: the search minimised the pure time
+/// itself, so the search channel already IS the duration and every consumer
+/// aliases it. Materialising a copy would add an array to the hierarchy, a
+/// flat adjacency to every mode and a pass to every customization, all holding
+/// numbers equal by construction — a thing that can only ever drift.
+///
+/// When a preference exists, the duration is the PURE time folded through the
+/// apexes the COST elected: `up_middle` / `down_middle` must be the middles
+/// that came out of the search relaxation, never a previous customization's
+/// (that is #528, and [`crate::cost::verify_reported_time_is_pure_time`]
+/// rejects it).
+pub(crate) fn time_along_cost(
+    topo: &CchTopo,
+    sorted_down_indices: &[Vec<usize>],
+    cost_model: &CostModel,
+    time_node_weights: &[u32],
+    up_middle: &[u32],
+    down_middle: &[u32],
+    orig_weight: impl Fn(usize, usize, &[u32]) -> u32,
+) -> Option<(Vec<u32>, Vec<u32>)> {
+    if cost_model.is_time_only() {
+        return None;
+    }
+    Some(bottom_up_with_external_middles(
+        topo,
+        sorted_down_indices,
+        up_middle,
+        down_middle,
+        |u, v| orig_weight(u, v, time_node_weights),
+    ))
 }
 
 pub(crate) fn bottom_up_customize(
@@ -1713,9 +1837,14 @@ mod determinism_tests {
         let weights = mod_weights::read_all(&paths[2]).unwrap();
         let turns = mod_turns::read_all(&paths[3]).unwrap();
 
-        let (got, _adjusted_node_weights) =
-            customize_cch_time_in_memory(&topo, &filtered_ebg, &weights.weights, &turns.penalties)
-                .unwrap();
+        let (got, _adjusted_node_weights) = customize_cch_time_in_memory(
+            &topo,
+            &filtered_ebg,
+            &weights.weights,
+            &turns.penalties,
+            &CostModel::TimeIsCost,
+        )
+        .unwrap();
 
         let want = CchWeightsFile::read(&paths[4]).unwrap();
 
@@ -2060,6 +2189,237 @@ mod pack_tl_order_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cost_channel_tests {
+    //! #610: the search cost, and the duration along it, through the real
+    //! derivation rather than its building blocks.
+    //!
+    //! [`crate::cost`] holds the guard itself and proves it has teeth on
+    //! hand-built channels. These tests point that guard at what
+    //! [`bottom_up_search_cost`] / [`triangle_relax_parallel`] /
+    //! [`time_along_cost`] actually produce, so a change to the derivation is
+    //! caught by the invariant and not only by a fixture.
+
+    use super::*;
+    use crate::formats::BitsetField;
+
+    /// The 6-node CCH of [`crate::cost`]'s guard tests: one UP shortcut 2→4
+    /// with two candidate apexes, and a second shortcut 3→4 nested on it.
+    fn topo() -> CchTopo {
+        CchTopo {
+            n_nodes: 6,
+            n_shortcuts: 2,
+            n_original_arcs: 6,
+            inputs_sha: [0u8; 32],
+            up_offsets: ArcCow::from_vec(vec![0u64, 1, 2, 3, 4, 5, 5]),
+            up_targets: ArcCow::from_vec(vec![4u32, 4, 4, 4, 5]),
+            up_is_shortcut: BitsetField::from_bools(&[false, false, true, true, false]),
+            up_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, 0, 2, u32::MAX]),
+            down_offsets: ArcCow::from_vec(vec![0u64, 0, 0, 2, 3, 3, 3]),
+            down_targets: ArcCow::from_vec(vec![0u32, 1, 2]),
+            down_is_shortcut: BitsetField::from_bools(&[false, false, false]),
+            down_middle: WeightArray::from_vec_u32(vec![u32::MAX, u32::MAX, u32::MAX]),
+            rank_to_filtered: ArcCow::from_vec(vec![0u32, 1, 2, 3, 4, 5]),
+        }
+    }
+
+    /// Per-EBG-node time weights, indexed the way step 5 indexes them: the
+    /// weight of an original edge is the weight of its HEAD node. Ranks are
+    /// the identity here, so the two candidate apexes are told apart by the
+    /// DOWN edges into them: 2→0 costs 10, 2→1 costs 25.
+    const TIME: [u32; 6] = [10, 25, 4, 1, 30, 7];
+
+    /// A preference that charges the edge into node 0 — the fast half of the
+    /// fast apex — so the cost-optimal expansion of 2→4 swings to apex 1
+    /// while the time-optimal one would stay on apex 0.
+    fn preference() -> CostModel {
+        CostModel::Preference {
+            charge: std::sync::Arc::from(vec![100u32, 0, 0, 0, 0, 0]),
+        }
+    }
+
+    /// The original-edge weight rule, with no turn penalties in the way:
+    /// weight(u→v) = node_weights[v].
+    fn orig_weight(_u: usize, v: usize, node_weights: &[u32]) -> u32 {
+        node_weights[v]
+    }
+
+    fn sdi() -> Vec<Vec<usize>> {
+        sorted_down_indices(&topo())
+    }
+
+    /// One derivation, end to end: the searched weights, the apexes it
+    /// elected, and the duration to report for them.
+    struct Derived {
+        cost_up: Vec<u32>,
+        up_middle: Vec<u32>,
+        down_middle: Vec<u32>,
+        report_up: Vec<u32>,
+        report_down: Vec<u32>,
+    }
+
+    fn derive(cost_model: &CostModel) -> Derived {
+        let topo = topo();
+        let sdi = sdi();
+        let rev_down = build_reverse_down_adj_for_relax(&topo);
+        let (cost_up, cost_down) =
+            bottom_up_search_cost(&topo, &sdi, cost_model, &TIME, orig_weight);
+        let (cost_up, cost_down, up_middle, down_middle, _, _) =
+            triangle_relax_parallel(&topo, cost_up, cost_down, &rev_down, false);
+        // With no preference the searched channel IS the duration — that is
+        // the whole point of the `None`, and every consumer aliases it.
+        let (report_up, report_down) = time_along_cost(
+            &topo,
+            &sdi,
+            cost_model,
+            &TIME,
+            &up_middle,
+            &down_middle,
+            orig_weight,
+        )
+        .unwrap_or_else(|| (cost_up.clone(), cost_down.clone()));
+        Derived {
+            cost_up,
+            up_middle,
+            down_middle,
+            report_up,
+            report_down,
+        }
+    }
+
+    #[test]
+    fn without_a_preference_the_searched_channel_is_the_pre_610_one() {
+        // `bottom_up_search_cost` under `TimeIsCost` must be the call that was
+        // there before #610 — same function, same slice, same bytes.
+        let topo = topo();
+        let sdi = sdi();
+        let want = bottom_up_customize(&topo, &sdi, |u, v| orig_weight(u, v, &TIME));
+        let got = bottom_up_search_cost(&topo, &sdi, &CostModel::TimeIsCost, &TIME, orig_weight);
+        assert_eq!(
+            got, want,
+            "#610 must not move a single weight while no mode expresses a \
+             preference"
+        );
+    }
+
+    #[test]
+    fn without_a_preference_there_is_no_second_channel_to_derive() {
+        let topo = topo();
+        assert!(
+            time_along_cost(
+                &topo,
+                &sdi(),
+                &CostModel::TimeIsCost,
+                &TIME,
+                &[u32::MAX, u32::MAX, 0, 2, u32::MAX],
+                &[u32::MAX; 3],
+                orig_weight,
+            )
+            .is_none(),
+            "#610: with no preference the searched channel already IS the \
+             duration — materialising a copy adds an array to every mode that \
+             can only ever drift"
+        );
+    }
+
+    #[test]
+    fn a_preference_swings_the_apex_and_the_guard_holds() {
+        let d = derive(&preference());
+
+        // The search really did change its mind: 2→4 now expands through apex
+        // 1 (25 + 30 = 55) instead of the charged apex 0 (110 + 30 = 140).
+        assert_eq!(d.up_middle[2], 1, "the cost-optimal apex of 2→4");
+        assert_eq!(d.cost_up[2], 55);
+
+        // …and the duration reported for that shortcut is the pure time along
+        // it, not the cost that chose it.
+        assert_eq!(d.report_up[2], 55, "time(2→1) + time(1→4) = 25 + 30");
+        assert_eq!(d.report_up[3], 59, "time(3→2) + 55 = 4 + 55");
+
+        // The invariant, checked over every edge by an independent expansion.
+        crate::cost::verify_reported_time_is_pure_time(
+            &topo(),
+            &d.up_middle,
+            &d.down_middle,
+            &d.report_up,
+            &d.report_down,
+            |u, v| orig_weight(u, v, &TIME),
+        )
+        .expect("the derivation must report the provider's time");
+    }
+
+    #[test]
+    fn a_preference_never_makes_a_reported_duration_shorter() {
+        let without = derive(&CostModel::TimeIsCost);
+        let with = derive(&preference());
+        for (i, (&fast, &along_cost)) in without
+            .report_up
+            .iter()
+            .zip(with.report_up.iter())
+            .enumerate()
+        {
+            assert!(
+                along_cost >= fast,
+                "#610: UP edge {i} reports {along_cost} under a preference but \
+                 {fast} without one — a preference may cost the traveller time, \
+                 never save it"
+            );
+        }
+        assert!(
+            with.report_up[2] > without.report_up[2],
+            "the fixture must actually swing an apex, or this proves nothing"
+        );
+    }
+
+    #[test]
+    fn the_duration_of_a_fixed_path_does_not_depend_on_the_preference() {
+        // The level-anchor invariant. The anchor is fitted on reported
+        // durations, so a preference is allowed to change WHICH path is
+        // served — it is not allowed to change what a GIVEN path is reported
+        // to take. Hold the elected apexes fixed and vary only the cost model:
+        // the duration must be a function of the middles and the provider's
+        // times, and of nothing else.
+        let topo = topo();
+        let sdi = sdi();
+        let mild = preference();
+        let fierce = CostModel::Preference {
+            charge: std::sync::Arc::from(vec![9_000u32, 7, 0, 0, 13, 0]),
+        };
+        for middles in [
+            [u32::MAX, u32::MAX, 0, 2, u32::MAX],
+            [u32::MAX, u32::MAX, 1, 2, u32::MAX],
+        ] {
+            let a = time_along_cost(
+                &topo,
+                &sdi,
+                &mild,
+                &TIME,
+                &middles,
+                &[u32::MAX; 3],
+                orig_weight,
+            )
+            .expect("a preference has a second channel");
+            let b = time_along_cost(
+                &topo,
+                &sdi,
+                &fierce,
+                &TIME,
+                &middles,
+                &[u32::MAX; 3],
+                orig_weight,
+            )
+            .expect("a preference has a second channel");
+            assert_eq!(
+                a, b,
+                "#610: the duration of a fixed path moved when the preference \
+                 changed. The level anchor is fitted on these numbers and would \
+                 absorb the difference as a global constant — the exact pattern \
+                 #608/#609 removed."
+            );
         }
     }
 }
