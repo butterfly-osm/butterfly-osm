@@ -48,17 +48,37 @@ container, one host:
 |---|---|---|
 | REST `/route` (+ annotations, steps, alternatives, exclude, bands, close pairs), `/nearest`, `/table` (10² to 100², 1×N, N×1, bounded, radius, foot, bike), `/isochrone` (depart, arrive, multi-contour, three modes), `/trip` | 1 061 requests, 12 149 369 bytes | one digest, `89e5aec6…6807c`, on both |
 | WKB isochrone, `/isochrone/bulk`, `/catchment` (road + convex), `/match`, banded `/table` and `/trip`, and Arrow Flight `matrix` / `route_batch` / `edges_batch` / `isochrone` with their #533 completeness trailers | 99 cases | one digest, `925ae3b0…940c`, on both |
-| the customized CCH weights themselves, cold from an empty cache | 3 sections × 244 548 342 B | same key, same sha256 |
+| the boot recustomizer's own output, cold from an empty cache | 3 sections × 244 548 342 B | same key, same sha256 |
+| the pipeline's step 8, both binaries on one unpacked step5/6/7 tree | `cch.w` + `cch.d` + `cch.lat`, 739 403 388 B | same sha256 each; the lock differs only in timestamp, wall time and output path |
 
 Every corpus point is drawn from a pool pre-snapped through `/nearest`, so a
 snap failure can never be mistaken for a difference; the first corpus was
 rebuilt for exactly that reason.
 
-**And it cost nothing.** Cold car customization on Belgium 39.575 s → 39.595 s
-(+0.05 %). Steady-state resident memory 24.78 GB → 24.79 GB, `VmHWM` identical
-to the megabyte. The query engine is not touched by this change at all — no
-file under `server/query`, `matrix/`, `range/` or the handlers differs — and
+Step 8's own progress lines are NOT a comparison, and the run that shows it is
+the control: the same binary, run twice on the same inputs, converges in 9
+passes once and 10 the next, with the first pass counting 107 742 638 updates
+and then 103 603 955 — and writes byte-identical files both times. The update
+count of a parallel triangle relaxation is a scheduling artefact; the fixed
+point is what is deterministic, and the fixed point is what is compared here.
+
+**And it cost nothing.** Cold car customization at boot 39.575 s → 39.595 s
+(+0.05 %). Steady-state resident memory 24.78 GB → 24.79 GB (`RssAnon` 16.24 →
+16.25), `VmHWM` identical at 27.27 GB. Query latency, interleaved call by call
+between the two instances and taken as a minimum of five: `/route` p50 ×1.013,
+`/isochrone` p50 ×0.959, `/table` from 10² to 400² between ×0.933 and ×1.078 —
+scatter around 1 in both directions, geometric mean 0.989. That is the expected
+answer, because the query engine is not touched by this change at all: no file
+under `server/query`, `matrix/`, `range/` or the handlers differs, and
 `server/state.rs` gains only doc comments.
+
+Two things could NOT be measured on the host of the day, whose load average
+swung between 10 and 80 on other people's work, and are recorded as unmeasured
+rather than reported as numbers: absolute query latency (a 10×10 matrix that
+should take ~20 ms took 64 ms on both instances), and step-8 wall time (the
+same binary spans 93.3 s to 149.8 s across three runs, which swamps the 93.3 vs
+103.0 seen between the two). The interleaved *ratios* survive the load; the
+absolute figures do not.
 
 **The guard is the point of the ticket.** `cost::verify_reported_time_is_pure_time`
 states the invariant executably — *the duration we report is the pure time of
