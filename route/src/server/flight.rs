@@ -1243,10 +1243,7 @@ fn do_matrix(
     } else {
         // ---- LARGE MATRIX: PHAST tiling, streamed ----
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_bg = cancelled.clone();
         let done = Arc::new(AtomicBool::new(false)); // #533: all-tiles-emitted flag
-        let done_bg = done.clone();
         let plan_cell_bg = plan_cell.clone(); // #594: per-tile plan, folded
 
         let up_adj = mode_data.up_adj_flat.clone();
@@ -1274,7 +1271,9 @@ fn do_matrix(
 
         let src_tile_size = 1000usize.min(n_origin).max(1);
 
-        tokio::task::spawn_blocking(move || {
+        spawn_stream_producer("matrix", tx, done.clone(), move |tx| {
+            // #611: how the tile loop ended, when it did not run to the end.
+            let mut early: Option<ProducerEnd> = None;
             let src_blocks: Vec<(usize, usize)> = (0..n_origin)
                 .step_by(src_tile_size)
                 .map(|s| (s, (s + src_tile_size).min(n_origin)))
@@ -1290,10 +1289,6 @@ fn do_matrix(
             // surface under saturation. It also keeps each block's
             // `PrefixSumBuckets` L3-resident one block at a time.
             for &(src_start, src_end) in &src_blocks {
-                if cancelled_bg.load(Ordering::Relaxed) {
-                    break;
-                }
-
                 let mut block_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
                 let mut block_src_orig = Vec::new();
                 for (vi, &oi) in valid_origin.iter().enumerate() {
@@ -1413,7 +1408,7 @@ fn do_matrix(
                     let _ = tx.blocking_send(Err(Status::resource_exhausted(
                         "matrix tile produced no routable pairs despite valid seeds — likely resource pressure; retry (#534)",
                     )));
-                    cancelled_bg.store(true, Ordering::Relaxed);
+                    early = Some(ProducerEnd::Failed("tile produced no routable pairs"));
                     break;
                 }
                 if attempt > 0 {
@@ -1451,25 +1446,23 @@ fn do_matrix(
                     Ok(Some(b)) => b,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
-                        cancelled_bg.store(true, Ordering::Relaxed);
+                        early = Some(ProducerEnd::Failed("arrow batch build"));
                         break;
                     }
                 };
 
                 if tx.blocking_send(Ok(batch)).is_err() {
-                    cancelled_bg.store(true, Ordering::Relaxed);
+                    early = Some(ProducerEnd::ClientGone);
                     break;
                 }
             }
 
-            // #533: mark the stream complete ONLY if every tile was emitted
-            // without a client disconnect, a tile error, or the #534 fail-closed
-            // guard tripping. A panic unwinds PAST this line, so `done` stays
-            // false and the consumer turns the clean channel-close into a non-OK
-            // error instead of a silent OK-with-missing-tiles truncation.
-            if !cancelled_bg.load(Ordering::Relaxed) {
-                done_bg.store(true, Ordering::Release);
-            }
+            // #533: complete ONLY if every tile was emitted without a client
+            // disconnect, a tile error, or the #534 fail-closed guard tripping.
+            // A panic is caught by the helper, which logs it and leaves the
+            // flag unset, so the consumer turns the clean channel-close into a
+            // non-OK error instead of a silent OK-with-missing-tiles.
+            early.unwrap_or(ProducerEnd::Complete)
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -3430,9 +3423,8 @@ pub fn do_edges_batch(
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
     let done = Arc::new(AtomicBool::new(false)); // #533: all-chunks-emitted flag
-    let done_bg = done.clone();
 
-    tokio::task::spawn_blocking(move || {
+    spawn_stream_producer("edges_batch", tx, done.clone(), move |tx| {
         let mode_data = state.get_mode(mode);
         let schema = Arc::new(edges_batch_schema());
         const MIN_PARALLEL_PAIRS: usize = 256;
@@ -3467,10 +3459,10 @@ pub fn do_edges_batch(
         const ROWS_PER_BATCH: usize = 20_000;
 
         // Build + stream row-bounded RecordBatches from one work-chunk's results
-        // (sorted by query_idx). Returns false on client disconnect / Arrow
-        // error so the caller stops. `per_pair` is dropped after emit, freeing
-        // the chunk's rows before the next chunk is computed.
-        let emit = |mut per_pair: Vec<PairEdges>| -> bool {
+        // (sorted by query_idx). Returns the reason to stop (client disconnect
+        // / Arrow error), `None` to carry on. `per_pair` is dropped after emit,
+        // freeing the chunk's rows before the next chunk is computed.
+        let emit = |mut per_pair: Vec<PairEdges>| -> Option<ProducerEnd> {
             per_pair.sort_unstable_by_key(|p| p.query_idx);
             let mut idx = 0usize;
             while idx < per_pair.len() {
@@ -3528,14 +3520,14 @@ pub fn do_edges_batch(
                         let _ = tx.blocking_send(Err(Status::internal(format!(
                             "edges_batch Arrow build: {e}"
                         ))));
-                        return false;
+                        return Some(ProducerEnd::Failed("arrow batch build"));
                     }
                 };
                 if tx.blocking_send(Ok(batch)).is_err() {
-                    return false; // Client disconnected.
+                    return Some(ProducerEnd::ClientGone);
                 }
             }
-            true
+            None
         };
 
         // Phase A: multi-target groups, chunked by accumulated target count so
@@ -3574,8 +3566,8 @@ pub fn do_edges_batch(
                     .flat_map(|b| process_tree_batch(&state, &mode_data, mode, b))
                     .collect()
             };
-            if !emit(per_pair) {
-                return;
+            if let Some(end) = emit(per_pair) {
+                return end;
             }
         }
 
@@ -3597,15 +3589,16 @@ pub fn do_edges_batch(
                     .map(|w| process_per_pair_work(&state, &mode_data, mode, &query, w))
                     .collect()
             };
-            if !emit(per_pair) {
-                return;
+            if let Some(end) = emit(per_pair) {
+                return end;
             }
         }
 
         // #533: both phases emitted without a client disconnect or Arrow error.
-        // A panic in the rayon region unwinds PAST this, leaving `done` false so
-        // the consumer turns the clean channel-close into a non-OK error.
-        done_bg.store(true, Ordering::Release);
+        // A panic in the rayon region is caught by the helper, which logs it
+        // and leaves `done` false so the consumer turns the clean channel-close
+        // into a non-OK error.
+        ProducerEnd::Complete
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -3663,9 +3656,8 @@ pub fn do_transit_bulk(
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
     let done = Arc::new(AtomicBool::new(false)); // #533: all-chunks-emitted flag
-    let done_bg = done.clone();
 
-    tokio::task::spawn_blocking(move || {
+    spawn_stream_producer("transit_bulk", tx, done.clone(), move |tx| {
         // Apply per-batch defaults to every query that omits the field.
         let mut queries = params.queries;
         let batch_max_walk_m = params.max_walk_m;
@@ -3794,20 +3786,20 @@ pub fn do_transit_bulk(
                     let _ = tx.blocking_send(Err(Status::internal(format!(
                         "transit_bulk Arrow build: {e}"
                     ))));
-                    return;
+                    return ProducerEnd::Failed("arrow batch build");
                 }
             };
 
             if tx.blocking_send(Ok(batch)).is_err() {
-                // Client disconnected — bail.
-                return;
+                return ProducerEnd::ClientGone;
             }
         }
 
         // #533: every chunk emitted without a client disconnect or Arrow error.
-        // A panic in the rayon region unwinds PAST this, leaving `done` false so
-        // the consumer turns the clean channel-close into a non-OK error.
-        done_bg.store(true, Ordering::Release);
+        // A panic in the rayon region is caught by the helper, which logs it
+        // and leaves `done` false so the consumer turns the clean channel-close
+        // into a non-OK error.
+        ProducerEnd::Complete
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -3870,7 +3862,13 @@ const DO_GET_ACTIONS: &[&str] = &[
 /// - if `done` is set (the producer emitted everything), append ONE trailing
 ///   FlightData with empty body and `app_metadata` =
 ///   `{"complete":true,"total_rows":N<extra>}`;
-/// - if `done` is NOT set (panic / abort / early close), append a non-OK error.
+/// - if `done` is NOT set (panic / abort / early close), append a non-OK error
+///   and log the refusal, with `action` naming the stream (#611).
+///
+/// `done` is read only AFTER the batch stream has ended, i.e. after every
+/// sender has dropped. [`spawn_stream_producer`] publishes the flag before it
+/// drops its sender, so this read cannot be a false negative — the shape #611
+/// measured at 17-35 % of `route_batch` calls on a loaded host.
 ///
 /// A gRPC-OK stream missing the trailer is impossible. `extra` injects extra
 /// JSON key/values verbatim (e.g. the matrix `,"contract":"dense"`), `""` for
@@ -4125,9 +4123,16 @@ async fn do_exchange_edges_flow(
                 app_metadata: json.into_bytes().into(),
                 ..Default::default()
             }),
-            Err(_) => Err(Status::internal(
-                "edges_flow stream truncated before completion — retry (#533)",
-            )),
+            Err(_) => {
+                // #611: never refuse a stream silently.
+                tracing::error!(
+                    action = "edges_flow",
+                    "flight stream refused: producer never sent its summary (#533/#611)"
+                );
+                Err(Status::internal(
+                    "edges_flow stream truncated before completion — retry (#533)",
+                ))
+            }
         }
     });
     Ok(Response::new(Box::pin(flight_stream.chain(trailer))))
@@ -4216,7 +4221,6 @@ async fn do_exchange_catchment(
     let schema = Arc::new(catchment_schema());
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(32);
     let done = Arc::new(AtomicBool::new(false)); // #533: completion flag
-    let done_bg = done.clone();
 
     // #596: the wire params split the same way they do on REST — a pre-matrix
     // Euclidean filter and post-matrix hull parameters.
@@ -4224,7 +4228,7 @@ async fn do_exchange_catchment(
     let hull_params = params.hull_params();
 
     let schema_clone = schema.clone();
-    tokio::task::spawn_blocking(move || {
+    spawn_stream_producer("catchment", tx, done.clone(), move |tx| {
         let start = std::time::Instant::now();
         tracing::info!(
             n_stores = n_stores,
@@ -4421,7 +4425,7 @@ async fn do_exchange_catchment(
                     let _ = tx.blocking_send(Err(Status::internal(format!(
                         "catchment Arrow build: {e}"
                     ))));
-                    return;
+                    return ProducerEnd::Failed("arrow batch build");
                 }
             }
         }
@@ -4430,9 +4434,10 @@ async fn do_exchange_catchment(
             elapsed_s = start.elapsed().as_secs_f64(),
             "do_exchange catchment done"
         );
-        // #533: all results emitted. A panic during computation unwinds past
-        // this, leaving `done` false → the consumer emits a non-OK error.
-        done_bg.store(true, Ordering::Release);
+        // #533: all results emitted. A panic during computation is caught by
+        // the helper, which logs it and leaves `done` false → the consumer
+        // emits a non-OK error.
+        ProducerEnd::Complete
     });
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
