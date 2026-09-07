@@ -55,14 +55,43 @@ pub struct PhantomSeed {
     /// for its twin. Kept so geometry consumers can walk the stored vertices
     /// without re-projecting the point (#605).
     pub frac_stored: f64,
-    /// Whether this seed may participate in SAME-EDGE direct/zero-move
-    /// evaluations. True for the primary (geometrically best) edge and for
-    /// secondary edges the point projects ONTO (interior). False for
-    /// CLAMPED secondary projections: two distinct points clamping onto the
-    /// same end of a shared side street collapse to equal fractions and
-    /// fabricate a 0-cost "direct" move (live bug: 0 s vs a true 30-70 s
-    /// drive). Such seeds still participate in the network query, where the
-    /// junction-entry approximation is fine.
+    /// Whether this seed is the endpoint's OWN snap — a twin of the PRIMARY
+    /// (geometrically nearest) physical edge — and may therefore carry a
+    /// SAME-EDGE direct/zero move against the other endpoint: [`direct_move`],
+    /// the matrix engine's pure⊕pure join, and `SeedExpansion::reduce_time`'s
+    /// same-rank cell all gate on it. The condition is exactly `!is_secondary`.
+    ///
+    /// It is NOT "the point projects onto the edge's interior", and
+    /// interiority is not a safe substitute for it (#607):
+    ///
+    /// * The engine answers between the two SNAPPED points, and the primary
+    ///   edge IS the snap. A move along it is the answer whether the
+    ///   projection is interior or clamped past an end — two points clamping
+    ///   onto the same end of one primary edge really do snap to the same
+    ///   network location, so 0 s is what "between the snapped points" means
+    ///   there.
+    /// * A secondary seed is a #502 multi-candidate ALTERNATIVE, handed to the
+    ///   search. The search validates it: whichever candidate it picks, the
+    ///   answer is still a real path over real network, so a wrong guess costs
+    ///   a bounded detour. A direct move is validated by nothing — it IS the
+    ///   answer — and the cheapest tier wins, so admitting secondaries lets a
+    ///   pair adopt the joint hypothesis "both endpoints are on this same
+    ///   non-primary edge", which bottoms out at ~0 s however far apart the
+    ///   two snaps actually are. The optimism has no floor.
+    /// * Interiority is a property of ONE point and ONE edge — it says the
+    ///   point is beside the segment rather than past its end. The fabrication
+    ///   is a property of the PAIR: two points on opposite sides of one street
+    ///   (opposite carriageways, opposite sidewalks, a road and its service
+    ///   road) both project INTERIOR onto it at nearly the same fraction and
+    ///   would bill ~0 s for a drive that has to go round the block. Clamping
+    ///   is only how #509 first met this class (two points clamping onto the
+    ///   same junction end of a shared side street: 0 s against a real
+    ///   30-190 s drive) — the symptom, not the cause.
+    ///
+    /// Secondary seeds still take part in the network query, where the
+    /// junction-entry approximation is fine. Pinned by
+    /// `direct_ok_is_the_endpoints_own_snap_not_an_interior_projection` in
+    /// `route/tests/synthetic_topology.rs`.
     pub direct_ok: bool,
 }
 
@@ -274,9 +303,10 @@ pub enum PhantomPair {
 /// or `None` when they share no edge they may both claim to be ON.
 ///
 /// Only PRIMARY-edge seeds (`direct_ok`) take part: a secondary candidate
-/// says "the search may depart from here", not "the point is on this edge",
-/// and two clamped secondaries on a shared side street fabricate a ~0 s move
-/// between points a real drive apart.
+/// says "the search may depart from here", not "the point is on this edge".
+/// Since each endpoint has exactly one primary physical edge, at most ONE
+/// shared edge can ever qualify — the loop below never picks between rival
+/// hypotheses, which is the whole point (see `PhantomSeed::direct_ok`, #607).
 pub fn direct_move(
     node_weights: &[u32],
     ebg_nodes: &EbgNodes,
@@ -374,6 +404,10 @@ pub fn resolve_phantom_pair(
 
 /// Project (lon, lat) onto the edge's stored polyline; return the arc-length
 /// fraction of the closest point along the STORED direction, in [0, 1].
+///
+/// A projection past either end CLAMPS into the interval, and the caller is
+/// never told that it did: nothing in the phantom tier treats a clamped snap
+/// differently from an interior one (see `PhantomSeed::direct_ok`, #607).
 // `pub(crate)` only so the unit tests below can pin the geometry directly;
 // behavior is unchanged.
 pub(crate) fn projection_fraction(
@@ -382,12 +416,12 @@ pub(crate) fn projection_fraction(
     ebg_id: u32,
     lon: f64,
     lat: f64,
-) -> (f64, bool) {
+) -> f64 {
     let node = &ebg_nodes.nodes[ebg_id as usize];
     let poly = edge_geom.polyline(node.geom_idx);
     let n = poly.len();
     if n < 2 {
-        return (0.5, false);
+        return 0.5;
     }
     // planar approximation, consistent with the snap index's projection
     let mlat = 111_320.0_f64;
@@ -422,14 +456,9 @@ pub(crate) fn projection_fraction(
         prev = cur;
     }
     if total > 0.0 {
-        let f = (best_arc / total).clamp(0.0, 1.0);
-        // Interior = the point actually projects ONTO the edge, not past an
-        // end. A sliver of tolerance (~0.5 m on a 500 m edge) keeps genuine
-        // endpoint projections classified as clamped.
-        let interior = best_arc > 1e-3 * total && best_arc < total * (1.0 - 1e-3);
-        (f, interior)
+        (best_arc / total).clamp(0.0, 1.0)
     } else {
-        (0.5, false)
+        0.5
     }
 }
 
@@ -632,15 +661,13 @@ fn phantom_from_primary_inner(
     // Fraction along the STORED direction; the reverse twin traverses the same
     // geometry backward, so its own fraction is 1 - f.
     //
-    // `direct_ok` marks PRIMARY-edge seeds only. Secondary seeds (nearby
-    // parallel/side streets within snap slack) exist to give the network
-    // query directional alternatives — they do NOT claim the point is ON
-    // that edge, so they must not participate in same-edge direct/zero-move
-    // evaluations: two points near a shared side street both project onto
-    // its stem at nearly the same spot and fabricate a ~0-cost "direct"
-    // between points a real 30-190 s drive apart (live /table 0-second bug).
-    let (f_stored, _interior) =
-        projection_fraction(&state.ebg_nodes, &state.edge_geom, fwd, lon, lat);
+    // `direct_ok` marks the endpoint's OWN snap — the primary physical edge,
+    // clamped projection or not. Secondary seeds (nearby parallel/side
+    // streets within snap slack) exist to give the network query directional
+    // alternatives; the search validates whichever it picks, a same-edge
+    // direct move validates nothing. Where the projection falls along the
+    // edge does not enter into it — see `PhantomSeed::direct_ok` (#607).
+    let f_stored = projection_fraction(&state.ebg_nodes, &state.edge_geom, fwd, lon, lat);
     let direct_ok = !is_secondary;
 
     let mut seeds: Vec<PhantomSeed> = Vec::with_capacity(2);
@@ -777,10 +804,12 @@ impl SeedExpansion {
                         }
                         // A same-rank combo is the engine's zero-cost identity
                         // cell — a pure seed-seed meet standing in for the
-                        // SAME-EDGE direct move. Only valid when both seeds
-                        // actually project onto the edge (direct_ok); clamped
-                        // secondary projections fabricate 0-cost moves between
-                        // distinct points (live 0-second /table bug).
+                        // SAME-EDGE direct move. Only valid when the edge is
+                        // BOTH endpoints' own snap (direct_ok); through a
+                        // secondary candidate it fabricates a 0-cost move
+                        // between distinct points (live 0-second /table bug).
+                        // Where the projections fall along the edge does not
+                        // enter into it — see `PhantomSeed::direct_ok` (#607).
                         if self.exp_ranks[r] == tgt.exp_ranks[c]
                             && !(self.parts[r].2 && tgt.parts[c].2)
                         {
@@ -959,29 +988,23 @@ mod tests {
         // in lon and the fractions are hand-derivable.
         let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
 
-        let (f_start, int_start) = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
+        let f_start = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
         assert!(
             f_start.abs() < 1e-9,
             "start vertex -> fraction 0, got {f_start}"
         );
-        assert!(
-            !int_start,
-            "an endpoint projection is CLAMPED, not interior"
-        );
 
-        let (f_end, int_end) = projection_fraction(&ebg, &geom, 0, 1.0, 0.0);
+        let f_end = projection_fraction(&ebg, &geom, 0, 1.0, 0.0);
         assert!(
             (f_end - 1.0).abs() < 1e-9,
             "end vertex -> fraction 1, got {f_end}"
         );
-        assert!(!int_end, "an endpoint projection is CLAMPED, not interior");
 
-        let (f_mid, int_mid) = projection_fraction(&ebg, &geom, 0, 0.5, 0.0);
+        let f_mid = projection_fraction(&ebg, &geom, 0, 0.5, 0.0);
         assert!(
             (f_mid - 0.5).abs() < 1e-9,
             "midpoint -> fraction 0.5, got {f_mid}"
         );
-        assert!(int_mid, "a mid-edge projection IS interior");
     }
 
     #[test]
@@ -990,12 +1013,12 @@ mod tests {
         // before the tail projects onto the tail (fraction 0). Both are the
         // clamp behaviour the seed math relies on (no negative / >1 partials).
         let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
-        let (f_past, _) = projection_fraction(&ebg, &geom, 0, 5.0, 0.0);
+        let f_past = projection_fraction(&ebg, &geom, 0, 5.0, 0.0);
         assert!(
             (f_past - 1.0).abs() < 1e-9,
             "past-the-end clamps to 1, got {f_past}"
         );
-        let (f_before, _) = projection_fraction(&ebg, &geom, 0, -3.0, 0.0);
+        let f_before = projection_fraction(&ebg, &geom, 0, -3.0, 0.0);
         assert!(
             f_before.abs() < 1e-9,
             "before-the-start clamps to 0, got {f_before}"
@@ -1009,12 +1032,11 @@ mod tests {
         // squared distance grows. Locks the "project onto, not snap-to-vertex"
         // property.
         let (ebg, geom) = single_edge(&[(0.0, 0.0), (1.0, 0.0)]);
-        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.5, 0.01);
+        let f = projection_fraction(&ebg, &geom, 0, 0.5, 0.01);
         assert!(
             (f - 0.5).abs() < 1e-6,
             "perpendicular offset keeps fraction 0.5, got {f}"
         );
-        assert!(interior);
     }
 
     #[test]
@@ -1025,25 +1047,23 @@ mod tests {
         // seg1 + 0.5*seg2 = 1 + 1 = 2 units -> fraction 2/3. A vertex-index
         // scheme would wrongly report 0.75 (3/4 of the way past vertex index).
         let (ebg, geom) = single_edge(&[(0.0, 0.0), (0.001, 0.0), (0.003, 0.0)]);
-        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.002, 0.0);
+        let f = projection_fraction(&ebg, &geom, 0, 0.002, 0.0);
         assert!(
             (f - 2.0 / 3.0).abs() < 1e-6,
             "arc-length fraction must be 2/3, got {f}"
         );
-        assert!(interior);
     }
 
     #[test]
     fn projection_fraction_degenerate_single_point_polyline() {
         // A polyline with <2 vertices has no direction; the function returns
-        // the documented (0.5, false) sentinel rather than dividing by zero.
+        // the documented 0.5 sentinel rather than dividing by zero.
         let (ebg, geom) = single_edge(&[(0.0, 0.0)]);
-        let (f, interior) = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
+        let f = projection_fraction(&ebg, &geom, 0, 0.0, 0.0);
         assert!(
             (f - 0.5).abs() < 1e-12,
             "single-point sentinel fraction is 0.5"
         );
-        assert!(!interior);
     }
 
     // --- PhantomEnd::query_seeds_and_shift ----------------------------------
@@ -1174,17 +1194,22 @@ mod tests {
     }
 
     #[test]
-    fn reduce_time_rejects_clamped_secondary_same_rank_meet() {
+    fn reduce_time_rejects_a_secondary_same_rank_meet() {
         // Same rank on both sides is the engine's zero-cost identity cell. It
-        // may ONLY stand in for a real same-edge direct move when BOTH seeds
-        // truly project onto the edge (direct_ok). Here the source seed is a
-        // CLAMPED secondary (direct_ok = false), so the meet is a fabricated
+        // may ONLY stand in for a real same-edge direct move when the edge is
+        // BOTH endpoints' own snap (direct_ok). Here the source seed is a
+        // SECONDARY candidate (direct_ok = false), so the meet is a fabricated
         // 0-cost move and must be rejected -> cell stays u32::MAX (#502/#509).
+        // Interiority would not separate the two cases (#607).
         let src = SeedExpansion::build(&[vec![(10u32, 5u32, 1u32, false)]]);
         let tgt = SeedExpansion::build(&[vec![(10u32, 5u32, 1u32, true)]]);
         let m = vec![0u32]; // zero-cost identity cell
         let (out, _) = src.reduce_time(&tgt, &m, None);
-        assert_eq!(out, vec![u32::MAX], "clamped same-rank meet is not a path");
+        assert_eq!(
+            out,
+            vec![u32::MAX],
+            "secondary same-rank meet is not a path"
+        );
     }
 
     #[test]
