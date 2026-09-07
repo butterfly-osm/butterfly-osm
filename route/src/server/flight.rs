@@ -3909,13 +3909,19 @@ fn completed_flight_stream(
         } else {
             // #611: a refusal used to be invisible on the server — the client
             // saw the error and the logs said nothing at all, on 20 % of
-            // loaded calls. The producer logs WHY it stopped
-            // ([`spawn_stream_producer`]); this line says the refusal
-            // happened, with the rows the client did receive.
+            // loaded calls, because nothing had actually been truncated: the
+            // producer had emitted every row and simply had not published its
+            // flag yet. That false negative is gone (the flag is published
+            // before the channel closes), so a refusal now always means the
+            // producer really did not finish — and it logs the reason itself
+            // just above this line ([`spawn_stream_producer`]). No producer
+            // line at all means it never reached the end: killed, aborted, or
+            // its task dropped.
             tracing::error!(
                 action,
                 rows = rows.load(Ordering::Relaxed),
-                "flight stream refused: producer never signalled completion (#533/#611)"
+                "flight stream refused: the producer did not signal completion \
+                 — see the producer's reason above (#533/#611)"
             );
             Err(Status::internal(
                 "flight stream truncated before completion — retry (#533)",
