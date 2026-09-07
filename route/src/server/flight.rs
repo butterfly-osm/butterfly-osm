@@ -542,6 +542,92 @@ fn build_matrix_batch(
 pub type BatchStream =
     Pin<Box<dyn futures::Stream<Item = std::result::Result<RecordBatch, Status>> + Send>>;
 
+/// The channel a streamed producer emits its batches on.
+type BatchTx = tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, Status>>;
+
+/// #611: why a streamed producer stopped. Returned by every producer body so
+/// [`spawn_stream_producer`] can publish completion — and, when the stream is
+/// NOT complete, say on the server WHY before the client sees the #533
+/// trailer refusal.
+enum ProducerEnd {
+    /// Everything the request asked for was emitted.
+    Complete,
+    /// The client went away mid-stream (`blocking_send` failed): nobody is
+    /// left to read a trailer, so this is not an engine failure.
+    ClientGone,
+    /// The producer stopped early and already sent a non-OK `Status` on the
+    /// channel. The `&'static str` names the reason for the server log.
+    Failed(&'static str),
+}
+
+/// #611: run one streamed `do_get` / `do_exchange` producer on the blocking
+/// pool (#539) and publish its completion flag.
+///
+/// **The flag is published BEFORE the channel closes.** The producer body only
+/// ever gets `&BatchTx`, so it cannot drop the sender: the channel closes when
+/// this helper drops its `tx`, which happens after the `Release` store. The
+/// consumer reaches [`completed_flight_stream`]'s trailer only once it has
+/// observed end-of-stream — i.e. after that drop — so an `Acquire` load there
+/// cannot miss the store.
+///
+/// This is exactly the bug #611 measured: `route_batch` passed its `Sender`
+/// BY VALUE into the producer body, so the sender dropped when that body
+/// returned and the flag was stored afterwards, from the blocking thread,
+/// while the runtime worker was already polling the trailer. Under host load
+/// the worker won that window on 17-35 % of calls: every row had been emitted
+/// (the trailer's own row count proved it) and the guard still — correctly,
+/// on what it could see — refused the stream. Nothing was ever truncated;
+/// the flag was late. Every other producer already stored before dropping,
+/// which is why only `route_batch` failed. One helper now, so the ordering
+/// is a property of the type and not of each producer's drop order.
+///
+/// A panic in the body is caught, logged, and leaves the flag unset — the
+/// trailer then refuses, as #533 requires, but the server now says why.
+fn spawn_stream_producer<F>(action: &'static str, tx: BatchTx, done: Arc<AtomicBool>, body: F)
+where
+    F: FnOnce(&BatchTx) -> ProducerEnd + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let end = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&tx))) {
+            Ok(end) => end,
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| {
+                        payload
+                            .downcast_ref::<&'static str>()
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_else(|| "<non-string panic>".to_string());
+                tracing::error!(
+                    action,
+                    panic = %msg,
+                    "flight producer panicked — the stream will be refused as truncated (#533/#611)"
+                );
+                ProducerEnd::Failed("panic")
+            }
+        };
+        match end {
+            // Ordering::Release + the drop of `tx` below: see the doc comment.
+            ProducerEnd::Complete => done.store(true, Ordering::Release),
+            ProducerEnd::ClientGone => {
+                tracing::warn!(
+                    action,
+                    "flight producer stopped: client disconnected (#611)"
+                )
+            }
+            ProducerEnd::Failed(why) => tracing::error!(
+                action,
+                why,
+                "flight producer stopped before completion — the stream will be refused (#533/#611)"
+            ),
+        }
+        // Explicit, and load-bearing: the flag above is published first.
+        drop(tx);
+    });
+}
+
 // =============================================================================
 // Named bands on Flight (2026-09-03): best / typical / worst
 // =============================================================================
@@ -2014,12 +2100,16 @@ fn emit_route_batch(
 /// thread-local `CchQueryState` + per-worker `RouteScratch` exactly
 /// once (the previous loop re-spawned per chunk, paying ~80 MB TLS
 /// init each time on Belgium).
+/// #611: `tx` is a BORROW. The producer must not be able to close the channel,
+/// because the completeness flag is published by [`spawn_stream_producer`]
+/// after this returns — passing the `Sender` by value here is what made the
+/// flag arrive after end-of-stream on ~20 % of loaded calls.
 fn do_route_batch_blocking(
     state: Arc<ServerState>,
     mode: Mode,
     params: RouteBatchParams,
-    tx: tokio::sync::mpsc::Sender<std::result::Result<RecordBatch, Status>>,
-) {
+    tx: &BatchTx,
+) -> ProducerEnd {
     let mode_data = state.get_mode(mode);
     let schema = Arc::new(route_batch_schema());
     let batch_size = route_batch_batch_size();
@@ -2115,12 +2205,14 @@ fn do_route_batch_blocking(
                 fallback_pct = (fb_count as f64) * 100.0 / (n.max(1) as f64),
                 "route_batch chunk fallback rate"
             );
-            match emit_route_batch(&tx, &schema, n, results) {
+            match emit_route_batch(tx, &schema, n, results) {
                 EmitOutcome::Sent => {}
-                EmitOutcome::Disconnected | EmitOutcome::ArrowError => return,
+                EmitOutcome::Disconnected => return ProducerEnd::ClientGone,
+                // emit_route_batch already forwarded the Status on tx.
+                EmitOutcome::ArrowError => return ProducerEnd::Failed("arrow batch build"),
             }
         }
-        return;
+        return ProducerEnd::Complete;
     }
 
     // Multi-worker: persistent pool. #293 review feedback addressed:
@@ -2174,7 +2266,7 @@ fn do_route_batch_blocking(
     }
     let (done_tx, done_rx) = std::sync::mpsc::channel::<Done>();
 
-    let join_result: std::thread::Result<()> = std::thread::scope(|scope| {
+    let join_result: std::thread::Result<ProducerEnd> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(n_workers);
         for rx in work_rxs.into_iter() {
             let state = Arc::clone(&state);
@@ -2270,7 +2362,10 @@ fn do_route_batch_blocking(
 
         let mut next_worker = 0usize;
         let mut first_panic_msg: Option<String> = None;
-        let mut bail_msg: Option<&'static str> = None;
+        // #611: how the chunk loop ended when it did NOT run to the end. The
+        // helper turns this into the completeness flag and one server-side log
+        // line naming the reason.
+        let mut early: Option<ProducerEnd> = None;
 
         'chunks: for (chunk_idx, chunk) in params.pairs.chunks(batch_size).enumerate() {
             let n = chunk.len();
@@ -2287,7 +2382,10 @@ fn do_route_batch_blocking(
                     dlat: pair[3],
                 };
                 if work_txs[next_worker].send(work).is_err() {
-                    bail_msg = Some("route_batch workers exited unexpectedly");
+                    let _ = tx.blocking_send(Err(Status::internal(
+                        "route_batch workers exited unexpectedly",
+                    )));
+                    early = Some(ProducerEnd::Failed("workers exited unexpectedly"));
                     break 'chunks;
                 }
                 next_worker = (next_worker + 1) % n_workers;
@@ -2322,7 +2420,10 @@ fn do_route_batch_blocking(
                         }
                     }
                     Err(_) => {
-                        bail_msg = Some("route_batch result channel closed early");
+                        let _ = tx.blocking_send(Err(Status::internal(
+                            "route_batch result channel closed early",
+                        )));
+                        early = Some(ProducerEnd::Failed("result channel closed early"));
                         break 'chunks;
                     }
                 }
@@ -2351,16 +2452,16 @@ fn do_route_batch_blocking(
                 fallback_pct = (fb_chunk as f64) * 100.0 / (n.max(1) as f64),
                 "route_batch chunk fallback rate"
             );
-            match emit_route_batch(&tx, &schema, emit_n, results) {
+            match emit_route_batch(tx, &schema, emit_n, results) {
                 EmitOutcome::Sent => {}
                 EmitOutcome::Disconnected => {
-                    bail_msg = Some("client disconnected");
+                    early = Some(ProducerEnd::ClientGone);
                     break 'chunks;
                 }
                 EmitOutcome::ArrowError => {
                     // emit_route_batch already forwarded the error
-                    // status on tx; bail without setting bail_msg so
-                    // we don't double-send.
+                    // status on tx — record the reason, don't double-send.
+                    early = Some(ProducerEnd::Failed("arrow batch build"));
                     break 'chunks;
                 }
             }
@@ -2379,28 +2480,29 @@ fn do_route_batch_blocking(
                 "route_batch worker panicked: {}",
                 msg
             ))));
-        } else if let Some(msg) = bail_msg
-            && msg != "client disconnected"
-        {
-            let _ = tx.blocking_send(Err(Status::internal(msg)));
+            return Ok(ProducerEnd::Failed("worker panicked"));
         }
-        Ok(())
+        Ok(early.unwrap_or(ProducerEnd::Complete))
     });
 
-    if let Err(panic_payload) = join_result {
-        let msg = panic_payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                panic_payload
-                    .downcast_ref::<&'static str>()
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "<non-string panic>".to_string());
-        let _ = tx.blocking_send(Err(Status::internal(format!(
-            "route_batch worker panicked: {}",
-            msg
-        ))));
+    match join_result {
+        Ok(end) => end,
+        Err(panic_payload) => {
+            let msg = panic_payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic_payload
+                        .downcast_ref::<&'static str>()
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "<non-string panic>".to_string());
+            let _ = tx.blocking_send(Err(Status::internal(format!(
+                "route_batch worker panicked: {}",
+                msg
+            ))));
+            ProducerEnd::Failed("worker panicked")
+        }
     }
 }
 
@@ -2422,17 +2524,12 @@ fn do_route_batch(
     let state = Arc::clone(state);
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
     let done = Arc::new(AtomicBool::new(false)); // #533: full-completion flag
-    let done_bg = done.clone();
 
-    tokio::task::spawn_blocking(move || {
-        do_route_batch_blocking(state, mode, params, tx);
-        // #533: reached only if the worker returned normally. Every early
-        // return inside `do_route_batch_blocking` already sent an `Err` (Arrow
-        // build) or is a client disconnect (receiver gone), so a `done=true`
-        // there is harmless — the client already saw the non-OK / is gone. A
-        // PANIC unwinds PAST this, leaving `done` false → the consumer emits a
-        // non-OK truncation error instead of a silent OK.
-        done_bg.store(true, Ordering::Release);
+    // #611: the helper publishes `done` BEFORE it drops the sender, so the
+    // trailer cannot read a stale `false` after end-of-stream, and it logs the
+    // reason (panic / client gone / error) when the stream is not complete.
+    spawn_stream_producer("route_batch", tx, done.clone(), move |tx| {
+        do_route_batch_blocking(state, mode, params, tx)
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -3788,6 +3885,7 @@ const DO_GET_ACTIONS: &[&str] = &[
 /// cell is read AFTER the stream drains, so the streamed (tiled) producer has
 /// folded every tile's plan into it by then.
 fn completed_flight_stream(
+    action: &'static str,
     schema: SchemaRef,
     batch_stream: BatchStream,
     done: Arc<AtomicBool>,
@@ -3811,6 +3909,16 @@ fn completed_flight_stream(
                 ..Default::default()
             })
         } else {
+            // #611: a refusal used to be invisible on the server — the client
+            // saw the error and the logs said nothing at all, on 20 % of
+            // loaded calls. The producer logs WHY it stopped
+            // ([`spawn_stream_producer`]); this line says the refusal
+            // happened, with the rows the client did receive.
+            tracing::error!(
+                action,
+                rows = rows.load(Ordering::Relaxed),
+                "flight stream refused: producer never signalled completion (#533/#611)"
+            );
             Err(Status::internal(
                 "flight stream truncated before completion — retry (#533)",
             ))
@@ -4329,7 +4437,7 @@ async fn do_exchange_catchment(
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
     // #533: completeness trailer or non-OK error on truncation.
-    let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
+    let flight_stream = completed_flight_stream("catchment", schema, batch_stream, done, "", None);
     Ok(Response::new(flight_stream))
 }
 
@@ -4430,8 +4538,14 @@ impl FlightService for ButterflyFlight {
                         off_runtime(move || do_matrix(&state, mode, params, &pc)).await?;
                     (Arc::new(matrix_schema()), bs, done)
                 };
-                let flight_stream =
-                    completed_flight_stream(schema, batch_stream, done, extra, Some(plan_cell));
+                let flight_stream = completed_flight_stream(
+                    "matrix",
+                    schema,
+                    batch_stream,
+                    done,
+                    extra,
+                    Some(plan_cell),
+                );
                 Ok(Response::new(flight_stream))
             }
             "route_batch" => {
@@ -4490,7 +4604,8 @@ impl FlightService for ButterflyFlight {
                     (Arc::new(route_batch_schema()), bs, done)
                 };
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
+                let flight_stream =
+                    completed_flight_stream("route_batch", schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "isochrone" => {
@@ -4524,7 +4639,8 @@ impl FlightService for ButterflyFlight {
                 // isochrone was the one do_get action still shipping without it.
                 // No plan cell: the matrix action is the only one whose result
                 // comes from the shape-aware router (#594).
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
+                let flight_stream =
+                    completed_flight_stream("isochrone", schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "transit_bulk" => {
@@ -4544,7 +4660,8 @@ impl FlightService for ButterflyFlight {
                     off_runtime(move || do_transit_bulk(&state, params)).await?;
                 let schema = Arc::new(transit_bulk_schema());
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
+                let flight_stream =
+                    completed_flight_stream("transit_bulk", schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             "edges_batch" => {
@@ -4576,6 +4693,7 @@ impl FlightService for ButterflyFlight {
                         Box::pin(stream::iter(all_null_edges_batches(params.pairs.len())));
                     // #533: fully materialised, complete by construction.
                     let flight_stream = completed_flight_stream(
+                        "edges_batch",
                         schema,
                         batch_stream,
                         Arc::new(AtomicBool::new(true)),
@@ -4591,7 +4709,8 @@ impl FlightService for ButterflyFlight {
                     off_runtime(move || do_edges_batch(&state, mode, params)).await?;
                 let schema = Arc::new(edges_batch_schema());
                 // #533: completeness trailer or non-OK error on truncation.
-                let flight_stream = completed_flight_stream(schema, batch_stream, done, "", None);
+                let flight_stream =
+                    completed_flight_stream("edges_batch", schema, batch_stream, done, "", None);
                 Ok(Response::new(flight_stream))
             }
             other => Err(Status::invalid_argument(format!(
@@ -5943,6 +6062,7 @@ mod flight_completeness_tests {
         let bs: BatchStream =
             Box::pin(futures::stream::iter(batches).map(Ok::<RecordBatch, tonic::Status>));
         let stream = completed_flight_stream(
+            "matrix",
             Arc::new(matrix_schema()),
             bs,
             Arc::new(AtomicBool::new(done)),
