@@ -72,6 +72,13 @@ struct Lattice {
     /// far end becomes a reachable-but-undrawn island: a second raster
     /// component, which the product rule says must not be served.
     express: Option<(usize, usize, usize, usize, u32)>,
+    /// `(row, col, offset_m)`: a SECOND two-way street between the same two
+    /// intersections `(row, col)` and `(row, col + 1)`, drawn `offset_m`
+    /// north of the one already there. The service-road / second-carriageway
+    /// / separately-mapped-sidewalk shape: two ways so close that a point
+    /// beside one is within the snapper's slack of the other, so one point's
+    /// PRIMARY snap is the other point's SECONDARY candidate (#607).
+    parallel_street: Option<(usize, usize, f64)>,
 }
 
 /// Directed street segment (an EBG node) as this fixture sees it.
@@ -128,15 +135,20 @@ impl Lattice {
         let mut polylines: Vec<PolyLine> = Vec::new();
         let mut nbg_edges: Vec<NbgEdge> = Vec::new();
 
+        // `draw_offset_m` shifts only the drawn polyline north; the street
+        // still joins the same two intersections.
         let push_street = |u: u32,
                            v: u32,
                            forward_only: bool,
+                           draw_offset_m: f64,
                            segs: &mut Vec<Segment>,
                            polys: &mut Vec<PolyLine>,
                            edges: &mut Vec<NbgEdge>| {
             let street = polys.len() as u32;
             let (ulon, ulat) = coords[u as usize];
             let (vlon, vlat) = coords[v as usize];
+            let off = draw_offset_m / M_PER_DEG_LAT;
+            let (ulat, vlat) = (ulat + off, vlat + off);
             polys.push(PolyLine {
                 lat_fxp: vec![(ulat * 1e7) as i32, (vlat * 1e7) as i32],
                 lon_fxp: vec![(ulon * 1e7) as i32, (vlon * 1e7) as i32],
@@ -180,6 +192,7 @@ impl Lattice {
                     self.node_id(row, col),
                     self.node_id(row, col + 1),
                     oneway,
+                    0.0,
                     &mut segments,
                     &mut polylines,
                     &mut nbg_edges,
@@ -195,11 +208,26 @@ impl Lattice {
                     self.node_id(row, col),
                     self.node_id(row + 1, col),
                     false,
+                    0.0,
                     &mut segments,
                     &mut polylines,
                     &mut nbg_edges,
                 );
             }
+        }
+
+        // The parallel street, appended after the grid so `twins_of` on the
+        // grid street it doubles is unchanged.
+        if let Some((row, col, offset_m)) = self.parallel_street {
+            push_street(
+                self.node_id(row, col),
+                self.node_id(row, col + 1),
+                false,
+                offset_m,
+                &mut segments,
+                &mut polylines,
+                &mut nbg_edges,
+            );
         }
 
         // The geometry-less express link, appended last so its street id is
@@ -543,6 +571,7 @@ fn geometry_lattice() -> Network {
         origin_lat: 50.85,
         void_block: None,
         express: None,
+        parallel_street: None,
     }
     .build()
 }
@@ -562,6 +591,7 @@ fn pathological_lattice() -> Network {
         origin_lat: 50.85,
         void_block: Some((23, 28, 23, 28)),
         express: Some((20, 20, 1, 1, 30)),
+        parallel_street: None,
     }
     .build()
 }
@@ -817,6 +847,7 @@ fn hierarchy_lattice() -> Network {
         origin_lat: 50.85,
         void_block: None,
         express: None,
+        parallel_street: None,
     }
     .build()
 }
@@ -1216,6 +1247,7 @@ fn traversal_lattice(oneway_row_period: usize) -> Network {
         origin_lat: 50.85,
         void_block: None,
         express: None,
+        parallel_street: None,
     }
     .build()
 }
@@ -1630,6 +1662,7 @@ fn arrive_lattice() -> Network {
         origin_lat: 50.85,
         void_block: None,
         express: None,
+        parallel_street: None,
     }
     .build()
 }
@@ -2029,6 +2062,238 @@ fn a_destination_behind_the_origin_is_the_other_twins_move() {
 }
 
 // ---------------------------------------------------------------------
+// #607 — what `PhantomSeed.direct_ok` actually is, and why the projection
+// being interior cannot stand in for it.
+// ---------------------------------------------------------------------
+
+/// The block that carries two parallel streets, and how far apart they are
+/// drawn — close enough that a point beside one is inside the snapper's
+/// slack (20 m / 20 %) of the other.
+const SERVICE_ROW: usize = 6;
+const SERVICE_COL: usize = 6;
+const SERVICE_OFFSET_M: f64 = 25.0;
+
+/// [`hierarchy_lattice`] plus a service road doubling one block.
+fn service_road_lattice() -> Network {
+    Lattice {
+        dim: 13,
+        spacing_m: 200.0,
+        edge_cost_s: 30,
+        oneway_row_period: 4,
+        origin_lon: 4.35,
+        origin_lat: 50.85,
+        void_block: None,
+        express: None,
+        parallel_street: Some((SERVICE_ROW, SERVICE_COL, SERVICE_OFFSET_M)),
+    }
+    .build()
+}
+
+/// One phantom endpoint snapped at `frac` along the STORED direction of
+/// `primary`, carrying `secondary` as a #502 alternative candidate at its
+/// own projection `frac_secondary`. Both twins of both streets, exactly the
+/// shape `phantom_from_candidates` builds — and `direct_ok` set the way the
+/// production snapper sets it: the primary's twins only.
+fn phantom_with_secondary(
+    net: &Network,
+    seg_to_rank: &[u32],
+    primary: u32,
+    frac: f64,
+    secondary: u32,
+    frac_secondary: f64,
+) -> PhantomEnd {
+    let mut seeds = Vec::with_capacity(4);
+    for (street_fwd, f_stored, direct_ok) in
+        [(primary, frac, true), (secondary, frac_secondary, false)]
+    {
+        for (i, &e) in net.twins_of(street_fwd).iter().enumerate() {
+            // Twin 0 is the stored direction; twin 1 drives it backwards.
+            let frac_self = if i == 0 { f_stored } else { 1.0 - f_stored };
+            let w = net.node_weights[e as usize] as f64;
+            seeds.push(PhantomSeed {
+                ebg_id: e,
+                rank: seg_to_rank[e as usize],
+                part_time: ((1.0 - frac_self) * w).round() as u32,
+                part_len: 0,
+                frac: frac_self,
+                frac_stored: f_stored,
+                direct_ok,
+            });
+        }
+    }
+    let (lon, lat) = net.segment_start(primary);
+    PhantomEnd {
+        seeds,
+        snapped_lon: lon,
+        snapped_lat: lat,
+        snap_distance_m: 0.0,
+        primary_ebg: primary,
+    }
+}
+
+/// The honest cost between two snapped points: leave the source along one of
+/// ITS OWN snap's twins, arrive on one of the destination's, paying the two
+/// partial edges. Independent Dijkstra, this file's own — never the engine's.
+/// Same-edge combinations are excluded: that is the direct move's business,
+/// and this is the truth it has to be checked against.
+fn true_cost_between(net: &Network, src: &PhantomEnd, dst: &PhantomEnd) -> i64 {
+    let mut best = i64::MAX;
+    for a in src.seeds.iter().filter(|s| s.direct_ok) {
+        let d = net.reference_dijkstra(a.ebg_id);
+        for b in dst.seeds.iter().filter(|s| s.direct_ok) {
+            if a.ebg_id == b.ebg_id || d[b.ebg_id as usize] == u32::MAX {
+                continue;
+            }
+            let c = a.part_time as i64 + d[b.ebg_id as usize] as i64 - b.part_time as i64;
+            best = best.min(c);
+        }
+    }
+    assert!(best < i64::MAX, "the two endpoints must be connected");
+    best
+}
+
+/// #607: `direct_ok` is "this seed is the endpoint's OWN snap" — its
+/// PRIMARY physical edge — and NOT "the point projects onto the edge's
+/// interior", which the field's documentation used to claim.
+///
+/// The fixture is the shape that makes the two readings disagree, and it is
+/// an ordinary one: a block carrying a main street and a service road 25 m
+/// away (equally: the two carriageways of a divided road, or a separately
+/// mapped sidewalk). P snaps to the main street, Q to the service road, and
+/// each is close enough to the other way that the snapper hands it as a
+/// second candidate. Every projection here is INTERIOR — mid-block, nowhere
+/// near an end — so the documented condition would mark all four seeds
+/// eligible and let the pair claim a same-edge move on a street that is only
+/// ONE of them's snap.
+///
+/// Asserted against this file's own Dijkstra:
+///   * the served condition offers no move, and the seeded query returns the
+///     real drive out to the junction and back down the other way;
+///   * the documented condition fabricates a move at a fraction of that cost
+///     — 0 s exactly when the two points sit opposite each other, which is
+///     the #509 live bug, with interiority holding throughout.
+///
+/// The direct move is offered against the seeded answer and the cheaper one
+/// wins, so every fabricated move here would be SERVED: on `/route`, on
+/// Flight `route_batch` and `edges_batch`, and — through the same flag in
+/// the matrix engine's pure⊕pure join — as a `/table` cell. Both surfaces
+/// would fabricate the same number, so the cross-surface gate check could
+/// not see it either.
+#[test]
+fn direct_ok_is_the_endpoints_own_snap_not_an_interior_projection() {
+    use butterfly_route::matrix::bucket_ch::{DownReverseAdjFlat, UpAdjFlat};
+    use butterfly_route::server::phantom::direct_move;
+    use butterfly_route::server::query::CchQuery;
+    use butterfly_route::server::types::SnapRole;
+
+    let net = service_road_lattice();
+    let h = contract(&net);
+    let n = net.n_segments();
+    let up = UpAdjFlat::build_with(&h.topo, &h.weights, true);
+    let down_rev = DownReverseAdjFlat::build_with(&h.topo, &h.weights, true);
+    let (_, seg_to_rank) = rank_maps(&h, n);
+    let query = CchQuery::with_custom_weights(&h.topo, &up, &down_rev, &h.weights);
+
+    // The two ways of the doubled block, in their stored direction.
+    let u = net.lat.node_id(SERVICE_ROW, SERVICE_COL);
+    let v = net.lat.node_id(SERVICE_ROW, SERVICE_COL + 1);
+    let both: Vec<u32> = (0..n as u32)
+        .filter(|&e| net.segments[e as usize].tail == u && net.segments[e as usize].head == v)
+        .collect();
+    assert_eq!(
+        both.len(),
+        2,
+        "the block must carry the grid street AND its parallel"
+    );
+    let (main_fwd, service_fwd) = (both[0], both[1]);
+    assert_ne!(
+        net.segments[main_fwd as usize].street, net.segments[service_fwd as usize].street,
+        "two distinct ways, not one street's twins"
+    );
+
+    for &(f_p, f_q) in &[(0.35_f64, 0.55_f64), (0.5, 0.5)] {
+        for f in [f_p, f_q] {
+            assert!(
+                f > 0.01 && f < 0.99,
+                "every projection in this fixture is INTERIOR — clamping is \
+                 not what keeps the fabricated move out"
+            );
+        }
+        // P is on the main street, Q on the service road; each carries the
+        // other way as its #502 secondary candidate.
+        let p = phantom_with_secondary(&net, &seg_to_rank, main_fwd, f_p, service_fwd, f_p);
+        let q = phantom_with_secondary(&net, &seg_to_rank, service_fwd, f_q, main_fwd, f_q);
+
+        let truth = true_cost_between(&net, &p, &q);
+        assert!(
+            truth > 0,
+            "two points on different ways of the block are a real drive apart"
+        );
+
+        // What is served today: no direct move, and the seeded query returns
+        // the truth.
+        assert!(
+            direct_move(&net.node_weights, &net.ebg_nodes, &p, &q).is_none(),
+            "a street that is only ONE endpoint's snap must carry no direct move"
+        );
+        let (src_seeds, _) = p.query_seeds_and_shift(SnapRole::Src);
+        let (dst_seeds, dst_shift) = q.query_seeds_and_shift(SnapRole::Dst);
+        let seeded = query
+            .query_seeded(&src_seeds, &dst_seeds, false)
+            .map(|r| r.distance.saturating_sub(dst_shift))
+            .expect("the seeded query must connect the two ways of the block");
+        assert_eq!(
+            seeded as i64, truth,
+            "the served answer is the real drive between the two snaps"
+        );
+
+        // What the documented condition would serve. Interiority marks every
+        // seed here eligible, so it reduces to flipping the secondaries on.
+        let all_ok = |e: &PhantomEnd| PhantomEnd {
+            seeds: e
+                .seeds
+                .iter()
+                .map(|s| PhantomSeed {
+                    direct_ok: true,
+                    ..*s
+                })
+                .collect(),
+            ..e.clone()
+        };
+        let fabricated = direct_move(&net.node_weights, &net.ebg_nodes, &all_ok(&p), &all_ok(&q))
+            .expect("the documented condition would offer a move on the shared way");
+        assert!(
+            (fabricated.cost_s as i64) * 2 < truth,
+            "interior secondary billed {} s for a {truth} s drive",
+            fabricated.cost_s
+        );
+        if (f_p - f_q).abs() < 1e-12 {
+            assert_eq!(
+                fabricated.cost_s, 0,
+                "two points opposite each other on the block would be billed 0 s"
+            );
+        }
+        eprintln!(
+            "#607 f_src={f_p} f_dst={f_q}: truth {truth} s, served direct none, \
+             documented condition would bill {} s",
+            fabricated.cost_s
+        );
+
+        // Positive control, so the `is_none` above cannot pass vacuously:
+        // move Q onto the main street and the SAME machinery does offer the
+        // move, because the shared way is now BOTH endpoints' own snap.
+        let q_on_main = phantom_with_secondary(&net, &seg_to_rank, main_fwd, f_q, service_fwd, f_q);
+        let shared = direct_move(&net.node_weights, &net.ebg_nodes, &p, &q_on_main)
+            .expect("both endpoints snapped to the same way: the move is theirs");
+        assert_eq!(
+            shared.cost_s,
+            ((f_q - f_p) * net.node_weights[main_fwd as usize] as f64).round() as u32,
+            "the move costs the fraction of the way actually travelled"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------
 // exclude= / avoid_polygons= — the recustomization (#606).
 //
 // `exclude=motorway` recomputes the CCH weights with every motorway arc
@@ -2100,6 +2365,7 @@ fn motorway_lattice() -> (Network, Vec<u8>) {
         origin_lat: 50.85,
         void_block: None,
         express: None,
+        parallel_street: None,
     }
     .build();
 
