@@ -56,6 +56,57 @@
 //! today — and is exercised with a non-zero one in
 //! [`mod guard_tests`](self), so it will already be standing when #593 adds a
 //! real preference term.
+//!
+//! # What each surface minimises, and what it reports
+//!
+//! Settled with #610 so that #593 implements a decision rather than taking one:
+//!
+//! | surface | minimises | reports |
+//! |---|---|---|
+//! | `/route` | cost | time along it as the duration, length along it as the distance |
+//! | `/table`, `/trip`, Flight `matrix` | cost | the same two, carried — a cell stays a duration |
+//! | `/isochrone` | **time** | the time-reachable area |
+//!
+//! The matrix is where the cost lands hardest: it has no per-cell path to
+//! unpack, so all three quantities must ride through the hierarchy together,
+//! and every sweep bound expressed in seconds (`max_minutes`, the seeded
+//! bucket's `sweep_bound`) has to bound the CARRIED time rather than the
+//! primary key it bounds today. `/route` could in principle re-derive its
+//! duration by summing the unpacked edges it already walks for the geometry,
+//! but its label must stay consistent with the matrix's or the two surfaces
+//! disagree — which is the whole point of one graph and one hierarchy.
+//!
+//! **The isochrone deliberately keeps minimising time.** A budget of twenty
+//! minutes is a question about time, and the honest answer to it is the set of
+//! places some road reaches in twenty minutes. The alternative reading — the
+//! places whose *cost-optimal* path takes under twenty minutes — is a different
+//! product: it excludes a town that a fast disliked road reaches, which is
+//! surprising rather than useful. It is also ruinous to compute. The reachable
+//! set is bounded today by comparing the primary label against the threshold,
+//! which is what makes an isochrone 5 ms; under a cost primary, `cost > T` is
+//! not a valid stopping condition, because a later, dearer label elsewhere may
+//! still be quick. The upward search would become effectively unbounded. A
+//! preferred-path isochrone, if it is ever wanted, is a separate named surface
+//! with its own latency budget — not a silent change of meaning for this one.
+//!
+//! # Where the preference lives, and who may change it
+//!
+//! **In the mode profile, not in the measured data.** A preference is a product
+//! choice, of exactly the kind `models/<mode>.model.json` already holds beside
+//! access rules, one-way rules and turn penalties; it belongs in git, next to
+//! them, where it can be reviewed and blamed. It must never travel in the speed
+//! table: that table is measurement with provenance, the level anchor is fitted
+//! on it, and a choice mixed into it is invisible by construction. The
+//! *compiled* channels do belong in the artifact — contracting a hierarchy is
+//! not something a request can do.
+//!
+//! **A request may pick a preference, never invent one.** Contraction does not
+//! distribute over the parameter: `min over paths of (time + α·charge)` is
+//! piecewise in `α`, so two customized hierarchies cannot be interpolated into
+//! a third — the winning path, and every middle that encodes it, changes. So a
+//! request names one of a small closed set of pre-customized profiles, the way
+//! it already names one of a small closed set of exclusion masks (#606), and a
+//! seconds-per-kilometre in a query string is not on offer.
 
 use std::borrow::Cow;
 use std::sync::Arc;

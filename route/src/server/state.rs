@@ -95,7 +95,20 @@ pub struct ModeData {
     pub mode: Mode,
     // CCH hierarchy for this mode
     pub cch_topo: CchTopo,
+    /// The channel the search minimises, with the apexes it elected.
+    ///
+    /// #610: it is ALSO the duration every surface reports, and that is only
+    /// sound while the mode has no routing preference — `CostModel::TimeIsCost`
+    /// for all of them today, so the cost IS the provider's measured time. Do
+    /// not add a preference term to these weights: the durations we serve are
+    /// the provider's, the level anchor is fitted on them, and a preference
+    /// folded in here would be absorbed by that anchor as a global constant
+    /// (#608/#609). The reported duration separates from this array in #593,
+    /// which is what `customization::time_along_cost` exists to derive.
     pub cch_weights: CchWeights,
+    /// Shortest-DISTANCE weights, an independent metric on its own apexes.
+    /// Never a substitute for the length along the path the search chose —
+    /// that is `cch_weights_len_along_time`.
     pub cch_weights_dist: CchWeights,
     /// Length-along-time-shortest weights (#371/#372). `None` for
     /// containers built before PR #377. Once the 2-channel bucket-M2M
