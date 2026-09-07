@@ -46,6 +46,15 @@ use crate::model::types::Mode;
 /// seed into the file name and header). v9: #609 (the turn charge
 /// subtracted from an observed door-to-door time is the cheapest allowed
 /// continuation, not the mean over all of them — different weights).
+///
+/// NOT bumped by #610, deliberately: naming the searched channel changed no
+/// weight. `CostModel::TimeIsCost` borrows the time weights rather than copying
+/// it, so the bottom-up call is the pre-#610 call on the same bytes — checked
+/// rather than assumed, by customizing Belgium cold with both binaries and
+/// comparing the three cached sections: 3 × 244 548 342 bytes, sha256-identical
+/// under the same key. A bump would have cost every deploy a pass that
+/// reproduces the bytes it already has. The cost model still reaches the key,
+/// via [`crate::cost::CostModel::fingerprint`], the moment it stops being zero.
 const RECUSTOMIZE_EDGE_ALGO_TAG: &[u8] = b"recustomize-car-edge-v9";
 
 /// Test-only: how many times the heavy shared inputs were actually built

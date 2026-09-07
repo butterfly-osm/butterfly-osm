@@ -10,6 +10,85 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-07 — The cost the search minimises is no longer the duration we report (#610)
+
+**One array was doing two jobs.** The contracted hierarchy's TIME channel was
+both the thing the search minimises and the number handed to the caller. That
+is sound while a mode expresses only time, and it stops being sound the moment
+a mode wants a *preference* — a dislike of forest tracks, a toll aversion, a
+comfort term. Such a term changes the answer twice: the route improves, and the
+reported duration becomes a number the speed provider never measured. The
+second effect is the dangerous one, because the level anchor is fitted on
+exactly those durations: a per-class preference baked into time comes back as a
+global constant compensating it, which is the pattern #608/#609 had just
+removed.
+
+**The separation, in two functions.** A mode now has a `CostModel`, and the
+whole idea rides on `customization::bottom_up_search_cost` (the cost model
+chooses the weights the hierarchy is contracted on) and
+`customization::time_along_cost` (the provider's pure time folded through the
+apexes that cost elected). Both production callers — the pipeline's step 8 and
+the serve-boot recustomizer — come through them, so there is exactly one answer
+to "what does this mode minimise" and exactly one place a preference could ever
+enter.
+
+**Nothing moves while nothing has a preference.** `CostModel::TimeIsCost` is
+deliberately not "a preference of zero": it *borrows* the time weights instead
+of copying them, so the bottom-up call is the pre-#610 call on the same slice,
+and `time_along_cost` returns `None`, because the searched channel already IS
+the duration. Materialising a copy would add an array to every mode, a flat
+adjacency behind every query and a pass to every customization, all holding
+numbers equal by construction — numbers that can therefore only ever diverge by
+accident.
+
+**Proven, not asserted.** Two Belgium instances, `main` and the branch, on one
+container, one host:
+
+| surface | corpus | result |
+|---|---|---|
+| REST `/route` (+ annotations, steps, alternatives, exclude, bands, close pairs), `/nearest`, `/table` (10² to 100², 1×N, N×1, bounded, radius, foot, bike), `/isochrone` (depart, arrive, multi-contour, three modes), `/trip` | 1 061 requests, 12 149 369 bytes | one digest, `89e5aec6…6807c`, on both |
+| WKB isochrone, `/isochrone/bulk`, `/catchment` (road + convex), `/match`, banded `/table` and `/trip`, and Arrow Flight `matrix` / `route_batch` / `edges_batch` / `isochrone` with their #533 completeness trailers | 99 cases | one digest, `925ae3b0…940c`, on both |
+| the customized CCH weights themselves, cold from an empty cache | 3 sections × 244 548 342 B | same key, same sha256 |
+
+Every corpus point is drawn from a pool pre-snapped through `/nearest`, so a
+snap failure can never be mistaken for a difference; the first corpus was
+rebuilt for exactly that reason.
+
+**And it cost nothing.** Cold car customization on Belgium 39.575 s → 39.595 s
+(+0.05 %). Steady-state resident memory 24.78 GB → 24.79 GB, `VmHWM` identical
+to the megabyte. The query engine is not touched by this change at all — no
+file under `server/query`, `matrix/`, `range/` or the handlers differs — and
+`server/state.rs` gains only doc comments.
+
+**The guard is the point of the ticket.** `cost::verify_reported_time_is_pure_time`
+states the invariant executably — *the duration we report is the pure time of
+the path the search chose* — by re-expanding every CCH edge top-down through
+the elected middles with a memo and summing PURE per-edge times. That is a
+different shape from the bottom-up rank-order fold the customization uses, so
+it is a check and not an echo. It has teeth, and the tests prove it rather than
+claim it: a derivation that folds the cost into the reported channel is
+rejected, naming the charged edge and why an anchor would swallow it; a channel
+folded through a previous customization's middles (the #528 failure class) is
+rejected too, naming the shortcut whose apex swung.
+
+**Four things the ticket asked to settle, settled.** A fourth channel is needed
+under a preference and none of it is materialised today; the isochrone keeps
+minimising *time*, because a twenty-minute budget is a question about time and
+because `cost > T` would stop nothing; the preference belongs in the mode
+profile, never in the speed table the anchor is fitted on; and a request may
+*pick* one of a small closed set of pre-customized preferences, never invent
+one, because contraction does not distribute over the parameter.
+
+Step 8 and the boot recustomizer both refuse a mode that declares a preference
+rather than serve an artifact whose durations came from the cost — their
+contracts have three channels and no place for the fourth. The artifact is
+#593; #610 is the derivation and the invariant that guards it.
+
+Cache tag stays v9: the derivation does not change, and the identical cached
+sections are the proof. A bump would have cost every deploy a pass that
+reproduces the bytes it already has. The cost model reaches the key the moment
+it stops being zero.
+
 ### 2026-09-06 — The calibration was landing, then being subtracted away (#608, #609)
 
 **Where a row dies is now counted, per road class.** The boot
