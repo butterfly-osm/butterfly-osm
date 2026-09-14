@@ -45,7 +45,12 @@ use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{IsochroneQuery, IsochroneSnapError, Point, isochrone_polygons};
+use super::geometry::{
+    IsochroneQuery, IsochroneSnapError, Point, ThresholdMetric, isochrone_polygons,
+};
+use super::isochrone_handler::{
+    FLIGHT_SPELLING, isochrone_error_message, parse_requested_contours,
+};
 use super::query::CchQuery;
 use super::query_context::QueryContext;
 use super::state::ServerState;
@@ -278,9 +283,14 @@ fn route_batch_schema() -> Schema {
     ])
 }
 
+/// #612: the threshold is echoed in the unit the caller asked for —
+/// `interval_s` on a time isochrone, `interval_m` on an isodistance, and
+/// exactly one of the two is non-null in any given batch. Both are nullable
+/// for that reason; every other column is as it was.
 fn isochrone_schema() -> Schema {
     Schema::new(vec![
-        Field::new("interval_s", DataType::UInt32, false),
+        Field::new("interval_s", DataType::UInt32, true),
+        Field::new("interval_m", DataType::UInt32, true),
         Field::new("polygon_wkb", DataType::Binary, false),
     ])
 }
@@ -2538,7 +2548,15 @@ fn do_route_batch(
 struct IsochroneParams {
     lon: f64,
     lat: f64,
-    intervals: Vec<u32>, // seconds
+    /// Time thresholds in seconds. Exactly one of `intervals` /
+    /// `intervals_m` must be given (#612).
+    #[serde(default)]
+    intervals: Option<Vec<u32>>,
+    /// Isodistance thresholds in METRES — road length accumulated along the
+    /// time-shortest path, the same metres the `matrix` action reports
+    /// (#612).
+    #[serde(default)]
+    intervals_m: Option<Vec<u32>>,
     #[serde(default = "default_direction")]
     direction: String,
     /// Named bands (2026-09-03): "bands" → typical, best, worst polygons, `band` column.
@@ -2559,19 +2577,20 @@ fn do_isochrone(
     // `done` flag is what lets the do_get wrapper append the #533
     // completeness trailer (or fail non-OK). The whole result is one batch
     // materialised BEFORE the stream exists, so completion is decided here.
-    if params.intervals.is_empty() {
-        return Err(Status::invalid_argument("intervals must not be empty"));
-    }
-    if params.intervals.len() > 10 {
-        return Err(Status::invalid_argument("max 10 intervals"));
-    }
-    for &iv in &params.intervals {
-        if iv == 0 || iv > 7200 {
-            return Err(Status::invalid_argument(
-                "each interval must be 1..=7200 seconds",
-            ));
-        }
-    }
+    // ONE threshold parser for every isochrone surface (#612): the same
+    // metric families, the same bounds, the same refusals REST answers with.
+    let to_csv = |v: &Option<Vec<u32>>| {
+        v.as_ref()
+            .map(|xs| xs.iter().map(u32::to_string).collect::<Vec<_>>().join(","))
+    };
+    let requested = parse_requested_contours(
+        None,
+        to_csv(&params.intervals).as_deref(),
+        None,
+        to_csv(&params.intervals_m).as_deref(),
+        &FLIGHT_SPELLING,
+    )
+    .map_err(Status::invalid_argument)?;
 
     let mode_data = state.get_mode(mode);
     let mode_name = &state.mode_names[mode.index()];
@@ -2586,11 +2605,13 @@ fn do_isochrone(
         &mode_data,
         mode,
         &IsochroneQuery {
+            metric: requested.metric,
             lon: params.lon,
             lat: params.lat,
-            // Intervals are user-input seconds; weights are also seconds
-            // (post-#297), so thresholds pass through unchanged.
-            thresholds: &params.intervals,
+            // Intervals are user-input seconds (weights are also seconds,
+            // post-#297) or metres, per `metric`; either way they pass
+            // through unchanged.
+            thresholds: &requested.values,
             reverse: is_reverse,
             mode_name,
             snap_mask: None,
@@ -2603,9 +2624,10 @@ fn do_isochrone(
         IsochroneSnapError::NotAccessible => {
             Status::not_found("Snapped node not accessible for this mode")
         }
+        // A property of the request, not of the network.
+        other => Status::invalid_argument(isochrone_error_message(other)),
     })?;
 
-    let intervals_s: Vec<u32> = params.intervals;
     let wkb_data: Vec<Vec<u8>> = field
         .topologies
         .into_iter()
@@ -2615,9 +2637,19 @@ fn do_isochrone(
         .collect();
 
     let schema = Arc::new(isochrone_schema());
-    let n = intervals_s.len();
+    let n = requested.values.len();
 
-    let interval_arr = UInt32Array::from(intervals_s);
+    // The threshold is echoed in its own unit; the other column is all-null.
+    let (secs, metres): (Vec<Option<u32>>, Vec<Option<u32>>) = match requested.metric {
+        ThresholdMetric::Time => (
+            requested.values.iter().copied().map(Some).collect(),
+            vec![None; n],
+        ),
+        ThresholdMetric::LengthAlongTime => (
+            vec![None; n],
+            requested.values.iter().copied().map(Some).collect(),
+        ),
+    };
     let mut wkb_builder = BinaryBuilder::with_capacity(n, wkb_data.iter().map(|w| w.len()).sum());
     for wkb in &wkb_data {
         wkb_builder.append_value(wkb);
@@ -2626,7 +2658,8 @@ fn do_isochrone(
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(interval_arr) as ArrayRef,
+            Arc::new(UInt32Array::from(secs)) as ArrayRef,
+            Arc::new(UInt32Array::from(metres)),
             Arc::new(wkb_builder.finish()),
         ],
     )

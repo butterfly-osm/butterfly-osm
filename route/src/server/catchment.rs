@@ -22,7 +22,7 @@ use crate::nbg::haversine_distance;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{IsochroneQuery, isochrone_polygons};
+use super::geometry::{IsochroneQuery, ThresholdMetric, isochrone_polygons};
 use super::state::ServerState;
 
 // ===========================================================================
@@ -283,6 +283,8 @@ pub fn isochrone_hull(
         &mode_data,
         mode,
         &IsochroneQuery {
+            // A catchment threshold is a drive TIME percentile.
+            metric: ThresholdMetric::Time,
             lon: store_lon,
             lat: store_lat,
             thresholds: &[threshold_s_u32],
@@ -505,6 +507,7 @@ pub fn compute_catchment(
 /// the accepted field names back off a serialized instance instead of trusting
 /// a hand-kept list that drifts.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct CatchmentRequest {
     pub mode: String,
     pub hull_shape: HullMode,
@@ -563,7 +566,7 @@ use std::sync::Arc;
 
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, ValidatedJson, parse_mode, validate_coord};
 
 #[utoipa::path(post, path = "/catchment", tag = "Catchment", summary = "Store catchments from client locations",
     request_body(content = serde_json::Value, description = "{mode, hull_shape, percentiles, remove_outliers, stores:[{id,lon,lat}], clients:[{lon,lat}], radius_km}"),
@@ -575,7 +578,7 @@ The Flight `catchment` DoExchange action takes the SAME parameter set (#596) —
 /// POST /catchment handler
 pub async fn catchment_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<CatchmentRequest>,
+    ValidatedJson(req): ValidatedJson<CatchmentRequest>,
 ) -> impl IntoResponse {
     // #539: seconds of sync PHAST/hull work — demote this worker out of the
     // async scheduler so concurrent catchments can't starve /health.

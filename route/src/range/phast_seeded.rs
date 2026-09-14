@@ -533,7 +533,18 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
                 state.ensure_len();
             }
             for (r, v) in seeds.clone() {
-                if v[0] < state.get_dist(r as usize) {
+                // #612: the SAME lexicographic rule `improve` applies. Two
+                // seeds can land on one rank; taking the second only when it
+                // is strictly faster would keep a LONGER length among equal
+                // times, which is precisely the tie-break #530 added to the
+                // relaxation so this surface could not disagree with /route.
+                let cur = state.get_dist(r as usize);
+                let better = v[0] < cur
+                    || (C >= 2
+                        && v[0] == cur
+                        && cur != u32::MAX
+                        && v[1] < state.get_len(r as usize));
+                if better {
                     if C >= 2 {
                         state.set_dist_len(r as usize, v[0], v[1]);
                     } else {
@@ -774,6 +785,87 @@ pub fn run_phast_bounded_fast_seeded_2ch(
     result
 }
 
+/// #612 (isodistance): the same 2-channel field, selected on the LENGTH
+/// channel instead of the time one. Returns settled `(rank, time, len)` for
+/// every node whose length-along-time is `≤ max_len`.
+///
+/// **The time sweep is deliberately unbounded, and it has to be.** The
+/// isodistance is "reachable within `max_len` metres ALONG THE TIME-SHORTEST
+/// PATH" — the same path `/route` and `/table` report, which is the whole
+/// reason the metric is consistent this time round (#371/#373). That makes
+/// `len` a value carried by the time search, not a value the time search may
+/// steer by. Gating the sweep on `len` — skipping relaxations out of a node
+/// whose length already exceeds the budget — looks tempting, because length
+/// is monotone along a path and the *reachable set* would still be
+/// prefix-closed. It is wrong: a node whose time-optimal parent was skipped
+/// is then labelled from a SLOWER parent, so its time label is
+/// over-estimated and the length it carries is the length of a path the
+/// engine would never drive. Exactly the nodes at the budget boundary — a
+/// long fast motorway approach versus a short slow one — would flip, and
+/// `/table`'s distance for that pair, which IS the truth here, would
+/// disagree.
+///
+/// Filtering inside `collect` rather than afterwards is what keeps this
+/// affordable in memory: the whole-graph settled set is ~2.4 M nodes on
+/// Belgium and a `Vec` of it would be ~28 MB per query, where the
+/// admissible set of a 5 km isodistance is ~24 k.
+///
+/// **Cost, measured (Belgium car, 5.1 M edge-based nodes, warm):** upward
+/// 2 ms, downward 68 ms, collect 3 ms — ~75 ms, independent of `max_len`,
+/// against 2 ms for a 1200 s time ball and 6 ms for an 1800 s one. The
+/// downward scan over every rank IS the cost, and it is the price of exact
+/// primary labels: no lower bound on length (the independent
+/// distance-shortest metric, crow-fly, landmarks) can prune the TIME
+/// propagation, because a long fast path outside the length budget is often
+/// what proves that an inside candidate's short slow path is not
+/// time-optimal. Two exact ways out, both bigger than this change and both
+/// reviewed:
+/// * bound the field at a time `T` and certify completeness — no node with
+///   `len ≤ max_len` beyond `T` — by checking that every arc leaving the
+///   admissible set into an unsettled node already blows the budget, growing
+///   `T` until it holds. Exact because a time bound corrupts no label inside
+///   it. `T` can also be derived in one shot from a distance-ball search
+///   that carries the time along its own witness path (an upper bound on the
+///   time-optimal one), which would need a `time_along_distance` weight set
+///   mirroring `length_along_time`.
+/// * restrict the downward scan to the hierarchy closure of the
+///   distance-shortest ball at `max_len` — an rPHAST target set, which is
+///   what that ball is — since `d_dist(v) ≤ len(v)` puts every admissible
+///   node inside it. Needs a forward-DOWN distance adjacency, which #553
+///   deliberately deleted as never-read.
+///
+/// Saturating the length channel at `max_len + 1` to skip the second
+/// channel's arc reads was tried and measured: 68 ms either way. The
+/// primary channel's random access is the wall, not the secondary one.
+pub fn run_phast_seeded_2ch_by_len(
+    up_adj_flat: &UpAdjFlat,
+    down_adj_flat: &DownAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_adj_flat_len: &DownAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    max_len: u32,
+    mode: Mode,
+) -> Vec<(u32, u32, u32)> {
+    let mut result: Vec<(u32, u32, u32)> = Vec::new();
+    run_seeded::<2, Forward>(
+        ScanFlats::with_len(
+            up_adj_flat,
+            down_adj_flat,
+            up_adj_flat_len,
+            down_adj_flat_len,
+        ),
+        seeds.iter().map(|&(r, t, l)| (r, [t, l])),
+        u32::MAX,
+        mode,
+        |rank, v| {
+            if v[1] <= max_len {
+                result.push((rank, v[0], v[1]));
+            }
+        },
+    );
+    result
+}
+
 /// Run REVERSE PHAST bounded query — computes `d(all → target)` for reverse
 /// isochrones.
 pub fn run_phast_bounded_fast_reverse(
@@ -834,6 +926,38 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
         threshold,
         mode,
         |rank, v| result.push((rank, v[0], v[1])),
+    );
+    result
+}
+
+/// #612: the ARRIVE mirror of [`run_phast_seeded_2ch_by_len`] — `d(all →
+/// target)` selected on the length channel. Same reasoning about why the
+/// time sweep is unbounded.
+pub fn run_phast_reverse_seeded_2ch_by_len(
+    up_adj_flat: &UpAdjFlat,
+    down_rev_flat: &DownReverseAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_rev_flat_len: &DownReverseAdjFlat,
+    seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
+    max_len: u32,
+    mode: Mode,
+) -> Vec<(u32, u32, u32)> {
+    let mut result: Vec<(u32, u32, u32)> = Vec::new();
+    run_seeded::<2, Reverse>(
+        ScanFlats::with_len(
+            down_rev_flat,
+            up_adj_flat,
+            down_rev_flat_len,
+            up_adj_flat_len,
+        ),
+        seeds.iter().map(|&(r, t, l)| (r, [t, l])),
+        u32::MAX,
+        mode,
+        |rank, v| {
+            if v[1] <= max_len {
+                result.push((rank, v[0], v[1]));
+            }
+        },
     );
     result
 }
@@ -936,5 +1060,47 @@ mod phast_2ch_lex_tests {
             node3.2, 2,
             "shorter length kept regardless of arrival order"
         );
+    }
+
+    /// #612: the tie-break has to apply to the SEED INITIALISATION too.
+    /// Phantom endpoints hand the sweep several seeds, and two of them can
+    /// land on one rank; the init used to adopt a later seed only when it was
+    /// strictly FASTER, which kept the longer of two equal-time partials and
+    /// propagated it to every node downstream — the one place `improve`'s
+    /// rule was not applied.
+    #[test]
+    fn two_seeds_on_one_rank_keep_the_shorter_equal_time_partial() {
+        // One edge 0→1; the answer at node 1 is seed(0) + (t=1, len=10).
+        let up_t = up_flat(vec![0, 1, 1], vec![1], vec![1]);
+        let up_l = up_flat(vec![0, 1, 1], vec![1], vec![10]);
+        let dn_t = down_flat(vec![0, 0, 0], Vec::new(), Vec::new());
+        let dn_l = down_flat(vec![0, 0, 0], Vec::new(), Vec::new());
+
+        // Both orders of the same two equal-time seeds on rank 0 must give
+        // the same answer: the SHORTER partial wins either way.
+        for seeds in [
+            [(0u32, 5u32, 900u32), (0u32, 5u32, 7u32)],
+            [(0u32, 5u32, 7u32), (0u32, 5u32, 900u32)],
+        ] {
+            let out = run_phast_bounded_fast_seeded_2ch(
+                &up_t,
+                &dn_t,
+                &up_l,
+                &dn_l,
+                &seeds,
+                1000,
+                Mode::from_u8(0),
+            );
+            let node1 = out
+                .iter()
+                .find(|(r, _, _)| *r == 1)
+                .expect("node 1 settled");
+            assert_eq!(node1.1, 6, "time is 5 (seed) + 1 (edge)");
+            assert_eq!(
+                node1.2, 17,
+                "length must be 7 (the shorter equal-time seed) + 10, never \
+                 900 + 10, whichever seed came first: {seeds:?}"
+            );
+        }
     }
 }

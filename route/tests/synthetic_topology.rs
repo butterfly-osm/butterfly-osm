@@ -32,7 +32,7 @@ use butterfly_route::formats::mmap::ArcCow;
 use butterfly_route::formats::nbg_geo::{NbgEdge, NbgGeo, PolyLine};
 use butterfly_route::formats::{CchTopo, CchWeights, FilteredEbg};
 use butterfly_route::model::types::Mode;
-use butterfly_route::range::{ContourResult, encode_polygon_wkb};
+use butterfly_route::range::{ContourResult, SparseContourConfig, encode_polygon_wkb};
 use butterfly_route::server::edge_geom::EdgeGeometry;
 use butterfly_route::server::geometry::{
     Point, ReachModel, build_isochrone_geometry_sparse, build_route_points_into,
@@ -517,7 +517,7 @@ fn serve_contour_pinned(
         &net.node_weights,
         &net.ebg_nodes,
         &net.edge_geom,
-        "car",
+        SparseContourConfig::for_mode_name_with_threshold("car", threshold_s),
         Some(anchor),
         pin.or(Some(anchor)),
         // Whole reached edges only: the frontier fragments are the
@@ -1582,7 +1582,7 @@ fn serve_arrive_contour(
         &net.node_weights,
         &net.ebg_nodes,
         &net.edge_geom,
-        "car",
+        SparseContourConfig::for_mode_name_with_threshold("car", threshold_s),
         Some(anchor),
         Some(anchor),
         &ReachModel::Arrive,

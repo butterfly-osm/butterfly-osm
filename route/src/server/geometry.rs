@@ -376,53 +376,10 @@ pub fn build_geometry(
     )
 }
 
-/// Build isochrone geometry using sparse tile rasterization + boundary tracing
-///
-/// This is the validated algorithm that:
-/// 1. Stamps reachable road segments into a sparse tile grid
-/// 2. For frontier edges: clips polyline at cut_fraction, stamps only reachable prefix
-/// 3. Applies local morphology (dilation/erosion) to create fillable regions
-/// 4. Extracts boundary via Moore-neighbor tracing (O(perimeter))
-///
-/// This respects road network topology and produces geometrically correct isochrones.
-#[allow(clippy::too_many_arguments)]
-pub fn build_isochrone_geometry(
-    settled_nodes: &[(u32, u32)], // (original_ebg_id, distance) — seconds for time, meters for isodistance (post-#297)
-    max_threshold: u32,
-    node_weights: &[u32], // Edge costs indexed by original EBG node ID
-    ebg_nodes: &EbgNodes,
-    edge_geom: &EdgeGeometry,
-    mode_name: &str,
-    origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat) of the query origin (#497/#506)
-    pin: Option<(f64, f64)>,
-    model: &ReachModel<'_>,
-) -> Vec<Point> {
-    build_isochrone_topology(
-        settled_nodes,
-        max_threshold,
-        node_weights,
-        ebg_nodes,
-        edge_geom,
-        mode_name,
-        origin_anchor,
-        pin,
-        model,
-    )
-    .into_iter()
-    .next()
-    .map(|p| {
-        p.outer
-            .into_iter()
-            .map(|(lon, lat)| Point { lon, lat })
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
 /// The isochrone topology served to the API: the ONE polygon of the
 /// origin's component, no holes, WGS84 `(lon, lat)` — an isochrone is one
 /// simple polygon by definition (#535/#542), enforced by the contour type
-/// since #570. `build_isochrone_geometry` is the ring-only view of this.
+/// since #570.
 #[allow(clippy::too_many_arguments)]
 pub fn build_isochrone_topology(
     settled_nodes: &[(u32, u32)],
@@ -430,7 +387,7 @@ pub fn build_isochrone_topology(
     node_weights: &[u32],
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
-    mode_name: &str,
+    config: SparseContourConfig,
     origin_anchor: Option<(f64, f64)>,
     pin: Option<(f64, f64)>,
     model: &ReachModel<'_>,
@@ -442,7 +399,7 @@ pub fn build_isochrone_topology(
         node_weights,
         ebg_nodes,
         edge_geom,
-        mode_name,
+        config,
         origin_anchor,
         pin,
         model,
@@ -634,7 +591,10 @@ pub fn build_isochrone_geometry_sparse(
     node_weights: &[u32], // Edge costs indexed by original EBG node ID
     ebg_nodes: &EbgNodes,
     edge_geom: &EdgeGeometry,
-    mode_name: &str,
+    // Raster + simplification tuning, picked by the caller from the mode AND
+    // the metric (#612): a threshold in seconds and one in metres imply
+    // different extents, so they select different tiers.
+    config: SparseContourConfig,
     origin_anchor: Option<(f64, f64)>, // exact snapped (lon, lat); fallback = min-label edge start
     // The raw query point (lon, lat). #535: a pin in a car-free zone snaps
     // tens of metres away and used to sit OUTSIDE its own isochrone; the
@@ -642,7 +602,6 @@ pub fn build_isochrone_geometry_sparse(
     pin: Option<(f64, f64)>,
     model: &ReachModel<'_>,
 ) -> Vec<ContourPolygon> {
-    let config = SparseContourConfig::for_mode_name_with_threshold(mode_name, max_time);
     let (polylines, anchor) = reachable_polylines(
         settled_nodes,
         max_time,
@@ -706,10 +665,34 @@ pub struct IsochroneFlats<'a> {
     pub down_rev: &'a DownReverseAdjFlat,
 }
 
+/// What an isochrone's thresholds MEASURE (#612).
+///
+/// Both variants run the SAME search on the SAME hierarchy and settle on the
+/// SAME paths — the time-shortest ones. Only the quantity accumulated along
+/// that path, and therefore the quantity the threshold is compared against,
+/// differs. That is the whole point: the isodistance removed in #373 ran
+/// PHAST on the separate distance-shortest CCH, so it reported reachability
+/// along a different geometric path from every other endpoint in the engine.
+/// This one cannot: its metres are the metres `/route`, `/table` and the
+/// Flight matrix already report for the same origin and destination
+/// (`cch_weights_len_along_time`, #371/#372), which makes the matrix an
+/// exact independent truth for the polygon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThresholdMetric {
+    /// Seconds of travel time — the classic isochrone.
+    Time,
+    /// Metres of road length accumulated along the time-shortest path —
+    /// the isodistance.
+    LengthAlongTime,
+}
+
 /// One isochrone query against one weight set — the input every surface
 /// (REST single/contours, REST bands, `/isochrone/bulk`, Flight `isochrone`,
 /// catchment road hull) used to spell out for itself before #549.
 pub struct IsochroneQuery<'a> {
+    /// What `thresholds` are measured in (#612). `Time` = seconds,
+    /// `LengthAlongTime` = metres.
+    pub metric: ThresholdMetric,
     /// Raw query point (also the stamped access-leg pin, #535).
     pub lon: f64,
     pub lat: f64,
@@ -751,6 +734,18 @@ pub enum IsochroneSnapError {
     NoSnap,
     /// It snaps, but the snapped edge is not accessible for this mode.
     NotAccessible,
+    /// #612: a distance threshold was asked for on a mode that carries no
+    /// length-along-time weights — a container built before PR #377. There
+    /// is no honest answer to give: the only other length in the container
+    /// is the distance-shortest metric, which measures a DIFFERENT path and
+    /// is exactly what #373 removed.
+    NoLengthChannel,
+    /// #612: a distance threshold was asked for together with
+    /// `avoid_polygons` / `exclude`. Those recustomize the time weights for
+    /// this one request; nothing recustomizes the length-along-time channel
+    /// to match, so the metres would be the metres of a path the modified
+    /// weights no longer choose.
+    LengthWithCustomWeights,
 }
 
 /// Depart frontiers memoised per DISTINCT threshold: `include=network` at
@@ -824,54 +819,143 @@ pub fn isochrone_polygons(
         return Err(IsochroneSnapError::NotAccessible);
     }
 
+    // #612: the isodistance runs on the length-along-time channel, which
+    // only exists as a weight set of its own — nothing derives it from a
+    // recustomized one, and old containers do not carry it at all. Both
+    // gaps are refused here rather than silently answered on the wrong
+    // metric, which is the mistake #373 removed.
+    let len_flats = match q.metric {
+        ThresholdMetric::Time => None,
+        ThresholdMetric::LengthAlongTime => {
+            if q.flats.is_some() {
+                return Err(IsochroneSnapError::LengthWithCustomWeights);
+            }
+            let up_len = mode_data
+                .up_adj_flat_len_along_time
+                .as_ref()
+                .ok_or(IsochroneSnapError::NoLengthChannel)?;
+            let down_fwd_len = mode_data
+                .down_len_flat()
+                .ok_or(IsochroneSnapError::NoLengthChannel)?;
+            let down_rev_len = mode_data
+                .down_rev_flat_len_along_time
+                .as_ref()
+                .ok_or(IsochroneSnapError::NoLengthChannel)?;
+            Some((up_len, down_fwd_len, down_rev_len))
+        }
+    };
+
     // #506: phantom center — seed both directed twins (and near-equidistant
     // parallel edges) so the polygon isn't committed to one departure /
     // arrival direction of the snapped edge. Custom-weight paths
     // (avoid/exclude) keep the legacy single seed.
     // `shift` is the arrive field's seed offset (#544): every label comes
     // back as `true cost + shift`, and is normalised below. Depart: 0.
-    let (seeds, shift, anchor) = if q.flats.is_none() {
-        crate::server::phantom::isochrone_center_seeds(
-            state,
-            mode_data,
-            mode,
-            q.lon,
-            q.lat,
-            role,
-            q.snap_mask,
-            q.reverse,
-            center_rank,
-        )
-    } else {
-        (vec![(center_rank, 0)], 0, None)
+    // #612: the isodistance seeds BOTH channels and carries a second shift,
+    // for the metres of the arrival edge past the snap.
+    let (seeds, shift, seeds_2ch, shift_len, anchor) = match (len_flats, q.flats.is_none()) {
+        (None, true) => {
+            let (s, sh, a) = crate::server::phantom::isochrone_center_seeds(
+                state,
+                mode_data,
+                mode,
+                q.lon,
+                q.lat,
+                role,
+                q.snap_mask,
+                q.reverse,
+                center_rank,
+            );
+            (s, sh, Vec::new(), 0, a)
+        }
+        (None, false) => (vec![(center_rank, 0)], 0, Vec::new(), 0, None),
+        // A length metric never takes the custom-weight branch: it was
+        // refused above.
+        (Some(_), _) => {
+            let (s, sh_t, sh_l, a) = crate::server::phantom::isochrone_center_seeds_2ch(
+                state,
+                mode_data,
+                mode,
+                q.lon,
+                q.lat,
+                role,
+                q.snap_mask,
+                q.reverse,
+                center_rank,
+            );
+            (Vec::new(), sh_t, s, sh_l, a)
+        }
     };
 
     let up = q.flats.map_or(&mode_data.up_adj_flat, |f| f.up);
     let down_fwd = q.flats.map_or(&mode_data.down_adj_flat, |f| f.down_fwd);
     let down_rev = q.flats.map_or(&mode_data.down_rev_flat, |f| f.down_rev);
-    let node_weights = &mode_data.node_weights[..];
+    // The per-edge weight the reach model bills an edge at, in the unit of
+    // the metric: seconds from the mode's time weights, metres from the
+    // EBG's own `length_m`.
+    let node_weights: &[u32] = match q.metric {
+        ThresholdMetric::Time => &mode_data.node_weights[..],
+        ThresholdMetric::LengthAlongTime => &state.node_weights_dist[..],
+    };
 
     // One PHAST run at the MAX threshold; every contour is a slice of it.
     let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
-    let phast_settled = if q.reverse {
-        // The field carries the seed shift, so the bound must too: a state
-        // whose TRUE cost to the snap is `max_threshold` is labelled
-        // `max_threshold + shift` (#544).
-        crate::range::phast_seeded::run_phast_bounded_fast_reverse_seeded(
-            up,
-            down_rev,
-            &seeds,
-            max_threshold.saturating_add(shift),
-            mode,
-        )
-    } else {
-        crate::range::phast_seeded::run_phast_bounded_fast_seeded(
-            up,
-            down_fwd,
-            &seeds,
-            max_threshold,
-            mode,
-        )
+    // The label and the shift live in the metric's own unit: seconds for a
+    // time field, metres for an isodistance.
+    let (phast_settled, shift) = match len_flats {
+        None => {
+            let f = if q.reverse {
+                // The field carries the seed shift, so the bound must too: a
+                // state whose TRUE cost to the snap is `max_threshold` is
+                // labelled `max_threshold + shift` (#544).
+                crate::range::phast_seeded::run_phast_bounded_fast_reverse_seeded(
+                    up,
+                    down_rev,
+                    &seeds,
+                    max_threshold.saturating_add(shift),
+                    mode,
+                )
+            } else {
+                crate::range::phast_seeded::run_phast_bounded_fast_seeded(
+                    up,
+                    down_fwd,
+                    &seeds,
+                    max_threshold,
+                    mode,
+                )
+            };
+            (f, shift)
+        }
+        Some((up_len, down_fwd_len, down_rev_len)) => {
+            let raw = if q.reverse {
+                crate::range::phast_seeded::run_phast_reverse_seeded_2ch_by_len(
+                    up,
+                    down_rev,
+                    up_len,
+                    down_rev_len,
+                    &seeds_2ch,
+                    max_threshold.saturating_add(shift_len),
+                    mode,
+                )
+            } else {
+                crate::range::phast_seeded::run_phast_seeded_2ch_by_len(
+                    up,
+                    down_fwd,
+                    up_len,
+                    down_fwd_len,
+                    &seeds_2ch,
+                    max_threshold.saturating_add(shift_len),
+                    mode,
+                )
+            };
+            // Drop the time channel: past this point every consumer — the
+            // contour threshold, the frontier, the reach model — reads the
+            // ONE label the metric is about.
+            (
+                raw.into_iter().map(|(r, _t, l)| (r, l)).collect(),
+                shift_len,
+            )
+        }
     };
 
     // Rank → original EBG id, and (arrive) label → true cost by removing the
@@ -896,8 +980,12 @@ pub fn isochrone_polygons(
         slots: Vec::new(),
         reverse: q.reverse,
         phast_settled: &phast_settled,
-        up,
-        down_fwd,
+        // The frontier walks the SAME arcs in the SAME unit as the field:
+        // time weights for a time field, length-along-time weights for an
+        // isodistance. The two flats share their topology, so slot `i`
+        // addresses the same CCH arc in both.
+        up: len_flats.map_or(up, |(u, _, _)| u),
+        down_fwd: len_flats.map_or(down_fwd, |(_, d, _)| d),
         mode_data,
         node_weights,
     };
@@ -910,7 +998,14 @@ pub fn isochrone_polygons(
             node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
-            q.mode_name,
+            match q.metric {
+                ThresholdMetric::Time => {
+                    SparseContourConfig::for_mode_name_with_threshold(q.mode_name, threshold)
+                }
+                ThresholdMetric::LengthAlongTime => {
+                    SparseContourConfig::for_mode_name_with_distance(q.mode_name, threshold)
+                }
+            },
             anchor,
             Some((q.lon, q.lat)),
             &ReachModel::for_direction(q.reverse, &frontiers.slots[slot].1),

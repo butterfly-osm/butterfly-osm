@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -14,12 +14,13 @@ use super::geometry::{GeometryFormat, Point, RouteGeometry, build_raw_points};
 use super::query::CchQuery;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, ValidatedQuery, parse_mode, validate_coord};
 use super::unpack::unpack_path;
 
 // ============ Types ============
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct RouteRequest {
     /// Source longitude
     #[schema(example = 4.3517)]
@@ -245,7 +246,7 @@ pub struct StepManeuver {
 // recustomization; `avoid::off_runtime` takes that off the tokio worker (#539).
 pub async fn route_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<RouteRequest>,
+    ValidatedQuery(req): ValidatedQuery<RouteRequest>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.origin_lon, req.origin_lat, "source") {
@@ -1281,7 +1282,7 @@ pub async fn route_handler(
 /// previously imported this name continue to work.
 pub async fn cross_region_route_handler(
     state: State<Arc<RegionsState>>,
-    query: Query<RouteRequest>,
+    query: ValidatedQuery<RouteRequest>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     route_handler(state, query, headers).await.into_response()

@@ -148,6 +148,42 @@ impl PhantomEnd {
             ),
         }
     }
+
+    /// #612: the same seeds with the LENGTH channel carried alongside —
+    /// `(seeds as (rank, time_cost, len_cost), time shift, length shift)`.
+    ///
+    /// Each channel gets its OWN shift, by exactly the same argument: the
+    /// destination role overpays `part_len(d)` metres on the arrival edge
+    /// just as it overpays `part_time(d)` seconds, and a negative label is
+    /// not representable. Both shifts are uniform over the whole field —
+    /// every label comes back as `true + shift` whichever seed produced it —
+    /// so the (time, then length) tie-break inside the sweep compares
+    /// exactly what it would have compared unshifted, and the caller
+    /// normalises each channel by subtracting its own shift.
+    pub fn query_seeds_and_shift_2ch(&self, role: SnapRole) -> (Vec<(u32, u32, u32)>, u32, u32) {
+        match role {
+            SnapRole::Dst => {
+                let shift_t = self.seeds.iter().map(|s| s.part_time).max().unwrap_or(0);
+                let shift_l = self.seeds.iter().map(|s| s.part_len).max().unwrap_or(0);
+                (
+                    self.seeds
+                        .iter()
+                        .map(|s| (s.rank, shift_t - s.part_time, shift_l - s.part_len))
+                        .collect(),
+                    shift_t,
+                    shift_l,
+                )
+            }
+            _ => (
+                self.seeds
+                    .iter()
+                    .map(|s| (s.rank, s.part_time, s.part_len))
+                    .collect(),
+                0,
+                0,
+            ),
+        }
+    }
 }
 
 /// #605: both endpoints landed on the SAME directed edge, with the
@@ -902,6 +938,43 @@ pub fn isochrone_center_seeds(
             (seeds, shift, anchor)
         }
         None => (vec![(fallback_rank, 0)], 0, None),
+    }
+}
+
+/// #612: seeded PHAST init for an ISODISTANCE center — `(seeds as
+/// (rank, time_cost, len_cost), time shift, length shift, snapped anchor)`.
+///
+/// Identical to [`isochrone_center_seeds`] in every respect except that the
+/// seed partials are carried on both channels: a depart isodistance starts
+/// with the metres of the origin edge still to be driven, an arrive one
+/// refunds the metres of the arrival edge past the snap. Same snap, same
+/// candidates, same anchor — the two functions must not be able to disagree
+/// about WHERE the isochrone starts, only about what it measures.
+pub type CenterSeeds2ch = (Vec<(u32, u32, u32)>, u32, u32, Option<(f64, f64)>);
+
+#[allow(clippy::too_many_arguments)]
+pub fn isochrone_center_seeds_2ch(
+    state: &ServerState,
+    mode_data: &ModeData,
+    mode: Mode,
+    lon: f64,
+    lat: f64,
+    role: SnapRole,
+    snap_mask: Option<&[u64]>,
+    is_reverse: bool,
+    fallback_rank: u32,
+) -> CenterSeeds2ch {
+    match phantom_for(state, mode_data, mode, lon, lat, role, snap_mask) {
+        Some(pe) => {
+            let anchor = Some((pe.snapped_lon, pe.snapped_lat));
+            let (seeds, shift_t, shift_l) = pe.query_seeds_and_shift_2ch(if is_reverse {
+                SnapRole::Dst
+            } else {
+                SnapRole::Src
+            });
+            (seeds, shift_t, shift_l, anchor)
+        }
+        None => (vec![(fallback_rank, 0, 0)], 0, 0, None),
     }
 }
 

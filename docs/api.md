@@ -48,7 +48,21 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   hints) keep single-seed snapping.
 - `GET /version` → `{"name": "butterfly-route", "version": "..."}`.
 - `alternatives` on `/route` is a **count** (`u32`), not a boolean.
-- Isodistance (`distance_m`) was removed in #371 — time thresholds only.
+- **Unknown input is refused, never ignored** (#612). A query parameter or
+  a JSON body field this build cannot honour — a typo, a name from an
+  older release, a parameter that never existed — is a `400` naming it and
+  listing what the endpoint does accept, on every REST path. It used to be
+  dropped silently, so `/isochrone?…&metric=distance` answered `200` with
+  a polygon identical to the one without it. Same rule as the Flight
+  actions, which got it in #548.
+- **Isodistance is back** (#612), on the metric that makes it consistent:
+  `distance_m` / `contours_m` on `/isochrone` and `intervals_m` on the
+  Flight `isochrone` action are metres of road length accumulated **along
+  the time-shortest path** — the same path, and the same metres, `/route`
+  and `/table` report for the same pair. The version removed in #371/#373
+  was different: it ran the reachability search on the separate
+  distance-shortest CCH, so it described a path no other endpoint would
+  have driven. That hierarchy is still not used here and must not be.
 - `GET /height` is mounted only when `<data>/srtm/` exists (lean
   containers return 404 by design).
 - REST `POST /catchment` takes `stores[].id` (the Flight `catchment`
@@ -70,6 +84,12 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   response carries extra contour features tagged `band: "optimistic" |
   "pessimistic"` (nested rings); on `/table` extra `durations_q25` /
   `durations_q75` grids. 400 if the loaded table has no band columns.
+  On an ISODISTANCE (#612) bands still mean something, but not the obvious
+  thing: the band weight sets change which path is time-shortest, so the
+  metres are spent on a slightly different route — the three polygons come
+  out nearly the same size and are NOT nested, where the three polygons of a
+  time isochrone are. A distance budget does not shrink because the traffic
+  got worse.
 
 ## REST endpoints
 
@@ -282,15 +302,34 @@ Reachability polygon using PHAST. Source: `route/src/server/isochrone_handler.rs
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `lon`, `lat` | f64 | required | Origin |
-| `time_s` | u32 | none | 1-7200 seconds. Exactly one of `time_s` / `distance_m` / `contours` must be set. |
-| `distance_m` | u32 | none | 1-100000 meters |
+| `time_s` | u32 | none | 1-7200 seconds — the one-contour form of `contours` |
 | `contours` | string | none | Comma list of seconds, 1-10 values, each 1-7200 |
+| `distance_m` | u32 | none | 1-100000 metres of length along the time-shortest path (#612) — the one-contour form of `contours_m` |
+| `contours_m` | string | none | Comma list of metres, 1-10 values, each 1-100000 |
 | `mode` | string | required | Transport mode |
 | `direction` | string | `depart` | `depart` (forward) or `arrive` (reverse PHAST) — case-insensitive |
 | `geometries` | string | `polyline6` | `polyline6` / `geojson` / `points` |
 | `include` | string | none | `network` adds reachable road segments |
 | `exclude` | string | none | Same tokens as `/route` |
 | `avoid_polygons` | string | none | Same shape as `/route` |
+
+A request carries EITHER a time threshold (`time_s` / `contours`) OR a
+distance one (`distance_m` / `contours_m`), never both — a threshold measures
+one quantity, and a request that names two is refused rather than silently
+resolved. Within a family the plural form wins when both are given.
+
+A distance threshold is refused, not silently answered on stale metres, with
+`exclude` / `avoid_polygons` (those recustomize the time weights for the one
+request; nothing recustomizes the length-along-time channel to match) and on a
+dataset built before the length-along-time weights existed.
+
+Cost (Belgium, car, warm): an isodistance runs the reachability field over the
+whole hierarchy — ~75 ms, independent of the threshold — where a time
+isochrone bounds its field at the threshold and costs 3-6 ms. The polygon
+stage is the same for both and scales with the area drawn. The reason is in
+`range/phast_seeded.rs::run_phast_seeded_2ch_by_len`: length is a value the
+time search CARRIES, never one it may steer by, or the reported metres stop
+being the metres of the path the engine would drive.
 
 Content negotiation:
 - `Accept: application/json` (default) → `IsochroneResponse`
@@ -301,7 +340,8 @@ Content negotiation:
 ```
 {
   "contours": [{
-    "time_s": ..., "distance_m": ...,           // one of these is set
+    "time_s": ...,                              // time threshold, seconds
+    "distance_m": ...,                          // OR distance threshold, metres
     "polygon" | "polygon_geojson" | "polygon_points": ...,
     "reachable_edges": ...
   }, ...],
@@ -313,7 +353,10 @@ Polygon ring orientation is enforced CCW for outer rings (GeoJSON spec). JSON co
 
 **Errors**
 
-- 400 — invalid coord/mode, missing or multiple metric (must provide exactly one), out-of-range threshold, invalid direction, bad geometry format
+- 400 — invalid coord/mode, no threshold or two metrics at once, out-of-range
+  threshold, invalid direction, bad geometry format, an unknown query
+  parameter (#612), a distance threshold with `exclude` / `avoid_polygons` or
+  on a dataset without length-along-time weights
 
 **Notes**
 
@@ -672,7 +715,8 @@ Params:
 
 | Column | Arrow type | Notes |
 |--------|------------|-------|
-| `interval_s` | u32 | |
+| `interval_s` | u32 | seconds; null on an isodistance |
+| `interval_m` | u32 | metres of length along the time-shortest path; null on a time isochrone (#612). Ask for one with `intervals_m` instead of `intervals`. |
 | `polygon_wkb` | binary | WKB Polygon, CCW outer ring |
 
 ### Action: `catchment` *(DoExchange)*

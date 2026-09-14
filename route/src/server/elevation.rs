@@ -491,6 +491,7 @@ use utoipa::ToSchema;
 ///
 /// Example: `?coordinates=4.3517,50.8503|4.4017,50.8603`
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct HeightRequest {
     /// Pipe-separated coordinate pairs: "lon,lat|lon,lat|..."
     #[schema(example = "4.3517,50.8503|4.4017,50.8603")]

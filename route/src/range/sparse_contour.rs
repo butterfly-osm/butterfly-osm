@@ -560,8 +560,6 @@ impl SparseContourConfig {
     /// -  <=3600 s (60 min): 4x base cell size
     /// -  >3600 s         : 6.67x base cell size
     pub fn for_mode_name_with_threshold(name: &str, threshold_s: u32) -> Self {
-        let base = Self::for_mode_name(name);
-
         let (cell_mult, simplify_mult) = if threshold_s <= 600 {
             (1.0, 1.0)
         } else if threshold_s <= 1800 {
@@ -571,7 +569,39 @@ impl SparseContourConfig {
         } else {
             (6.67, 8.0)
         };
+        Self::for_mode_name(name).scaled(cell_mult, simplify_mult)
+    }
 
+    /// Select config by mode name and an ISODISTANCE threshold in metres
+    /// (#612).
+    ///
+    /// What the tiers above are really about is the polygon's spatial
+    /// extent: a wide reachable set needs coarser cells and stronger
+    /// simplification, or the raster and the Douglas-Peucker pass dominate
+    /// the query. The time tiers are that extent expressed through a car's
+    /// speed — ~10 min ≈ 10 km, ~30 min ≈ 30 km, ~60 min ≈ 60 km. A distance
+    /// threshold states the extent directly, and does so identically for
+    /// every mode (10 km on foot covers the same ground as 10 km by car),
+    /// so the tiers are read straight off it. The per-mode BASE cell size
+    /// still varies — that one is about road density and detail, not extent.
+    pub fn for_mode_name_with_distance(name: &str, threshold_m: u32) -> Self {
+        let (cell_mult, simplify_mult) = if threshold_m <= 10_000 {
+            (1.0, 1.0)
+        } else if threshold_m <= 30_000 {
+            (2.0, 2.0)
+        } else if threshold_m <= 60_000 {
+            (4.0, 4.0)
+        } else {
+            (6.67, 8.0)
+        };
+        Self::for_mode_name(name).scaled(cell_mult, simplify_mult)
+    }
+
+    /// Coarsen a base config by the tier multipliers above. Morphology
+    /// rounds, halo and crumb filter are properties of the SHAPE, not of the
+    /// extent, so they never scale.
+    fn scaled(self, cell_mult: f64, simplify_mult: f64) -> Self {
+        let base = self;
         Self {
             cell_size_m: base.cell_size_m * cell_mult,
             dilation_rounds: base.dilation_rounds,

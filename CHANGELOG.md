@@ -10,6 +10,77 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-14 — Input we cannot honour is refused; isodistance is back, on the metric that makes it consistent (#612)
+
+**Two things, and the first is a defect.** `GET /isochrone?…&metric=distance`
+answered `200` with a polygon byte-identical to the one without the parameter,
+and an invented `?pouet=42` answered `200` too. Axum's bare `Query` drops a key
+the request type has no field for, so a caller who mistyped a parameter — or
+used one from an older build — got a confident answer to a question it had not
+asked. Every REST surface had it, not just the isochrone; the machine-facing
+Flight params had the same hole closed in #548.
+
+Every REST request type now denies unknown fields, and two extractors,
+`types::ValidatedQuery` / `types::ValidatedJson`, render the refusal as
+`ErrorResponse` — the one documented error shape (#576) — naming the offending
+key and listing what the endpoint does accept. Affected: `/route`, `/nearest`,
+`/isochrone`, `/transit`, `/height` (query parameters) and `/isochrone/bulk`,
+`/trip`, `/match`, `/catchment`, `/transit/bulk` (JSON bodies). `/table`
+already denied unknown fields (#415) but answered axum's plain-text 422; it now
+answers the documented 400 body like everything else.
+
+**Isodistance, rebuilt on length-along-time.** `/isochrone?distance_m=5000` and
+`?contours_m=5000,10000` are back, and so is `intervals_m` on the Flight
+`isochrone` action — single threshold and multi-contour, same one-simple-polygon
+guarantee, depart and arrive. #373 removed the old one for a good reason: it was
+the only endpoint running its reachability search on the separate
+distance-shortest CCH, so it reported reachability along a different geometric
+path from every other endpoint. That objection does not apply here. An
+isodistance is now **the set of points reachable within X metres of road length
+accumulated along the TIME-shortest path** — the same path every other surface
+routes, and the same metres `/route` and `/table` already report for the same
+pair (`cch_weights_len_along_time`, #371/#372). The distance-shortest hierarchy
+is not used, and must not be.
+
+Because the metres are the matrix's metres, the matrix is the polygon's exact
+truth: `gate_isodistance_truth` runs `gate_isochrone_reach_truth`'s check with
+`annotations=distance` and a threshold in metres, both directions — the served
+network is inside the budget, nothing inside the budget is left outside the
+polygon, the WKB is one simple CCW polygon containing the snapped origin, and
+the contours nest and are labelled in metres, never seconds.
+
+A distance threshold is refused, never silently answered on the wrong metric,
+with `exclude` / `avoid_polygons` (those recustomize the time weights for the
+one request; nothing recustomizes the length-along-time channel to match) and
+on a dataset built before those weights existed.
+
+**`/table?annotations=distance` was still answering out of the distance-shortest
+CCH.** Found while wiring the truth check. #371 required `/table`'s `distance`
+to be the length along the time-shortest path, and the fix landed gated on
+`want_duration && want_distance` — so the one request shape that asks for
+distance ALONE fell through to the legacy branch. Measured on Belgium,
+Brussels→Antwerp: 44 991 m with `annotations=distance` against 53 246 m with
+`duration,distance`, and 53 245 m from `/route`. A 16 % divergence on the same
+pair, decided by whether the caller also wanted to know how long it takes.
+`distance` means the length of the path the engine would drive; it cannot depend
+on that. The 2-channel engine now runs whenever distance is asked for.
+
+**Also:** the seeded PHAST's seed initialisation applies the same
+(time, then length) tie-break as its relaxation — two phantom seeds can land on
+one rank, and taking the later one only when strictly faster kept the LONGER of
+two equal-time partials.
+
+**Cost.** An isodistance runs its reachability field over the whole hierarchy —
+~75 ms on Belgium, independent of the threshold — where a time isochrone bounds
+its field and costs 3-6 ms. Length is a value the time search CARRIES, never one
+it may steer by: gating the sweep on it would label boundary nodes from a slower
+parent and report the length of a path the engine would never drive. Two exact
+ways to bound it anyway are written up on
+`range/phast_seeded.rs::run_phast_seeded_2ch_by_len`, along with the
+optimisation that was tried and measured not to pay (saturating the length
+channel: 68 ms either way — the primary channel's random access is the wall).
+
+
 ### 2026-09-07 — The cost the search minimises is no longer the duration we report (#610)
 
 **One array was doing two jobs.** The contracted hierarchy's TIME channel was
