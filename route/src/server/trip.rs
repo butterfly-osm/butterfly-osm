@@ -15,7 +15,9 @@ use utoipa::ToSchema;
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, bad_request_deprecated, parse_mode, validate_coord};
+use super::types::{
+    ErrorResponse, ValidatedJson, bad_request_deprecated, parse_mode, validate_coord,
+};
 
 // ============ TSP Solver (pure algorithm) ============
 
@@ -343,6 +345,7 @@ fn brute_force_3(
 
 /// Request for trip/TSP optimization
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct TripRequest {
     /// Waypoint coordinates [[lon, lat], ...] - 2 to 100 waypoints
     #[schema(example = json!([[4.3517, 50.8503], [4.4017, 50.8603], [4.3817, 50.8403], [4.3317, 50.8303]]))]
@@ -486,7 +489,7 @@ pub struct TripLeg {
 )]
 pub async fn trip_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<TripRequest>,
+    ValidatedJson(req): ValidatedJson<TripRequest>,
 ) -> impl IntoResponse {
     // Region dispatch (#91): the trip's coordinate set must all snap
     // into one region. Mixed-region trips require the cross-region

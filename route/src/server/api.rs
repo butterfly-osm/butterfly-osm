@@ -427,6 +427,125 @@ mod openapi_parity {
         );
     }
 
+    /// #612: the router half of "input we cannot honour is refused". The
+    /// request TYPES deny unknown fields (pinned by
+    /// `every_rest_request_refuses_a_parameter_it_cannot_honour` below), but
+    /// a handler that extracts with the bare `Query` / `Json` still answers
+    /// axum's plain-text rejection, which is not [`ErrorResponse`] and which
+    /// `every_documented_error_response_is_the_one_error_shape` above cannot
+    /// see — the document would say `ErrorResponse` and the router would
+    /// serve `text/plain`. So the extractor itself is the tripwire: a
+    /// handler signature may only name `ValidatedQuery` / `ValidatedJson`.
+    #[test]
+    fn no_handler_extracts_input_with_the_plain_rejection() {
+        let mut offenders = Vec::new();
+        for (name, src) in HANDLER_SOURCES {
+            for (i, line) in src.lines().enumerate() {
+                let t = line.trim();
+                // A handler argument, i.e. `<pat>: Query<T>,` — not the
+                // utoipa `params(("x" = T, Query, …))` entries, not
+                // `CchQuery`, not `IsochroneQuery`.
+                let bare = (t.contains(": Query<") || t.contains(": Json<"))
+                    && !t.contains("Validated")
+                    && t.ends_with(',');
+                if bare {
+                    offenders.push(format!("{name}:{}: {}", i + 1, t));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these handlers extract with axum's bare extractor, whose rejection \
+             is plain text rather than the documented ErrorResponse — use \
+             `types::ValidatedQuery` / `types::ValidatedJson` (#612):\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// #612: every REST request type refuses a parameter it cannot honour.
+    ///
+    /// `/isochrone?…&metric=distance` returned 200 with a byte-identical
+    /// polygon, and `?pouet=42` returned 200 too: the key was dropped and
+    /// the caller got a confident answer to a question it had not asked.
+    /// That is the web-surface twin of what #548 closed on Flight, and the
+    /// negative case belongs next to the path list because the list is what
+    /// says which surfaces have to carry it.
+    ///
+    /// Each entry deserializes a MINIMAL VALID request first — otherwise the
+    /// negative case below would pass for the wrong reason (a missing
+    /// required field is also an error).
+    #[test]
+    fn every_rest_request_refuses_a_parameter_it_cannot_honour() {
+        use serde::de::DeserializeOwned;
+        use serde_json::json;
+
+        fn refuses<T: DeserializeOwned>(surface: &str, valid: serde_json::Value) {
+            serde_json::from_value::<T>(valid.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "{surface}: the base request must deserialize, else the \
+                     negative case is vacuous — {e}: {valid}"
+                )
+            });
+            let mut with_junk = valid;
+            with_junk
+                .as_object_mut()
+                .expect("object")
+                .insert("metric".to_string(), json!("distance"));
+            let err = serde_json::from_value::<T>(with_junk)
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("{surface}: `metric` was accepted and silently ignored (#612)")
+                })
+                .to_string();
+            assert!(
+                err.contains("metric"),
+                "{surface}: the refusal must NAME the parameter, got: {err}"
+            );
+        }
+
+        let pair = json!([[4.3517, 50.8503], [4.4017, 50.8603]]);
+        refuses::<super::super::route::RouteRequest>(
+            "/route",
+            json!({"origin_lon": 4.35, "origin_lat": 50.85,
+                   "destination_lon": 4.40, "destination_lat": 50.86, "mode": "car"}),
+        );
+        refuses::<super::super::nearest::NearestRequest>(
+            "/nearest",
+            json!({"lon": 4.35, "lat": 50.85, "mode": "car"}),
+        );
+        refuses::<super::super::table::TablePostRequest>(
+            "/table",
+            json!({"origins": pair, "destinations": pair, "mode": "car"}),
+        );
+        refuses::<super::super::isochrone_handler::IsochroneRequest>(
+            "/isochrone",
+            json!({"lon": 4.35, "lat": 50.85, "mode": "car", "time_s": 600}),
+        );
+        refuses::<super::super::isochrone_handler::BulkIsochroneRequest>(
+            "/isochrone/bulk",
+            json!({"origins": pair, "time_s": 600, "mode": "car"}),
+        );
+        refuses::<super::super::trip::TripRequest>("/trip", json!({"points": pair}));
+        refuses::<super::super::matching::MatchRequest>("/match", json!({"points": pair}));
+        refuses::<super::super::catchment::CatchmentRequest>(
+            "/catchment",
+            json!({"mode": "car", "hull_shape": "road", "percentiles": [50.0],
+                   "stores": [{"id": "a", "lon": 4.35, "lat": 50.85}],
+                   "clients": [{"lon": 4.36, "lat": 50.86}]}),
+        );
+        let transit = json!({"origin_lon": 4.35, "origin_lat": 50.85,
+                             "destination_lon": 4.40, "destination_lat": 51.22});
+        refuses::<super::super::transit_handler::TransitRequest>("/transit", transit.clone());
+        refuses::<super::super::transit_handler::TransitBulkRequest>(
+            "/transit/bulk",
+            json!({"queries": [transit]}),
+        );
+        refuses::<super::super::elevation::HeightRequest>(
+            "/height",
+            json!({"coordinates": "4.3517,50.8503"}),
+        );
+    }
+
     /// The documented field is `error`, and the two legacy `/trip` and
     /// `/match` fields are documented AS deprecated for the length of
     /// the #576 window — a client reading the Swagger UI must be able to

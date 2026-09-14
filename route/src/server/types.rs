@@ -247,6 +247,118 @@ pub fn bad_request_deprecated(
     )
 }
 
+// ===========================================================================
+// Input that cannot be honoured is refused, never ignored (#612)
+// ===========================================================================
+
+/// Rewrite one serde rejection into the sentence a caller needs.
+///
+/// `axum`'s own rejection body is plain text — it never reaches
+/// [`ErrorResponse`] — and it opens with the transport detail
+/// (`Failed to deserialize query string: …`) rather than with the thing the
+/// caller got wrong. serde's own half is exactly right, though: it NAMES the
+/// offending key and lists what the endpoint does accept. So the transport
+/// prefix is stripped, the serde half is kept verbatim, and the unknown-key
+/// case gains the one fact the caller cannot infer from a 400 — that the
+/// parameter was refused *because* it could not be honoured, not because it
+/// was malformed.
+fn refusal_message(kind: &str, body_text: &str) -> String {
+    /// The transport half of every axum rejection this wraps. Anything
+    /// else (a missing `Content-Type`, a body-read failure) has no serde
+    /// half to keep and is passed through whole.
+    const TRANSPORT_PREFIXES: &[&str] = &[
+        "Failed to deserialize query string: ",
+        "Failed to deserialize the JSON body into the target type: ",
+        "Failed to parse the request body as JSON: ",
+    ];
+    const UNKNOWN: &str = "unknown field ";
+    let detail = TRANSPORT_PREFIXES
+        .iter()
+        .find_map(|p| body_text.strip_prefix(p))
+        .unwrap_or(body_text);
+    // `unknown field` is not always at the start: the query-string
+    // deserializer prefixes the failing key (`metric: unknown field
+    // \`metric\`, expected \`lon\` or \`mode\``), the JSON one does not.
+    // Both carry the list of names the endpoint DOES accept after it,
+    // which is the half worth serving verbatim.
+    match detail.find(UNKNOWN) {
+        Some(at) => format!(
+            "unknown {kind} {}. \
+             A {kind} this endpoint cannot honour is refused, not ignored",
+            &detail[at + UNKNOWN.len()..]
+        ),
+        None => format!("invalid {kind}s: {detail}"),
+    }
+}
+
+/// `GET` query parameters, with an unknown one refused by name (#612).
+///
+/// Two things separate this from a bare [`axum::extract::Query`], and the
+/// isochrone defect needed both. The request type carries
+/// `#[serde(deny_unknown_fields)]`, so a parameter the endpoint cannot
+/// honour — `metric=distance` on a build that has no such parameter, a
+/// typo, a spelling from an older release — is an error instead of a
+/// silently dropped key that returns a confident answer to a question
+/// nobody asked. And the refusal is rendered as [`ErrorResponse`], the one
+/// documented error shape of the REST surface (#576), instead of axum's
+/// plain-text rejection which no OpenAPI component describes.
+///
+/// This is the web-surface half of #548, which closed the same hole on the
+/// machine-facing Flight params.
+pub struct ValidatedQuery<T>(pub T);
+
+impl<T, S> axum::extract::FromRequestParts<S> for ValidatedQuery<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (axum::http::StatusCode, Json<ErrorResponse>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(Self(value)),
+            Err(rejection) => Err(bad_request(refusal_message(
+                "query parameter",
+                &rejection.body_text(),
+            ))),
+        }
+    }
+}
+
+/// A JSON request body, with an unknown field refused by name (#612) — the
+/// `POST` mirror of [`ValidatedQuery`]. Same two reasons: the body type
+/// denies unknown fields, and the refusal is [`ErrorResponse`].
+///
+/// The #576 deprecation fields are deliberately NOT emitted here, on
+/// `/trip` and `/match` included: those two carry `code`/`message` for the
+/// 400s they already answered before #576, and no client can have been
+/// reading a legacy body for a refusal that did not exist until now.
+pub struct ValidatedJson<T>(pub T);
+
+impl<T, S> axum::extract::FromRequest<S> for ValidatedJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (axum::http::StatusCode, Json<ErrorResponse>);
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            // 400, not axum's 422 for a well-formed body of the wrong
+            // shape: every other refusal on this surface is a 400 and
+            // that is the status the OpenAPI document promises.
+            Err(rejection) => Err(bad_request(refusal_message(
+                "body field",
+                &rejection.body_text(),
+            ))),
+        }
+    }
+}
+
 /// Get the location (lon, lat) of an EBG node
 pub fn get_node_location(state: &super::state::ServerState, node_id: u32) -> [f64; 2] {
     let node = &state.ebg_nodes.nodes[node_id as usize];
@@ -259,6 +371,97 @@ pub fn get_node_location(state: &super::state::ServerState, node_id: u32) -> [f6
         return [lon, lat];
     }
     [0.0, 0.0]
+}
+
+#[cfg(test)]
+mod validated_extractor_tests {
+    //! #612: the extractor is what turns `deny_unknown_fields` into a
+    //! REFUSAL a caller can read. The struct attribute alone is checked
+    //! per request type in `api.rs`; what is pinned here is the wiring —
+    //! that a query string carrying an unknown key comes back as 400 with
+    //! the documented [`ErrorResponse`] body, naming the key, and that a
+    //! clean query string still parses.
+    use super::*;
+    use axum::extract::FromRequestParts;
+    use axum::http::{Request, StatusCode};
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Probe {
+        lon: f64,
+        #[serde(default)]
+        mode: Option<String>,
+    }
+
+    fn extract(uri: &str) -> Result<Probe, (StatusCode, String)> {
+        let (mut parts, ()) = Request::builder().uri(uri).body(()).unwrap().into_parts();
+        let out = futures::executor::block_on(ValidatedQuery::<Probe>::from_request_parts(
+            &mut parts,
+            &(),
+        ));
+        match out {
+            Ok(ValidatedQuery(v)) => Ok(v),
+            Err((code, Json(body))) => {
+                assert!(
+                    body.code.is_none() && body.message.is_none(),
+                    "a refusal invented by #612 has no legacy client to keep: {body:?}"
+                );
+                Err((code, body.error))
+            }
+        }
+    }
+
+    #[test]
+    fn a_clean_query_string_still_parses() {
+        let ok = extract("/isochrone?lon=4.35&mode=car").expect("valid query");
+        assert_eq!(ok.lon, 4.35);
+        assert_eq!(ok.mode.as_deref(), Some("car"));
+    }
+
+    #[test]
+    fn an_unknown_query_parameter_is_refused_by_name() {
+        // The exact shape of the #612 report: the parameter used to be
+        // dropped and the endpoint answered 200 with an identical body.
+        for uri in [
+            "/isochrone?lon=4.35&metric=distance",
+            "/isochrone?lon=4.35&pouet=42",
+        ] {
+            let (code, error) = extract(uri).expect_err(uri);
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{uri}");
+            let named = error.contains("metric") || error.contains("pouet");
+            assert!(named, "the refusal must name the parameter, got: {error}");
+            assert!(
+                error.starts_with("unknown query parameter"),
+                "and say what kind of thing it refused, got: {error}"
+            );
+            assert!(
+                error.contains("refused, not ignored"),
+                "and why, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_value_is_still_a_400_in_the_documented_shape() {
+        let (code, error) = extract("/isochrone?lon=north").expect_err("not a float");
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(
+            error.starts_with("invalid query parameters: "),
+            "a bad VALUE is not an unknown KEY and must not claim to be: {error}"
+        );
+    }
+
+    /// The transport prefix is stripped only when it is actually there:
+    /// a rejection with no serde half (a missing `Content-Type`, say)
+    /// must survive whole rather than be cut at its first colon.
+    #[test]
+    fn a_rejection_without_a_serde_half_is_passed_through_whole() {
+        let whole = "Expected request with `Content-Type: application/json`";
+        assert_eq!(
+            refusal_message("body field", whole),
+            format!("invalid body fields: {whole}")
+        );
+    }
 }
 
 #[cfg(test)]

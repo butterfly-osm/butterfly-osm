@@ -21,7 +21,7 @@ use crate::model::types::Mode;
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, SnapRole, Waypoint, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, ValidatedJson, Waypoint, parse_mode, validate_coord};
 
 /// #594: response header naming the matrix plan `/table` actually ran —
 /// `bucket`, `phast_fwd` or `phast_rev` (see [`MatrixPlan`]). The value comes
@@ -164,7 +164,7 @@ pub struct TableResponse {
 )]
 pub async fn table_post_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<TablePostRequest>,
+    ValidatedJson(req): ValidatedJson<TablePostRequest>,
 ) -> impl IntoResponse {
     for (i, [lon, lat]) in req.origins.iter().enumerate() {
         if let Err(e) = validate_coord(*lon, *lat, &format!("source[{}]", i)) {

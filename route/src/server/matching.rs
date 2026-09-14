@@ -9,12 +9,15 @@ use super::geometry::{GeometryFormat, RouteGeometry, build_geometry};
 use super::regions::RegionsState;
 use super::route::{RouteStep, build_steps, lookup_road_name};
 use super::state::ServerState;
-use super::types::{ErrorResponse, bad_request_deprecated, parse_mode, validate_coord};
+use super::types::{
+    ErrorResponse, ValidatedJson, bad_request_deprecated, parse_mode, validate_coord,
+};
 
 // ============ Types ============
 
 /// Request for GPS trace map matching
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct MatchRequest {
     /// GPS coordinates [[lon, lat], ...] -- at least 2 points
     #[schema(example = json!([[4.3517, 50.8503], [4.3537, 50.8513], [4.3557, 50.8523], [4.3577, 50.8533]]))]
@@ -117,7 +120,7 @@ pub struct MatchTracepoint {
 )]
 pub async fn match_trace_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<MatchRequest>,
+    ValidatedJson(req): ValidatedJson<MatchRequest>,
 ) -> impl IntoResponse {
     if req.points.len() < 2 {
         return bad_request_deprecated("At least 2 coordinates required").into_response();
