@@ -84,6 +84,12 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   response carries extra contour features tagged `band: "optimistic" |
   "pessimistic"` (nested rings); on `/table` extra `durations_q25` /
   `durations_q75` grids. 400 if the loaded table has no band columns.
+  On an ISODISTANCE (#612) bands still mean something, but not the obvious
+  thing: the band weight sets change which path is time-shortest, so the
+  metres are spent on a slightly different route — the three polygons come
+  out nearly the same size and are NOT nested, where the three polygons of a
+  time isochrone are. A distance budget does not shrink because the traffic
+  got worse.
 
 ## REST endpoints
 
