@@ -3,7 +3,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Query, State},
+    extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -14,18 +14,19 @@ use utoipa::ToSchema;
 
 use super::geometry::{
     GeometryFormat, IsochroneFlats, IsochroneQuery, IsochroneSnapError, Point, ReachModel,
-    encode_contour, isochrone_polygons, primary_outer_ring, reachable_polylines,
+    ThresholdMetric, encode_contour, isochrone_polygons, primary_outer_ring, reachable_polylines,
 };
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, ValidatedJson, ValidatedQuery, parse_mode, validate_coord};
 use crate::range::ContourPolygon;
 
 // ============ Types ============
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct IsochroneRequest {
     /// Center longitude
     #[schema(example = 4.3517)]
@@ -41,6 +42,18 @@ pub struct IsochroneRequest {
     /// Mutually exclusive with time_s.
     #[serde(default)]
     pub contours: Option<String>,
+    /// Isodistance (#612): distance limit in METRES (1-100000) of road length
+    /// accumulated along the time-shortest path — the same path `/route` and
+    /// `/table` report, and the same metres. The one-contour form of
+    /// `contours_m`. Mutually exclusive with `time_s` / `contours`.
+    #[serde(default)]
+    #[schema(example = json!(null))]
+    pub distance_m: Option<u32>,
+    /// Multiple isodistance contours as comma-separated metres (e.g.
+    /// "5000,10000,20000", max 10). Mutually exclusive with `time_s` /
+    /// `contours`.
+    #[serde(default)]
+    pub contours_m: Option<String>,
     /// Transport mode (car, bike, foot)
     #[schema(example = "car")]
     pub mode: String,
@@ -71,9 +84,13 @@ pub struct IsochroneRequest {
 /// A single contour polygon in an isochrone response
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ContourFeature {
-    /// Contour threshold in seconds
+    /// Contour threshold in seconds — set on a time isochrone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_s: Option<u32>,
+    /// Contour threshold in metres — set on an isodistance (#612), where
+    /// `time_s` is absent. Exactly one of the two is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<u32>,
     /// Polygon as encoded polyline6 string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polygon: Option<String>,
@@ -155,13 +172,22 @@ pub struct IsochroneResponse {
 
 /// Bulk isochrone request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct BulkIsochroneRequest {
     /// List of origins as [lon, lat] pairs (max 10,000)
     #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]]))]
     origins: Vec<[f64; 2]>,
-    /// Time limit in seconds (1-7200)
+    /// Time limit in seconds (1-7200). The one-contour time threshold;
+    /// exactly one of `time_s` / `distance_m` must be set.
+    #[serde(default)]
     #[schema(example = 600)]
-    time_s: u32,
+    time_s: Option<u32>,
+    /// Isodistance threshold in METRES (1-100000) of road length along the
+    /// time-shortest path (#612). Exactly one of `time_s` / `distance_m`
+    /// must be set.
+    #[serde(default)]
+    #[schema(example = json!(null))]
+    distance_m: Option<u32>,
     /// Transport mode: car, bike, or foot
     #[schema(example = "car")]
     mode: String,
@@ -171,6 +197,171 @@ pub struct BulkIsochroneRequest {
     /// Avoid polygon(s) as JSON array of coordinate rings
     #[serde(default)]
     avoid_polygons: Option<String>,
+}
+
+/// ONE rendering of every reason [`isochrone_polygons`] can refuse to start,
+/// so the REST single, bulk and band surfaces cannot describe the same
+/// refusal differently. All five are 400s: they are properties of the
+/// request, not of the server.
+pub fn isochrone_error_message(e: IsochroneSnapError) -> String {
+    match e {
+        IsochroneSnapError::NoSnap => "Could not snap center to road network".to_string(),
+        IsochroneSnapError::NotAccessible => "Center not accessible for this mode".to_string(),
+        IsochroneSnapError::NoLengthChannel => {
+            "a distance threshold needs length-along-time weights, which this \
+             dataset does not carry for the requested mode. Use a time \
+             threshold (time_s / contours)"
+                .to_string()
+        }
+        IsochroneSnapError::LengthWithCustomWeights => {
+            "a distance threshold is incompatible with exclude / avoid_polygons: \
+             those change which path is time-shortest, and the length-along-time \
+             weights still describe the unmodified one"
+                .to_string()
+        }
+    }
+}
+
+// ============ Thresholds ============
+
+/// Largest time threshold an isochrone accepts, in seconds (2 h).
+pub const MAX_TIME_S: u32 = 7200;
+/// Largest isodistance threshold, in metres (100 km) — #612, the same
+/// ceiling `distance_m` carried before #373 removed it.
+pub const MAX_DISTANCE_M: u32 = 100_000;
+/// Largest number of contours one request may ask for.
+pub const MAX_CONTOURS: usize = 10;
+
+/// What one isochrone request asks for: a metric, and the thresholds in that
+/// metric's unit (sorted, de-duplicated, 1..=[`MAX_CONTOURS`] values).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestedContours {
+    pub metric: ThresholdMetric,
+    pub values: Vec<u32>,
+}
+
+impl RequestedContours {
+    /// The threshold labels a [`ContourFeature`] carries: seconds on a time
+    /// isochrone, metres on an isodistance, never both.
+    fn label(&self, threshold: u32) -> (Option<u32>, Option<u32>) {
+        match self.metric {
+            ThresholdMetric::Time => (Some(threshold), None),
+            ThresholdMetric::LengthAlongTime => (None, Some(threshold)),
+        }
+    }
+}
+
+/// How ONE transport spells the two threshold families, so a refusal from
+/// the shared parser names the parameters the CALLER can actually set — the
+/// Flight action has no `time_s` to offer and must not say so.
+pub struct ThresholdSpelling {
+    /// The time family, e.g. `"time_s / contours (seconds)"`.
+    pub time: &'static str,
+    /// The distance family, e.g. `"distance_m / contours_m (metres)"`.
+    pub distance: &'static str,
+}
+
+/// The REST `/isochrone` and `/isochrone/bulk` spelling.
+pub const REST_SPELLING: ThresholdSpelling = ThresholdSpelling {
+    time: "time_s / contours (seconds)",
+    distance: "distance_m / contours_m (metres)",
+};
+
+/// The Flight `isochrone` action's spelling.
+pub const FLIGHT_SPELLING: ThresholdSpelling = ThresholdSpelling {
+    time: "intervals (seconds)",
+    distance: "intervals_m (metres)",
+};
+
+/// Parse the four threshold parameters into ONE metric and its values
+/// (#612).
+///
+/// Two families, one per metric: seconds and metres. Within a family the
+/// singular form is the one-contour spelling of the plural, and the plural
+/// wins when both are given — the #554 rule, unchanged. ACROSS families
+/// nothing wins: a threshold measures one quantity, and a request that names
+/// both is a caller who does not know which answer they want, so it is
+/// refused rather than silently resolved.
+///
+/// Every isochrone surface parses through here, so they cannot drift on what
+/// a valid threshold is; only the [`ThresholdSpelling`] differs, so each
+/// surface's refusal still names its own parameters.
+pub fn parse_requested_contours(
+    time_s: Option<u32>,
+    contours: Option<&str>,
+    distance_m: Option<u32>,
+    contours_m: Option<&str>,
+    spelling: &ThresholdSpelling,
+) -> Result<RequestedContours, String> {
+    let wants_time = time_s.is_some() || contours.is_some();
+    let wants_distance = distance_m.is_some() || contours_m.is_some();
+    match (wants_time, wants_distance) {
+        (false, false) => {
+            return Err(format!(
+                "Provide a threshold: {} for an isochrone, or {} for an isodistance",
+                spelling.time, spelling.distance
+            ));
+        }
+        (true, true) => {
+            return Err(format!(
+                "Provide EITHER a time threshold, {}, OR a distance threshold, {} \
+                 — not both",
+                spelling.time, spelling.distance
+            ));
+        }
+        _ => {}
+    }
+
+    let (metric, single, multi, unit, max) = if wants_time {
+        (
+            ThresholdMetric::Time,
+            time_s,
+            contours,
+            "seconds",
+            MAX_TIME_S,
+        )
+    } else {
+        (
+            ThresholdMetric::LengthAlongTime,
+            distance_m,
+            contours_m,
+            "metres",
+            MAX_DISTANCE_M,
+        )
+    };
+
+    let mut values: Vec<u32> = Vec::new();
+    if let Some(list) = multi {
+        for part in list.split(',') {
+            let part = part.trim();
+            match part.parse::<u32>() {
+                Ok(v) if (1..=max).contains(&v) => values.push(v),
+                Ok(v) => {
+                    return Err(format!(
+                        "contour value must be between 1 and {max} {unit}, got {v}"
+                    ));
+                }
+                Err(_) => return Err(format!("invalid contour value: '{part}'")),
+            }
+        }
+    } else if let Some(v) = single {
+        if v == 0 || v > max {
+            return Err(format!(
+                "threshold must be between 1 and {max} {unit}, got {v}"
+            ));
+        }
+        values.push(v);
+    }
+
+    values.sort_unstable();
+    values.dedup();
+    if values.is_empty() || values.len() > MAX_CONTOURS {
+        return Err(format!(
+            "contours must have 1-{MAX_CONTOURS} values, got {}",
+            values.len()
+        ));
+    }
+    Ok(RequestedContours { metric, values })
 }
 
 // ============ Handlers ============
@@ -188,12 +379,14 @@ pub struct BulkIsochroneRequest {
     path = "/isochrone",
     tag = "Isochrone",
     summary = "Compute reachability polygon",
-    description = "Computes the area reachable within a time limit using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\n`time_s` is the one-contour form of `contours` (`contours` wins when both are given).\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
+    description = "Computes the area reachable within a threshold using PHAST.\nSupports forward (depart) and reverse (arrive) isochrones.\n\nThe threshold is EITHER a time (`time_s` / `contours`, seconds) OR a distance (`distance_m` / `contours_m`, metres). A distance threshold is an **isodistance**: road length accumulated along the time-shortest path \u{2014} the same path and the same metres `/route` and `/table` report for the same pair, so the matrix is its exact truth. Never both in one request.\n\n`time_s` is the one-contour form of `contours`, `distance_m` of `contours_m` (the multi form wins when both are given).\n\nContent negotiation:\n- `Accept: application/json` \u{2192} JSON polygon\n- `Accept: application/octet-stream` \u{2192} WKB binary polygon (single contour only)",
     params(
         ("lon" = f64, Query, description = "Center longitude", example = 4.3517),
         ("lat" = f64, Query, description = "Center latitude", example = 50.8503),
         ("time_s" = Option<u32>, Query, description = "Time limit in seconds (1-7200) — the one-contour form of contours.", example = 600),
-        ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). Mutually exclusive with time_s.", example = json!(null)),
+        ("contours" = Option<String>, Query, description = "Comma-separated time contours in seconds (e.g. '300,600,1200', max 10). The multi-contour form of time_s.", example = json!(null)),
+        ("distance_m" = Option<u32>, Query, description = "Isodistance limit in metres (1-100000) along the time-shortest path \u{2014} the one-contour form of contours_m. Mutually exclusive with time_s / contours.", example = json!(null)),
+        ("contours_m" = Option<String>, Query, description = "Comma-separated isodistance contours in metres (e.g. '5000,10000,20000', max 10). Mutually exclusive with time_s / contours.", example = json!(null)),
         ("mode" = String, Query, description = "Transport mode (e.g. car, bike, foot \u{2014} depends on available models)", example = "car"),
         ("direction" = Option<String>, Query, description = "Direction: 'depart' (default) or 'arrive'", example = "depart"),
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "geojson"),
@@ -207,7 +400,7 @@ pub struct BulkIsochroneRequest {
 )]
 pub async fn isochrone_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<IsochroneRequest>,
+    ValidatedQuery(req): ValidatedQuery<IsochroneRequest>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "center") {
@@ -227,101 +420,18 @@ pub async fn isochrone_handler(
     let state = Arc::clone(&ctx.state);
     let _: &Arc<ServerState> = &state;
 
-    // Determine isochrone metric: exactly one of {time_s, contours}.
-    // The pre-#371 `distance_m` (isodistance) variant was removed — that
-    // mode ran PHAST on a separate distance-shortest CCH metric, which
-    // produced reachability sets along a different geometric path from
-    // every other drivetime endpoint. Reachable-by-time is the only
-    // semantically consistent isochrone for a drivetime engine.
-    enum IsoMetric {
-        Time(u32),           // threshold in seconds (post-#297; was ds)
-        MultiTime(Vec<u32>), // sorted thresholds in seconds
-    }
-
-    // #554: `time_s` is the one-contour spelling of `contours`; `contours` wins
-    // when both are given (they used to be mutually exclusive, a 400 for no
-    // benefit).
-    if req.time_s.is_none() && req.contours.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "Provide time_s (one contour) or contours (comma-separated seconds)".to_string(),
-            )),
-        )
-            .into_response();
-    }
-
-    let metric = if let (Some(t), None) = (req.time_s, req.contours.as_ref()) {
-        if t == 0 || t > 7200 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(format!(
-                    "time_s must be between 1 and 7200, got {}",
-                    t
-                ))),
-            )
-                .into_response();
+    // What the thresholds measure, and what they are (#612).
+    let requested = match parse_requested_contours(
+        req.time_s,
+        req.contours.as_deref(),
+        req.distance_m,
+        req.contours_m.as_deref(),
+        &REST_SPELLING,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
-        IsoMetric::Time(t) // seconds (post-#297; weights are also in s)
-    } else if let Some(ref contours_str) = req.contours {
-        let mut values = Vec::new();
-        for part in contours_str.split(',') {
-            let part = part.trim();
-            match part.parse::<u32>() {
-                Ok(v) if (1..=7200).contains(&v) => values.push(v), // seconds (post-#297)
-                Ok(v) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse::new(format!(
-                            "contour value must be between 1 and 7200, got {}",
-                            v
-                        ))),
-                    )
-                        .into_response();
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse::new(format!(
-                            "invalid contour value: '{}'",
-                            part
-                        ))),
-                    )
-                        .into_response();
-                }
-            }
-        }
-        if values.is_empty() || values.len() > 10 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(format!(
-                    "contours must have 1-10 values, got {}",
-                    values.len()
-                ))),
-            )
-                .into_response();
-        }
-        values.sort_unstable();
-        values.dedup();
-        IsoMetric::MultiTime(values)
-    } else {
-        // The `provided != 1` guard above already returns 400 when no
-        // metric is set, so this branch is unreachable today. We keep
-        // it as a structured 500 instead of `unreachable!()` so that a
-        // future edit which adds a fourth metric option to the
-        // `provided` count but forgets the matching arm degrades into
-        // a logged 500 instead of a process panic caught only by
-        // `CatchPanicLayer`. (#141)
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(
-                "isochrone metric dispatch fell through; this is a server bug \
-                        — the request validator and metric parser disagree about which \
-                        fields are accepted"
-                    .to_string(),
-            )),
-        )
-            .into_response();
     };
 
     let mode = match parse_mode(&req.mode, &state.mode_lookup) {
@@ -436,17 +546,12 @@ pub async fn isochrone_handler(
         down_rev: &w.time_down_flat,
     });
 
-    // Build list of thresholds with their labels. All time-based after #371.
-    let thresholds: Vec<(u32, Option<u32>)> = match &metric {
-        IsoMetric::Time(s) => vec![(*s, Some(*s))],
-        IsoMetric::MultiTime(vals) => vals.iter().map(|&s| (s, Some(s))).collect(),
-    };
     // #559: the WKB guards depend only on parsed input — reject BEFORE the
     // seeded PHAST + topology pipeline. An unauthenticated
     // `Accept: application/octet-stream` + `contours=a,b` (or
     // `uncertainty=bands`) used to pay for a full isochrone it was never
     // going to receive.
-    if let Some(err) = wkb_request_rejection(wants_wkb, thresholds.len(), bands_requested) {
+    if let Some(err) = wkb_request_rejection(wants_wkb, requested.values.len(), bands_requested) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(err.to_string())),
@@ -455,10 +560,10 @@ pub async fn isochrone_handler(
     }
     // WKB serves ONE contour (guarded above) — the others would be computed
     // only to be discarded.
-    let requested: Vec<u32> = if wants_wkb {
-        thresholds.iter().take(1).map(|&(t, _)| t).collect()
+    let thresholds: Vec<u32> = if wants_wkb {
+        requested.values.iter().copied().take(1).collect()
     } else {
-        thresholds.iter().map(|&(t, _)| t).collect()
+        requested.values.clone()
     };
 
     // THE pipeline (#549): snap -> phantom seeds -> seeded PHAST ->
@@ -469,9 +574,10 @@ pub async fn isochrone_handler(
         &mode_data,
         mode,
         &IsochroneQuery {
+            metric: requested.metric,
             lon: req.lon,
             lat: req.lat,
-            thresholds: &requested,
+            thresholds: &thresholds,
             reverse,
             mode_name: &req.mode,
             snap_mask: Some(snap_mask),
@@ -480,21 +586,10 @@ pub async fn isochrone_handler(
         },
     ) {
         Ok(f) => f,
-        Err(IsochroneSnapError::NoSnap) => {
+        Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "Could not snap center to road network".to_string(),
-                )),
-            )
-                .into_response();
-        }
-        Err(IsochroneSnapError::NotAccessible) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "Center not accessible for this mode".to_string(),
-                )),
+                Json(ErrorResponse::new(isochrone_error_message(e))),
             )
                 .into_response();
         }
@@ -523,7 +618,8 @@ pub async fn isochrone_handler(
     let mut contour_features: Vec<ContourFeature> = thresholds
         .iter()
         .zip(field.topologies.iter())
-        .map(|(&(threshold, time_s), topology)| {
+        .map(|(&threshold, topology)| {
+            let (time_s, distance_m) = requested.label(threshold);
             let polygon = primary_outer_ring(topology);
             let reachable = field
                 .settled
@@ -533,6 +629,7 @@ pub async fn isochrone_handler(
             let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
             ContourFeature {
                 time_s,
+                distance_m,
                 polygon: poly_enc,
                 polygon_geojson: poly_geo,
                 polygon_points: poly_pts,
@@ -561,7 +658,7 @@ pub async fn isochrone_handler(
                 band_mode,
                 &req,
                 reverse,
-                &thresholds,
+                &requested,
                 geom_format,
                 tag,
             ) {
@@ -599,20 +696,20 @@ fn band_isochrone_features(
     band: crate::model::types::Mode,
     req: &IsochroneRequest,
     reverse: bool,
-    thresholds: &[(u32, Option<u32>)],
+    requested: &RequestedContours,
     geom_format: GeometryFormat,
     tag: &'static str,
 ) -> Option<Vec<ContourFeature>> {
     let md = state.get_mode(band);
-    let requested: Vec<u32> = thresholds.iter().map(|&(t, _)| t).collect();
     let field = isochrone_polygons(
         state,
         &md,
         band,
         &IsochroneQuery {
+            metric: requested.metric,
             lon: req.lon,
             lat: req.lat,
-            thresholds: &requested,
+            thresholds: &requested.values,
             reverse,
             // The contour config keys off the mode name the CLIENT asked
             // for, not the hidden band mode's internal name.
@@ -625,10 +722,12 @@ fn band_isochrone_features(
     .ok()?;
 
     Some(
-        thresholds
+        requested
+            .values
             .iter()
             .zip(field.topologies.iter())
-            .map(|(&(threshold, time_s), topology)| {
+            .map(|(&threshold, topology)| {
+                let (time_s, distance_m) = requested.label(threshold);
                 let polygon = primary_outer_ring(topology);
                 let reachable = field
                     .settled
@@ -638,6 +737,7 @@ fn band_isochrone_features(
                 let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
                 ContourFeature {
                     time_s,
+                    distance_m,
                     polygon: poly_enc,
                     polygon_geojson: poly_geo,
                     polygon_points: poly_pts,
@@ -804,7 +904,7 @@ pub fn depart_frontier(
 )]
 pub async fn isochrone_bulk_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<BulkIsochroneRequest>,
+    ValidatedJson(req): ValidatedJson<BulkIsochroneRequest>,
 ) -> impl IntoResponse {
     // #539: seconds of sync rayon work — demote this worker out of the async
     // scheduler so bulk storms can't starve /health (liveness kills).
@@ -842,16 +942,15 @@ fn isochrone_bulk_sync(
             return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
         }
     }
-    if req.time_s == 0 || req.time_s > 7200 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(format!(
-                "time_s must be between 1 and 7200, got {}",
-                req.time_s
-            ))),
-        )
-            .into_response();
-    }
+    // One threshold, in seconds or in metres (#612) — the same parser the
+    // single endpoint uses, so the two cannot disagree about what is valid.
+    let requested =
+        match parse_requested_contours(req.time_s, None, req.distance_m, None, &REST_SPELLING) {
+            Ok(r) => r,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
+            }
+        };
 
     // Region dispatch (#91): every origin must snap to the same
     // region. Mixed-region bulk is rejected with 501 — same rule as
@@ -890,8 +989,6 @@ fn isochrone_bulk_sync(
     };
 
     let mode_data = state.get_mode(mode);
-    // Weights and thresholds are both seconds (post-#297).
-    let time_s = req.time_s;
 
     // #566: one resolution of exclude + avoid_polygons. #561: the snap
     // mask is BORROWED when neither option is present — /isochrone/bulk
@@ -922,7 +1019,7 @@ fn isochrone_bulk_sync(
 
     // Bulk isochrones are depart-only (no `direction` field), so origins
     // act as sources.
-    let thresholds = [time_s];
+    let thresholds = &requested.values[..];
 
     // Process all origins in parallel
     let results: Vec<(u32, Vec<u8>)> = req
@@ -937,9 +1034,10 @@ fn isochrone_bulk_sync(
                 &mode_data,
                 mode,
                 &IsochroneQuery {
+                    metric: requested.metric,
                     lon,
                     lat,
-                    thresholds: &thresholds,
+                    thresholds,
                     reverse: false,
                     mode_name: &req.mode,
                     snap_mask: Some(snap_mask),
@@ -987,4 +1085,118 @@ fn isochrone_bulk_sync(
             )
                 .into_response()
         })
+}
+
+#[cfg(test)]
+mod threshold_tests {
+    //! #612: the one parser every isochrone surface — REST single, REST
+    //! bulk, Flight `isochrone` — runs its thresholds through. What it
+    //! decides is which metric the whole query then uses, so its refusals
+    //! are part of the API contract, not an implementation detail.
+    use super::*;
+
+    fn ok(t: Option<u32>, c: Option<&str>, d: Option<u32>, cm: Option<&str>) -> RequestedContours {
+        parse_requested_contours(t, c, d, cm, &REST_SPELLING).expect("valid thresholds")
+    }
+
+    fn err(t: Option<u32>, c: Option<&str>, d: Option<u32>, cm: Option<&str>) -> String {
+        parse_requested_contours(t, c, d, cm, &REST_SPELLING).expect_err("refused")
+    }
+
+    #[test]
+    fn a_time_threshold_is_seconds_and_a_distance_threshold_is_metres() {
+        let time = ok(Some(600), None, None, None);
+        assert_eq!(time.metric, ThresholdMetric::Time);
+        assert_eq!(time.values, vec![600]);
+        let dist = ok(None, None, Some(5000), None);
+        assert_eq!(dist.metric, ThresholdMetric::LengthAlongTime);
+        assert_eq!(dist.values, vec![5000]);
+    }
+
+    #[test]
+    fn both_metrics_offer_the_same_multi_contour_shape() {
+        assert_eq!(
+            ok(None, Some("600,300,300"), None, None).values,
+            vec![300, 600]
+        );
+        let m = ok(None, None, None, Some("20000, 5000 ,10000"));
+        assert_eq!(m.metric, ThresholdMetric::LengthAlongTime);
+        assert_eq!(m.values, vec![5000, 10000, 20000]);
+    }
+
+    /// #554's rule, unchanged and now mirrored on the distance family: the
+    /// singular form is the one-contour spelling of the plural, and the
+    /// plural wins when both are given.
+    #[test]
+    fn the_multi_form_wins_over_the_single_one_within_a_family() {
+        assert_eq!(ok(Some(600), Some("120"), None, None).values, vec![120]);
+        assert_eq!(ok(None, None, Some(5000), Some("900")).values, vec![900]);
+    }
+
+    /// ACROSS families nothing wins. A threshold measures one quantity, and
+    /// resolving the ambiguity silently is exactly the class of defect #612
+    /// is about.
+    #[test]
+    fn a_request_that_names_both_metrics_is_refused() {
+        for (t, c, d, cm) in [
+            (Some(600), None, Some(5000), None),
+            (Some(600), None, None, Some("5000")),
+            (None, Some("600"), Some(5000), None),
+        ] {
+            let e = err(t, c, d, cm);
+            assert!(e.contains("not both"), "{e}");
+        }
+    }
+
+    #[test]
+    fn no_threshold_at_all_names_every_parameter_that_would_have_worked() {
+        let e = err(None, None, None, None);
+        for name in ["time_s", "contours", "distance_m", "contours_m"] {
+            assert!(e.contains(name), "the refusal must name {name}: {e}");
+        }
+    }
+
+    #[test]
+    fn each_family_carries_its_own_bounds_and_unit() {
+        assert!(err(Some(0), None, None, None).contains("seconds"));
+        assert!(err(Some(MAX_TIME_S + 1), None, None, None).contains("7200"));
+        assert_eq!(
+            ok(Some(MAX_TIME_S), None, None, None).values,
+            vec![MAX_TIME_S]
+        );
+        assert!(err(None, None, Some(0), None).contains("metres"));
+        assert!(err(None, None, Some(MAX_DISTANCE_M + 1), None).contains("100000"));
+        assert_eq!(
+            ok(None, None, Some(MAX_DISTANCE_M), None).values,
+            vec![MAX_DISTANCE_M]
+        );
+        // A distance-legal value that is NOT a time-legal one: the bound has
+        // to follow the family, not the caller's habit.
+        assert!(parse_requested_contours(None, None, Some(50_000), None, &REST_SPELLING).is_ok());
+        assert!(parse_requested_contours(Some(50_000), None, None, None, &REST_SPELLING).is_err());
+    }
+
+    #[test]
+    fn more_than_ten_contours_is_refused_in_either_metric() {
+        let many: Vec<String> = (1..=11).map(|i| (i * 100).to_string()).collect();
+        let list = many.join(",");
+        assert!(err(None, Some(&list), None, None).contains("1-10"));
+        assert!(err(None, None, None, Some(&list)).contains("1-10"));
+    }
+
+    #[test]
+    fn a_contour_that_is_not_a_number_names_itself() {
+        assert!(err(None, Some("300,soon"), None, None).contains("soon"));
+        assert!(err(None, None, None, Some("5000,far")).contains("far"));
+    }
+
+    /// The two threshold labels are mutually exclusive on the wire: a
+    /// contour carries seconds OR metres, never both, never neither.
+    #[test]
+    fn a_contour_is_labelled_in_exactly_one_unit() {
+        let (t, d) = ok(Some(600), None, None, None).label(600);
+        assert_eq!((t, d), (Some(600), None));
+        let (t, d) = ok(None, None, Some(5000), None).label(5000);
+        assert_eq!((t, d), (None, Some(5000)));
+    }
 }

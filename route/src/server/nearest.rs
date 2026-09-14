@@ -1,22 +1,18 @@
 //! /nearest handler — snap to nearest road segments
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
 
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
-use super::types::{ErrorResponse, SnapRole, parse_mode, validate_coord};
+use super::types::{ErrorResponse, SnapRole, ValidatedQuery, parse_mode, validate_coord};
 
 // ============ Types ============
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct NearestRequest {
     /// Longitude to snap
     #[schema(example = 4.3517)]
@@ -92,7 +88,7 @@ pub struct NearestResponse {
 )]
 pub async fn nearest_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<NearestRequest>,
+    ValidatedQuery(req): ValidatedQuery<NearestRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "query point") {
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();

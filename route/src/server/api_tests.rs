@@ -958,6 +958,7 @@ fn test_contours_max_10() {
 fn test_contour_feature_serialization_time() {
     let feature = ContourFeature {
         time_s: Some(600),
+        distance_m: None,
         polygon: None,
         polygon_geojson: Some(vec![[4.35, 50.85], [4.36, 50.86]]),
         polygon_points: None,
@@ -978,6 +979,7 @@ fn test_isochrone_response_always_has_contours_array() {
         contours: vec![
             ContourFeature {
                 time_s: Some(300),
+                distance_m: None,
                 polygon: None,
                 polygon_geojson: Some(vec![[4.35, 50.85]]),
                 polygon_points: None,
@@ -987,6 +989,7 @@ fn test_isochrone_response_always_has_contours_array() {
             },
             ContourFeature {
                 time_s: Some(600),
+                distance_m: None,
                 polygon: None,
                 polygon_geojson: Some(vec![[4.34, 50.84]]),
                 polygon_points: None,
@@ -1199,6 +1202,7 @@ fn test_isochrone_response_single_contour_still_array() {
     let resp = IsochroneResponse {
         contours: vec![ContourFeature {
             time_s: Some(600),
+            distance_m: None,
             polygon: Some("encoded".to_string()),
             polygon_geojson: None,
             polygon_points: None,
