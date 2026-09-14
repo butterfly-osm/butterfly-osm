@@ -625,19 +625,30 @@ pub fn compute_table_bucket_m2m(
         (&mode_data.up_adj_flat_dist, &mode_data.down_rev_flat_dist)
     };
 
-    // #372: when both duration and distance are requested AND the
-    // length-along-time flats are available (container shipped with
-    // cch.lat.<mode>.u32 from PR #379), use the 2-channel bucket-M2M.
-    // It produces both matrices in a single forward+backward pass with
-    // the time-shortest path's geometry — distance numbers correspond
-    // to the same path as the duration (matching /route's per-cell
-    // unpack semantics).
+    // #372: when distance is requested AND the length-along-time flats are
+    // available (container shipped with cch.lat.<mode>.u32 from PR #379),
+    // use the 2-channel bucket-M2M. It produces both matrices in a single
+    // forward+backward pass with the time-shortest path's geometry —
+    // distance numbers correspond to the same path as the duration
+    // (matching /route's per-cell unpack semantics).
+    //
+    // #612: the gate for this used to be `want_duration && want_distance`,
+    // so `annotations=distance` ALONE fell through to the legacy branch and
+    // answered out of the separate distance-shortest CCH — the very defect
+    // #371 was opened for, still live on the one request shape nobody
+    // re-checked. Measured on Belgium, Brussels→Antwerp: 44991 m
+    // distance-only against 53246 m for `duration,distance` and 53245 m from
+    // `/route`, a 16 % divergence on the same pair depending only on which
+    // annotations were asked for. `distance` means the length of the path
+    // the engine WOULD DRIVE; it cannot depend on whether the caller also
+    // wanted to know how long that takes. The time grid is computed either
+    // way (it is the primary channel) and dropped before the response when
+    // it was not asked for.
     //
     // Custom-weight paths (exclude/avoid) don't have length-along-time
     // recustomisation yet; they fall back to the two-pass distance-
     // shortest legacy below.
-    let use_2channel = want_duration
-        && want_distance
+    let use_2channel = want_distance
         && custom_weights.is_none()
         && mode_data.up_adj_flat_len_along_time.is_some()
         && mode_data.down_rev_flat_len_along_time.is_some();
@@ -664,7 +675,11 @@ pub fn compute_table_bucket_m2m(
     // ≤ max_minutes. The bound still pays off: the SEARCH already early-stopped
     // at `threshold`, so out-of-bound cells are mostly unreached (MAX) and the
     // bounded fallback's distance_bounded gate keeps them null cheaply.
-    let need_dur_internal = want_duration || bounded;
+    // #612: the 2-channel branch produces the time grid whatever was asked
+    // for — time is its primary channel — so the K-best fallback below must
+    // be told the grid exists, or it reads `durations` as "not computed"
+    // while holding a populated one.
+    let need_dur_internal = want_duration || bounded || use_2channel;
 
     // #509: phantom seeds go INTO the bucket engine (super-source forward,
     // shift-trick backward, pure-meet guard) — one sweep per endpoint, S×T
