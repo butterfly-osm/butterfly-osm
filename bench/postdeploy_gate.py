@@ -746,9 +746,14 @@ class IsoBundle:
     origin. Five gates assert against the same responses; before #550 each
     re-fetched them."""
 
-    def __init__(self, base, lon, lat, mode, time_s, direction):
+    def __init__(self, base, lon, lat, mode, time_s, direction, param="time_s"):
         self.base, self.lon, self.lat = base, lon, lat
         self.mode, self.time_s, self.direction = mode, time_s, direction
+        # #612: which THRESHOLD this bundle asks for — `time_s` (seconds, the
+        # classic isochrone) or `distance_m` (metres of length along the
+        # time-shortest path, the isodistance). Everything downstream of the
+        # query string is metric-agnostic, which is the point.
+        self.param = param
         self._memo = {}
 
     def _cached(self, key, fn):
@@ -759,7 +764,7 @@ class IsoBundle:
     @property
     def q(self):
         return (f"lon={self.lon}&lat={self.lat}&mode={self.mode}"
-            f"&direction={self.direction}&time_s={self.time_s}")
+            f"&direction={self.direction}&{self.param}={self.time_s}")
 
     def _json(self, extra=""):
         return self._cached(("json", extra),
@@ -809,10 +814,10 @@ class IsoBundle:
             timeout=120)))
 
 
-def iso_bundle(base, lon, lat, mode, time_s, direction="depart"):
-    key = (base, lon, lat, mode, time_s, direction)
+def iso_bundle(base, lon, lat, mode, time_s, direction="depart", param="time_s"):
+    key = (base, lon, lat, mode, time_s, direction, param)
     if key not in _ISO_CACHE:
-        _ISO_CACHE[key] = IsoBundle(base, lon, lat, mode, time_s, direction)
+        _ISO_CACHE[key] = IsoBundle(base, lon, lat, mode, time_s, direction, param)
     return _ISO_CACHE[key]
 
 
@@ -1508,6 +1513,204 @@ def gate_isochrone_reach_truth(base):
     return passed
 
 
+def gate_isodistance_truth(base):
+    """#612: an isodistance is the set of points reachable within X METRES of
+    road length accumulated ALONG THE TIME-SHORTEST PATH — the same path, and
+    the same metres, `/route` and `/table` report for the same pair. That is
+    what makes it consistent with the rest of the engine (and what the
+    distance-shortest version removed in #373 could never be), and it is what
+    makes `/table` its exact independent truth: the SAME check
+    `gate_isochrone_reach_truth` runs on a time isochrone, with
+    `annotations=distance` and the threshold in metres.
+
+      (a) inside  — the exposed vertices of the served network are within
+          `reach_in_tol` x L of the origin by /table distance;
+      (b) outside — road points > `topology_outside_m` outside the polygon
+          (taken from the 1.4 L network) are NOT within `reach_out_tol` x L;
+      (c) product rule — ONE simple Polygon, closed CCW ring, snapped origin
+          inside, exactly as a time isochrone (#535/#542/#570);
+      (d) the contours nest, and each contour is labelled `distance_m` and
+          never `time_s`.
+
+    depart AND arrive: the arrive field is the mirror (point -> origin), and
+    it carries its own seed shift on the length channel, so it is not implied
+    by the depart one.
+
+    The /table probes are batched into ONE call per direction, over every
+    origin at once, and that is not just for speed: the matrix router is a
+    MEASURED cost model (#526/#594, process-wide EWMA), so a gate that fires
+    forty near-range 1xN matrices teaches it that a sweep is cheap and flips
+    the plan `gate_lopsided` asserts two gates later. One wide call per
+    direction feeds it a representative sample instead of a skewed one."""
+    print("== isodistance == length along the time-shortest path (/table truth) (#612) ==")
+    passed = True
+    mode, L = "car", 5000
+    t = THRESHOLDS
+    far_m = t["topology_outside_m"]
+
+    for direction in ("depart", "arrive"):
+        # Sample first, ask once. `probe[name] = (origin, ends, far)`.
+        probe = []
+        details = []
+        for name, lon, lat in ISO_POINTS:
+            b = iso_bundle(base, lon, lat, mode, L, direction, param="distance_m")
+            wide = iso_bundle(base, lon, lat, mode, int(L * 1.4), direction, param="distance_m")
+            try:
+                ring = b.polys[0][0]
+                net = b.network
+                big = wide.network
+            except Exception as ex:
+                details.append(f"{name}: {ex}")
+                continue
+            rnd = random.Random(7)
+            ends = [tuple(s[-1]) for s in net]
+            rnd.shuffle(ends)
+            ends = ends[:150]
+            pts = [tuple(p) for s in big for p in s]
+            rnd.shuffle(pts)
+            far = []
+            for p in pts:
+                if len(far) >= 150:
+                    break
+                if point_in_ring(p, ring[:-1]):
+                    continue
+                if dist_to_ring_m(p, ring) > far_m:
+                    far.append(p)
+            probe.append((name, [lon, lat], ends, far))
+
+        origins = [o for _n, o, _e, _f in probe]
+        points, spans = [], []
+        for _n, _o, ends, far in probe:
+            spans.append((len(points), len(ends), len(far)))
+            points.extend([list(e) for e in ends] + [list(p) for p in far])
+        if not origins or not points:
+            passed &= check(f"{direction} {L}m: isodistance probes built", False,
+                            "; ".join(details[:3]) or "no origins sampled")
+            continue
+        # ONE matrix per direction. `depart` = origin -> point (rows are
+        # origins), `arrive` = point -> origin (columns are origins).
+        if direction == "depart":
+            grid = table(base, origins, points, mode=mode, annotations="distance")["distances"]
+            row_of = lambda i: grid[i]
+        else:
+            grid = table(base, points, origins, mode=mode, annotations="distance")["distances"]
+            row_of = lambda i: [r[i] for r in grid]
+
+        n_in = n_in_over = n_out = n_out_reached = 0
+        worst_out = None
+        for i, (name, _o, ends, far) in enumerate(probe):
+            row = row_of(i)
+            off, n_e, n_f = spans[i]
+            d_in = [x for x in row[off:off + n_e] if x is not None]
+            d_out = [x for x in row[off + n_e:off + n_e + n_f] if x is not None]
+            n_in += len(d_in)
+            n_in_over += sum(1 for x in d_in if x > t["reach_in_tol"] * L)
+            n_out += len(d_out)
+            reached = [x for x in d_out if x <= t["reach_out_tol"] * L]
+            n_out_reached += len(reached)
+            if reached:
+                m = min(reached)
+                if worst_out is None or m < worst_out[0]:
+                    worst_out = (m, name)
+                details.append(f"{name}: {len(reached)}/{len(d_out)} outside road points within "
+                               f"{t['reach_out_tol']}L (min {m:.0f} m)")
+        for d in details[:4]:
+            print(f"    {d}")
+        passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance",
+                        n_in > 0 and n_in_over <= max(1, int(n_in * t["reach_in_over_frac"])),
+                        f"{n_in - n_in_over}/{n_in} vertices")
+        passed &= check(
+            f"{direction} {L}m: nothing within {t['reach_out_tol']}L lies > {far_m:.0f} m outside",
+            n_out > 0 and n_out_reached <= max(1, int(n_out * t["reach_out_frac"])),
+            f"{n_out_reached}/{n_out} road points"
+            + (f", nearest {worst_out[0]:.0f} m at {worst_out[1]}" if worst_out else ""))
+
+    # (c) the product rule holds for a distance threshold too: the tracer sees
+    # a different settled set, so "one simple polygon" is not implied by the
+    # time gate.
+    n = n_ok = 0
+    why_all = []
+    for name, lon, lat in ISO_POINTS:
+        b = iso_bundle(base, lon, lat, mode, L, "depart", param="distance_m")
+        try:
+            wkb, polys, sp = b.wkb, b.polys, b.snap
+        except Exception as ex:
+            why_all.append(f"{name}: {ex}")
+            continue
+        n += 1
+        why = []
+        if not polys:
+            why.append("no polygon in the WKB")
+        elif wkb_type(wkb) != 3 or len(polys) != 1:
+            why.append(f"WKB is not a single Polygon ({len(polys)} parts)")
+        elif len(polys[0]) != 1:
+            why.append(f"polygon has {len(polys[0]) - 1} hole(s)")
+        else:
+            ring = polys[0][0]
+            if len(ring) < 4 or ring[0] != ring[-1]:
+                why.append("outer ring not closed / < 4 points")
+            elif ring_area2(ring[:-1]) <= 0:
+                why.append("outer ring not CCW")
+            elif not point_in_ring(sp, ring[:-1]):
+                why.append("snapped origin outside its own polygon")
+        if why:
+            why_all.append(f"{name}: {'; '.join(why)}")
+        else:
+            n_ok += 1
+    for d in why_all[:4]:
+        print(f"    {d}")
+    passed &= check(f"{L}m: ONE simple CCW polygon containing the snapped origin",
+                    n > 0 and n_ok == n, f"{n_ok}/{n} origins")
+
+    # (d) contours nest and carry the RIGHT label. A `distance_m` contour that
+    # answered `time_s` would be the #612 silent-metric defect again, one
+    # layer up.
+    lon, lat = ISO_POINTS[0][1], ISO_POINTS[0][2]
+    js = http_json(f"{base}/isochrone?lon={lon}&lat={lat}&mode={mode}&contours_m=2500,5000")
+    cs = js.get("contours", [])
+    labelled = (len(cs) == 2
+                and [c.get("distance_m") for c in cs] == [2500, 5000]
+                and all(c.get("time_s") is None for c in cs))
+    passed &= check("contours_m: two contours labelled in metres, never seconds",
+                    labelled, f"{[(c.get('distance_m'), c.get('time_s')) for c in cs]}")
+    if len(cs) == 2:
+        rings = [decode_polyline6(c["polygon"]) for c in cs if c.get("polygon")]
+        nested = (len(rings) == 2
+                  and sum(1 for p in rings[0][:-1] if point_in_ring(p, rings[1][:-1]))
+                  >= t["iso_nest_tol"] * len(rings[0][:-1]))
+        passed &= check("contours_m: the 5 km contour contains the 2.5 km one", nested,
+                        f"{len(rings)} rings")
+
+    # The truth this gate leans on must not depend on the request SHAPE.
+    # #371 required `/table`'s `distance` to be the length along the
+    # time-shortest path; the fix landed gated on `want_duration &&
+    # want_distance`, so `annotations=distance` ALONE kept answering out of
+    # the separate distance-shortest CCH — 44991 m against 53246 m on
+    # Brussels->Antwerp, decided by whether the caller also asked for the
+    # duration. Fixed in #612; pinned here because an isodistance verified
+    # against the wrong channel would verify nothing.
+    o, d = [ISO_POINTS[0][1], ISO_POINTS[0][2]], [ISO_POINTS[1][1], ISO_POINTS[1][2]]
+    d_only = table(base, [o], [d], mode=mode, annotations="distance")["distances"][0][0]
+    d_both = table(base, [o], [d], mode=mode, annotations="duration,distance")["distances"][0][0]
+    d_route = route_json(base, o[0], o[1], d[0], d[1], mode=mode)["distance_m"]
+    same = (d_only is not None and d_both is not None
+            and abs(d_only - d_both) < 1.0
+            and abs(d_only - d_route) <= max(2.0, 0.001 * d_route))
+    passed &= check(
+        "/table annotations=distance is the same metres as duration,distance and /route",
+        same,
+        f"distance-only {d_only} m, duration+distance {d_both} m, /route {d_route:.0f} m")
+
+    # A distance threshold is refused where its metres would describe a path
+    # the engine no longer chooses, rather than answered on the wrong metric.
+    code, _ct, raw = http_status(f"{base}/isochrone?lon={lon}&lat={lat}&mode={mode}"
+                                 f"&distance_m={L}&exclude=motorway")
+    body = raw.decode("utf-8", "replace")
+    passed &= check("distance_m + exclude is refused, not answered on stale metres",
+                    code == 400 and "length-along-time" in body, f"HTTP {code}: {body[:140]}")
+    return passed
+
+
 def gate_isochrone_upper_bound(base):
     """#430/#495/#431: isochrones were too LARGE/lenient (a short interval
     covering a far-too-big area), and #431 bounds residual over-extension. Two
@@ -1595,6 +1798,27 @@ TICKET_NOTES = {
 }
 
 
+def matrix_plan_gates_run_before_the_matrix_heavy_ones(order):
+    """#612: an ORDERING invariant, checked by name so a reshuffle fails loudly.
+
+    `gate_lopsided` asserts which PLAN the matrix router chose. That router is
+    a measured cost model with a process-wide EWMA (#526/#594), so the plan it
+    picks depends on the traffic the process has already seen — a gate that
+    fires thousands of matrix cells first can move the decision. Gates that do
+    that must therefore run AFTER the plan assertions, not before."""
+    heavy = ("isodistance_truth",)
+    pos = {name: i for i, name in enumerate(order)}
+    plan_gate = pos.get("lopsided_matrix")
+    ok = True
+    for name in heavy:
+        if name not in pos or plan_gate is None:
+            continue
+        ok &= check(f"{name} runs after lopsided_matrix", pos[name] > plan_gate,
+            "the plan assertions read a MEASURED router; heavy matrix probes "
+            "must not teach it first")
+    return ok
+
+
 def gate_ticket_invariants(base):
     """One named invariant per user ticket, so none of them can regress
     silently. This gate does NOT re-measure anything (#572: the #535 pin probe
@@ -1604,8 +1828,9 @@ def gate_ticket_invariants(base):
     it, or drop it from build_gates and this fails by ticket number."""
     del base  # structural check: no server call (the delegated gates make them)
     print("== ticket invariants: every user ticket delegates to a REGISTERED gate ==")
-    registered = set(gate_names())
-    passed = True
+    order = gate_names()
+    registered = set(order)
+    passed = matrix_plan_gates_run_before_the_matrix_heavy_ones(order)
     for ticket in sorted(TICKET_GATES):
         gates = TICKET_GATES[ticket]
         note = TICKET_NOTES[ticket]
@@ -3060,6 +3285,15 @@ def build_gates(args):
         ("bands", False, lambda: gate_bands(b, refs_path(REFS_PREFIX, args.refs_prefix))),
         ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
         ("lopsided_matrix", False, lambda: gate_lopsided(b)),
+        # AFTER lopsided_matrix, and that is load-bearing (#612 — asserted by
+        # `matrix_plan_gates_run_before_the_matrix_heavy_ones`). The matrix
+        # router is a MEASURED cost model with a process-wide EWMA (#526/#594),
+        # so `lopsided_matrix` asserting a PLAN is really asserting what the
+        # traffic before it taught the model. This gate probes /table with
+        # `annotations=distance`, which since #612 runs the same 2-channel
+        # engine the lopsided assertions read — enough, measured, to flip the
+        # Flight 1x800 decision to `bucket` when it runs first.
+        ("isodistance_truth", False, lambda: gate_isodistance_truth(b)),
         ("radius_prune", False, lambda: gate_radius_prune(b)),
         ("radius_exactness", False, lambda: gate_radius_exactness(b)),
         ("recustomized_distance", False, lambda: gate_recustomized_distance(b)),

@@ -372,7 +372,7 @@ mod tests {
             &mode_data.node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
-            mode_name,
+            crate::range::SparseContourConfig::for_mode_name_with_threshold(mode_name, threshold_s),
             None,
             None,
             &crate::server::geometry::ReachModel::Depart { frontier: &[] },
