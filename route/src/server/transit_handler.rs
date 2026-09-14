@@ -29,11 +29,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::server::geometry::build_raw_points;
@@ -46,7 +42,7 @@ use crate::transit::timetable::{StopIdx, Timetable};
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::ErrorResponse;
+use super::types::{ErrorResponse, ValidatedJson, ValidatedQuery};
 
 /// Per-mode defaults for access/egress fan-out. `(radius_m, max_stops, speed_mps)`.
 ///
@@ -78,6 +74,7 @@ fn default_access_params(mode: &str) -> (u32, usize, f64) {
 
 /// Query parameters for `GET /transit`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct TransitRequest {
     pub origin_lon: f64,
     pub origin_lat: f64,
@@ -244,7 +241,7 @@ fn road_leg(
         (status = 503, description = "Transit not loaded", body = ErrorResponse)))]
 pub async fn transit_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<TransitRequest>,
+    ValidatedQuery(req): ValidatedQuery<TransitRequest>,
 ) -> Result<Json<TransitResponse>, (StatusCode, Json<ErrorResponse>)> {
     // #334: dispatch by the access origin's region — each region
     // carries its own transit subsystem. Validate that origin and
@@ -880,6 +877,7 @@ pub fn compute_transit_journey_with_access(
 /// of the per-query parameters (applied as defaults to each query
 /// that doesn't set them explicitly).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct TransitBulkRequest {
     pub queries: Vec<TransitRequest>,
     /// Optional per-batch default: passed down to any query that
@@ -1033,7 +1031,7 @@ fn bulk_query_dispatch_error(
 /// per-query cancellation flag — a follow-up.
 pub async fn transit_bulk_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<TransitBulkRequest>,
+    ValidatedJson(req): ValidatedJson<TransitBulkRequest>,
 ) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
     // #334: dispatch by the first query's access origin region. Every
     // query in the batch must dispatch to the same region; mixed-region

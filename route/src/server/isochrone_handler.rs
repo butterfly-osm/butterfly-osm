@@ -3,7 +3,7 @@
 use axum::{
     Json,
     body::Body,
-    extract::{Query, State},
+    extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -20,12 +20,13 @@ use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{ErrorResponse, parse_mode, validate_coord};
+use super::types::{ErrorResponse, ValidatedJson, ValidatedQuery, parse_mode, validate_coord};
 use crate::range::ContourPolygon;
 
 // ============ Types ============
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct IsochroneRequest {
     /// Center longitude
     #[schema(example = 4.3517)]
@@ -155,6 +156,7 @@ pub struct IsochroneResponse {
 
 /// Bulk isochrone request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
 pub struct BulkIsochroneRequest {
     /// List of origins as [lon, lat] pairs (max 10,000)
     #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]]))]
@@ -207,7 +209,7 @@ pub struct BulkIsochroneRequest {
 )]
 pub async fn isochrone_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<IsochroneRequest>,
+    ValidatedQuery(req): ValidatedQuery<IsochroneRequest>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = validate_coord(req.lon, req.lat, "center") {
@@ -804,7 +806,7 @@ pub fn depart_frontier(
 )]
 pub async fn isochrone_bulk_handler(
     State(regions): State<Arc<RegionsState>>,
-    Json(req): Json<BulkIsochroneRequest>,
+    ValidatedJson(req): ValidatedJson<BulkIsochroneRequest>,
 ) -> impl IntoResponse {
     // #539: seconds of sync rayon work — demote this worker out of the async
     // scheduler so bulk storms can't starve /health (liveness kills).

@@ -1,15 +1,10 @@
 //! /height handler — elevation lookup from SRTM DEM tiles
 
-use axum::{
-    Json,
-    extract::{Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use std::sync::Arc;
 
 use super::regions::RegionsState;
-use super::types::ErrorResponse;
+use super::types::{ErrorResponse, ValidatedQuery};
 
 /// Query elevation for coordinates using SRTM data
 #[utoipa::path(
@@ -29,7 +24,7 @@ use super::types::ErrorResponse;
 )]
 pub async fn height_handler(
     State(regions): State<Arc<RegionsState>>,
-    Query(req): Query<super::elevation::HeightRequest>,
+    ValidatedQuery(req): ValidatedQuery<super::elevation::HeightRequest>,
 ) -> impl IntoResponse {
     // Elevation data (SRTM tiles) is geographically global and lives
     // on the primary region; height queries don't need per-region

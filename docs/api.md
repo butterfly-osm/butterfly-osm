@@ -48,6 +48,13 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   hints) keep single-seed snapping.
 - `GET /version` → `{"name": "butterfly-route", "version": "..."}`.
 - `alternatives` on `/route` is a **count** (`u32`), not a boolean.
+- **Unknown input is refused, never ignored** (#612). A query parameter or
+  a JSON body field this build cannot honour — a typo, a name from an
+  older release, a parameter that never existed — is a `400` naming it and
+  listing what the endpoint does accept, on every REST path. It used to be
+  dropped silently, so `/isochrone?…&metric=distance` answered `200` with
+  a polygon identical to the one without it. Same rule as the Flight
+  actions, which got it in #548.
 - Isodistance (`distance_m`) was removed in #371 — time thresholds only.
 - `GET /height` is mounted only when `<data>/srtm/` exists (lean
   containers return 404 by design).
