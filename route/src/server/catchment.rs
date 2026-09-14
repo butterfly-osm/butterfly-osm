@@ -22,7 +22,7 @@ use crate::nbg::haversine_distance;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
-use super::geometry::{IsochroneQuery, isochrone_polygons};
+use super::geometry::{IsochroneQuery, ThresholdMetric, isochrone_polygons};
 use super::state::ServerState;
 
 // ===========================================================================
@@ -283,6 +283,8 @@ pub fn isochrone_hull(
         &mode_data,
         mode,
         &IsochroneQuery {
+            // A catchment threshold is a drive TIME percentile.
+            metric: ThresholdMetric::Time,
             lon: store_lon,
             lat: store_lat,
             thresholds: &[threshold_s_u32],
