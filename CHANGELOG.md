@@ -10,6 +10,84 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-15 — The isodistance field is bounded, and the answer is unchanged (#613)
+
+#612 shipped the isodistance running its reachability field over the WHOLE
+hierarchy — ~75 ms on Belgium at any threshold, against 0.7-6 ms for a time
+isochrone of the same shape. It said so rather than hiding it, and left the two
+exact escapes it had been given written up on the kernel. This is the first of
+them, and the bound it needs turns out not to have to be guessed, iterated
+towards, or read off a new weight set.
+
+**Why the field could not be bounded.** The answer is length accumulated along
+the TIME-shortest path, the metres `/route` and `/table` report for the same
+pair — which is what makes the matrix an independent truth for the polygon.
+Length is therefore a value the time search CARRIES, never one it may steer by:
+skip the relaxations out of a node whose carried length is already over budget
+and a node downstream is labelled from a slower parent, so its time is
+over-estimated and its metres are the metres of a path the engine would never
+drive.
+
+**What survives that, and it is enough.** The corruption has exactly one shape.
+Every node whose TRUE length-along-time is within budget keeps its EXACT label
+under the gate — the lexicographic (time, then length) optimum is
+prefix-optimal and length only grows along a path, so every node on such a
+node's own optimal path is itself within budget and none of that path's arcs is
+ever skipped. And the nodes the gated pass wrongly reports carry an
+OVER-estimated time, never an under-estimated one, because every label it can
+hold is the cost of a real path. So the largest time it reports bounds the time
+of every admissible node, and a second, ordinary time-bounded pass at that
+bound is exact for everything it settles and settles everything admissible.
+Filter it on length and the result is the unbounded scan's, rank for rank and
+label for label.
+
+**Measured (Belgium, car, Brussels, warm, REST wall, interleaved min-of-9):**
+
+| `distance_m` depart | before | after |
+|---|---|---|
+| 1000 | 79.7 ms | **1.35 ms** (59×) |
+| 2000 | 81.0 ms | **3.40 ms** (24×) |
+| 5000 | 95.1 ms | **20.7 ms** (4.6×) |
+| 10000 | 129.2 ms | **76.2 ms** (1.7×) |
+| 20000 | 153.9 ms | **120.7 ms** (1.3×) |
+
+`POST /isochrone/bulk`, 30 origins at 2 km: **258 ms → 8.5 ms**, byte-identical
+WKB stream. The Flight `isochrone` action gets the same ratios with
+byte-identical Arrow rows — one pipeline, so REST and Flight cannot drift.
+
+**What still costs, stated plainly.** The bound is set by the answer's own
+slowest node: a 10 km isodistance from Brussels contains a point 3669 s away,
+so the second pass must cover a 3669 s ball, and no time bound can be tighter.
+The new `isodistance two-pass bound` log line prints that bound next to the
+largest time the answer actually contains — they are equal or within 1-2 % at
+every origin and budget measured, so pass 1's false inclusions cost nothing and
+there is no headroom in tightening `T`. The remaining majority of the 20 km
+case is the polygon stage, which is shared with time isochrones and scales with
+what is drawn. Seen the other way round: `distance_m=20000` costs 121 ms where
+`time_s=4498` — the field it is obliged to compute — costs 510 ms.
+
+**Arrive is unchanged, deliberately.** The reverse field PULLs over every rank
+because there is no reverse-UP adjacency to PUSH along, and a PULL cannot
+propagate block activation, so a bound saves the `improve` calls and nothing
+else; two passes there would pay the full scan twice. That is a property of
+`direction=arrive`, not of the metric — an arrive TIME isochrone pays the same
+full scan at any threshold. The fix is a reverse-UP adjacency, which would
+speed up every arrive query and costs a new per-mode flat; out of scope here
+and written up where the next reader will look.
+
+**Proved two ways.** The served geometry is unchanged over a 1800-case corpus —
+30 origins x 3 modes x both directions x five distance thresholds, two
+multi-contour sets and three time thresholds — digested on the contour list
+(threshold, `reachable_edges`, ring coordinates) before and after: 1800/1800
+identical, corpus digest `0f15369b`. And the adversarial case is in the suite,
+not just in the argument: a node whose time-shortest path is the LONG fast one,
+so its length-along-time is over budget although a short slow path to it is
+not. One test asserts the gated pass alone would serve it — a lock, so nobody
+deletes the second pass as dead weight — and one asserts the two-pass excludes
+it, plus 40 deterministic pseudo-random rank-structured graphs x 6 budgets x
+multi-seed origins asserting the bounded field IS the unbounded one filtered.
+
+
 ### 2026-09-14 — Input we cannot honour is refused; isodistance is back, on the metric that makes it consistent (#612)
 
 **Two things, and the first is a defect.** `GET /isochrone?…&metric=distance`
@@ -72,7 +150,8 @@ two equal-time partials.
 
 **Cost.** An isodistance runs its reachability field over the whole hierarchy —
 ~75 ms on Belgium, independent of the threshold — where a time isochrone bounds
-its field and costs 3-6 ms. Length is a value the time search CARRIES, never one
+its field and costs 3-6 ms. (Superseded by #613, above: the first of the two
+escapes below is implemented and the depart field is bounded.) Length is a value the time search CARRIES, never one
 it may steer by: gating the sweep on it would label boundary nodes from a slower
 parent and report the length of a path the engine would never drive. Two exact
 ways to bound it anyway are written up on
