@@ -646,6 +646,11 @@ pub struct SparseContourStats {
     pub total_cells_set: usize,
     pub contour_vertices_before_simplify: usize,
     pub contour_vertices_after_simplify: usize,
+    /// #613: the Mercator projection half of the old `stamp_time_us` — two
+    /// transcendentals per polyline vertex, and on a big field the single
+    /// most expensive thing the contour pipeline does.
+    pub project_time_us: u64,
+    /// The Bresenham rasterisation half.
     pub stamp_time_us: u64,
     pub morphology_time_us: u64,
     pub contour_time_us: u64,
@@ -681,7 +686,8 @@ impl From<SparseContourResult> for ContourResult {
                 filled_cells: st.total_cells_set,
                 contour_vertices_before_simplify: st.contour_vertices_before_simplify,
                 contour_vertices_after_simplify: st.contour_vertices_after_simplify,
-                elapsed_ms: (st.stamp_time_us
+                elapsed_ms: (st.project_time_us
+                    + st.stamp_time_us
                     + st.morphology_time_us
                     + st.contour_time_us
                     + st.simplify_time_us)
@@ -724,7 +730,7 @@ pub fn generate_sparse_contour_anchored(
     }
 
     // Step 1: Find bounding box and project to Mercator
-    let stamp_start = std::time::Instant::now();
+    let project_start = std::time::Instant::now();
 
     let mut min_x = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -771,7 +777,10 @@ pub fn generate_sparse_contour_anchored(
     min_x -= margin;
     min_y -= margin;
 
+    stats.project_time_us = project_start.elapsed().as_micros() as u64;
+
     // Step 2: Create sparse tile map and stamp segments
+    let stamp_start = std::time::Instant::now();
     let mut tile_map = SparseTileMap::new(cell_size_merc, min_x, min_y);
 
     for seg in &mercator_segments {
@@ -878,6 +887,7 @@ pub fn generate_sparse_contour_anchored(
         active_tiles = stats.active_tiles,
         tiles_after_morph = stats.active_tiles_after_morphology,
         cells_set = stats.total_cells_set,
+        project_us = stats.project_time_us,
         stamp_us = stats.stamp_time_us,
         morphology_us = stats.morphology_time_us,
         contour_us = stats.contour_time_us,
