@@ -935,12 +935,14 @@ pub fn run_phast_seeded_2ch_by_len(
 
     // Pass 1: the completeness bound. Nothing here is served.
     let mut time_bound: Option<u32> = None;
+    let mut pass1_nodes = 0usize;
     run_seeded_gated::<2, 1, Forward>(
         flats(),
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         max_len,
         mode,
         |_rank, v| {
+            pass1_nodes += 1;
             time_bound = Some(time_bound.map_or(v[0], |t| t.max(v[0])));
         },
     );
@@ -963,6 +965,19 @@ pub fn run_phast_seeded_2ch_by_len(
                 result.push((rank, v[0], v[1]));
             }
         },
+    );
+    // `bound` vs `bound_tight` is how loose pass 1's certificate was: the
+    // tight one is the largest time the answer actually contains, the bound
+    // is what pass 2 had to be run at because pass 1 could not tell the
+    // admissible nodes from the over-estimated ones. Their ratio is the
+    // headroom a target-restricted scan would recover.
+    tracing::debug!(
+        max_len = max_len,
+        pass1_nodes = pass1_nodes,
+        bound_s = time_bound,
+        bound_tight_s = result.iter().map(|&(_, t, _)| t).max().unwrap_or(0),
+        admissible = result.len(),
+        "isodistance two-pass bound"
     );
     result
 }
@@ -1344,18 +1359,20 @@ mod isodistance_bound_tests {
         for case in 0..40 {
             // Rank-structured: an arc between i<j is UP out of i and DOWN
             // out of j, so both scans see the same graph.
-            let mut up: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
-            let mut dn: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
+            let mut arcs: Vec<(usize, usize, u32, u32)> = Vec::new();
             for i in 0..N {
                 for j in (i + 1)..N {
                     if next() % 10 != 0 {
                         continue;
                     }
-                    let t = 1 + next() % 60;
-                    let l = 1 + next() % 400;
-                    up[i].push((j as u32, t, l));
-                    dn[j].push((i as u32, t, l));
+                    arcs.push((i, j, 1 + next() % 60, 1 + next() % 400));
                 }
+            }
+            let mut up: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
+            let mut dn: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
+            for &(i, j, t, l) in &arcs {
+                up[i].push((j as u32, t, l));
+                dn[j].push((i as u32, t, l));
             }
             let flatten = |adj: &[Vec<(u32, u32, u32)>]| {
                 let mut offsets = vec![0u64];
