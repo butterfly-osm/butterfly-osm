@@ -115,7 +115,10 @@ Support directories: `bench/` (regression and competitor benches),
 - `contours=300,600,1200` (multi-contour, seconds).
 - Isodistance: `distance_m=5000` / `contours_m=5000,10000` — metres of road
   length along the **time-shortest** path, the same metres `/route` and
-  `/table` report, so the matrix verifies the polygon exactly.
+  `/table` report, so the matrix verifies the polygon exactly. Bounded in two
+  passes (#613): a length-gated pass earns a completeness bound, an ordinary
+  time-bounded pass serves the answer — 1.4 ms at 2 km depart, where the
+  unbounded field cost 81 ms.
 - GeoJSON or WKB output; CCW outer rings, 5-decimal precision.
 - `POST /isochrone/bulk` length-prefixed WKB stream.
 

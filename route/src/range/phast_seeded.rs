@@ -853,7 +853,7 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 /// channel instead of the time one. Returns settled `(rank, time, len)` for
 /// every node whose length-along-time is `≤ max_len`.
 ///
-/// **The time sweep is deliberately unbounded, and it has to be.** The
+/// **The sweep that is SERVED may never be gated on length.** The
 /// isodistance is "reachable within `max_len` metres ALONG THE TIME-SHORTEST
 /// PATH" — the same path `/route` and `/table` report, which is the whole
 /// reason the metric is consistent this time round (#371/#373). That makes
@@ -887,9 +887,9 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 ///
 /// # #613: the field IS bounded, in two passes, and the answer is identical
 ///
-/// The first escape above is the one that pays, and the bound it needs does
-/// not have to be guessed, iterated towards, or read off a new weight set —
-/// a length-gated pass hands it over directly.
+/// A length gate cannot produce the answer — but it can produce a BOUND, and
+/// that bound does not have to be guessed, iterated towards, or read off a
+/// new weight set.
 ///
 /// * **Pass 1** runs the same 2-channel field with the gate on the LENGTH
 ///   channel ([`run_seeded_gated`], `GATE = 1`). Every node whose true
@@ -912,6 +912,23 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 /// on the length channel, pass 2 a ball on time, and the block-gated
 /// downward scan skips the rest of the hierarchy in each. The whole-graph
 /// scan is gone.
+///
+/// **Measured (Belgium car, Brussels, warm, REST wall):** 1 km 79.7 → 1.4 ms,
+/// 2 km 81.0 → 3.4 ms, 5 km 95.1 → 20.7 ms, 10 km 129.2 → 76.2 ms, 20 km
+/// 153.9 → 120.7 ms. `POST /isochrone/bulk` over 30 origins at 2 km: 258 →
+/// 8.5 ms.
+///
+/// **What still costs, so nobody re-derives it.** `T` is set by the ANSWER's
+/// own slowest node, not by pass 1's imprecision — the `isodistance two-pass
+/// bound` log line prints `bound_s` beside `bound_tight_s`, the largest time
+/// the answer actually contains, and they are equal or within 1-2 % at every
+/// origin and budget measured. A 10 km isodistance from Brussels genuinely
+/// contains a point 3669 s away, so pass 2 must cover a 3669 s ball and no
+/// time bound can be tighter. Tightening `T` is not where the remaining
+/// milliseconds are; a target-restricted (rPHAST) pass 2 over the hierarchy
+/// closure of pass 1's candidate set is, and it is a bigger change than this
+/// one. Above ~10 km the polygon stage is the majority of the wall anyway,
+/// and it is shared with time isochrones.
 ///
 /// The arrive mirror gets no such win and deliberately does not try — see
 /// [`run_phast_reverse_seeded_2ch_by_len`].
