@@ -9,6 +9,7 @@
 //! 4. Run marching squares per tile with seam stitching
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use super::contour::{ContourResult, ContourStats};
@@ -31,6 +32,54 @@ const COMPONENT_MIN_AREA_CELLS: f64 = 64.0;
 
 /// Tile size in cells (64x64 = 4096 bits = 512 bytes per tile)
 const TILE_SIZE: usize = 64;
+
+/// #614: below this many reachable segments, project and stamp sequentially.
+///
+/// The threshold is a pure COST decision and can be retuned freely: the
+/// parallel and sequential paths produce bit-identical output by
+/// construction — same per-point projection, a min-reduction that is
+/// associative and exact, and a bit-OR merge — so moving it can change how
+/// long a contour takes and nothing else.
+///
+/// It is not zero because `POST /isochrone/bulk` already runs one origin per
+/// rayon worker. Leaving the small fields sequential keeps a bulk job's
+/// parallelism where it belongs — across origins — instead of nesting it
+/// inside each one, while the big single-query fields, which are the ones
+/// that hurt, still fan out.
+const PARALLEL_STAMP_MIN_SEGMENTS: usize = 10_000;
+
+/// The low corner of the projected bounding box — the only part of it the
+/// pipeline reads (it becomes the tile map's origin).
+///
+/// `min` over `f64` is associative and has an exact identity, so folding
+/// this across rayon workers and merging gives bit-identical results to the
+/// sequential fold, in any order and at any chunk size.
+#[derive(Clone, Copy)]
+struct LowCorner {
+    x: f64,
+    y: f64,
+}
+
+impl LowCorner {
+    fn none() -> Self {
+        Self {
+            x: f64::INFINITY,
+            y: f64::INFINITY,
+        }
+    }
+    fn include(self, p: &MercatorPoint) -> Self {
+        Self {
+            x: self.x.min(p.x),
+            y: self.y.min(p.y),
+        }
+    }
+    fn merge(self, other: Self) -> Self {
+        Self {
+            x: self.x.min(other.x),
+            y: self.y.min(other.y),
+        }
+    }
+}
 
 /// Tile coordinate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -174,6 +223,28 @@ impl SparseTileMap {
             }
         }
         result
+    }
+
+    /// #614: OR another map's bits into this one. Both must share the grid
+    /// (same cell size and origin), which the parallel stamp guarantees by
+    /// building every worker's map from the same three numbers.
+    fn merge_or(&mut self, other: SparseTileMap) {
+        debug_assert_eq!(self.cell_size_m, other.cell_size_m);
+        debug_assert_eq!(self.origin_x, other.origin_x);
+        debug_assert_eq!(self.origin_y, other.origin_y);
+        for (coord, tile) in other.tiles {
+            match self.tiles.entry(coord) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let dst = e.get_mut();
+                    for (d, s) in dst.bits.iter_mut().zip(tile.bits.iter()) {
+                        *d |= *s;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(tile);
+                }
+            }
+        }
     }
 
     /// Count total set cells across all tiles
@@ -732,33 +803,38 @@ pub fn generate_sparse_contour_anchored(
     // Step 1: Find bounding box and project to Mercator
     let project_start = std::time::Instant::now();
 
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut min_lat = f64::INFINITY;
-    let mut max_lat = f64::NEG_INFINITY;
+    // #614: only the LOW corner is read — it becomes the tile map's origin.
+    // `max_x`, `max_y`, `min_lat` and `max_lat` were accumulated here too and
+    // never read again: four min/max per polyline vertex, of which there are
+    // over a million on a large field, feeding nothing.
+    let project_seg = |seg: &ReachableSegment| -> Vec<MercatorPoint> {
+        seg.points
+            .iter()
+            .map(|&(lat_fxp, lon_fxp)| to_mercator(lat_fxp as f64 / 1e7, lon_fxp as f64 / 1e7))
+            .collect()
+    };
+    let parallel = segments.len() >= PARALLEL_STAMP_MIN_SEGMENTS;
+    let mercator_segments: Vec<Vec<MercatorPoint>> = if parallel {
+        // `collect` off an indexed parallel iterator keeps input order, so
+        // this is the sequential vector, element for element.
+        segments.par_iter().map(project_seg).collect()
+    } else {
+        segments.iter().map(project_seg).collect()
+    };
 
-    let mercator_segments: Vec<Vec<MercatorPoint>> = segments
-        .iter()
-        .map(|seg| {
-            seg.points
-                .iter()
-                .map(|&(lat_fxp, lon_fxp)| {
-                    let lat = lat_fxp as f64 / 1e7;
-                    let lon = lon_fxp as f64 / 1e7;
-                    min_lat = min_lat.min(lat);
-                    max_lat = max_lat.max(lat);
-                    let pt = to_mercator(lat, lon);
-                    min_x = min_x.min(pt.x);
-                    max_x = max_x.max(pt.x);
-                    min_y = min_y.min(pt.y);
-                    max_y = max_y.max(pt.y);
-                    pt
-                })
-                .collect()
-        })
-        .collect();
+    let low = if parallel {
+        mercator_segments
+            .par_iter()
+            .flatten()
+            .fold(LowCorner::none, LowCorner::include)
+            .reduce(LowCorner::none, LowCorner::merge)
+    } else {
+        mercator_segments
+            .iter()
+            .flatten()
+            .fold(LowCorner::none(), LowCorner::include)
+    };
+    let (mut min_x, mut min_y) = (low.x, low.y);
 
     // #431 rank 3 (cos(lat) ground-sizing) was REJECTED BY VALIDATION:
     // sizing cells as true ground meters coarsened Belgium's grid from the
@@ -781,18 +857,42 @@ pub fn generate_sparse_contour_anchored(
 
     // Step 2: Create sparse tile map and stamp segments
     let stamp_start = std::time::Instant::now();
-    let mut tile_map = SparseTileMap::new(cell_size_merc, min_x, min_y);
-
-    for seg in &mercator_segments {
+    let stamp_seg = |map: &mut SparseTileMap, seg: &[MercatorPoint]| {
         for window in seg.windows(2) {
-            tile_map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
+            map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
         }
         // Stamp individual points
         for pt in seg {
-            let (col, row) = tile_map.mercator_to_cell(pt.x, pt.y);
-            tile_map.set_cell(col, row);
+            let (col, row) = map.mercator_to_cell(pt.x, pt.y);
+            map.set_cell(col, row);
         }
-    }
+    };
+    let fresh = || SparseTileMap::new(cell_size_merc, min_x, min_y);
+    let mut tile_map = if parallel {
+        // Stamping only ORs bits into tiles, so it is commutative and
+        // associative: one map per worker, merged by OR, holds exactly the
+        // bits the single map would. Nothing downstream can tell the
+        // difference — the rest of the pipeline is a function of the SET of
+        // bits, never of the map's iteration order (#431 sorts the boundary
+        // starts for precisely that reason, and each morphology step reads
+        // only its input and writes a fresh map).
+        mercator_segments
+            .par_iter()
+            .fold(fresh, |mut map, seg| {
+                stamp_seg(&mut map, seg);
+                map
+            })
+            .reduce(fresh, |mut a, b| {
+                a.merge_or(b);
+                a
+            })
+    } else {
+        let mut map = fresh();
+        for seg in &mercator_segments {
+            stamp_seg(&mut map, seg);
+        }
+        map
+    };
 
     // #497: the anchor (snapped query origin) is reachable BY DEFINITION —
     // stamp a 3×3 disk at its cell so its component always has area. A thin
