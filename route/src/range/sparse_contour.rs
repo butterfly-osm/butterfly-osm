@@ -858,13 +858,27 @@ pub fn generate_sparse_contour_anchored(
     // Step 2: Create sparse tile map and stamp segments
     let stamp_start = std::time::Instant::now();
     let stamp_seg = |map: &mut SparseTileMap, seg: &[MercatorPoint]| {
-        for window in seg.windows(2) {
-            map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
-        }
-        // Stamp individual points
-        for pt in seg {
-            let (col, row) = map.mercator_to_cell(pt.x, pt.y);
-            map.set_cell(col, row);
+        // #614: Bresenham stamps the cells of BOTH endpoints of every window,
+        // and the windows of a polyline cover every one of its points — so
+        // the separate per-point pass that used to follow this loop could
+        // only ever re-set bits that were already set. That is one wasted
+        // `set_cell`, HashMap probe included, per polyline vertex, and a
+        // large field has over a million vertices.
+        //
+        // A lone point has no window. That is the one case that still needs
+        // stamping directly, and it is why this is a `match` and not a
+        // deletion.
+        match seg {
+            [] => {}
+            [only] => {
+                let (col, row) = map.mercator_to_cell(only.x, only.y);
+                map.set_cell(col, row);
+            }
+            _ => {
+                for window in seg.windows(2) {
+                    map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
+                }
+            }
         }
     };
     let fresh = || SparseTileMap::new(cell_size_merc, min_x, min_y);
