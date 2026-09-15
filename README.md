@@ -119,6 +119,8 @@ Support directories: `bench/` (regression and competitor benches),
   passes (#613): a length-gated pass earns a completeness bound, an ordinary
   time-bounded pass serves the answer — 1.4 ms at 2 km depart, where the
   unbounded field cost 81 ms.
+- Contour pipeline (#614): parallel projection + stamping, bitwise boundary
+  scan — 4.5× on the polygon stage, on every isochrone and both transports.
 - GeoJSON or WKB output; CCW outer rings, 5-decimal precision.
 - `POST /isochrone/bulk` length-prefixed WKB stream.
 
