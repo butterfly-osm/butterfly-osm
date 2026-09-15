@@ -323,13 +323,44 @@ A distance threshold is refused, not silently answered on stale metres, with
 request; nothing recustomizes the length-along-time channel to match) and on a
 dataset built before the length-along-time weights existed.
 
-Cost (Belgium, car, warm): an isodistance runs the reachability field over the
-whole hierarchy — ~75 ms, independent of the threshold — where a time
-isochrone bounds its field at the threshold and costs 3-6 ms. The polygon
-stage is the same for both and scales with the area drawn. The reason is in
-`range/phast_seeded.rs::run_phast_seeded_2ch_by_len`: length is a value the
-time search CARRIES, never one it may steer by, or the reported metres stop
-being the metres of the path the engine would drive.
+Cost (Belgium, car, Brussels, warm, wall). A **depart** isodistance is bounded
+in two passes (#613) and its cost now tracks the threshold:
+
+| `distance_m` | before #613 | now |
+|---|---|---|
+| 1000 | 80 ms | **1.4 ms** |
+| 2000 | 81 ms | **3.4 ms** |
+| 5000 | 95 ms | **21 ms** |
+| 10000 | 129 ms | **76 ms** |
+| 20000 | 154 ms | **121 ms** |
+
+Length is a value the time search CARRIES, never one it may steer by, or the
+reported metres stop being the metres of the path the engine would drive —
+so the field cannot be gated on length and served. It can be gated on length
+to earn a *bound*: every node truly within the budget keeps its exact label
+under such a gate, and the nodes it wrongly reports carry an over-estimated
+time, so the largest time it reports is an upper bound on the time of every
+admissible node. An ordinary time-bounded pass at that bound is then exact
+and complete, and the answer is the unbounded scan's, node for node. The
+argument and its adversarial case are on
+`range/phast_seeded.rs::run_phast_seeded_2ch_by_len`.
+
+Two things still cost, and both are honest:
+
+- **The bound is set by the answer's own slowest node.** A 10 km isodistance
+  from Brussels contains a point whose time-shortest path takes 3669 s, so
+  the second pass must cover a 3669 s ball — there is no tighter time bound,
+  and the log line `isodistance two-pass bound` prints `bound_s` next to the
+  largest time the answer actually contains (they are equal or within 1-2 %).
+  Seen the other way round: `distance_m=20000` costs 121 ms where the time
+  isochrone whose field it is obliged to compute, `time_s=4498`, costs 510 ms.
+- **The polygon stage is shared with time isochrones** and scales with what is
+  drawn, not with the metric. At 20 km it is the majority of the 121 ms.
+
+An **arrive** isodistance is unchanged, and so is an arrive time isochrone:
+the reverse field PULLs over every rank because there is no reverse-UP
+adjacency to PUSH along, so no threshold makes it cheaper. That is a property
+of `direction=arrive`, not of the metric.
 
 Content negotiation:
 - `Accept: application/json` (default) → `IsochroneResponse`
