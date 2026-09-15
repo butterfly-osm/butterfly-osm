@@ -9,6 +9,7 @@
 //! 4. Run marching squares per tile with seam stitching
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use super::contour::{ContourResult, ContourStats};
@@ -31,6 +32,54 @@ const COMPONENT_MIN_AREA_CELLS: f64 = 64.0;
 
 /// Tile size in cells (64x64 = 4096 bits = 512 bytes per tile)
 const TILE_SIZE: usize = 64;
+
+/// #614: below this many reachable segments, project and stamp sequentially.
+///
+/// The threshold is a pure COST decision and can be retuned freely: the
+/// parallel and sequential paths produce bit-identical output by
+/// construction — same per-point projection, a min-reduction that is
+/// associative and exact, and a bit-OR merge — so moving it can change how
+/// long a contour takes and nothing else.
+///
+/// It is not zero because `POST /isochrone/bulk` already runs one origin per
+/// rayon worker. Leaving the small fields sequential keeps a bulk job's
+/// parallelism where it belongs — across origins — instead of nesting it
+/// inside each one, while the big single-query fields, which are the ones
+/// that hurt, still fan out.
+const PARALLEL_STAMP_MIN_SEGMENTS: usize = 10_000;
+
+/// The low corner of the projected bounding box — the only part of it the
+/// pipeline reads (it becomes the tile map's origin).
+///
+/// `min` over `f64` is associative and has an exact identity, so folding
+/// this across rayon workers and merging gives bit-identical results to the
+/// sequential fold, in any order and at any chunk size.
+#[derive(Clone, Copy)]
+struct LowCorner {
+    x: f64,
+    y: f64,
+}
+
+impl LowCorner {
+    fn none() -> Self {
+        Self {
+            x: f64::INFINITY,
+            y: f64::INFINITY,
+        }
+    }
+    fn include(self, p: &MercatorPoint) -> Self {
+        Self {
+            x: self.x.min(p.x),
+            y: self.y.min(p.y),
+        }
+    }
+    fn merge(self, other: Self) -> Self {
+        Self {
+            x: self.x.min(other.x),
+            y: self.y.min(other.y),
+        }
+    }
+}
 
 /// Tile coordinate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -174,6 +223,28 @@ impl SparseTileMap {
             }
         }
         result
+    }
+
+    /// #614: OR another map's bits into this one. Both must share the grid
+    /// (same cell size and origin), which the parallel stamp guarantees by
+    /// building every worker's map from the same three numbers.
+    fn merge_or(&mut self, other: SparseTileMap) {
+        debug_assert_eq!(self.cell_size_m, other.cell_size_m);
+        debug_assert_eq!(self.origin_x, other.origin_x);
+        debug_assert_eq!(self.origin_y, other.origin_y);
+        for (coord, tile) in other.tiles {
+            match self.tiles.entry(coord) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let dst = e.get_mut();
+                    for (d, s) in dst.bits.iter_mut().zip(tile.bits.iter()) {
+                        *d |= *s;
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(tile);
+                }
+            }
+        }
     }
 
     /// Count total set cells across all tiles
@@ -646,6 +717,11 @@ pub struct SparseContourStats {
     pub total_cells_set: usize,
     pub contour_vertices_before_simplify: usize,
     pub contour_vertices_after_simplify: usize,
+    /// #613: the Mercator projection half of the old `stamp_time_us` — two
+    /// transcendentals per polyline vertex, and on a big field the single
+    /// most expensive thing the contour pipeline does.
+    pub project_time_us: u64,
+    /// The Bresenham rasterisation half.
     pub stamp_time_us: u64,
     pub morphology_time_us: u64,
     pub contour_time_us: u64,
@@ -681,7 +757,8 @@ impl From<SparseContourResult> for ContourResult {
                 filled_cells: st.total_cells_set,
                 contour_vertices_before_simplify: st.contour_vertices_before_simplify,
                 contour_vertices_after_simplify: st.contour_vertices_after_simplify,
-                elapsed_ms: (st.stamp_time_us
+                elapsed_ms: (st.project_time_us
+                    + st.stamp_time_us
                     + st.morphology_time_us
                     + st.contour_time_us
                     + st.simplify_time_us)
@@ -724,35 +801,40 @@ pub fn generate_sparse_contour_anchored(
     }
 
     // Step 1: Find bounding box and project to Mercator
-    let stamp_start = std::time::Instant::now();
+    let project_start = std::time::Instant::now();
 
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut min_lat = f64::INFINITY;
-    let mut max_lat = f64::NEG_INFINITY;
+    // #614: only the LOW corner is read — it becomes the tile map's origin.
+    // `max_x`, `max_y`, `min_lat` and `max_lat` were accumulated here too and
+    // never read again: four min/max per polyline vertex, of which there are
+    // over a million on a large field, feeding nothing.
+    let project_seg = |seg: &ReachableSegment| -> Vec<MercatorPoint> {
+        seg.points
+            .iter()
+            .map(|&(lat_fxp, lon_fxp)| to_mercator(lat_fxp as f64 / 1e7, lon_fxp as f64 / 1e7))
+            .collect()
+    };
+    let parallel = segments.len() >= PARALLEL_STAMP_MIN_SEGMENTS;
+    let mercator_segments: Vec<Vec<MercatorPoint>> = if parallel {
+        // `collect` off an indexed parallel iterator keeps input order, so
+        // this is the sequential vector, element for element.
+        segments.par_iter().map(project_seg).collect()
+    } else {
+        segments.iter().map(project_seg).collect()
+    };
 
-    let mercator_segments: Vec<Vec<MercatorPoint>> = segments
-        .iter()
-        .map(|seg| {
-            seg.points
-                .iter()
-                .map(|&(lat_fxp, lon_fxp)| {
-                    let lat = lat_fxp as f64 / 1e7;
-                    let lon = lon_fxp as f64 / 1e7;
-                    min_lat = min_lat.min(lat);
-                    max_lat = max_lat.max(lat);
-                    let pt = to_mercator(lat, lon);
-                    min_x = min_x.min(pt.x);
-                    max_x = max_x.max(pt.x);
-                    min_y = min_y.min(pt.y);
-                    max_y = max_y.max(pt.y);
-                    pt
-                })
-                .collect()
-        })
-        .collect();
+    let low = if parallel {
+        mercator_segments
+            .par_iter()
+            .flatten()
+            .fold(LowCorner::none, LowCorner::include)
+            .reduce(LowCorner::none, LowCorner::merge)
+    } else {
+        mercator_segments
+            .iter()
+            .flatten()
+            .fold(LowCorner::none(), LowCorner::include)
+    };
+    let (mut min_x, mut min_y) = (low.x, low.y);
 
     // #431 rank 3 (cos(lat) ground-sizing) was REJECTED BY VALIDATION:
     // sizing cells as true ground meters coarsened Belgium's grid from the
@@ -771,19 +853,60 @@ pub fn generate_sparse_contour_anchored(
     min_x -= margin;
     min_y -= margin;
 
-    // Step 2: Create sparse tile map and stamp segments
-    let mut tile_map = SparseTileMap::new(cell_size_merc, min_x, min_y);
+    stats.project_time_us = project_start.elapsed().as_micros() as u64;
 
-    for seg in &mercator_segments {
-        for window in seg.windows(2) {
-            tile_map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
+    // Step 2: Create sparse tile map and stamp segments
+    let stamp_start = std::time::Instant::now();
+    let stamp_seg = |map: &mut SparseTileMap, seg: &[MercatorPoint]| {
+        // #614: Bresenham stamps the cells of BOTH endpoints of every window,
+        // and the windows of a polyline cover every one of its points — so
+        // the separate per-point pass that used to follow this loop could
+        // only ever re-set bits that were already set. That is one wasted
+        // `set_cell`, HashMap probe included, per polyline vertex, and a
+        // large field has over a million vertices.
+        //
+        // A lone point has no window. That is the one case that still needs
+        // stamping directly, and it is why this is a `match` and not a
+        // deletion.
+        match seg {
+            [] => {}
+            [only] => {
+                let (col, row) = map.mercator_to_cell(only.x, only.y);
+                map.set_cell(col, row);
+            }
+            _ => {
+                for window in seg.windows(2) {
+                    map.stamp_line(window[0].x, window[0].y, window[1].x, window[1].y);
+                }
+            }
         }
-        // Stamp individual points
-        for pt in seg {
-            let (col, row) = tile_map.mercator_to_cell(pt.x, pt.y);
-            tile_map.set_cell(col, row);
+    };
+    let fresh = || SparseTileMap::new(cell_size_merc, min_x, min_y);
+    let mut tile_map = if parallel {
+        // Stamping only ORs bits into tiles, so it is commutative and
+        // associative: one map per worker, merged by OR, holds exactly the
+        // bits the single map would. Nothing downstream can tell the
+        // difference — the rest of the pipeline is a function of the SET of
+        // bits, never of the map's iteration order (#431 sorts the boundary
+        // starts for precisely that reason, and each morphology step reads
+        // only its input and writes a fresh map).
+        mercator_segments
+            .par_iter()
+            .fold(fresh, |mut map, seg| {
+                stamp_seg(&mut map, seg);
+                map
+            })
+            .reduce(fresh, |mut a, b| {
+                a.merge_or(b);
+                a
+            })
+    } else {
+        let mut map = fresh();
+        for seg in &mercator_segments {
+            stamp_seg(&mut map, seg);
         }
-    }
+        map
+    };
 
     // #497: the anchor (snapped query origin) is reachable BY DEFINITION —
     // stamp a 3×3 disk at its cell so its component always has area. A thin
@@ -878,6 +1001,7 @@ pub fn generate_sparse_contour_anchored(
         active_tiles = stats.active_tiles,
         tiles_after_morph = stats.active_tiles_after_morphology,
         cells_set = stats.total_cells_set,
+        project_us = stats.project_time_us,
         stamp_us = stats.stamp_time_us,
         morphology_us = stats.morphology_time_us,
         contour_us = stats.contour_time_us,
@@ -958,8 +1082,15 @@ fn extract_components_sparse(
     // (its rotation) feeds Douglas-Peucker — which pins the first/last
     // vertex — so an unsorted start list made the simplified polygon vary
     // across identical runs.
+    // #614: `find_all_boundary_starts` is O(area) — it visits every SET cell
+    // and probes up to four neighbours — where the tracing below is
+    // O(perimeter). Time them apart before optimising either.
+    let starts_start = std::time::Instant::now();
     let mut boundary_starts = find_all_boundary_starts(map);
     boundary_starts.sort_unstable();
+    let starts_us = starts_start.elapsed().as_micros() as u64;
+    let n_starts = boundary_starts.len();
+    let trace_start = std::time::Instant::now();
 
     for (start_col, start_row, start_edge) in boundary_starts {
         if visited_edges.contains(&(start_col, start_row, start_edge)) {
@@ -979,6 +1110,14 @@ fn extract_components_sparse(
             rings.push(ring);
         }
     }
+    tracing::debug!(
+        tiles = map.tiles.len(),
+        starts = n_starts,
+        rings = rings.len(),
+        find_starts_us = starts_us,
+        trace_us = trace_start.elapsed().as_micros() as u64,
+        "boundary extraction timing"
+    );
     if rings.is_empty() {
         return vec![];
     }
@@ -1155,34 +1294,84 @@ fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
 fn find_all_boundary_starts(map: &SparseTileMap) -> Vec<(i32, i32, u8)> {
     let mut starts = Vec::new();
 
+    // #614: one start per boundary cell, by the SAME priority the per-cell
+    // chain used — north, else west, else east, else south — but computed a
+    // row of 64 cells at a time.
+    //
+    // The old form asked `map.get_cell()` up to four times per SET cell, and
+    // every one of those is a HashMap probe: O(area) hashing, which made this
+    // the most expensive step left in the pipeline once the stamp was fanned
+    // out. The neighbour of a cell is a neighbouring BIT, so the four probes
+    // become four shifts, and the only HashMap lookups left are the four
+    // adjacent tiles — per TILE, not per cell.
+    //
+    // Shift conventions are `dilate_sparse`'s: bit index == local column, so
+    // `<< 1` reads the cell to the west and `>> 1` the cell to the east, with
+    // the wrapped bit coming from the left/right tile's edge column.
     for (&coord, tile) in &map.tiles {
         let base_col = coord.tx * TILE_SIZE as i32;
         let base_row = coord.ty * TILE_SIZE as i32;
+        let center = &tile.bits;
+        let above = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty - 1,
+            },
+        );
+        let below = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty + 1,
+            },
+        );
+        let left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty,
+            },
+        );
+        let right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty,
+            },
+        );
 
         for local_row in 0..TILE_SIZE {
-            let row_bits = tile.bits[local_row];
-            if row_bits == 0 {
+            let cur = center[local_row];
+            if cur == 0 {
                 continue;
             }
+            let north = if local_row == 0 {
+                above[TILE_SIZE - 1]
+            } else {
+                center[local_row - 1]
+            };
+            let south = if local_row == TILE_SIZE - 1 {
+                below[0]
+            } else {
+                center[local_row + 1]
+            };
+            let west = (cur << 1) | ((left[local_row] >> 63) & 1);
+            let east = (cur >> 1) | ((right[local_row] & 1) << 63);
 
-            for local_col in 0..TILE_SIZE {
-                if (row_bits >> local_col) & 1 == 0 {
-                    continue;
-                }
-
-                let col = base_col + local_col as i32;
-                let row = base_row + local_row as i32;
-
-                // Check for boundary edges - add one start per boundary cell
-                // We only need one edge per cell to start tracing
-                if !map.get_cell(col, row - 1) {
-                    starts.push((col, row, 0)); // North edge
-                } else if !map.get_cell(col - 1, row) {
-                    starts.push((col, row, 3)); // West edge
-                } else if !map.get_cell(col + 1, row) {
-                    starts.push((col, row, 1)); // East edge
-                } else if !map.get_cell(col, row + 1) {
-                    starts.push((col, row, 2)); // South edge
+            // Exactly the if / else-if chain, as masks: a cell falls to the
+            // next edge only when the previous neighbour IS present.
+            let row = base_row + local_row as i32;
+            for (mask, edge) in [
+                (cur & !north, 0u8),
+                (cur & north & !west, 3),
+                (cur & north & west & !east, 1),
+                (cur & north & west & east & !south, 2),
+            ] {
+                let mut m = mask;
+                while m != 0 {
+                    starts.push((base_col + m.trailing_zeros() as i32, row, edge));
+                    m &= m - 1;
                 }
             }
         }

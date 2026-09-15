@@ -10,6 +10,83 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-15 — The contour pipeline, which every isochrone shares, is 4.5x faster (#614)
+
+Once #613 bounded the isodistance field, the field stopped being the cost. One
+timer split in two said where it had gone instead: `stamp_time_us` was timing
+two different jobs — projecting every polyline vertex to Mercator, `tan()` then
+`ln()`, and the Bresenham rasterisation — and together they were 31 ms of a
+46 ms polygon stage. Nothing here is specific to a distance threshold. The
+polygon stage is shared by `/isochrone`, `/isochrone/bulk`, the Flight
+`isochrone` action and the catchment hull, in both directions, so all of them
+gain.
+
+**Three changes, each proven on its own before the next was started.**
+
+*Project and stamp in parallel, and stop computing four dead corners.* The
+bounding-box fold accumulated six values and only the low corner was ever read;
+the other four were four `min`/`max` per vertex, over a million vertices,
+feeding nothing. Then both steps fan out over rayon. Below
+`PARALLEL_STAMP_MIN_SEGMENTS` they stay sequential, because
+`POST /isochrone/bulk` already runs one origin per worker and a bulk job's
+parallelism belongs across origins rather than nested inside each one — and
+because the two paths are bit-identical by construction, that constant is a
+pure cost decision and can be retuned on measurements alone.
+
+*Find the boundary starts a row at a time.* `find_all_boundary_starts` is
+O(AREA) where the tracing it feeds is O(perimeter), and it asked
+`map.get_cell()` up to four times per SET cell — a HashMap probe each. The
+neighbour of a cell is a neighbouring BIT, so the four probes become four
+shifts over a 64-cell row and the only lookups left are the four adjacent
+tiles, per TILE. The per-cell priority chain (north, else west, else east, else
+south) is preserved exactly, as masks. 3418 → 295 µs on a 59-tile field.
+
+*Drop the per-point stamp pass.* Bresenham stamps both endpoint cells of every
+window and the windows cover every point, so that pass could only re-set bits
+already set. Worth ~15 % of the stamp and honestly below the noise floor of an
+end-to-end measurement; kept because it is strictly less work for identical
+output, in six lines.
+
+**Why any of this is allowed to reorder work.** The pipeline's output is a
+function of the SET of stamped bits and nothing else: #431 already sorted the
+boundary starts precisely because HashMap iteration order is process-random,
+and every morphology step reads only its input and writes a fresh map. So
+per-worker maps merged by bit-OR, and starts emitted grouped by edge rather
+than by cell, cannot change a served byte. Exact, not approximately equal.
+
+**The pipeline** (Belgium, car, Brussels, 20 km, microseconds):
+
+    before:  project 12663  stamp 19414  morph 265  boundary 13484  simplify 403  = 46.2 ms
+    after:   project  2281  stamp  2587  morph 284  boundary  4664  simplify 405  = 10.2 ms
+
+**Whole request**, against the pre-#614 baseline, interleaved min-of-9 on a
+shared host at load 5.6:
+
+| | before | after | |
+|---|---|---|---|
+| `time_s=1800` depart | 34.70 ms | **22.40 ms** | 1.55× |
+| `distance_m=20000` depart | 122.74 ms | **87.61 ms** | 1.40× |
+| `distance_m=10000` depart | 76.67 ms | **54.46 ms** | 1.41× |
+| `distance_m=5000` depart | 20.67 ms | **14.39 ms** | 1.44× |
+| `distance_m=1000` depart | 1.33 ms | **1.00 ms** | 1.33× |
+| `distance_m=20000` arrive | 145.87 ms | **105.38 ms** | 1.38× |
+| `time_s=1800` arrive | 54.48 ms | **46.64 ms** | 1.17× |
+
+Arrive gains as much as depart, and time isochrones as much as distance ones.
+
+**Geometry unchanged, three times over.** The 1800-case corpus — 30 origins ×
+3 modes × both directions × five distance thresholds, two multi-contour sets
+and three time thresholds — digests to `0f15369b` after each of the three
+commits, 1800/1800 identical every time. That is the same digest the corpus had
+before #612, so the chain is unbroken across this whole series of changes.
+
+**Where the cost is now.** Nothing in the polygon stage dominates any more: the
+ring TRACE (4.7 ms at 20 km) and the stamp (2.6 ms) are the two comparable
+items, with projection just behind. The remaining large-threshold cost is the
+`/isochrone` response itself and, on a distance threshold, the second field
+pass — whose size is set by the answer's own slowest node (#613).
+
+
 ### 2026-09-15 — The isodistance field is bounded, and the answer is unchanged (#613)
 
 #612 shipped the isodistance running its reachability field over the WHOLE
