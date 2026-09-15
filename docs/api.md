@@ -756,9 +756,28 @@ Params:
 
 ```json
 { "lon": f64, "lat": f64,
-  "intervals": [u32, ...],    // seconds, 1-10 values each 1-7200
-  "direction": "depart" | "arrive" }
+  "intervals": [u32, ...],      // seconds, 1-10 values each 1-7200
+  "intervals_m": [u32, ...],    // OR metres, 1-10 values each 1-100000 (#612)
+  "direction": "depart" | "arrive",
+  "exclude": "toll,ferry,motorway",          // #613
+  "avoid_polygons": "[[[lon,lat], ...]]",    // #613, JSON as a string
+  "uncertainty": "bands" }
 ```
+
+Unknown fields are refused (#548), so a mistyped parameter fails loud instead
+of being ignored.
+
+`exclude` and `avoid_polygons` are the same tokens, the same shape and the
+same answer as on `GET /isochrone` (#613): both transports resolve them
+through the one weight plan, including the snap mask, so the same request
+returns byte-identical WKB on either. Avoid wins over exclude — the avoid
+recustomization already folds the exclude flags into its own weights. A
+**cold** recustomization is expensive by nature (seconds to roughly 70 s for
+the widest mask, #606) and is cached per mode and mask; it never runs on a
+runtime worker (#539). A distance threshold (`intervals_m`) with either
+option is refused, for the reason `GET /isochrone` gives. `uncertainty`
+cannot be combined with either: the bands are hidden best/worst car weight
+sets and nothing recustomizes them to match one request's exclusion.
 
 | Column | Arrow type | Notes |
 |--------|------------|-------|

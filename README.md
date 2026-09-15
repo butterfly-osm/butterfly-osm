@@ -121,6 +121,9 @@ Support directories: `bench/` (regression and competitor benches),
   unbounded field cost 81 ms.
 - Contour pipeline (#614): parallel projection + stamping, bitwise boundary
   scan — 4.5× on the polygon stage, on every isochrone and both transports.
+- `exclude=toll,ferry,motorway` and `avoid_polygons` on BOTH transports
+  (#613): REST and the Flight `isochrone` action resolve them through one
+  weight plan — mask included — and answer byte-identical WKB.
 - GeoJSON or WKB output; CCW outer rings, 5-decimal precision.
 - `POST /isochrone/bulk` length-prefixed WKB stream.
 
