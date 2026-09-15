@@ -1777,6 +1777,7 @@ TICKET_GATES = {
     "#605": ("route_batch_agrees_with_route",),
     "#545": ("route_choice",),
     "#606": ("exclude_motorway",),
+    "#613": ("isochrone_transports_agree",),
     "#495/#497": ("isochrone_upper_bound", "isochrone_topology"),
 }
 TICKET_NOTES = {
@@ -1794,6 +1795,8 @@ TICKET_NOTES = {
     "#545": "route CHOICE has no check: durations are judged like-for-like (which drops the\n            divergent pairs) and route length only on the legacy corridor set, so a calibration\n            can collapse choice onto the motorways with every gate green",
     "#606": "exclude=motorway close to a no-op: a restriction is never faster, the mask "
             "is monotone, /route == /table under it, and the corridor is left",
+    "#613": "the machine isochrone could not exclude anything: both transports serve the "
+            "same bytes under an exclusion, and the exclusion actually moves the polygon",
     "#495/#497": "size / foot origin: max reach <= v_max x time, snapped origin contained",
 }
 
@@ -2956,6 +2959,128 @@ def gate_route_batch_max_meters(base):
     passed &= check("every returned pair ≤ B", len(over) == 0, f"{len(over)} over-bound leaked")
     return passed
 
+def gate_isochrone_transports_agree(base):
+    """#613: the SAME isochrone request must come back as the SAME BYTES from
+    `/isochrone` and from the Flight `isochrone` action — with an exclusion
+    active, which is where they could not previously be compared at all
+    because the machine action carried neither `exclude` nor `avoid_polygons`.
+
+    The shape is `gate_route_batch_agrees_with_route`'s: two transports, one
+    request, asserted equality — plus the thing that gate also insists on, a
+    sample that still hits the case. Here that is stronger than a sample
+    property: an exclusion that changed nothing would make every byte match
+    for the wrong reason, so each option must MOVE the polygon against the
+    same request without it.
+
+    Three checks, no measured constants:
+
+      1. EXACT — the WKB the web surface serves and the WKB in the action's
+         `polygon_wkb` column are byte-identical, single and multi-contour,
+         both directions, with `exclude` and with `avoid_polygons`. The
+         machine action used to pass NO snap mask into the shared contour
+         pipeline while the web surface passed its plan's: inert while no
+         exclusion could reach that transport, and a silent divergence the
+         moment one could.
+      2. The options are not inert — each moves at least one polygon.
+      3. EXACT — the REFUSALS match too: a distance threshold with an
+         exclusion is refused by the shared core (#612, nothing recustomizes
+         the length-along-time channel), and both transports must refuse it.
+
+    Car only, and that is a cost decision, not a coverage one: a cold
+    recustomization is ~65 s per (mode, mask) and `gate_exclude_motorway` has
+    already warmed car's two exclude masks by the time this runs. What makes
+    car enough is that nothing here is mode-specific — both surfaces resolve
+    through the ONE weight plan (#566), asserted from the server source by
+    `flight::isochrone_options_tests`, and the three-mode / ten-origin sweep
+    is the ticket's own wire proof."""
+    print("== Flight isochrone == /isochrone, same request, same bytes (#613) ==")
+    # 600 s stamps under the contour's parallel threshold, 1800 s well over
+    # it, so the branch a bulk job nests inside its own fan-out is covered
+    # on both sides.
+    origins = [("Brussels", 4.3517, 50.8503), ("Liege", 5.5671, 50.6326),
+        ("Bruges", 3.2247, 51.2089)]
+    ring = json.dumps([[[4.40, 50.83], [4.46, 50.83], [4.46, 50.89], [4.40, 50.89]]])
+    options = [
+        ("exclude=motorway", {"exclude": "motorway"}),
+        ("exclude=motorway,toll,ferry", {"exclude": "motorway,toll,ferry"}),
+        ("avoid_polygons", {"avoid_polygons": ring}),
+    ]
+
+    def rest_wkb(lon, lat, direction, key, value, opts):
+        q = {"lon": lon, "lat": lat, "mode": "car", "direction": direction, key: value}
+        q.update(opts)
+        return http_bytes(f"{base}/isochrone?" + urllib.parse.urlencode(q),
+            timeout=900, headers={"Accept": "application/octet-stream"})
+
+    def flight_wkb(lon, lat, direction, key, values, opts):
+        params = {"lon": lon, "lat": lat, "direction": direction, key: values}
+        params.update(opts)
+        tb = flight_table(base, "isochrone", "car", params)
+        return [tb.column("polygon_wkb")[i].as_py() for i in range(tb.num_rows)]
+
+    passed, n, errors = True, 0, 0
+    moved = {label: 0 for label, _ in options}
+    for name, lon, lat in origins:
+        for direction in ("depart", "arrive"):
+            base_wkb = {}
+            for t in (600, 1800):
+                try:
+                    base_wkb[t] = rest_wkb(lon, lat, direction, "time_s", t, {})
+                except Exception as e:  # noqa: BLE001
+                    errors += 1
+                    print(f"  [warn] {name}/{direction}/{t}s baseline: {e}")
+            for label, opts in options:
+                tag = f"{name}/{direction}/{label}"
+                try:
+                    # Single contour, on both sides of the parallel threshold.
+                    for t in (600, 1800):
+                        r = rest_wkb(lon, lat, direction, "time_s", t, opts)
+                        f = flight_wkb(lon, lat, direction, "intervals", [t], opts)
+                        n += 1
+                        passed &= check(f"{tag} {t}s: same bytes",
+                            len(f) == 1 and f[0] == r,
+                            f"REST {len(r)} B vs Flight {len(f[0]) if f else 0} B")
+                        if base_wkb.get(t) not in (None, r):
+                            moved[label] += 1
+                    # Multi-contour: the action returns one row per threshold,
+                    # each identical to that threshold asked for on its own.
+                    multi = [600, 1800]
+                    f = flight_wkb(lon, lat, direction, "intervals", multi, opts)
+                    n += 1
+                    if len(f) != len(multi):
+                        passed &= check(f"{tag} multi: one row per threshold", False,
+                            f"{len(f)} rows for {len(multi)} thresholds")
+                    else:
+                        for row, t in zip(f, multi):
+                            passed &= check(f"{tag} multi@{t}s: same bytes",
+                                row == rest_wkb(lon, lat, direction, "time_s", t, opts),
+                                f"{len(row)} B")
+                    # #612: a distance threshold with an exclusion is refused
+                    # by the core — both transports, same reason.
+                    rest_refused = flight_refused = ""
+                    try:
+                        rest_wkb(lon, lat, direction, "distance_m", 5000, opts)
+                    except urllib.error.HTTPError as e:
+                        rest_refused = e.read().decode("utf8", "replace")
+                    try:
+                        flight_wkb(lon, lat, direction, "intervals_m", [5000], opts)
+                    except Exception as e:  # noqa: BLE001
+                        flight_refused = str(e)
+                    passed &= check(f"{tag}: both refuse a distance threshold",
+                        "length-along-time" in rest_refused
+                        and "length-along-time" in flight_refused,
+                        f"REST {rest_refused[:60]!r} / Flight {flight_refused[:60]!r}")
+                except Exception as e:  # noqa: BLE001
+                    errors += 1
+                    passed &= check(f"{tag}: request failed", False, str(e)[:200])
+    for label, k in moved.items():
+        passed &= check(f"{label} actually moves the polygon", k > 0,
+            f"{k}/{2 * len(origins) * 2} single-contour cases differ from the "
+            "same request without it")
+    passed &= check_errors("isochrone transports", errors)
+    print(f"  ({n} paired requests)")
+    return passed
+
 
 def gate_catchment_containment(base):
     """#536: hull_shape "road" must be the threshold isochrone — every
@@ -3302,6 +3427,11 @@ def build_gates(args):
         ("graph_holes", False, lambda: gate_graph_holes(b)),
         ("motorway_speed_floor", False, lambda: gate_motorway_speed_floor(b)),
         ("exclude_motorway", False, lambda: gate_exclude_motorway(b)),
+        # AFTER exclude_motorway, and that is a cost decision: it leaves
+        # car's two exclude masks warm, so this gate pays for one cold
+        # recustomization (the avoid ring) instead of three.
+        ("isochrone_transports_agree", True,
+         lambda: gate_isochrone_transports_agree(b)),
         ("edges_batch", True, lambda: gate_edges_batch(b)),
         ("matrix_sparse", True, lambda: gate_matrix_sparse(b)),
         ("matrix_sparse_streaming", True, lambda: gate_matrix_sparse_streaming(b)),
