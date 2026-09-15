@@ -490,12 +490,54 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
     seeds: impl Iterator<Item = (u32, [u32; C])> + Clone,
     threshold: u32,
     mode: Mode,
+    collect: impl FnMut(u32, [u32; C]),
+) {
+    run_seeded_gated::<C, 0, D>(flats, seeds, threshold, mode, collect)
+}
+
+/// [`run_seeded`] with the bound applied to channel `GATE` instead of the
+/// primary one (#613).
+///
+/// `GATE = 0` is the plain bounded scan: the threshold is a bound on the
+/// quantity the search OPTIMISES, so a node beyond it can never lie on an
+/// optimal path to a node inside it, and every label inside the bound is
+/// exact. That is the isochrone.
+///
+/// `GATE = 1` bounds the CARRIED channel, and it is a different animal.
+/// Skipping the relaxations out of a node whose carried length already
+/// exceeds the budget leaves nodes downstream of it labelled from a slower
+/// parent — an over-estimate. What survives is exactly this, and it is what
+/// the isodistance leans on:
+///
+/// * every node whose TRUE carried length is within the bound keeps its
+///   EXACT label, because the lexicographic (time, then length) optimum is
+///   prefix-optimal and length is monotone along a path: every node on such
+///   a node's own optimal path is itself within the bound, so no arc of that
+///   path is ever skipped;
+/// * the nodes that are reported but should not be — true length above the
+///   bound, corrupted label below it — are over-estimates on the PRIMARY
+///   channel, never under-estimates, since every label is the cost of a real
+///   path.
+///
+/// So the collected primary values are an upper bound on the primary cost of
+/// every genuinely admissible node, and their maximum is a sound completeness
+/// bound for a second, ordinary `GATE = 0` pass. Never serve a `GATE = 1`
+/// field directly.
+pub fn run_seeded_gated<const C: usize, const GATE: usize, D: ScanDir>(
+    flats: ScanFlats<'_, D>,
+    seeds: impl Iterator<Item = (u32, [u32; C])> + Clone,
+    threshold: u32,
+    mode: Mode,
     mut collect: impl FnMut(u32, [u32; C]),
 ) {
     const {
         assert!(
             C == 1 || C == 2,
             "PhastState carries one length channel: C is 1 or 2"
+        );
+        assert!(
+            GATE == 0 || (GATE == 1 && C == 2),
+            "the gate is the primary channel, or the length channel of a 2-channel scan"
         );
     }
     use std::cmp::Reverse as Rev;
@@ -568,12 +610,19 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
             }
 
             while let Some(Rev((d, u))) = state.pq.pop() {
-                if d > threshold {
+                // The PQ is ordered by the PRIMARY channel, so only a primary
+                // bound may stop the sweep. A gate on the carried channel has
+                // to skip the node and keep popping — length is not monotone
+                // in pop order.
+                if GATE == 0 && d > threshold {
                     break;
                 }
 
                 if d > state.get_dist(u as usize) {
                     continue; // Stale entry
+                }
+                if GATE == 1 && state.get_len(u as usize) > threshold {
+                    continue;
                 }
 
                 upward_settled += 1;
@@ -612,10 +661,13 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
                     for rank in (block_start..block_end).rev() {
                         let d_u = state.get_dist(rank);
 
-                        if d_u == u32::MAX || d_u > threshold {
+                        if d_u == u32::MAX || (GATE == 0 && d_u > threshold) {
                             continue;
                         }
                         let l_u = if C >= 2 { state.get_len(rank) } else { 0 };
+                        if GATE == 1 && l_u > threshold {
+                            continue;
+                        }
 
                         let (slot_start, slot_end) = down.slots(rank);
                         for i in slot_start..slot_end {
@@ -648,7 +700,10 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
                         let u = down.neighbor(i); // u has higher rank
 
                         let d_u = state.get_dist(u);
-                        if d_u == u32::MAX || d_u > threshold {
+                        if d_u == u32::MAX || (GATE == 0 && d_u > threshold) {
+                            continue;
+                        }
+                        if GATE == 1 && state.get_len(u) > threshold {
                             continue;
                         }
 
@@ -666,6 +721,16 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
             // block gating to lean on.
             let collect_start = std::time::Instant::now();
             let mut settled_nodes = 0usize;
+            // The gated channel decides membership too, or a length-gated
+            // pass would hand out every node the time field happens to reach.
+            let within = |state: &PhastState, rank: usize| {
+                state.version[rank] == state.current_gen
+                    && if GATE == 0 {
+                        state.dist[rank] <= threshold
+                    } else {
+                        state.len[rank] <= threshold
+                    }
+            };
             if !D::PULL {
                 for block_idx in 0..state.n_blocks {
                     if !state.is_block_active(block_idx) {
@@ -674,8 +739,7 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
                     let block_start = block_idx * PHAST_BLOCK_SIZE;
                     let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
                     for rank in block_start..block_end {
-                        if state.version[rank] == state.current_gen && state.dist[rank] <= threshold
-                        {
+                        if within(state, rank) {
                             settled_nodes += 1;
                             collect(rank as u32, state.label::<C>(rank));
                         }
@@ -683,7 +747,7 @@ pub fn run_seeded<const C: usize, D: ScanDir>(
                 }
             } else {
                 for rank in 0..n_nodes {
-                    if state.version[rank] == state.current_gen && state.dist[rank] <= threshold {
+                    if within(state, rank) {
                         settled_nodes += 1;
                         collect(rank as u32, state.label::<C>(rank));
                     }
@@ -810,33 +874,47 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 /// Belgium and a `Vec` of it would be ~28 MB per query, where the
 /// admissible set of a 5 km isodistance is ~24 k.
 ///
-/// **Cost, measured (Belgium car, 5.1 M edge-based nodes, warm):** upward
-/// 2 ms, downward 68 ms, collect 3 ms — ~75 ms, independent of `max_len`,
-/// against 2 ms for a 1200 s time ball and 6 ms for an 1800 s one. The
-/// downward scan over every rank IS the cost, and it is the price of exact
-/// primary labels: no lower bound on length (the independent
-/// distance-shortest metric, crow-fly, landmarks) can prune the TIME
-/// propagation, because a long fast path outside the length budget is often
-/// what proves that an inside candidate's short slow path is not
-/// time-optimal. Two exact ways out, both bigger than this change and both
-/// reviewed:
-/// * bound the field at a time `T` and certify completeness — no node with
-///   `len ≤ max_len` beyond `T` — by checking that every arc leaving the
-///   admissible set into an unsettled node already blows the budget, growing
-///   `T` until it holds. Exact because a time bound corrupts no label inside
-///   it. `T` can also be derived in one shot from a distance-ball search
-///   that carries the time along its own witness path (an upper bound on the
-///   time-optimal one), which would need a `time_along_distance` weight set
-///   mirroring `length_along_time`.
-/// * restrict the downward scan to the hierarchy closure of the
-///   distance-shortest ball at `max_len` — an rPHAST target set, which is
-///   what that ball is — since `d_dist(v) ≤ len(v)` puts every admissible
-///   node inside it. Needs a forward-DOWN distance adjacency, which #553
-///   deliberately deleted as never-read.
+/// Nor can any LOWER bound on length prune the TIME propagation — not the
+/// independent distance-shortest metric, not crow-fly, not landmarks —
+/// because a long fast path outside the length budget is often exactly what
+/// proves that an inside candidate's short slow path is not time-optimal.
+/// The bound has to come from the primary channel, which is what #613 does
+/// below.
 ///
 /// Saturating the length channel at `max_len + 1` to skip the second
 /// channel's arc reads was tried and measured: 68 ms either way. The
 /// primary channel's random access is the wall, not the secondary one.
+///
+/// # #613: the field IS bounded, in two passes, and the answer is identical
+///
+/// The first escape above is the one that pays, and the bound it needs does
+/// not have to be guessed, iterated towards, or read off a new weight set —
+/// a length-gated pass hands it over directly.
+///
+/// * **Pass 1** runs the same 2-channel field with the gate on the LENGTH
+///   channel ([`run_seeded_gated`], `GATE = 1`). Every node whose true
+///   length-along-time is within `max_len` comes out with its EXACT label:
+///   the lexicographic optimum is prefix-optimal and length only grows along
+///   a path, so every node on such a node's own optimal path is itself
+///   within the budget and none of that path's arcs is ever skipped. What
+///   the pass may ALSO report is a node whose true length is over budget
+///   wearing a corrupted label — and a corrupted label is always the cost of
+///   some real path, hence an OVER-estimate of the time.
+/// * So `T = max(time over pass 1's output)` is `>= max(time over the
+///   admissible set)` — pass 1 reports every admissible node, exactly.
+/// * **Pass 2** is then an ordinary time-bounded field at `T`: exact for
+///   every node it settles, and it settles every admissible one. Filtering
+///   it on length gives precisely the unbounded scan's answer, node for node
+///   and label for label — this function's contract is unchanged, which is
+///   what lets `gate_isodistance_truth` keep checking it against the matrix.
+///
+/// What the two passes buy is that BOTH are bounded: pass 1 explores a ball
+/// on the length channel, pass 2 a ball on time, and the block-gated
+/// downward scan skips the rest of the hierarchy in each. The whole-graph
+/// scan is gone.
+///
+/// The arrive mirror gets no such win and deliberately does not try — see
+/// [`run_phast_reverse_seeded_2ch_by_len`].
 pub fn run_phast_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_adj_flat: &DownAdjFlat,
@@ -846,16 +924,39 @@ pub fn run_phast_seeded_2ch_by_len(
     max_len: u32,
     mode: Mode,
 ) -> Vec<(u32, u32, u32)> {
-    let mut result: Vec<(u32, u32, u32)> = Vec::new();
-    run_seeded::<2, Forward>(
+    let flats = || {
         ScanFlats::with_len(
             up_adj_flat,
             down_adj_flat,
             up_adj_flat_len,
             down_adj_flat_len,
-        ),
+        )
+    };
+
+    // Pass 1: the completeness bound. Nothing here is served.
+    let mut time_bound: Option<u32> = None;
+    run_seeded_gated::<2, 1, Forward>(
+        flats(),
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
-        u32::MAX,
+        max_len,
+        mode,
+        |_rank, v| {
+            time_bound = Some(time_bound.map_or(v[0], |t| t.max(v[0])));
+        },
+    );
+    // No node is within the budget — not even a seed. The unbounded scan
+    // would have filtered every settled node away, so: nothing.
+    let Some(time_bound) = time_bound else {
+        return Vec::new();
+    };
+
+    // Pass 2: the field that is served, bounded where pass 1 proved it can
+    // be, and exact inside that bound.
+    let mut result: Vec<(u32, u32, u32)> = Vec::new();
+    run_seeded::<2, Forward>(
+        flats(),
+        seeds.iter().map(|&(r, t, l)| (r, [t, l])),
+        time_bound,
         mode,
         |rank, v| {
             if v[1] <= max_len {
@@ -933,6 +1034,23 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
 /// #612: the ARRIVE mirror of [`run_phast_seeded_2ch_by_len`] — `d(all →
 /// target)` selected on the length channel. Same reasoning about why the
 /// time sweep is unbounded.
+///
+/// **#613: and unlike the depart side, it stays that way, on purpose.** The
+/// two-pass bound over there works because a FORWARD downward scan is
+/// block-gated: bound the field and the scan skips the blocks it never
+/// reaches. This one PULLs — for every rank, from its higher-rank
+/// neighbours — because there is no reverse-UP adjacency to PUSH along, and
+/// a PULL cannot propagate block activation. The loop therefore reads every
+/// rank and every arc whatever the threshold is: a bound saves the `improve`
+/// calls and nothing else. Running a first pass here to earn a bound that
+/// buys nothing would simply pay the full scan twice.
+///
+/// That is not an isodistance problem — an ARRIVE time isochrone pays the
+/// same full scan, at any threshold. The fix is a reverse-UP adjacency so
+/// the arrive field can PUSH and be block-gated like the depart one, which
+/// would speed up every arrive query, not just this one, and costs a new
+/// per-mode flat (RSS). Out of scope here; measured and written up in the
+/// #613 report.
 pub fn run_phast_reverse_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
@@ -1101,6 +1219,198 @@ mod phast_2ch_lex_tests {
                 "length must be 7 (the shorter equal-time seed) + 10, never \
                  900 + 10, whichever seed came first: {seeds:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod isodistance_bound_tests {
+    //! #613: the isodistance field is bounded in two passes, and the answer
+    //! must be the one the unbounded whole-graph scan gave.
+    //!
+    //! The first pass gates on the CARRIED channel, which on its own is
+    //! WRONG — that is the whole reason #612 ran unbounded. These tests pin
+    //! both halves: that the wrongness is real and of exactly one kind (a
+    //! false inclusion, never a missing node), and that the second pass
+    //! removes it.
+    use super::{
+        Forward, ScanFlats, run_phast_bounded_fast_seeded_2ch, run_phast_seeded_2ch_by_len,
+        run_seeded_gated,
+    };
+    use crate::formats::{ArcCow, WeightArray};
+    use crate::matrix::bucket_ch::{DownAdjFlat, UpAdjFlat};
+    use crate::model::types::Mode;
+
+    fn up_flat(offsets: Vec<u64>, targets: Vec<u32>, weights: Vec<u32>) -> UpAdjFlat {
+        UpAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: WeightArray::from_vec_u32(weights),
+            topo_edge_idx: ArcCow::from_vec(Vec::new()),
+        }
+    }
+
+    fn down_flat(offsets: Vec<u64>, targets: Vec<u32>, weights: Vec<u32>) -> DownAdjFlat {
+        DownAdjFlat {
+            offsets: ArcCow::from_vec(offsets),
+            targets: ArcCow::from_vec(targets),
+            weights: WeightArray::from_vec_u32(weights),
+        }
+    }
+
+    /// The "long fast approach versus short slow approach" node, built to
+    /// flip. Rank order 0 < 1 < 2 < 3, every arc UP:
+    ///
+    /// * `0→1` t=1  len=1000   the long FAST approach
+    /// * `0→2` t=50 len=10     the short SLOW approach
+    /// * `1→3` t=1  len=10
+    /// * `2→3` t=1  len=10
+    ///
+    /// Node 3's time-shortest path is via node 1: t=2, and the length it
+    /// accumulates ALONG THAT PATH is 1010. With a 100 m budget node 3 is
+    /// therefore OUT — even though a 20 m path to it exists, because that is
+    /// not the path the engine would drive.
+    fn flip_case() -> (UpAdjFlat, DownAdjFlat, UpAdjFlat, DownAdjFlat) {
+        let up_t = up_flat(vec![0, 2, 3, 4, 4], vec![1, 2, 3, 3], vec![1, 50, 1, 1]);
+        let up_l = up_flat(
+            vec![0, 2, 3, 4, 4],
+            vec![1, 2, 3, 3],
+            vec![1000, 10, 10, 10],
+        );
+        let dn_t = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+        let dn_l = down_flat(vec![0, 0, 0, 0, 0], Vec::new(), Vec::new());
+        (up_t, dn_t, up_l, dn_l)
+    }
+
+    #[test]
+    fn length_gated_pass_alone_would_serve_a_node_that_is_out_of_budget() {
+        // Not a bug report — a lock. If this ever stops being true the
+        // second pass has become dead weight and somebody will delete it.
+        let (up_t, dn_t, up_l, dn_l) = flip_case();
+        let mut got: Vec<(u32, u32, u32)> = Vec::new();
+        run_seeded_gated::<2, 1, Forward>(
+            ScanFlats::with_len(&up_t, &dn_t, &up_l, &dn_l),
+            [(0u32, [0u32, 0u32])].into_iter(),
+            100,
+            Mode::from_u8(0),
+            |rank, v| got.push((rank, v[0], v[1])),
+        );
+        let node3 = got.iter().find(|(r, _, _)| *r == 3);
+        assert!(
+            node3.is_some(),
+            "the length-gated pass is expected to over-report node 3 — it \
+             reaches it from the slow parent once the fast one is gated out"
+        );
+        let (_, t3, l3) = *node3.unwrap();
+        assert_eq!((t3, l3), (51, 20), "and to over-estimate its TIME (51 > 2)");
+    }
+
+    #[test]
+    fn two_pass_isodistance_excludes_the_flipped_node() {
+        let (up_t, dn_t, up_l, dn_l) = flip_case();
+        let out = run_phast_seeded_2ch_by_len(
+            &up_t,
+            &dn_t,
+            &up_l,
+            &dn_l,
+            &[(0u32, 0u32, 0u32)],
+            100,
+            Mode::from_u8(0),
+        );
+        let ranks: Vec<u32> = out.iter().map(|&(r, _, _)| r).collect();
+        assert_eq!(
+            ranks,
+            vec![0, 2],
+            "node 3's length along its TIME-shortest path is 1010 > 100, and \
+             node 1's is 1000 > 100: only the seed and node 2 are within \
+             budget"
+        );
+    }
+
+    /// A deterministic pseudo-random rank-structured graph, exercised at
+    /// every budget: the two-pass answer must equal the unbounded scan's,
+    /// rank for rank and label for label.
+    #[test]
+    fn two_pass_matches_the_unbounded_scan_over_random_graphs() {
+        const N: usize = 48;
+        let mut rng_state: u64 = 0x5DEE_CE66_D1CE_B00D;
+        let mut next = move || {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng_state >> 33) as u32
+        };
+
+        for case in 0..40 {
+            // Rank-structured: an arc between i<j is UP out of i and DOWN
+            // out of j, so both scans see the same graph.
+            let mut up: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
+            let mut dn: Vec<Vec<(u32, u32, u32)>> = vec![Vec::new(); N];
+            for i in 0..N {
+                for j in (i + 1)..N {
+                    if next() % 10 != 0 {
+                        continue;
+                    }
+                    let t = 1 + next() % 60;
+                    let l = 1 + next() % 400;
+                    up[i].push((j as u32, t, l));
+                    dn[j].push((i as u32, t, l));
+                }
+            }
+            let flatten = |adj: &[Vec<(u32, u32, u32)>]| {
+                let mut offsets = vec![0u64];
+                let (mut tg, mut wt, mut wl) = (Vec::new(), Vec::new(), Vec::new());
+                for row in adj {
+                    for &(v, t, l) in row {
+                        tg.push(v);
+                        wt.push(t);
+                        wl.push(l);
+                    }
+                    offsets.push(tg.len() as u64);
+                }
+                (offsets, tg, wt, wl)
+            };
+            let (uo, ut, uwt, uwl) = flatten(&up);
+            let (do_, dt, dwt, dwl) = flatten(&dn);
+            let up_t = up_flat(uo.clone(), ut.clone(), uwt);
+            let up_l = up_flat(uo, ut, uwl);
+            let dn_t = down_flat(do_.clone(), dt.clone(), dwt);
+            let dn_l = down_flat(do_, dt, dwl);
+
+            // Multi-seed, with per-channel partials, like a phantom centre.
+            let seeds = [
+                (0u32, next() % 20, next() % 50),
+                ((next() as usize % N) as u32, next() % 20, next() % 50),
+            ];
+
+            for max_len in [0u32, 25, 100, 400, 1500, 100_000] {
+                let want: Vec<(u32, u32, u32)> = run_phast_bounded_fast_seeded_2ch(
+                    &up_t,
+                    &dn_t,
+                    &up_l,
+                    &dn_l,
+                    &seeds,
+                    u32::MAX,
+                    Mode::from_u8(0),
+                )
+                .into_iter()
+                .filter(|&(_, _, l)| l <= max_len)
+                .collect();
+                let got = run_phast_seeded_2ch_by_len(
+                    &up_t,
+                    &dn_t,
+                    &up_l,
+                    &dn_l,
+                    &seeds,
+                    max_len,
+                    Mode::from_u8(0),
+                );
+                assert_eq!(
+                    got, want,
+                    "case {case}, budget {max_len}: the bounded field must be \
+                     the unbounded one filtered, not an approximation of it"
+                );
+            }
         }
     }
 }
