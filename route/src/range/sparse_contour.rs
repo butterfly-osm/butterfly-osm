@@ -1068,8 +1068,15 @@ fn extract_components_sparse(
     // (its rotation) feeds Douglas-Peucker — which pins the first/last
     // vertex — so an unsorted start list made the simplified polygon vary
     // across identical runs.
+    // #614: `find_all_boundary_starts` is O(area) — it visits every SET cell
+    // and probes up to four neighbours — where the tracing below is
+    // O(perimeter). Time them apart before optimising either.
+    let starts_start = std::time::Instant::now();
     let mut boundary_starts = find_all_boundary_starts(map);
     boundary_starts.sort_unstable();
+    let starts_us = starts_start.elapsed().as_micros() as u64;
+    let n_starts = boundary_starts.len();
+    let trace_start = std::time::Instant::now();
 
     for (start_col, start_row, start_edge) in boundary_starts {
         if visited_edges.contains(&(start_col, start_row, start_edge)) {
@@ -1089,6 +1096,14 @@ fn extract_components_sparse(
             rings.push(ring);
         }
     }
+    tracing::debug!(
+        tiles = map.tiles.len(),
+        starts = n_starts,
+        rings = rings.len(),
+        find_starts_us = starts_us,
+        trace_us = trace_start.elapsed().as_micros() as u64,
+        "boundary extraction timing"
+    );
     if rings.is_empty() {
         return vec![];
     }
@@ -1265,34 +1280,84 @@ fn point_in_ring(pt: (f64, f64), ring: &[(f64, f64)]) -> bool {
 fn find_all_boundary_starts(map: &SparseTileMap) -> Vec<(i32, i32, u8)> {
     let mut starts = Vec::new();
 
+    // #614: one start per boundary cell, by the SAME priority the per-cell
+    // chain used — north, else west, else east, else south — but computed a
+    // row of 64 cells at a time.
+    //
+    // The old form asked `map.get_cell()` up to four times per SET cell, and
+    // every one of those is a HashMap probe: O(area) hashing, which made this
+    // the most expensive step left in the pipeline once the stamp was fanned
+    // out. The neighbour of a cell is a neighbouring BIT, so the four probes
+    // become four shifts, and the only HashMap lookups left are the four
+    // adjacent tiles — per TILE, not per cell.
+    //
+    // Shift conventions are `dilate_sparse`'s: bit index == local column, so
+    // `<< 1` reads the cell to the west and `>> 1` the cell to the east, with
+    // the wrapped bit coming from the left/right tile's edge column.
     for (&coord, tile) in &map.tiles {
         let base_col = coord.tx * TILE_SIZE as i32;
         let base_row = coord.ty * TILE_SIZE as i32;
+        let center = &tile.bits;
+        let above = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty - 1,
+            },
+        );
+        let below = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx,
+                ty: coord.ty + 1,
+            },
+        );
+        let left = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx - 1,
+                ty: coord.ty,
+            },
+        );
+        let right = get_tile_bits(
+            map,
+            TileCoord {
+                tx: coord.tx + 1,
+                ty: coord.ty,
+            },
+        );
 
         for local_row in 0..TILE_SIZE {
-            let row_bits = tile.bits[local_row];
-            if row_bits == 0 {
+            let cur = center[local_row];
+            if cur == 0 {
                 continue;
             }
+            let north = if local_row == 0 {
+                above[TILE_SIZE - 1]
+            } else {
+                center[local_row - 1]
+            };
+            let south = if local_row == TILE_SIZE - 1 {
+                below[0]
+            } else {
+                center[local_row + 1]
+            };
+            let west = (cur << 1) | ((left[local_row] >> 63) & 1);
+            let east = (cur >> 1) | ((right[local_row] & 1) << 63);
 
-            for local_col in 0..TILE_SIZE {
-                if (row_bits >> local_col) & 1 == 0 {
-                    continue;
-                }
-
-                let col = base_col + local_col as i32;
-                let row = base_row + local_row as i32;
-
-                // Check for boundary edges - add one start per boundary cell
-                // We only need one edge per cell to start tracing
-                if !map.get_cell(col, row - 1) {
-                    starts.push((col, row, 0)); // North edge
-                } else if !map.get_cell(col - 1, row) {
-                    starts.push((col, row, 3)); // West edge
-                } else if !map.get_cell(col + 1, row) {
-                    starts.push((col, row, 1)); // East edge
-                } else if !map.get_cell(col, row + 1) {
-                    starts.push((col, row, 2)); // South edge
+            // Exactly the if / else-if chain, as masks: a cell falls to the
+            // next edge only when the previous neighbour IS present.
+            let row = base_row + local_row as i32;
+            for (mask, edge) in [
+                (cur & !north, 0u8),
+                (cur & north & !west, 3),
+                (cur & north & west & !east, 1),
+                (cur & north & west & east & !south, 2),
+            ] {
+                let mut m = mask;
+                while m != 0 {
+                    starts.push((base_col + m.trailing_zeros() as i32, row, edge));
+                    m &= m - 1;
                 }
             }
         }
