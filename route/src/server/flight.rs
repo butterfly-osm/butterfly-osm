@@ -46,7 +46,7 @@ use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
 
 use super::geometry::{
-    IsochroneQuery, IsochroneSnapError, Point, ThresholdMetric, isochrone_polygons,
+    IsochroneFlats, IsochroneQuery, IsochroneSnapError, Point, ThresholdMetric, isochrone_polygons,
 };
 use super::isochrone_handler::{
     FLIGHT_SPELLING, isochrone_error_message, parse_requested_contours,
@@ -2559,6 +2559,16 @@ struct IsochroneParams {
     intervals_m: Option<Vec<u32>>,
     #[serde(default = "default_direction")]
     direction: String,
+    /// Exclude road types: comma-separated list of "toll", "ferry",
+    /// "motorway" — the same spelling, the same weight plan and the same
+    /// answer as REST `/isochrone?exclude=` (#613).
+    #[serde(default)]
+    exclude: Option<String>,
+    /// Avoid polygon(s) as JSON: `[[lon,lat],...]` or `[[[lon,lat],...],...]`
+    /// — the same spelling, the same weight plan and the same answer as REST
+    /// `/isochrone?avoid_polygons=` (#613).
+    #[serde(default)]
+    avoid_polygons: Option<String>,
     /// Named bands (2026-09-03): "bands" → typical, best, worst polygons, `band` column.
     #[serde(default)]
     uncertainty: Option<String>,
@@ -2596,6 +2606,36 @@ fn do_isochrone(
     let mode_name = &state.mode_names[mode.index()];
     let is_reverse = params.direction.to_lowercase() == "arrive";
 
+    // #613: `exclude` / `avoid_polygons`, resolved by THE shared plan
+    // (#566) — the same parsers, the same avoid-over-exclude priority, the
+    // same cache and the same refusals REST `/isochrone` answers. Both
+    // parse errors are properties of the request, hence invalid_argument.
+    let exclude_mask =
+        super::exclude::parse_exclude_option(&params.exclude).map_err(Status::invalid_argument)?;
+    let avoid_json = super::avoid::parse_avoid_option(&params.avoid_polygons)
+        .map_err(Status::invalid_argument)?;
+    // A COLD recustomization is seconds to a bounded ~70 s (#606); this
+    // whole function already runs on the blocking pool (do_get wraps it in
+    // `spawn_blocking`, `chain_bands` starts each band pass the same way),
+    // so it never lands on a runtime worker — the #539 failure mode.
+    let weight_plan =
+        super::avoid::resolve_weights(state, &mode_data, mode, exclude_mask, avoid_json.as_deref())
+            .map_err(Status::invalid_argument)?;
+
+    // #613: the mask follows the SAME plan as the weights. It used to be
+    // `None` here while REST passed its plan's mask — inert only as long as
+    // no exclusion existed on this transport, which is exactly what the
+    // fields above add.
+    let snap_mask: &[u64] = &weight_plan.snap_mask;
+    // Recustomized flats (avoid > exclude), spelled exactly as REST spells
+    // them. `Some` also selects the legacy single seed inside the core:
+    // phantom partial costs assume base weights.
+    let flats = weight_plan.weights().map(|w| IsochroneFlats {
+        up: &w.time_up_flat,
+        down_fwd: &w.time_down_fwd_flat,
+        down_rev: &w.time_down_flat,
+    });
+
     // THE pipeline (#549): snap (directional role, #197) -> phantom center
     // seeds (#506) -> seeded PHAST -> per-interval depart frontier ->
     // topology. Shared verbatim with REST /isochrone, bands, the bulk
@@ -2614,8 +2654,8 @@ fn do_isochrone(
             thresholds: &requested.values,
             reverse: is_reverse,
             mode_name,
-            snap_mask: None,
-            flats: None,
+            snap_mask: Some(snap_mask),
+            flats,
             include_network: false,
         },
     )
@@ -4658,6 +4698,17 @@ impl FlightService for ButterflyFlight {
                         Status::invalid_argument(format!("Invalid isochrone params: {}", e))
                     })?;
                 validate_coord(params.lon, params.lat, "origin")?;
+                // #613: bands are hidden best/worst CAR weight sets, and an
+                // exclusion recustomizes THIS request's weights — nothing
+                // recustomizes the band sets to match. The same refusal
+                // REST `/isochrone` answers, at the same point in the order.
+                if params.uncertainty.as_deref() == Some("bands")
+                    && (params.exclude.is_some() || params.avoid_polygons.is_some())
+                {
+                    return Err(Status::invalid_argument(
+                        "uncertainty=bands is car-only and incompatible with avoid_polygons/exclude",
+                    ));
+                }
 
                 let state = self
                     .dispatch_for_point(params.lon, params.lat, &parsed.profile)?
@@ -6458,6 +6509,155 @@ mod flight_completeness_tests {
             assert!(
                 !arm.contains("batches_to_flight_data("),
                 "do_get arm '{name}' encodes with the raw batches_to_flight_data — no trailer"
+            );
+        }
+    }
+}
+
+/// #613: `exclude` / `avoid_polygons` are honoured on BOTH isochrone
+/// transports, through the ONE weight plan (#566) — and the snap mask
+/// follows that same plan on both, which is the asymmetry #613 found
+/// latent. These tests read the SERVER SOURCE, so a future edit that
+/// re-forks either surface fails here rather than shipping two transports
+/// that quietly answer different polygons.
+#[cfg(test)]
+mod isochrone_options_tests {
+    use super::IsochroneParams;
+
+    /// The body of `do_isochrone`, from its signature to the next section
+    /// banner.
+    fn do_isochrone_src() -> &'static str {
+        let src = include_str!("flight.rs");
+        let at = src
+            .find("fn do_isochrone(")
+            .expect("the isochrone action handler is present");
+        let end = at
+            + src[at..]
+                .find("\n// ====")
+                .expect("a section banner follows");
+        &src[at..end]
+    }
+
+    #[test]
+    fn the_action_takes_exclude_and_avoid_polygons() {
+        let p: IsochroneParams = serde_json::from_str(
+            r#"{"lon":4.35,"lat":50.85,"intervals":[600],
+                "exclude":"motorway,toll",
+                "avoid_polygons":"[[[4.3,50.8],[4.4,50.8],[4.4,50.9]]]"}"#,
+        )
+        .expect("both options parse");
+        assert_eq!(p.exclude.as_deref(), Some("motorway,toll"));
+        assert!(p.avoid_polygons.is_some());
+        // Absent stays absent: the default answer is not opted into.
+        let plain: IsochroneParams =
+            serde_json::from_str(r#"{"lon":4.35,"lat":50.85,"intervals":[600]}"#).unwrap();
+        assert!(plain.exclude.is_none() && plain.avoid_polygons.is_none());
+    }
+
+    /// #548: adding two fields must not open the door to every other one.
+    #[test]
+    fn an_unknown_field_is_still_refused() {
+        let e = match serde_json::from_str::<IsochroneParams>(
+            r#"{"lon":4.35,"lat":50.85,"intervals":[600],"excludes":"motorway"}"#,
+        ) {
+            Ok(_) => panic!("a mistyped field must fail loud (#548)"),
+            Err(e) => e,
+        };
+        assert!(
+            e.to_string().contains("excludes"),
+            "the refusal must name the field: {e}"
+        );
+    }
+
+    /// The machine action resolves through `avoid::resolve_weights` and
+    /// uses what it returns — the plan's mask AND the plan's weights.
+    #[test]
+    fn the_action_routes_through_the_shared_weight_plan() {
+        let body = do_isochrone_src();
+        assert!(
+            body.contains("super::avoid::resolve_weights("),
+            "the isochrone action must resolve its options through the shared plan (#566/#613)"
+        );
+        assert!(
+            body.contains("snap_mask: Some(snap_mask)"),
+            "the action must pass the PLAN's snap mask into the shared pipeline (#613)"
+        );
+        assert!(
+            !body.contains("snap_mask: None"),
+            "an unfiltered snap mask cannot honour an exclusion (#613)"
+        );
+        assert!(
+            !body.contains("flats: None"),
+            "the action must run on the plan's recustomized flats (#613)"
+        );
+        // Not a second plumbing: no mask is built here, the plan builds it.
+        for forked in ["build_exclude_mask", "build_avoid_mask", "AvoidEntry"] {
+            assert!(
+                !body.contains(forked),
+                "`{forked}` in the isochrone action means the plan was copied, not shared (#613)"
+            );
+        }
+    }
+
+    /// Every surface spells the recustomized flats the SAME way. Three
+    /// constructions exist (REST single, REST bulk, Flight action); if they
+    /// ever disagree about which flat feeds which direction, one transport
+    /// answers a different polygon under an exclusion and nothing says so.
+    #[test]
+    fn every_surface_spells_the_recustomized_flats_identically() {
+        fn blocks(src: &str) -> Vec<String> {
+            // Server code only — this test names the literal it looks for.
+            let src = &src[..src.find("\n#[cfg(test)]\n").unwrap_or(src.len())];
+            let mut out = Vec::new();
+            for (at, _) in src.match_indices("IsochroneFlats {") {
+                let rest = &src[at..];
+                let end = rest.find("})").expect("a flats literal closes") + 1;
+                out.push(rest[..end].split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+            out
+        }
+        let mut all = blocks(include_str!("flight.rs"));
+        all.extend(blocks(include_str!("isochrone_handler.rs")));
+        assert_eq!(
+            all.len(),
+            3,
+            "expected the three surfaces' flats literals, found {}: {all:?}",
+            all.len()
+        );
+        assert!(
+            all.windows(2).all(|w| w[0] == w[1]),
+            "the surfaces spell the recustomized flats differently: {all:?}"
+        );
+    }
+
+    /// #539: a cold exclusion recustomization is seconds to ~70 s, so it
+    /// must never run on a runtime worker. Every call into `do_isochrone`
+    /// is already on the blocking pool — the plain path through
+    /// `off_runtime` (a `spawn_blocking`), the banded path through
+    /// `chain_bands`, which starts each pass with `spawn_blocking`.
+    #[test]
+    fn the_action_is_only_ever_called_off_the_runtime() {
+        let src = include_str!("flight.rs");
+        let server = &src[..src
+            .find("\n#[cfg(test)]\n")
+            .expect("test modules follow the server")];
+        let calls: Vec<&str> = server
+            .match_indices("do_isochrone(")
+            .map(|(at, _)| {
+                let from = server[..at].rfind('\n').map_or(0, |n| n + 1);
+                server[from..at].trim()
+            })
+            .filter(|prefix| *prefix != "fn")
+            .collect();
+        assert_eq!(calls.len(), 2, "call sites changed: {calls:?}");
+        for c in &calls {
+            assert!(
+                // the plain path: spawn_blocking, awaited by do_get
+                c.contains("off_runtime(move ||")
+                    // the banded path: the BandRun closure, which chain_bands
+                    // starts with spawn_blocking for every pass
+                    || c.contains("Arc<BandRun> = Arc::new(move |m|"),
+                "an isochrone call site left the blocking pool (#539): {c:?}"
             );
         }
     }
