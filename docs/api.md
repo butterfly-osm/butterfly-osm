@@ -324,15 +324,20 @@ request; nothing recustomizes the length-along-time channel to match) and on a
 dataset built before the length-along-time weights existed.
 
 Cost (Belgium, car, Brussels, warm, wall). A **depart** isodistance is bounded
-in two passes (#613) and its cost now tracks the threshold:
+in two passes (#613) and its cost now tracks the threshold; #614 then made the
+contour pipeline, which every isochrone shares, 4.5x faster:
 
-| `distance_m` | before #613 | now |
-|---|---|---|
-| 1000 | 80 ms | **1.4 ms** |
-| 2000 | 81 ms | **3.4 ms** |
-| 5000 | 95 ms | **21 ms** |
-| 10000 | 129 ms | **76 ms** |
-| 20000 | 154 ms | **121 ms** |
+| `distance_m` | before #613 | after #613 | now (#614) |
+|---|---|---|---|
+| 1000 | 80 ms | 1.4 ms | **1.0 ms** |
+| 2000 | 81 ms | 3.4 ms | **2.5 ms** |
+| 5000 | 95 ms | 21 ms | **14 ms** |
+| 10000 | 129 ms | 76 ms | **54 ms** |
+| 20000 | 154 ms | 121 ms | **88 ms** |
+
+#614 is not specific to the metric — a `time_s=1800` isochrone went 35 ms to
+22 ms and an **arrive** isodistance at 20 km 146 ms to 105 ms, because the
+polygon stage is shared. See the contour section below.
 
 Length is a value the time search CARRIES, never one it may steer by, or the
 reported metres stop being the metres of the path the engine would drive —
@@ -392,6 +397,17 @@ Polygon ring orientation is enforced CCW for outer rings (GeoJSON spec). JSON co
 **Notes**
 
 - Block-gated downward PHAST + thread-local state — 5 ms p50 on the 30-min car case (CLAUDE.md). 815/sec for JSON, 814/sec for WKB.
+- **Contour pipeline (#614)**, shared by every isochrone surface and by both
+  transports. Projection and Bresenham stamping fan out over rayon above
+  `PARALLEL_STAMP_MIN_SEGMENTS` segments (below it they stay sequential, so a
+  `POST /isochrone/bulk` job keeps its parallelism across origins instead of
+  nesting it inside each one); the boundary starts are found a 64-cell row at
+  a time with shifts instead of a HashMap probe per neighbour per cell. All of
+  it is bit-identical to what came before — the pipeline is a function of the
+  SET of stamped bits, never of tile iteration order, which is why the
+  boundary starts have been sorted since #431. Brussels 20 km, microseconds:
+  `project 12663 stamp 19414 morph 265 boundary 13484 simplify 403` became
+  `2281 / 2587 / 284 / 4664 / 405`.
 - Reverse isochrone (`direction=arrive`) uses plain linear-scan downward (PUSH+block-gating is broken for reverse PHAST — see MEMORY.md).
 
 ---
