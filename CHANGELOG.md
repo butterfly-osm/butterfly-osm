@@ -10,6 +10,81 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-15 — The machine isochrone can exclude roads and avoid areas, and both transports answer the same bytes (#613)
+
+`GET /isochrone` has honoured `exclude` and `avoid_polygons` all along, and
+since #606 it honours them all the way down instead of only at the seeds. The
+Flight `isochrone` action carried NEITHER field, so a caller on that transport
+could not ask for a motorway-free, toll-free, ferry-free or area-avoiding
+reachability zone at all. Nothing named the difference — the machine transport
+was simply poorer. It did at least fail loud rather than answering a silently
+complete polygon, because #548 made the action refuse unknown fields.
+
+Found while replaying the #614 equality proof between the two transports: 978
+wire-byte comparisons, zero differences, and one asymmetry the comparison could
+not have caught because no request could reach it.
+
+**One weight plan, not two.** Both options go through the plan unified in #566:
+the same two parsers, the same avoid-over-exclude priority (the avoid
+recustomization already folds the exclude flags into its own weights), the same
+per-mode-and-mask cache, the same refusals. The action gained ten lines that ask
+the plan for a mask and for flats; the plan is the same object `/route`,
+`/table`, `/trip`, `/match` and both REST isochrone surfaces already use.
+
+**The snap mask follows the same plan, which is the half that would have bitten
+silently.** REST passed its plan's mask into the shared contour pipeline and the
+machine action passed none. That was inert while no exclusion could exist on
+that transport — measured across those 978 comparisons, not assumed — and it
+stops being inert on the first request this change makes possible: an excluded
+motorway would have been excluded from the weights and still offered to the
+snap. One plan now decides both, so they cannot disagree.
+
+`uncertainty=bands` with either option is refused in the same words and at the
+same point in the order as REST: the bands are hidden best/worst car weight
+sets and nothing recustomizes them to match one request's exclusion. A distance
+threshold with either option was already refused by the shared core (#612) and
+now gets that refusal on both transports.
+
+**Cost and where it runs.** A cold recustomization is expensive by nature —
+#606 measured and bounded the exclude masks — and it must never land on a tokio
+worker (#539). It does not: every call into the action is already on the
+blocking pool, `spawn_blocking` on the plain path and `chain_bands` starting
+each band pass the same way. It is cached per mode and mask, so the second
+caller pays nothing.
+
+**Proof.** Same shape as #614's: the web surface's binary polygon
+(`Accept: application/octet-stream`) against the machine action's `polygon_wkb`
+column, on the same request. Car, depart, 900 s, Brussels:
+
+| | REST | Flight | |
+|---|---|---|---|
+| no option | 1469 B | 1469 B | identical |
+| `exclude=motorway` | 1501 B | 1501 B | identical, and different from the no-option answer |
+| `avoid_polygons` | 1485 B | 1485 B | identical, and different from the no-option answer |
+
+The "different from the no-option answer" column is not decoration: byte
+equality between two transports that both ignored the option would pass just as
+cleanly.
+
+**The default answer did not move.** The 1800-case corpus — 30 origins × 3 modes
+× both directions × five distance thresholds, two multi-contour sets and three
+time thresholds, none of them carrying an exclusion — digests to `0f15369b`,
+the same digest it has had since before #612. Adding an option moved nothing
+that did not ask for it.
+
+`gate_isochrone_transports_agree` locks this in the post-deploy gate, in the
+shape `gate_route_batch_agrees_with_route` established for routes: two
+transports, one request, asserted byte equality, plus the assertion that the
+option actually moves the polygon. First run, on Belgium: 94 checks, 0 failures
+over 54 paired requests — three origins, both directions, three option sets,
+single and multi-contour, thresholds either side of the contour stage's
+parallelism threshold, 18 symmetric refusals of a distance threshold, and each
+option moving the polygon in 12/12, 12/12 and 10/12 cases. Five unit tests, four of them reading the
+server source, fail if either surface is ever re-forked: the action must resolve
+through `resolve_weights` and build no mask of its own, it must pass the plan's
+mask and the plan's flats, the three surfaces must spell the recustomized flats
+identically, and neither call site may run on the runtime.
+
 ### 2026-09-15 — The contour pipeline, which every isochrone shares, is 4.5x faster (#614)
 
 Once #613 bounded the isodistance field, the field stopped being the cost. One
