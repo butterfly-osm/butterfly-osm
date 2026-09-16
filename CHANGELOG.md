@@ -10,6 +10,71 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-16 — The exclude masks clients use are warm before the server listens; the gate's avoid polygon sits under the scratch threshold (#615)
+
+A cold `exclude=motorway` is a from-scratch customization of the whole
+hierarchy: the mask seeds far more base edges than `SCRATCH_SEED_THRESHOLD`
+(20 835 on Belgium+Luxembourg), so `recustomize_weights` takes the scratch
+shape and pays step 8 twice — time and distance, concurrently — plus six flat
+adjacencies. Measured: ~60 s on a 24-core build host and 287 s on the 10-core
+Haswell that serves staging (204 s for `motorway,toll,ferry`). Until now that
+cost landed on the FIRST request that asked — and on every deploy gate, whose
+120 s client timeout therefore failed on a cold pod and passed on a warm one.
+Same code, same data, same host; the only variable was whether someone had
+asked before.
+
+`?mode=car` already refused to listen before its uncertainty bands were built.
+The exclude masks clients actually use get the same treatment:
+`BUTTERFLY_WARM_EXCLUDES` (default `motorway;motorway,toll,ferry`, `off` for
+dev iteration, a typo is a boot error) recustomizes them through the very
+path a request takes — single flight, cache, insert — so the bytes a warm
+request gets are, by construction, the bytes a cold one would have computed.
+`/health` gains `exclude_warm`. Cost stated: ~1.5 GB of resident memory per
+mask and two recustomizations more at boot, paid once by the operator
+instead of once by a client.
+
+Avoid polygons are open-ended and cannot be warmed. The gate's Flight==REST
+isochrone check sent a 6 km square over eastern Brussels — 29 754 seeds, the
+scratch shape, 210 s on staging, a timeout on every cold run. What that gate
+proves is that both transports serve the same bytes for the same avoid
+request; the shape choice and scratch==incremental equality are unit-tested
+in the engine. It now sends a ~1 km square, incremental in seconds on any
+host. The scratch cost itself — 712 s for a 6 km bike polygon on the build
+host, twelve times car — is #615.
+
+Measured after: first `exclude=motorway` after a restart answers in 10 ms
+(was 60 s); the staging gate passes from cold in 299 s with `exclude_motorway`
+at 0.7 s (was 291 s) and `isodistance_truth` at 13.9 s (was a timeout).
+
+### 2026-09-16 — `/transit` says why it is unavailable: disabled by flag, or directory missing (#614)
+
+Started with `--transit off`, `GET /transit` answered "transit subsystem is
+not loaded (no transit/ directory)" while a populated `transit/` sat on the
+volume next to the container. The message named the one cause that was not
+the case. All four sites — two REST handlers, the region-scoped one and the
+Flight action — now name the flag when the subsystem is disabled and the
+directory when it is enabled but nothing loaded; `/health` gains a one-word
+`transit` status (`loaded`, `not_loaded`, `disabled`) where `transit_feeds`
+was null for the last two alike.
+
+### 2026-09-16 — CI: the guard self-test must never touch the real repository; pull-request jobs could never pass the guard
+
+`git -C "$dir"` only sets the working directory. git exports `GIT_DIR` into
+every hook it runs from a linked worktree, so a push from a worktree ran
+`scripts/test-check-upstream-clean.sh` through the pre-push hook and every
+fixture command landed on the engine's main checkout: `core.bare=true`,
+`main` deleted, `feature` and `lonely` created, two fixture commits on the
+developer's branch. The self-test now unsets the `GIT_*` variables first,
+refuses to continue unless the git dir it just created is the one it will act
+on, and case 5 rebuilds the incident against a decoy repository. The hook
+unsets the same variables before the CI steps.
+
+Separately, since #592 the guard refuses success without a resolvable commit
+range — right — but `actions/checkout` defaults to depth 1, so every
+pull-request job found no `origin/main` and every PR's CI was red by
+construction while pushes to main stayed green. The checkout fetches the full
+history and the guard uses `origin/$GITHUB_BASE_REF` as the precise base.
+
 ### 2026-09-15 — The machine isochrone can exclude roads and avoid areas, and both transports answer the same bytes (#613)
 
 `GET /isochrone` has honoured `exclude` and `avoid_polygons` all along, and
