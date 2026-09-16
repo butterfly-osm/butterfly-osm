@@ -1610,13 +1610,17 @@ def gate_isodistance_truth(base):
                 details.append(f"{name}: {ex}")
                 continue
             rnd = random.Random(7)
-            # Endpoints AND midpoints of the served polylines: the endpoint is
-            # where the budget or the twin cut it, the midpoint is a point
-            # only that road can reach (#620).
+            # The last vertex BEFORE the cut and the midpoint of the last pair
+            # of every served polyline: both strictly inside what is served,
+            # both points only that road can reach (#620). Never the cut
+            # point itself: where the two arrivals of a two-way segment meet,
+            # the cut is by construction a TIE in time between a side within
+            # budget and a side past it — a discontinuity of the set — and
+            # /table, in whole seconds, resolves that tie either way.
             segs = [s for s in net if len(s) >= 2]
             rnd.shuffle(segs)
             segs = segs[:100]
-            ends = [tuple(s[-1]) for s in segs] + [
+            ends = [tuple(s[-2]) for s in segs] + [
                 ((s[-2][0] + s[-1][0]) / 2, (s[-2][1] + s[-1][1]) / 2) for s in segs]
             # A probe point has a /table truth only when /table snaps it to
             # THAT road: the phantom seeds every physical edge within
@@ -1676,7 +1680,7 @@ def gate_isodistance_truth(base):
             print(f"    {d}")
         passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance (exact, #620)",
                         n_in > 0 and n_in_over <= t["iso_len_in_over_max"],
-                        f"{n_in - n_in_over}/{n_in} unambiguous points (endpoints + midpoints)")
+                        f"{n_in - n_in_over}/{n_in} unambiguous points (last vertex before the cut + midpoints)")
         passed &= check(
             f"{direction} {L}m: nothing within {t['reach_out_tol']}L lies > {far_m:.0f} m outside",
             n_out > 0 and n_out_reached <= max(1, int(n_out * t["reach_out_frac"])),

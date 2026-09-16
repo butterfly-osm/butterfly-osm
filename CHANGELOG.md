@@ -10,6 +10,53 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-16 — An isodistance is exact where its truth is defined: the field's shell, the latest cut time, length-proportional cuts (#620)
+
+Two directed twins run every two-way segment, and an isodistance (length
+along the TIME-shortest path) must decide, per physical segment, which side
+each point is reached from — the faster arrival — and whether THAT side's
+length is within budget. Measured before this change on the freshly built
+Belgium+Luxembourg graph: served road points 18.7 km along their
+time-shortest path for a 5 km query, 1453/1500 depart and 1481/1500 arrive
+probes within budget. Three defects, found by tracing the engine's own
+numbers (`BUTTERFLY_ISO_TRACE=lon,lat,radius_m` logs every entry near a
+point: twin, weights, entries, fragment) rather than by inference from
+`/table`:
+
+1. **The twin that decides the cut was filtered away.** Both 2-channel
+   PHAST surfaces returned only the states whose length was within budget.
+   The twin that matters is the one entered FAST by a LONG road — its length
+   past the budget, its time ahead of the other side — so the reach model
+   never saw it and drew the other side whole. The seeded PHAST now hands
+   over every label it wrote (`ScanLabels`): the nodes within the bound,
+   exact, and the shell beyond it, exact whenever the node is entered before
+   the bound (its last hierarchy arc costs at least its own weight). The
+   depart bound is the latest CUT time over pass 1's labels — a partial edge
+   is a shell node of the length gate — not the latest whole head; the
+   arrive mirror applies the same bound to its full scan. The entries
+   builder is a map over the labels; the predecessor scan is gone.
+   Invariants: the shell is never below the unbounded truth and exact within
+   the bound (random graphs); a twin entered after the last whole head but
+   before the last cut is labelled; the flipped node keeps its exact
+   `(2, 1010)` label past the budget.
+2. **Arrive labels were normalised by the wrong shift** — metres subtracted
+   from seconds, clamping the near-snap twins to 0 s.
+3. **A partial polyline was cut at a share of its VERTEX COUNT.** Every
+   reach model hands over a share of the edge's cost or length; vertices are
+   dense on bends and sparse on straights. Traced: a 17-vertex 1 007 m edge
+   cut at 0.596 (600 m, its two arrivals' meeting point) was served to its
+   11th vertex, 664 m in; a 21-vertex edge cut at the 701 m budget was
+   served 895 m in. Time isochrone frontiers took the same cut. Now
+   equirectangular metres along the polyline.
+
+**What the truth is.** `/table` seeds every physical edge within
+max(d_min + 20 m, 1.2 d_min) of a coordinate and reports the fastest, so
+for a point on a junction or beside a parallel road it answers for a
+DIFFERENT, longer road. The gate's isodistance truth now probes endpoints
+AND midpoints of the served polylines and judges only the points `/nearest`
+snaps unambiguously to that road — zero exceptions there; the ambiguous
+share is reported, not judged, because its truth does not exist.
+
 ### 2026-09-16 — The exclude masks clients use are warm before the server listens; the gate's avoid polygon sits under the scratch threshold (#615)
 
 A cold `exclude=motorway` is a from-scratch customization of the whole
