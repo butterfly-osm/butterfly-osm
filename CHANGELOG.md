@@ -68,6 +68,13 @@ DIFFERENT, longer road. The gate's isodistance truth now probes endpoints
 AND midpoints of the served polylines and judges only the points `/nearest`
 snaps unambiguously to that road — zero exceptions there; the ambiguous
 share is reported, not judged, because its truth does not exist.
+Two refinements found live on staging (#622): a candidate is the served road by
+EDGE IDENTITY (`edge_length_m` of the nearest sample), not by position — a
+junction's other edges are sampled at the very vertex our polyline starts
+on; and a saturated list of 8 samples within the slack is ambiguous, since
+the phantom ranks a junction's edges with its own role filter. Traced: the
+served road exact at 721 s / 3 721 m, `/table` 720 s / 5 364 m via another
+edge of the junction, confirmed by `/route` and the time isochrone.
 
 ### 2026-09-16 — The exclude masks clients use are warm before the server listens; the gate's avoid polygon sits under the scratch threshold (#615)
 
