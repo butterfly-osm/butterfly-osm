@@ -60,7 +60,13 @@ scan "data provider" \
 # and when NONE of them resolves the script FAILS instead of printing OK.
 msg_base=""
 msg_range=""
-if upstream=$(git rev-parse --verify --quiet '@{upstream}'); then
+# In a pull-request job the checkout is a detached merge commit and the base
+# branch is named by GITHUB_BASE_REF — the precise base, ahead of any guess.
+if [[ -n "${GITHUB_BASE_REF:-}" ]] && git rev-parse --verify --quiet "origin/$GITHUB_BASE_REF" >/dev/null \
+   && base=$(git merge-base HEAD "origin/$GITHUB_BASE_REF" 2>/dev/null); then
+  msg_base="$base"
+  msg_range="origin/$GITHUB_BASE_REF(merge-base)..HEAD"
+elif upstream=$(git rev-parse --verify --quiet '@{upstream}'); then
   msg_base="$upstream"
   msg_range="$(git rev-parse --abbrev-ref '@{upstream}')..HEAD"
 else
