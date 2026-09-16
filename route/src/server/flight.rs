@@ -3705,7 +3705,7 @@ pub fn do_transit_bulk(
 ) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     if state.transit.is_none() {
         return Err(Status::failed_precondition(
-            "transit subsystem is not loaded",
+            super::transit_unavailable_reason(super::transit_enabled()),
         ));
     }
     if params.queries.is_empty() {

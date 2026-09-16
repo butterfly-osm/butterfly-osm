@@ -150,8 +150,36 @@ pub fn set_transit_enabled(on: bool) {
     let _ = TRANSIT_ENABLED.set(on);
 }
 
-fn transit_enabled() -> bool {
+pub(crate) fn transit_enabled() -> bool {
     *TRANSIT_ENABLED.get().unwrap_or(&true)
+}
+
+/// Why a transit query cannot be served, in the words the operator needs.
+///
+/// A deliberate `--transit off` and an absent `transit/` directory call for
+/// opposite actions — flip a flag, or ship the feeds — and the message used
+/// to name only the second. A lean road-only deploy therefore looked like
+/// missing data: on 2026-09-16 a populated `transit/` sat on the volume
+/// while `/transit` answered "no transit/ directory", and it took an
+/// inspection of the process arguments to learn the flag was the cause
+/// (butterfly-osm#614). Pure on `enabled` so both branches are testable in
+/// one process — the toggle itself is a set-once `OnceLock`.
+pub(crate) fn transit_unavailable_reason(enabled: bool) -> &'static str {
+    if enabled {
+        "transit subsystem is not loaded (no transit/ directory under the data directory)"
+    } else {
+        "transit is disabled on this instance (--transit off / BUTTERFLY_TRANSIT=off)"
+    }
+}
+
+/// `/health`'s one-word transit status, so "disabled" and "nothing loaded"
+/// stop looking identical (both used to be `transit_feeds: null`).
+pub(crate) fn transit_status_word(enabled: bool, loaded: bool) -> &'static str {
+    match (enabled, loaded) {
+        (false, _) => "disabled",
+        (true, false) => "not_loaded",
+        (true, true) => "loaded",
+    }
 }
 
 fn idle_compact_secs() -> u64 {
@@ -861,4 +889,39 @@ async fn start_grpc_server(state: Arc<regions::RegionsState>, port: u16) -> Resu
         .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod transit_reason_tests {
+    use super::{transit_status_word, transit_unavailable_reason};
+
+    /// #614: the message must name the cause the operator can act on. A
+    /// disabled subsystem names the flag; a missing directory names the
+    /// directory. The two must never read the same.
+    #[test]
+    fn disabled_and_missing_are_told_apart() {
+        let off = transit_unavailable_reason(false);
+        let missing = transit_unavailable_reason(true);
+        assert!(off.contains("--transit off"), "{off}");
+        assert!(
+            !off.contains("directory"),
+            "a flag is not a missing directory: {off}"
+        );
+        assert!(missing.contains("transit/ directory"), "{missing}");
+        assert!(
+            !missing.contains("--transit"),
+            "a missing directory is not a flag: {missing}"
+        );
+        assert_ne!(off, missing);
+    }
+
+    /// `/health` gives one word per state; `disabled` wins over `loaded`
+    /// because a disabled subsystem never loads.
+    #[test]
+    fn health_word_covers_the_three_states() {
+        assert_eq!(transit_status_word(false, false), "disabled");
+        assert_eq!(transit_status_word(false, true), "disabled");
+        assert_eq!(transit_status_word(true, false), "not_loaded");
+        assert_eq!(transit_status_word(true, true), "loaded");
+    }
 }
