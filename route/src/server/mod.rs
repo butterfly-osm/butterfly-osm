@@ -656,6 +656,33 @@ pub async fn serve(
         regions_state.regions[idx].mode_names = live_modes;
     }
 
+    // Warm the exclude masks clients use BEFORE listening, like the bands:
+    // a cold `exclude=motorway` is a from-scratch customization (~60 s on the
+    // build host, 287 s on the 10-core Haswell that runs staging, measured
+    // 2026-09-16) that used to land on the first request — and on every
+    // deploy gate, which timed out cold and passed warm. Fatal on a bad spec: a typo must not silently warm
+    // nothing.
+    {
+        let masks = exclude::warm_masks_from_env().map_err(|e| anyhow::anyhow!(e))?;
+        if masks.is_empty() {
+            tracing::info!("exclude warm-up disabled (BUTTERFLY_WARM_EXCLUDES=off)");
+        } else {
+            let t0 = std::time::Instant::now();
+            let mut computed = 0usize;
+            for idx in 0..n_regions {
+                if let Some(s) = regions_state.regions[idx].state_loaded() {
+                    computed += s.warm_exclude_masks(&masks);
+                }
+            }
+            tracing::info!(
+                masks = masks.len(),
+                computed,
+                elapsed_s = t0.elapsed().as_secs_f64(),
+                "exclude masks warm — a cold recustomization is no longer a request-path cost"
+            );
+        }
+    }
+
     // ---- Per-region size metrics -----------------------------------
     // Skip Pending regions on the lazy boot path; their stats publish
     // after the first query loads the ServerState. state_loaded() is a
