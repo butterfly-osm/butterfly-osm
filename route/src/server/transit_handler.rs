@@ -333,7 +333,7 @@ pub fn compute_access_context(
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new(
-                "transit subsystem is not loaded (no transit/ directory)".to_string(),
+                super::transit_unavailable_reason(super::transit_enabled()).to_string(),
             )),
         ));
     };
@@ -497,7 +497,7 @@ pub fn compute_transit_journey_with_access(
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new(
-                "transit subsystem is not loaded (no transit/ directory)".to_string(),
+                super::transit_unavailable_reason(super::transit_enabled()).to_string(),
             )),
         ));
     };
@@ -1132,7 +1132,8 @@ pub async fn transit_bulk_handler(
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new(format!(
-                "transit subsystem is not loaded for region {}",
+                "{} (region {})",
+                super::transit_unavailable_reason(super::transit_enabled()),
                 ctx.region_id
             ))),
         ));
