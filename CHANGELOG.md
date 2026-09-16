@@ -49,6 +49,18 @@ point: twin, weights, entries, fragment) rather than by inference from
    served 895 m in. Time isochrone frontiers took the same cut. Now
    equirectangular metres along the polyline.
 
+**Speed.** Exactness asks for one thing: the twins that can contest a
+drawn prefix must be labelled, so the depart field's bound is the latest
+CONTESTING twin entry (`t_cut(s) − (len − x)·w_t(s')/len`; a one-way
+segment adds nothing) rather than the latest whole head. Everything else
+was kept at cost: both 2-channel surfaces hand the reach model the scan's
+labels IN PLACE (`ScanLabels::get` by rank) — the states within budget are
+the served field, the states entered within budget are entries, their
+twins are read by rank, and a state whose length label is past
+`budget + longest edge` is skipped on one compare; the arrive mirror needs
+no bound and no second sweep. Carrying every label out and hashing it had
+cost 1.6× at 5 km and 2.6× at 20 km on the way to this.
+
 **What the truth is.** `/table` seeds every physical edge within
 max(d_min + 20 m, 1.2 d_min) of a coordinate and reports the fastest, so
 for a point on a junction or beside a parallel road it answers for a
