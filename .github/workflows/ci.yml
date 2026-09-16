@@ -27,6 +27,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The upstream-clean guard scans commit MESSAGES from the merge-base
+          # with the base branch (#592). A depth-1 checkout has no history and
+          # no origin/main, so on every pull request the guard could not
+          # resolve a range and CI was red by construction (2026-09-16).
+          fetch-depth: 0
 
       # PUBLIC-REPO guard: fail in seconds (no toolchain needed) if any private
       # infra / deploy / client / data-provider term leaked into a tracked file.
