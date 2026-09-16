@@ -559,6 +559,15 @@ pub struct ScanLabels<'a, const C: usize> {
 }
 
 impl<const C: usize> ScanLabels<'_, C> {
+    /// The label at `rank`, if the scan wrote one. O(1): what the reach
+    /// model uses to read a twin it knows the rank of, instead of carrying
+    /// every label out of the scan.
+    pub fn get(&self, rank: u32) -> Option<[u32; C]> {
+        let st = self.state;
+        let r = rank as usize;
+        (r < self.n_nodes && st.version[r] == st.current_gen).then(|| st.label::<C>(r))
+    }
+
     /// Every labelled node, in increasing rank order. The PUSH side walks
     /// only the active blocks (a relaxation activates its target's block);
     /// the PULL side has no block gating to lean on.
@@ -969,14 +978,14 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 /// The arrive mirror gets no such win and deliberately does not try — see
 /// [`run_phast_reverse_seeded_2ch_by_len`].
 ///
-/// **#620 — what is handed out, and the bound.** The result is EVERY label
-/// pass 2 wrote: the nodes within its time bound (exact) and the shell
-/// beyond it ([`ScanLabels`]: exact when entered before the bound). The
-/// caller filters `length ≤ max_len` for the served field; the reach model
-/// reads the rest, because the twin that decides where a two-way segment is
-/// cut can be a node whose LENGTH is past the budget — entered fast by a
-/// long road — and every "settled within the budget" filter erased it. The
-/// bound itself is `cut_time`'s maximum over pass 1's labels, shell
+/// **#620 — what is handed out, and the bound.** `finish` reads EVERY label
+/// pass 2 wrote, in place: the nodes within its time bound (exact) and the
+/// shell beyond it ([`ScanLabels`]: exact when entered before the bound).
+/// The caller keeps `length ≤ max_len` for the served field and reads the
+/// twins it needs by rank, because the twin that decides where a two-way
+/// segment is cut can be a node whose LENGTH is past the budget — entered
+/// fast by a long road — and every "settled within the budget" filter erased
+/// it. The bound itself is `cut_time`'s maximum over pass 1's labels, shell
 /// included: `cut_time(rank, time, length)` is the caller's latest time at
 /// which that node still draws something (the arrival at its head for a
 /// whole edge, the arrival at the budget cut for a partial one; `None` when
@@ -985,6 +994,7 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 /// before the bound — labelled exact. Pass 1's labels are upper bounds and
 /// exact for every node that draws (its optimal predecessor is within the
 /// length gate), so the maximum is a sound bound.
+#[allow(clippy::too_many_arguments)]
 pub fn run_phast_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_adj_flat: &DownAdjFlat,
@@ -994,7 +1004,8 @@ pub fn run_phast_seeded_2ch_by_len(
     max_len: u32,
     mode: Mode,
     cut_time: impl Fn(u32, u32, u32) -> Option<u32>,
-) -> Vec<(u32, u32, u32)> {
+    finish: impl FnOnce(&ScanLabels<'_, 2>, u32),
+) {
     let flats = || {
         ScanFlats::with_len(
             up_adj_flat,
@@ -1022,41 +1033,56 @@ pub fn run_phast_seeded_2ch_by_len(
             });
         },
     );
-    // Nothing draws — not even a seed. The unbounded scan would have
-    // filtered every settled node away, so: nothing.
+    // Nothing draws — not even a seed: the field is empty.
     let Some(time_bound) = time_bound else {
-        return Vec::new();
+        return;
     };
 
     // Pass 2: the field that is served, bounded where pass 1 proved it can
-    // be, exact inside that bound, its shell handed out with it.
-    let mut result: Vec<(u32, u32, u32)> = Vec::new();
+    // be, exact inside that bound; `finish` reads it in place, shell included.
     run_seeded_core::<2, 0, Forward>(
         flats(),
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         time_bound,
         mode,
-        |labels| labels.for_each(|rank, v| result.push((rank, v[0], v[1]))),
+        |labels| {
+            tracing::debug!(
+                max_len = max_len,
+                pass1_nodes = pass1_nodes,
+                bound_s = time_bound,
+                "isodistance two-pass bound"
+            );
+            finish(labels, time_bound)
+        },
     );
-    // `bound` vs `bound_tight` is how loose pass 1's certificate was: the
-    // tight one is the largest time the served field actually contains, the
-    // bound is what pass 2 had to be run at. Their ratio is the headroom a
-    // target-restricted scan would recover.
-    tracing::debug!(
-        max_len = max_len,
-        pass1_nodes = pass1_nodes,
-        bound_s = time_bound,
-        bound_tight_s = result
-            .iter()
-            .filter(|&&(_, _, l)| l <= max_len)
-            .map(|&(_, t, _)| t)
-            .max()
-            .unwrap_or(0),
-        admissible = result.iter().filter(|&&(_, _, l)| l <= max_len).count(),
-        labelled = result.len(),
-        "isodistance two-pass bound"
+}
+
+/// [`run_phast_seeded_2ch_by_len`] materialised: every label of pass 2 as
+/// `(rank, time, length)` in rank order — the tests' and benches' shape.
+#[allow(clippy::too_many_arguments)]
+pub fn run_phast_seeded_2ch_by_len_vec(
+    up_adj_flat: &UpAdjFlat,
+    down_adj_flat: &DownAdjFlat,
+    up_adj_flat_len: &UpAdjFlat,
+    down_adj_flat_len: &DownAdjFlat,
+    seeds: &[(u32, u32, u32)],
+    max_len: u32,
+    mode: Mode,
+    cut_time: impl Fn(u32, u32, u32) -> Option<u32>,
+) -> Vec<(u32, u32, u32)> {
+    let mut out = Vec::new();
+    run_phast_seeded_2ch_by_len(
+        up_adj_flat,
+        down_adj_flat,
+        up_adj_flat_len,
+        down_adj_flat_len,
+        seeds,
+        max_len,
+        mode,
+        cut_time,
+        |labels, _| labels.for_each(|r, v| out.push((r, v[0], v[1]))),
     );
-    result
+    out
 }
 
 /// Run REVERSE PHAST bounded query — computes `d(all → target)` for reverse
@@ -1144,12 +1170,9 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
 /// per-mode flat (RSS). Out of scope here; measured and written up in the
 /// #613 report.
 ///
-/// **#620:** like the depart surface, the result is not filtered on length:
-/// it is every label whose TIME is within `cut_time`'s maximum over the
-/// field — the latest departure at which a node still draws something — so
-/// the twin that decides a two-way segment's cut is present whatever its
-/// length. The scan is full, so every label is exact; the bound only keeps
-/// the handed-out set proportionate.
+/// **#620:** the scan is full, so every label is exact; `finish` reads them
+/// in place — the states within budget for the served field, and the twins
+/// that decide the cuts by rank, whatever their length.
 pub fn run_phast_reverse_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
@@ -1157,9 +1180,8 @@ pub fn run_phast_reverse_seeded_2ch_by_len(
     down_rev_flat_len: &DownReverseAdjFlat,
     seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
     mode: Mode,
-    cut_time: impl Fn(u32, u32, u32) -> Option<u32>,
-) -> Vec<(u32, u32, u32)> {
-    let mut result: Vec<(u32, u32, u32)> = Vec::new();
+    finish: impl FnOnce(&ScanLabels<'_, 2>),
+) {
     run_seeded_core::<2, 0, Reverse>(
         ScanFlats::with_len(
             down_rev_flat,
@@ -1170,24 +1192,8 @@ pub fn run_phast_reverse_seeded_2ch_by_len(
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         u32::MAX,
         mode,
-        |labels| {
-            let mut bound: Option<u32> = None;
-            labels.for_each(|rank, v| {
-                if let Some(c) = cut_time(rank, v[0], v[1]) {
-                    bound = Some(bound.map_or(c, |t| t.max(c)));
-                }
-            });
-            let Some(bound) = bound else {
-                return;
-            };
-            labels.for_each(|rank, v| {
-                if v[0] <= bound {
-                    result.push((rank, v[0], v[1]));
-                }
-            });
-        },
+        finish,
     );
-    result
 }
 
 #[cfg(test)]
@@ -1344,7 +1350,7 @@ mod isodistance_bound_tests {
     //! false inclusion, never a missing node), and that the second pass
     //! removes it.
     use super::{
-        Forward, ScanFlats, run_phast_bounded_fast_seeded_2ch, run_phast_seeded_2ch_by_len,
+        Forward, ScanFlats, run_phast_bounded_fast_seeded_2ch, run_phast_seeded_2ch_by_len_vec,
         run_seeded_gated,
     };
     use crate::formats::{ArcCow, WeightArray};
@@ -1418,7 +1424,7 @@ mod isodistance_bound_tests {
     #[test]
     fn two_pass_isodistance_excludes_the_flipped_node() {
         let (up_t, dn_t, up_l, dn_l) = flip_case();
-        let out = run_phast_seeded_2ch_by_len(
+        let out = run_phast_seeded_2ch_by_len_vec(
             &up_t,
             &dn_t,
             &up_l,
@@ -1498,7 +1504,7 @@ mod isodistance_bound_tests {
             let x = wl.min(budget - el) as u64;
             Some(t.saturating_sub(wt) + (x * wt as u64).div_ceil(wl as u64) as u32)
         };
-        let out = run_phast_seeded_2ch_by_len(
+        let out = run_phast_seeded_2ch_by_len_vec(
             &up_t,
             &dn_t,
             &up_l,
@@ -1597,7 +1603,7 @@ mod isodistance_bound_tests {
                 .into_iter()
                 .filter(|&(_, _, l)| l <= max_len)
                 .collect();
-                let all = run_phast_seeded_2ch_by_len(
+                let all = run_phast_seeded_2ch_by_len_vec(
                     &up_t,
                     &dn_t,
                     &up_l,

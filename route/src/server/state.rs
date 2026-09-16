@@ -380,6 +380,10 @@ pub struct ServerState {
     /// two EBG edges with the same `geom_idx` are the two directions of one
     /// physical segment. Read through [`Self::twin_of`].
     pub twin_of: std::sync::OnceLock<Vec<u32>>,
+    /// The longest edge in metres (#620): a state whose length label is past
+    /// `budget + this` cannot be entered within budget — one compare that
+    /// spares the reach model a rank→edge lookup on most of a wide field.
+    pub max_edge_len_m: std::sync::OnceLock<u32>,
 
     // Per-EBG-edge exclude flags (toll/ferry/motorway), indexed by original EBG edge ID
     pub edge_exclude_flags: Vec<u8>,
@@ -637,6 +641,7 @@ impl ServerState {
             way_names,
             node_weights_dist,
             twin_of: std::sync::OnceLock::new(),
+            max_edge_len_m: std::sync::OnceLock::new(),
             edge_exclude_flags,
             avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit,
@@ -827,6 +832,7 @@ impl ServerState {
             way_names: aux.way_names,
             node_weights_dist: aux.node_weights_dist,
             twin_of: std::sync::OnceLock::new(),
+            max_edge_len_m: std::sync::OnceLock::new(),
             edge_exclude_flags: aux.edge_exclude_flags,
             avoid_cache: super::avoid::AvoidWeightCache::default(),
             transit: None,
@@ -1009,6 +1015,17 @@ impl ServerState {
 
 impl ServerState {
     /// The directed twin of each EBG edge, or `u32::MAX` (#620). O(n) once.
+    pub fn max_edge_len_m(&self) -> u32 {
+        *self.max_edge_len_m.get_or_init(|| {
+            self.node_weights_dist
+                .iter()
+                .copied()
+                .filter(|&w| w != u32::MAX)
+                .max()
+                .unwrap_or(0)
+        })
+    }
+
     pub fn twin_of(&self) -> &[u32] {
         self.twin_of.get_or_init(|| {
             let nodes = &self.ebg_nodes.nodes;

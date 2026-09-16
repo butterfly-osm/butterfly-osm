@@ -1168,30 +1168,29 @@ pub fn isochrone_polygons(
     let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
     // The label and the shift live in the metric's own unit: seconds for a
     // time field, metres for an isodistance.
-    let mut raw_2ch: Option<Vec<(u32, u32, u32)>> = None;
     // The time shift outlives the rebinding below: an isodistance field is
     // read on the length channel (its `shift` is `shift_len`), but its time
     // labels are normalised by the TIME shift (#620: the arrive mirror used
     // to subtract metres from seconds, clamping the near-snap twins to 0 s).
     let shift_time = shift;
     // #620: the latest time at which a labelled state still draws something
-    // — the bound both isodistance fields run to, so every twin that can
-    // decide a cut is labelled exact. Depart: a state entered at
+    // — the bound the depart isodistance field runs to, so every twin that
+    // can decide a cut is labelled exact. Depart: a state entered at
     // `(l − w_len, t − w_time)` draws `min(w_len, budget − entry_len)` metres
     // of itself; arrive: a label is the cost from the HEAD, it draws
     // `min(w_len, budget − label_len)` metres into that head.
     let budget_len = max_threshold.saturating_add(shift_len);
     let orig_of_rank = |rank: u32| {
         mode_data.filtered_to_original[mode_data.cch_topo.rank_to_filtered[rank as usize] as usize]
-            as usize
     };
-    let edge_w = |rank: u32| -> Option<(u64, u64)> {
-        let o = orig_of_rank(rank);
+    let edge_w = |orig: u32| -> Option<(u32, u32)> {
+        let o = orig as usize;
         let (wl, wt) = (state.node_weights_dist[o], mode_data.node_weights[o]);
-        (wl != 0 && wl != u32::MAX && wt != u32::MAX).then_some((wl as u64, wt as u64))
+        (wl != 0 && wl != u32::MAX && wt != u32::MAX).then_some((wl, wt))
     };
     let cut_time_depart = |rank: u32, t: u32, l: u32| -> Option<u32> {
-        let (wl, wt) = edge_w(rank)?;
+        let (wl, wt) = edge_w(orig_of_rank(rank))?;
+        let (wl, wt) = (wl as u64, wt as u64);
         let el = (l as u64).saturating_sub(wl);
         if el >= budget_len as u64 {
             return None;
@@ -1203,16 +1202,58 @@ pub fn isochrone_polygons(
                 .saturating_add((x * wt).div_ceil(wl)) as u32,
         )
     };
-    let cut_time_arrive = |rank: u32, t: u32, l: u32| -> Option<u32> {
-        // The budget test first: the arrive scan is full, and this runs for
-        // every labelled rank — the weight lookups are for the few that draw.
-        if l >= budget_len {
-            return None;
-        }
-        let (wl, wt) = edge_w(rank)?;
-        let x = wl.min((budget_len - l) as u64);
-        Some((t as u64).saturating_add((x * wt).div_ceil(wl)) as u32)
-    };
+    // #620: the reach model's entries — `(entry length, entry time)` by
+    // original EBG id: for depart `(l − w_len, t − w_time)`, standing at the
+    // edge's TAIL about to drive it; for arrive the normalised label, the
+    // cost from the HEAD to the snap. Read in place from the scan: the states
+    // whose entry is within budget (they draw) and the twins of those (they
+    // cut), fetched by rank — never every label of a wide field (hashing
+    // them all cost 2.6× at 20 km). A state whose length label is past
+    // `budget + longest edge` cannot be entered within budget: one compare
+    // spares the lookup on most of the field.
+    let twin_of = state.twin_of();
+    let max_edge = state.max_edge_len_m();
+    let mut entries: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
+    let mut phast_settled_2ch: Vec<(u32, u32)> = Vec::new();
+    let mut read_2ch =
+        |labels: &crate::range::phast_seeded::ScanLabels<'_, 2>,
+         to_entry: &dyn Fn(u32, u32, u32, u32) -> (u32, u32)| {
+            let mut twins: Vec<u32> = Vec::new();
+            labels.for_each(|rank, v| {
+                let (t, l) = (v[0], v[1]);
+                if l <= budget_len {
+                    phast_settled_2ch.push((rank, l));
+                }
+                if l >= budget_len.saturating_add(max_edge) {
+                    return;
+                }
+                let orig = orig_of_rank(rank);
+                let Some((wl, wt)) = edge_w(orig) else {
+                    return;
+                };
+                let e = to_entry(t, l, wl, wt);
+                if e.0 < max_threshold {
+                    entries.insert(orig, e);
+                    if let Some(&tw) = twin_of.get(orig as usize)
+                        && tw != u32::MAX
+                    {
+                        twins.push(tw);
+                    }
+                }
+            });
+            for tw in twins {
+                if entries.contains_key(&tw) {
+                    continue;
+                }
+                let Some((wl, wt)) = edge_w(tw) else {
+                    continue;
+                };
+                let rank = mode_data.orig_to_rank[tw as usize];
+                if let Some(v) = labels.get(rank) {
+                    entries.insert(tw, to_entry(v[0], v[1], wl, wt));
+                }
+            }
+        };
     let (phast_settled, shift) = match len_flats {
         None => {
             let f = if q.reverse {
@@ -1238,7 +1279,9 @@ pub fn isochrone_polygons(
             (f, shift)
         }
         Some((up_len, down_fwd_len, down_rev_len)) => {
-            let raw = if q.reverse {
+            if q.reverse {
+                // Arrive labels carry the seed shift on both channels
+                // (#544/#612); the mirror reads them normalised.
                 crate::range::phast_seeded::run_phast_reverse_seeded_2ch_by_len(
                     up,
                     down_rev,
@@ -1246,8 +1289,12 @@ pub fn isochrone_polygons(
                     down_rev_len,
                     &seeds_2ch,
                     mode,
-                    cut_time_arrive,
-                )
+                    |labels| {
+                        read_2ch(labels, &|t, l, _wl, _wt| {
+                            (l.saturating_sub(shift_len), t.saturating_sub(shift_time))
+                        })
+                    },
+                );
             } else {
                 crate::range::phast_seeded::run_phast_seeded_2ch_by_len(
                     up,
@@ -1258,18 +1305,16 @@ pub fn isochrone_polygons(
                     budget_len,
                     mode,
                     cut_time_depart,
-                )
-            };
+                    |labels, _bound| {
+                        read_2ch(labels, &|t, l, wl, wt| {
+                            (l.saturating_sub(wl), t.saturating_sub(wt))
+                        })
+                    },
+                );
+            }
             // The contour threshold reads the ONE label the metric is about,
-            // over the states within the budget; the reach model keeps both
-            // channels of EVERY label, past the budget included (#620).
-            let settled: Vec<(u32, u32)> = raw
-                .iter()
-                .filter(|&&(_, _, l)| l <= budget_len)
-                .map(|&(r, _t, l)| (r, l))
-                .collect();
-            raw_2ch = Some(raw);
-            (settled, shift_len)
+            // over the states within the budget.
+            (std::mem::take(&mut phast_settled_2ch), shift_len)
         }
     };
 
@@ -1303,43 +1348,16 @@ pub fn isochrone_polygons(
         down_fwd: len_flats.map_or(down_fwd, |(_, d, _)| d),
         mode_data,
         node_weights,
-        // #620: a depart isodistance decides reach per physical segment from
-        // both twins' exact (time, length) entries, not per directed edge.
-        length: match (&raw_2ch, len_flats) {
-            (Some(raw), Some(_)) => Some(LengthReachCtx {
-                reverse: q.reverse,
-                entries: if q.reverse {
-                    // Arrive labels carry the seed shift on both channels
-                    // (#544/#612); the mirror reads them normalised.
-                    crate::server::isochrone_handler::reach_entries_2ch(
-                        raw,
-                        max_threshold,
-                        state.twin_of(),
-                        mode_data,
-                        &state.node_weights_dist,
-                        &mode_data.node_weights,
-                        |t, l, _wl, _wt| {
-                            (l.saturating_sub(shift_len), t.saturating_sub(shift_time))
-                        },
-                    )
-                } else {
-                    crate::server::isochrone_handler::reach_entries_2ch(
-                        raw,
-                        max_threshold,
-                        state.twin_of(),
-                        mode_data,
-                        &state.node_weights_dist,
-                        &mode_data.node_weights,
-                        |t, l, wl, wt| (l.saturating_sub(wl), t.saturating_sub(wt)),
-                    )
-                },
-                twin_of: state.twin_of(),
-                w_len: &state.node_weights_dist,
-                w_time: &mode_data.node_weights,
-                nbg_edges: &state.nbg_geo.edges,
-            }),
-            _ => None,
-        },
+        // #620: an isodistance decides reach per physical segment from both
+        // twins' exact (time, length) entries, not per directed edge.
+        length: len_flats.map(|_| LengthReachCtx {
+            reverse: q.reverse,
+            entries,
+            twin_of,
+            w_len: &state.node_weights_dist,
+            w_time: &mode_data.node_weights,
+            nbg_edges: &state.nbg_geo.edges,
+        }),
     };
     // Diagnostic (#620): `BUTTERFLY_ISO_TRACE=lon,lat,radius_m` logs, for an
     // isodistance, every entry whose polyline passes within `radius_m` of the
