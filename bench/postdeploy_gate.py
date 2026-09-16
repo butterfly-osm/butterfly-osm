@@ -1566,7 +1566,17 @@ def snap_unambiguous(base, p, polyline, mode):
     # exact, confirmed by /route and the time isochrone).
     if len(w) >= 8 and all(x["distance"] <= slack for x in w):
         return False
-    return all(x["distance"] > slack or on_polyline(x["location"]) for x in w)
+    # Identity, not just position: a junction's other edges are sampled at
+    # the very vertex our polyline starts or ends on, so their location IS
+    # on the polyline. The nearest sample lies on the served edge (the probe
+    # is on it); a candidate is the same physical edge only if its length
+    # matches that sample's — the twin shares it, another edge does not.
+    own_len = w[0].get("edge_length_m")
+    return all(
+        x["distance"] > slack
+        or (on_polyline(x["location"]) and x.get("edge_length_m") == own_len)
+        for x in w
+    )
 
 
 def gate_isodistance_truth(base):
