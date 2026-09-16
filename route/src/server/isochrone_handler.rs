@@ -884,110 +884,37 @@ pub fn depart_frontier(
     out
 }
 
-/// #620: the ENTRY cost of every directed edge an isodistance may draw, in
-/// both channels — `(original EBG id) -> (entry length m, entry time)`.
+/// #620: the exact `(entry length, entry time)` of every labelled state —
+/// `orig -> (label − w_len, label − w_time)`, the cost of standing at the
+/// edge's TAIL about to drive it along its time-shortest path.
 ///
-/// A settled state's entry is its exact label minus its own weights: the
-/// cheapest way to reach its tail AND continue into it. An unsettled
-/// successor `f` of a settled state `e` (a frontier edge) gets the
-/// time-cheapest entry over its settled predecessors, read on the SAME arc
-/// slot in both flats. States whose entry length is already at or past the
-/// budget are dropped: nothing on them is admissible. What the caller does
-/// with two entries on one physical segment is `length_reach_fragments`.
-#[allow(clippy::too_many_arguments)]
+/// No predecessor scan: the 2-channel field hands out every label it wrote,
+/// the shell beyond its bound included (`ScanLabels`). A state that draws
+/// anything is entered from a state within the length budget, whose time is
+/// within the bound, so it is labelled — exact, since its optimal
+/// predecessor is within the bound. A twin that decides where a two-way
+/// segment is cut is entered before the point it competes for, hence before
+/// the bound (the latest cut time): labelled, exact. What else the shell
+/// carries is an upper bound on a state that neither draws nor competes,
+/// and `length_reach_fragments` never lets it matter (a competitor entered
+/// at or after the cut cannot move the cut).
 pub fn depart_entries_2ch(
-    settled: &[(u32, u32, u32)], // (rank, time label, length label)
-    threshold_len: u32,
-    up_len: &crate::matrix::bucket_ch::UpAdjFlat,
-    down_len: &crate::matrix::bucket_ch::DownAdjFlat,
-    up_time: &crate::matrix::bucket_ch::UpAdjFlat,
-    down_time: &crate::matrix::bucket_ch::DownAdjFlat,
+    labelled: &[(u32, u32, u32)], // (rank, time label, length label)
     md: &super::state::ModeData,
     w_len: &[u32],
     w_time: &[u32],
 ) -> rustc_hash::FxHashMap<u32, (u32, u32)> {
-    use rustc_hash::FxHashMap;
-    let n_nodes = up_len.offsets.len() - 1;
-    let mut is_settled = vec![0u64; n_nodes.div_ceil(64)];
-    for &(r, _, _) in settled {
-        is_settled[(r >> 6) as usize] |= 1u64 << (r & 63);
-    }
-    let settled_bit = |v: usize| (is_settled[v >> 6] >> (v & 63)) & 1 == 1;
     let rank_to_filtered = &md.cch_topo.rank_to_filtered;
     let filtered_to_original = &md.filtered_to_original;
-    let orig_of = |rank: usize| filtered_to_original[rank_to_filtered[rank] as usize];
-    let mut entries: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
-    // 1. settled states: exact entries from their own labels.
-    for &(r, t, l) in settled {
-        let orig = orig_of(r as usize);
+    let mut entries: rustc_hash::FxHashMap<u32, (u32, u32)> =
+        rustc_hash::FxHashMap::with_capacity_and_hasher(labelled.len(), Default::default());
+    for &(r, t, l) in labelled {
+        let orig = filtered_to_original[rank_to_filtered[r as usize] as usize];
         let (wl, wt) = (w_len[orig as usize], w_time[orig as usize]);
-        if wl == 0 || wl == u32::MAX {
+        if wl == 0 || wl == u32::MAX || wt == u32::MAX {
             continue;
         }
-        let el = l.saturating_sub(wl);
-        if el >= threshold_len {
-            continue;
-        }
-        entries.insert(orig, (el, t.saturating_sub(wt)));
-    }
-    // 2. unsettled successors of in-budget states: time-cheapest entry.
-    let mut scan = |offsets: &[u64],
-                    targets: &[u32],
-                    wl_arc: &crate::formats::WeightArray,
-                    wt_arc: &crate::formats::WeightArray,
-                    r: usize,
-                    t: u32,
-                    l: u32| {
-        let (a, b) = (offsets[r] as usize, offsets[r + 1] as usize);
-        for (i, &target) in (a..b).zip(&targets[a..b]) {
-            let v = target as usize;
-            if settled_bit(v) {
-                continue; // its own label decides
-            }
-            let orig = orig_of(v);
-            let wl = w_len[orig as usize];
-            if wl == 0 || wl == u32::MAX {
-                continue;
-            }
-            let el = l.saturating_add(wl_arc.get(i)).saturating_sub(wl);
-            if el >= threshold_len {
-                continue;
-            }
-            let et = t
-                .saturating_add(wt_arc.get(i))
-                .saturating_sub(w_time[orig as usize]);
-            entries
-                .entry(orig)
-                .and_modify(|e| {
-                    if (et, el) < (e.1, e.0) {
-                        *e = (el, et);
-                    }
-                })
-                .or_insert((el, et));
-        }
-    };
-    for &(r, t, l) in settled {
-        if l > threshold_len {
-            continue;
-        }
-        scan(
-            &up_len.offsets[..],
-            &up_len.targets[..],
-            &up_len.weights,
-            &up_time.weights,
-            r as usize,
-            t,
-            l,
-        );
-        scan(
-            &down_len.offsets[..],
-            &down_len.targets[..],
-            &down_len.weights,
-            &down_time.weights,
-            r as usize,
-            t,
-            l,
-        );
+        entries.insert(orig, (l.saturating_sub(wl), t.saturating_sub(wt)));
     }
     entries
 }
