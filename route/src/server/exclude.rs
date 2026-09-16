@@ -172,6 +172,15 @@ impl ExcludeWeightCache {
         inner.map.insert(mask, (entry, gen_stamp));
     }
 
+    /// The masks currently resident, ascending — what `/health` reports as
+    /// warm, so "the exclude I am about to send is a cold recustomization"
+    /// is knowable before sending it.
+    pub fn masks(&self) -> Vec<u8> {
+        let mut m: Vec<u8> = self.inner.read().map.keys().copied().collect();
+        m.sort_unstable();
+        m
+    }
+
     /// (hits, misses, current size, capacity) — operational visibility.
     pub fn stats(&self) -> (u64, u64, usize, usize) {
         let inner = self.inner.read();
@@ -224,6 +233,60 @@ pub fn parse_exclude_option(exclude: &Option<String>) -> Result<Option<u8>, Stri
         }
         None => Ok(None),
     }
+}
+
+/// The exclude masks to recustomize at BOOT, before the server listens.
+///
+/// A cold `exclude=` recustomization is a from-scratch customization of the
+/// whole hierarchy for the masks that block a road class (motorway seeds far
+/// more than `SCRATCH_SEED_THRESHOLD` base edges): ~60 s on the build host
+/// and, measured 2026-09-16 on the 10-core Haswell that runs staging, 287 s
+/// (motorway, 20 835 seeds) and 204 s (motorway,toll,ferry) — so the first
+/// client to ask, and every deploy gate, paid it on the request path, and the
+/// gate's 120 s client timeout failed cold and passed warm. `?mode=car`
+/// already refuses to listen before its uncertainty bands are built; the
+/// exclude masks that clients actually use get the same treatment. The set
+/// is a closed list (three bits, seven masks), read from
+/// `BUTTERFLY_WARM_EXCLUDES`: sets separated by `;`, tokens within a set by
+/// `,` — default `motorway;motorway,toll,ferry`; `off` warms nothing (dev
+/// iteration). An unknown token is a boot error, never a silent skip.
+pub const DEFAULT_WARM_EXCLUDES: &str = "motorway;motorway,toll,ferry";
+
+pub fn warm_masks_from_spec(spec: &str) -> Result<Vec<u8>, String> {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("off") {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for set in spec.split(';') {
+        let mask = parse_exclude(set)?;
+        if mask != 0 && !out.contains(&mask) {
+            out.push(mask);
+        }
+    }
+    Ok(out)
+}
+
+pub fn warm_masks_from_env() -> Result<Vec<u8>, String> {
+    let spec = std::env::var("BUTTERFLY_WARM_EXCLUDES")
+        .unwrap_or_else(|_| DEFAULT_WARM_EXCLUDES.to_string());
+    warm_masks_from_spec(&spec).map_err(|e| format!("BUTTERFLY_WARM_EXCLUDES: {e}"))
+}
+
+/// The wire spelling of a mask (`motorway,toll`): the inverse of
+/// [`parse_exclude`], in canonical token order.
+pub fn exclude_mask_name(mask: u8) -> String {
+    let mut parts = Vec::new();
+    if mask & EXCLUDE_MOTORWAY != 0 {
+        parts.push("motorway");
+    }
+    if mask & EXCLUDE_TOLL != 0 {
+        parts.push("toll");
+    }
+    if mask & EXCLUDE_FERRY != 0 {
+        parts.push("ferry");
+    }
+    parts.join(",")
 }
 
 /// Build per-EBG-edge exclude flags from way attributes.
@@ -1310,5 +1373,52 @@ mod tests {
         assert_eq!(mask[0] & (1u64 << 1), 0); // toll cleared
         assert_eq!(mask[0] & (1u64 << 3), 0); // ferry cleared
         assert_ne!(mask[0] & (1u64 << 10), 0); // motorway still set
+    }
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+
+    #[test]
+    fn default_spec_warms_the_two_masks_the_product_uses() {
+        let m = warm_masks_from_spec(DEFAULT_WARM_EXCLUDES).unwrap();
+        assert_eq!(
+            m,
+            vec![
+                EXCLUDE_MOTORWAY,
+                EXCLUDE_MOTORWAY | EXCLUDE_TOLL | EXCLUDE_FERRY
+            ]
+        );
+    }
+
+    #[test]
+    fn off_and_empty_warm_nothing() {
+        assert!(warm_masks_from_spec("off").unwrap().is_empty());
+        assert!(warm_masks_from_spec("OFF").unwrap().is_empty());
+        assert!(warm_masks_from_spec("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn sets_are_deduplicated_and_empty_sets_dropped() {
+        let m = warm_masks_from_spec("toll;toll,toll; ;ferry,toll").unwrap();
+        assert_eq!(m, vec![EXCLUDE_TOLL, EXCLUDE_TOLL | EXCLUDE_FERRY]);
+    }
+
+    #[test]
+    fn a_typo_is_a_boot_error_not_a_silent_skip() {
+        let err = warm_masks_from_spec("motorway;motorways").unwrap_err();
+        assert!(err.contains("motorways"), "{err}");
+    }
+
+    #[test]
+    fn mask_name_round_trips_through_parse() {
+        for mask in 1u8..8 {
+            assert_eq!(parse_exclude(&exclude_mask_name(mask)).unwrap(), mask);
+        }
+        assert_eq!(
+            exclude_mask_name(EXCLUDE_MOTORWAY | EXCLUDE_FERRY),
+            "motorway,ferry"
+        );
     }
 }

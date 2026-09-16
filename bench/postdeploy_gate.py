@@ -2999,7 +2999,17 @@ def gate_isochrone_transports_agree(base):
     # on both sides.
     origins = [("Brussels", 4.3517, 50.8503), ("Liege", 5.5671, 50.6326),
         ("Bruges", 3.2247, 51.2089)]
-    ring = json.dumps([[[4.40, 50.83], [4.46, 50.83], [4.46, 50.89], [4.40, 50.89]]])
+    # ~1 km square in Woluwe. The polygon's size decides the recustomization
+    # SHAPE: above `SCRATCH_SEED_THRESHOLD` (3 500 seeded base edges) the
+    # engine recustomizes the whole hierarchy from scratch — ~60 s on the
+    # build host and, measured 2026-09-16, 210 s on the staging node (29 754
+    # seeds for the 6 km square this gate used to send), past the 120 s
+    # client timeout on every cold run. What this gate proves is that REST and Flight serve the
+    # SAME bytes for the same avoid request; the shape choice and
+    # scratch==incremental equality are unit-tested in the engine, and the
+    # scratch cost itself is #615. A polygon under the threshold takes the
+    # incremental walk (seconds) and proves the same equality.
+    ring = json.dumps([[[4.42, 50.85], [4.43, 50.85], [4.43, 50.86], [4.42, 50.86]]])
     options = [
         ("exclude=motorway", {"exclude": "motorway"}),
         ("exclude=motorway,toll,ferry", {"exclude": "motorway,toll,ferry"}),

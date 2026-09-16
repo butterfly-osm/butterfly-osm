@@ -1000,6 +1000,50 @@ impl ServerState {
     }
 }
 
+impl ServerState {
+    /// Recustomize the configured exclude masks for `car` NOW, through the
+    /// very path a request takes ([`Self::get_exclude_weights`]: single
+    /// flight, cache, insert) — so the bytes a warm request gets are, by
+    /// construction, the bytes a cold one would have computed. Returns how
+    /// many masks were computed here (0 = all already resident, or no car).
+    pub fn warm_exclude_masks(&self, masks: &[u8]) -> usize {
+        let Some(&car_idx) = self.mode_lookup.get("car") else {
+            return 0;
+        };
+        let car = Mode(car_idx);
+        let mut computed = 0;
+        for &mask in masks {
+            let t0 = std::time::Instant::now();
+            let was_resident = self.get_mode(car).exclude_cache.get(mask).is_some();
+            let _ = self.get_exclude_weights(car, mask);
+            if !was_resident {
+                computed += 1;
+            }
+            tracing::info!(
+                mask = %exclude::exclude_mask_name(mask),
+                resident_before = was_resident,
+                elapsed_s = t0.elapsed().as_secs_f64(),
+                "exclude mask warm"
+            );
+        }
+        computed
+    }
+
+    /// Wire spellings of the exclude masks resident for `car`, for `/health`.
+    pub fn warm_exclude_names(&self) -> Vec<String> {
+        match self.mode_lookup.get("car") {
+            Some(&i) => self
+                .get_mode(Mode(i))
+                .exclude_cache
+                .masks()
+                .into_iter()
+                .map(exclude::exclude_mask_name)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+}
+
 /// Find step directory (handles both "step3" and "step3-belgium" naming)
 fn find_step_dir(data_dir: &Path, step: &str) -> Result<std::path::PathBuf> {
     // Try exact match first
