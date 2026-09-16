@@ -200,6 +200,12 @@ THRESHOLDS = {
     # ~1.1 % at rural origins, ~0 % urban; anything above 1.5 % is under-draw.
     "topology_outside_frac": 0.015,
     "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
+    # #620 INVARIANT: an isodistance's served network is EXACT — no served
+    # point may lie past reach_in_tol x L along its time-shortest path. The
+    # time isochrone keeps its 1 % crumb allowance; the length model had a
+    # real defect hiding under it (12/1500 = 99.2 % passed; 18/1500 tipped
+    # it), so the bound is 0, on endpoints AND on interior points.
+    "iso_len_in_over_max": 0,
     "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
     # 0.95 -> 0.99 (2026-09-04, measured on Belgium after #544). #544 fixed the
     # arrive field but deliberately left this knob alone: it is shared with the
@@ -1468,9 +1474,17 @@ def gate_isochrone_reach_truth(base):
                 details.append(f"{name}: {ex}")
                 continue
             rnd = random.Random(7)
-            ends = [tuple(s[-1]) for s in net]
-            rnd.shuffle(ends)
-            ends = ends[:150]
+            # #620: endpoints AND a point strictly inside each segment — a
+            # served segment's end may sit on a junction whose time-shortest
+            # path comes from elsewhere, and the interior is where the
+            # two-sided defect showed (19.5 km along the time-shortest path).
+            segs = [s for s in net if len(s) >= 2]
+            rnd.shuffle(segs)
+            segs = segs[:150]
+            ends = [tuple(s[-1]) for s in segs] + [
+                (s[-2][0] + (s[-1][0] - s[-2][0]) * 0.5, s[-2][1] + (s[-1][1] - s[-2][1]) * 0.5)
+                for s in segs
+            ]
             pts = [tuple(p) for s in big for p in s]
             rnd.shuffle(pts)
             far = []
@@ -1616,9 +1630,9 @@ def gate_isodistance_truth(base):
                                f"{t['reach_out_tol']}L (min {m:.0f} m)")
         for d in details[:4]:
             print(f"    {d}")
-        passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance",
-                        n_in > 0 and n_in_over <= max(1, int(n_in * t["reach_in_over_frac"])),
-                        f"{n_in - n_in_over}/{n_in} vertices")
+        passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance (exact, #620)",
+                        n_in > 0 and n_in_over <= t["iso_len_in_over_max"],
+                        f"{n_in - n_in_over}/{n_in} points (endpoints + midpoints)")
         passed &= check(
             f"{direction} {L}m: nothing within {t['reach_out_tol']}L lies > {far_m:.0f} m outside",
             n_out > 0 and n_out_reached <= max(1, int(n_out * t["reach_out_frac"])),

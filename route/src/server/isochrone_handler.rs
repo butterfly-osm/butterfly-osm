@@ -884,6 +884,114 @@ pub fn depart_frontier(
     out
 }
 
+/// #620: the ENTRY cost of every directed edge an isodistance may draw, in
+/// both channels — `(original EBG id) -> (entry length m, entry time)`.
+///
+/// A settled state's entry is its exact label minus its own weights: the
+/// cheapest way to reach its tail AND continue into it. An unsettled
+/// successor `f` of a settled state `e` (a frontier edge) gets the
+/// time-cheapest entry over its settled predecessors, read on the SAME arc
+/// slot in both flats. States whose entry length is already at or past the
+/// budget are dropped: nothing on them is admissible. What the caller does
+/// with two entries on one physical segment is `length_reach_fragments`.
+#[allow(clippy::too_many_arguments)]
+pub fn depart_entries_2ch(
+    settled: &[(u32, u32, u32)], // (rank, time label, length label)
+    threshold_len: u32,
+    up_len: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_len: &crate::matrix::bucket_ch::DownAdjFlat,
+    up_time: &crate::matrix::bucket_ch::UpAdjFlat,
+    down_time: &crate::matrix::bucket_ch::DownAdjFlat,
+    md: &super::state::ModeData,
+    w_len: &[u32],
+    w_time: &[u32],
+) -> rustc_hash::FxHashMap<u32, (u32, u32)> {
+    use rustc_hash::FxHashMap;
+    let n_nodes = up_len.offsets.len() - 1;
+    let mut is_settled = vec![0u64; n_nodes.div_ceil(64)];
+    for &(r, _, _) in settled {
+        is_settled[(r >> 6) as usize] |= 1u64 << (r & 63);
+    }
+    let settled_bit = |v: usize| (is_settled[v >> 6] >> (v & 63)) & 1 == 1;
+    let rank_to_filtered = &md.cch_topo.rank_to_filtered;
+    let filtered_to_original = &md.filtered_to_original;
+    let orig_of = |rank: usize| filtered_to_original[rank_to_filtered[rank] as usize];
+    let mut entries: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
+    // 1. settled states: exact entries from their own labels.
+    for &(r, t, l) in settled {
+        let orig = orig_of(r as usize);
+        let (wl, wt) = (w_len[orig as usize], w_time[orig as usize]);
+        if wl == 0 || wl == u32::MAX {
+            continue;
+        }
+        let el = l.saturating_sub(wl);
+        if el >= threshold_len {
+            continue;
+        }
+        entries.insert(orig, (el, t.saturating_sub(wt)));
+    }
+    // 2. unsettled successors of in-budget states: time-cheapest entry.
+    let mut scan = |offsets: &[u64],
+                    targets: &[u32],
+                    wl_arc: &crate::formats::WeightArray,
+                    wt_arc: &crate::formats::WeightArray,
+                    r: usize,
+                    t: u32,
+                    l: u32| {
+        let (a, b) = (offsets[r] as usize, offsets[r + 1] as usize);
+        for (i, &target) in (a..b).zip(&targets[a..b]) {
+            let v = target as usize;
+            if settled_bit(v) {
+                continue; // its own label decides
+            }
+            let orig = orig_of(v);
+            let wl = w_len[orig as usize];
+            if wl == 0 || wl == u32::MAX {
+                continue;
+            }
+            let el = l.saturating_add(wl_arc.get(i)).saturating_sub(wl);
+            if el >= threshold_len {
+                continue;
+            }
+            let et = t
+                .saturating_add(wt_arc.get(i))
+                .saturating_sub(w_time[orig as usize]);
+            entries
+                .entry(orig)
+                .and_modify(|e| {
+                    if (et, el) < (e.1, e.0) {
+                        *e = (el, et);
+                    }
+                })
+                .or_insert((el, et));
+        }
+    };
+    for &(r, t, l) in settled {
+        if l > threshold_len {
+            continue;
+        }
+        scan(
+            &up_len.offsets[..],
+            &up_len.targets[..],
+            &up_len.weights,
+            &up_time.weights,
+            r as usize,
+            t,
+            l,
+        );
+        scan(
+            &down_len.offsets[..],
+            &down_len.targets[..],
+            &down_len.weights,
+            &down_time.weights,
+            r as usize,
+            t,
+            l,
+        );
+    }
+    entries
+}
+
 // ============ Bulk Isochrone Handler ============
 
 /// POST /isochrone/bulk - Compute multiple isochrones in parallel, return WKB stream
