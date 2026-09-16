@@ -200,6 +200,12 @@ THRESHOLDS = {
     # ~1.1 % at rural origins, ~0 % urban; anything above 1.5 % is under-draw.
     "topology_outside_frac": 0.015,
     "reach_in_tol": 1.02,  # served-network vertices reachable within 1.02 T
+    # #620 INVARIANT: an isodistance's served network is EXACT — no served
+    # point may lie past reach_in_tol x L along its time-shortest path. The
+    # time isochrone keeps its 1 % crumb allowance; the length model had a
+    # real defect hiding under it (12/1500 = 99.2 % passed; 18/1500 tipped
+    # it), so the bound is 0, on endpoints AND on interior points.
+    "iso_len_in_over_max": 0,
     "reach_in_over_frac": 0.01,  # ≤1 % may exceed it
     # 0.95 -> 0.99 (2026-09-04, measured on Belgium after #544). #544 fixed the
     # arrive field but deliberately left this knob alone: it is shared with the
@@ -1468,9 +1474,17 @@ def gate_isochrone_reach_truth(base):
                 details.append(f"{name}: {ex}")
                 continue
             rnd = random.Random(7)
-            ends = [tuple(s[-1]) for s in net]
-            rnd.shuffle(ends)
-            ends = ends[:150]
+            # #620: endpoints AND a point strictly inside each segment — a
+            # served segment's end may sit on a junction whose time-shortest
+            # path comes from elsewhere, and the interior is where the
+            # two-sided defect showed (19.5 km along the time-shortest path).
+            segs = [s for s in net if len(s) >= 2]
+            rnd.shuffle(segs)
+            segs = segs[:150]
+            ends = [tuple(s[-1]) for s in segs] + [
+                (s[-2][0] + (s[-1][0] - s[-2][0]) * 0.5, s[-2][1] + (s[-1][1] - s[-2][1]) * 0.5)
+                for s in segs
+            ]
             pts = [tuple(p) for s in big for p in s]
             rnd.shuffle(pts)
             far = []
@@ -1511,6 +1525,39 @@ def gate_isochrone_reach_truth(base):
             f"{n_out_reached}/{n_out} road points"
             + (f", earliest {worst_out[0]:.0f} s at {worst_out[1]}" if worst_out else ""))
     return passed
+
+
+def snap_unambiguous(base, p, polyline, mode):
+    """True when every road /table would seed for `p` (the phantom rule:
+    each physical edge within max(d_min + 20 m, 1.2 d_min) of the point,
+    `phantom_from_candidates`) lies on `polyline` — so `/table`'s answer for
+    `p` is the time-shortest path to THAT road and nothing else. Checked
+    against the engine's own `/nearest` (8 candidates, the phantom's K)."""
+    try:
+        j = http_json(f"{base}/nearest?lon={p[0]}&lat={p[1]}&mode={mode}&number=8")
+        w = j["waypoints"]
+    except Exception:
+        return False
+    if not w:
+        return False
+    d_min = min(x["distance"] for x in w)
+    slack = max(d_min + 20.0, d_min * 1.2)
+    kx = math.cos(math.radians(p[1])) * 111_320.0
+    ky = 110_540.0
+
+    def on_polyline(q, tol=1.0):
+        for i in range(len(polyline) - 1):
+            a, b = polyline[i], polyline[i + 1]
+            ax, ay = (a[0] - q[0]) * kx, (a[1] - q[1]) * ky
+            bx, by = (b[0] - q[0]) * kx, (b[1] - q[1]) * ky
+            dx, dy = bx - ax, by - ay
+            l2 = dx * dx + dy * dy
+            u = 0.0 if l2 == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / l2))
+            if math.hypot(ax + u * dx, ay + u * dy) <= tol:
+                return True
+        return False
+
+    return all(x["distance"] > slack or on_polyline(x["location"]) for x in w)
 
 
 def gate_isodistance_truth(base):
@@ -1563,9 +1610,24 @@ def gate_isodistance_truth(base):
                 details.append(f"{name}: {ex}")
                 continue
             rnd = random.Random(7)
-            ends = [tuple(s[-1]) for s in net]
-            rnd.shuffle(ends)
-            ends = ends[:150]
+            # The last vertex BEFORE the cut and the midpoint of the last pair
+            # of every served polyline: both strictly inside what is served,
+            # both points only that road can reach (#620). Never the cut
+            # point itself: where the two arrivals of a two-way segment meet,
+            # the cut is by construction a TIE in time between a side within
+            # budget and a side past it — a discontinuity of the set — and
+            # /table, in whole seconds, resolves that tie either way.
+            segs = [s for s in net if len(s) >= 2]
+            rnd.shuffle(segs)
+            segs = segs[:100]
+            ends = [tuple(s[-2]) for s in segs] + [
+                ((s[-2][0] + s[-1][0]) / 2, (s[-2][1] + s[-1][1]) / 2) for s in segs]
+            # A probe point has a /table truth only when /table snaps it to
+            # THAT road: the phantom seeds every physical edge within
+            # max(d_min + 20 m, 1.2 d_min) of the point and reports the
+            # fastest, which on a junction or beside a parallel road is a
+            # different, longer road. Such points are counted, not judged.
+            ends = [p for p, s in zip(ends, segs + segs) if snap_unambiguous(base, p, s, mode)]
             pts = [tuple(p) for s in big for p in s]
             rnd.shuffle(pts)
             far = []
@@ -1616,9 +1678,9 @@ def gate_isodistance_truth(base):
                                f"{t['reach_out_tol']}L (min {m:.0f} m)")
         for d in details[:4]:
             print(f"    {d}")
-        passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance",
-                        n_in > 0 and n_in_over <= max(1, int(n_in * t["reach_in_over_frac"])),
-                        f"{n_in - n_in_over}/{n_in} vertices")
+        passed &= check(f"{direction} {L}m: served network within {t['reach_in_tol']}L by /table distance (exact, #620)",
+                        n_in > 0 and n_in_over <= t["iso_len_in_over_max"],
+                        f"{n_in - n_in_over}/{n_in} unambiguous points (last vertex before the cut + midpoints)")
         passed &= check(
             f"{direction} {L}m: nothing within {t['reach_out_tol']}L lies > {far_m:.0f} m outside",
             n_out > 0 and n_out_reached <= max(1, int(n_out * t["reach_out_frac"])),
