@@ -1,9 +1,10 @@
 //! Geometry reconstruction from EBG path
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::formats::nbg_geo::NbgEdge;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
 use crate::model::types::Mode;
@@ -446,6 +447,23 @@ pub enum ReachModel<'a> {
         frontier: &'a [(u32, f32)],
     },
     Arrive,
+    /// #620: a depart ISODISTANCE. Reach is decided per physical segment from
+    /// the exact `(time, length)` entries of BOTH directed twins
+    /// (`length_reach_fragments`): `fragments` = `(original EBG id, fraction
+    /// of that edge driven from ITS tail)`, a whole edge being `1.0`; every
+    /// edge is oriented exactly on its shared polyline through `nbg_edges`
+    /// (forward iff its tail is the NBG edge's `u_node`).
+    DepartLength {
+        fragments: &'a [(u32, f32)],
+        nbg_edges: &'a [NbgEdge],
+    },
+    /// #620, arrive: the mirror — `fragments` = `(original EBG id, fraction
+    /// of that edge driven INTO its head)`, decided per physical segment by
+    /// `length_reach_fragments_arrive`.
+    ArriveLength {
+        fragments: &'a [(u32, f32)],
+        nbg_edges: &'a [NbgEdge],
+    },
 }
 
 impl<'a> ReachModel<'a> {
@@ -503,6 +521,39 @@ pub fn reachable_polylines(
     model: &ReachModel<'_>,
     want_anchor: bool,
 ) -> ReachPolylines {
+    match model {
+        ReachModel::DepartLength {
+            fragments,
+            nbg_edges,
+        } => {
+            return length_polylines(
+                settled_nodes,
+                max_threshold,
+                fragments,
+                nbg_edges,
+                ebg_nodes,
+                edge_geom,
+                want_anchor,
+                false,
+            );
+        }
+        ReachModel::ArriveLength {
+            fragments,
+            nbg_edges,
+        } => {
+            return length_polylines(
+                settled_nodes,
+                max_threshold,
+                fragments,
+                nbg_edges,
+                ebg_nodes,
+                edge_geom,
+                want_anchor,
+                true,
+            );
+        }
+        _ => {}
+    }
     let mut out: Vec<Vec<(i32, i32)>> = Vec::with_capacity(settled_nodes.len());
     let mut anchor: Option<(i32, i32)> = None;
     let mut anchor_dist = u32::MAX;
@@ -528,7 +579,9 @@ pub fn reachable_polylines(
             anchor = Some(polyline.at_lat_lon_e7(0));
         }
         let reach = match model {
-            ReachModel::Depart { .. } => Some(1.0),
+            ReachModel::Depart { .. }
+            | ReachModel::DepartLength { .. }
+            | ReachModel::ArriveLength { .. } => Some(1.0),
             ReachModel::Arrive => arrive_reach(dist, weight, max_threshold),
         };
         match reach {
@@ -574,6 +627,177 @@ pub fn reachable_polylines(
         let cut = partial_polyline(&points, fraction.clamp(0.0, 1.0));
         if !cut.is_empty() {
             out.push(cut);
+        }
+    }
+    (out, anchor)
+}
+
+/// #620: which part of each directed edge an ISODISTANCE serves.
+///
+/// An isodistance is the set of road points whose length along the
+/// TIME-shortest path is within `threshold_len`. A time field could draw a
+/// reached edge whole and a frontier edge from its tail because "unreached"
+/// meant the head's time exceeds T, so the tail-side arrival was
+/// time-optimal for every point it drew. On the carried channel that
+/// implication is gone: a segment's head can be reached FAST by a LONG road,
+/// and then the head side is the time-optimal arrival for most of the
+/// segment while the tail side is within the length budget — measured
+/// 2026-09-16, one served endpoint sat 19.5 km along its time-shortest path
+/// for a 5 km isodistance.
+///
+/// So the rule is per physical segment, from the exact `(entry length,
+/// entry time)` of both directed twins (`depart_entries_2ch`): a point at
+/// `x` metres from edge `s`'s tail is reached via `s` at
+/// `entry_t(s) + x·w_t(s)/len`, via its twin at
+/// `entry_t(s') + (len − x)·w_t(s')/len`; the faster one is the
+/// time-shortest path to that point, and the point is admissible iff THAT
+/// side's length is within budget. Along `s` this is the prefix
+/// `[0, min(len, budget − entry_len(s), x_m)]`, `x_m` the meeting point of
+/// the two arrivals — nothing at all once the twin is faster from the tail.
+/// The twin's own prefix covers the other end. A one-way segment has no
+/// twin: only the budget cuts it.
+pub fn length_reach_fragments(
+    entries: &FxHashMap<u32, (u32, u32)>, // orig -> (entry length m, entry time)
+    threshold_len: u32,
+    twin_of: &[u32],
+    w_len: &[u32],
+    w_time: &[u32],
+) -> Vec<(u32, f32)> {
+    let mut out: Vec<(u32, f32)> = Vec::with_capacity(entries.len());
+    for (&orig, &(el, et)) in entries {
+        let len = w_len[orig as usize];
+        if len == 0 || len == u32::MAX || el >= threshold_len {
+            continue;
+        }
+        let mut x = (len.min(threshold_len - el)) as f64;
+        let twin = twin_of.get(orig as usize).copied().unwrap_or(u32::MAX);
+        if twin != u32::MAX
+            && let Some(&(_, et2)) = entries.get(&twin)
+        {
+            let (wt, wt2) = (w_time[orig as usize] as f64, w_time[twin as usize] as f64);
+            let denom = wt + wt2;
+            if denom > 0.0 {
+                // entry_t(s) + x·wt/len == entry_t(s') + (len − x)·wt2/len
+                let x_m = (et2 as f64 + wt2 - et as f64) * len as f64 / denom;
+                if x_m <= 0.0 {
+                    continue; // the twin is the faster arrival from this tail on
+                }
+                x = x.min(x_m);
+            }
+        }
+        out.push((orig, (x / len as f64).min(1.0) as f32));
+    }
+    out.sort_unstable_by_key(|&(orig, _)| orig);
+    out
+}
+
+/// #620, ARRIVE: the mirror of [`length_reach_fragments`]. An arrive label
+/// is the cost from the edge's HEAD to the snap, so a point at `x` from
+/// edge `s`'s tail reaches the snap via `s` at
+/// `label_t(s) + (len − x)·w_t(s)/len` and via its twin at
+/// `label_t(s') + x·w_t(s')/len`; the faster is the time-shortest path from
+/// that point, and it is admissible iff THAT side's length is within budget.
+/// Along `s` this is the SUFFIX `[max(x_m, len − (budget − label_len(s))),
+/// len]`, `x_m` the meeting point — returned as the fraction of `s` driven
+/// into its head, like [`arrive_reach`].
+pub fn length_reach_fragments_arrive(
+    labels: &FxHashMap<u32, (u32, u32)>, // orig -> (label length m, label time)
+    threshold_len: u32,
+    twin_of: &[u32],
+    w_len: &[u32],
+    w_time: &[u32],
+) -> Vec<(u32, f32)> {
+    let mut out: Vec<(u32, f32)> = Vec::with_capacity(labels.len());
+    for (&orig, &(ll, lt)) in labels {
+        let len = w_len[orig as usize];
+        if len == 0 || len == u32::MAX || ll >= threshold_len {
+            continue;
+        }
+        let lenf = len as f64;
+        // the budget-admissible suffix starts here (measured from the tail)
+        let mut x_start = (lenf - (threshold_len - ll) as f64).max(0.0);
+        let twin = twin_of.get(orig as usize).copied().unwrap_or(u32::MAX);
+        if twin != u32::MAX
+            && let Some(&(_, lt2)) = labels.get(&twin)
+        {
+            let (wt, wt2) = (w_time[orig as usize] as f64, w_time[twin as usize] as f64);
+            let denom = wt + wt2;
+            if denom > 0.0 {
+                // label_t(s) + (len − x)·wt/len == label_t(s') + x·wt2/len
+                let x_m = (lt as f64 + wt - lt2 as f64) * lenf / denom;
+                if x_m >= lenf {
+                    continue; // the twin is the faster departure all the way to the head
+                }
+                x_start = x_start.max(x_m);
+            }
+        }
+        let frac = ((lenf - x_start) / lenf).clamp(0.0, 1.0) as f32;
+        if frac > 0.0 {
+            out.push((orig, frac));
+        }
+    }
+    out.sort_unstable_by_key(|&(orig, _)| orig);
+    out
+}
+
+fn twin_of_entry(ctx: &LengthReachCtx<'_>, twin: u32) -> Option<(u32, u32, u32, u32)> {
+    let &(l, t) = ctx.entries.get(&twin)?;
+    Some((l, t, ctx.w_len[twin as usize], ctx.w_time[twin as usize]))
+}
+
+/// The `DepartLength` / `ArriveLength` polylines: every fragment from ITS
+/// edge's tail (depart) or into its head (arrive), the edge oriented exactly
+/// on the shared polyline. The anchor keeps the legacy definition (start of
+/// the minimum-label edge).
+#[allow(clippy::too_many_arguments)]
+fn length_polylines(
+    settled_nodes: &[(u32, u32)],
+    max_threshold: u32,
+    fragments: &[(u32, f32)],
+    nbg_edges: &[NbgEdge],
+    ebg_nodes: &EbgNodes,
+    edge_geom: &EdgeGeometry,
+    want_anchor: bool,
+    from_head: bool,
+) -> ReachPolylines {
+    let mut anchor: Option<(i32, i32)> = None;
+    if want_anchor {
+        let mut best = u32::MAX;
+        for &(ebg_id, dist) in settled_nodes {
+            if dist <= max_threshold && dist < best {
+                let node = &ebg_nodes.nodes[ebg_id as usize];
+                let polyline = edge_geom.polyline(node.geom_idx);
+                if !polyline.is_empty() {
+                    best = dist;
+                    anchor = Some(polyline.at_lat_lon_e7(0));
+                }
+            }
+        }
+    }
+    let mut out: Vec<Vec<(i32, i32)>> = Vec::with_capacity(fragments.len());
+    for &(ebg_id, fraction) in fragments {
+        let node = &ebg_nodes.nodes[ebg_id as usize];
+        let polyline = edge_geom.polyline(node.geom_idx);
+        if polyline.is_empty() {
+            continue;
+        }
+        let mut points: Vec<(i32, i32)> = polyline.iter_lat_lon_e7().collect();
+        let forward = nbg_edges
+            .get(node.geom_idx as usize)
+            .is_none_or(|e| e.u_node == node.tail_nbg);
+        if !forward {
+            points.reverse();
+        }
+        if fraction >= 1.0 {
+            out.push(points);
+        } else {
+            if from_head {
+                points.reverse(); // cut from the head end
+            }
+            let cut = partial_polyline(&points, fraction.clamp(0.0, 1.0));
+            if !cut.is_empty() {
+                out.push(cut);
+            }
         }
     }
     (out, anchor)
@@ -761,14 +985,42 @@ struct FrontierCache<'a> {
     down_fwd: &'a DownAdjFlat,
     mode_data: &'a ModeData,
     node_weights: &'a [u32],
+    /// #620: set on a depart ISODISTANCE — the slots then hold
+    /// `length_reach_fragments` and the model is `DepartLength`.
+    length: Option<LengthReachCtx<'a>>,
 }
 
-impl FrontierCache<'_> {
+/// Everything a depart isodistance needs to decide reach per physical
+/// segment (#620): both twins' entries, the twin map, both weight channels.
+struct LengthReachCtx<'a> {
+    /// Depart: entries `(entry length, entry time)`; arrive: labels
+    /// `(label length, label time)` — the mirror needs no predecessor scan.
+    reverse: bool,
+    entries: FxHashMap<u32, (u32, u32)>,
+    twin_of: &'a [u32],
+    w_len: &'a [u32],
+    w_time: &'a [u32],
+    nbg_edges: &'a [NbgEdge],
+}
+
+impl<'a> FrontierCache<'a> {
     fn slot(&mut self, threshold: u32) -> usize {
         if let Some(i) = self.slots.iter().position(|(t, _)| *t == threshold) {
             return i;
         }
-        let frontier = if self.reverse {
+        let frontier = if let Some(ctx) = &self.length {
+            if ctx.reverse {
+                length_reach_fragments_arrive(
+                    &ctx.entries,
+                    threshold,
+                    ctx.twin_of,
+                    ctx.w_len,
+                    ctx.w_time,
+                )
+            } else {
+                length_reach_fragments(&ctx.entries, threshold, ctx.twin_of, ctx.w_len, ctx.w_time)
+            }
+        } else if self.reverse {
             Vec::new()
         } else {
             crate::server::isochrone_handler::depart_frontier(
@@ -782,6 +1034,20 @@ impl FrontierCache<'_> {
         };
         self.slots.push((threshold, frontier));
         self.slots.len() - 1
+    }
+    /// The reach model for a computed slot.
+    fn model(&self, slot: usize) -> ReachModel<'_> {
+        match &self.length {
+            Some(ctx) if ctx.reverse => ReachModel::ArriveLength {
+                fragments: &self.slots[slot].1,
+                nbg_edges: ctx.nbg_edges,
+            },
+            Some(ctx) => ReachModel::DepartLength {
+                fragments: &self.slots[slot].1,
+                nbg_edges: ctx.nbg_edges,
+            },
+            None => ReachModel::for_direction(self.reverse, &self.slots[slot].1),
+        }
     }
 }
 
@@ -902,6 +1168,120 @@ pub fn isochrone_polygons(
     let max_threshold = q.thresholds.iter().copied().max().unwrap_or(0);
     // The label and the shift live in the metric's own unit: seconds for a
     // time field, metres for an isodistance.
+    // The time shift outlives the rebinding below: an isodistance field is
+    // read on the length channel (its `shift` is `shift_len`), but its time
+    // labels are normalised by the TIME shift (#620: the arrive mirror used
+    // to subtract metres from seconds, clamping the near-snap twins to 0 s).
+    let shift_time = shift;
+    // #620: the latest time at which a labelled state still draws something
+    // — the bound the depart isodistance field runs to, so every twin that
+    // can decide a cut is labelled exact. Depart: a state entered at
+    // `(l − w_len, t − w_time)` draws `min(w_len, budget − entry_len)` metres
+    // of itself; arrive: a label is the cost from the HEAD, it draws
+    // `min(w_len, budget − label_len)` metres into that head.
+    let budget_len = max_threshold.saturating_add(shift_len);
+    let orig_of_rank = |rank: u32| {
+        mode_data.filtered_to_original[mode_data.cch_topo.rank_to_filtered[rank as usize] as usize]
+    };
+    let edge_w = |orig: u32| -> Option<(u32, u32)> {
+        let o = orig as usize;
+        let (wl, wt) = (state.node_weights_dist[o], mode_data.node_weights[o]);
+        (wl != 0 && wl != u32::MAX && wt != u32::MAX).then_some((wl, wt))
+    };
+    // What the bound must cover is not the cut itself but the latest ENTRY
+    // of a twin that can still contest it: a state that draws is exact at
+    // any bound (its optimal predecessor is within the length gate), so the
+    // bound exists for the OTHER side of its segment. A twin entered at
+    // `e'` reaches the cut `x` of `s` at `e' + (len − x)·w_t(s')/len`, so it
+    // contests the drawn prefix only if `e' < t_cut(s) − (len − x)·w_t(s')/len`
+    // — that, not `t_cut(s)`, is the state's contribution; a one-way segment
+    // contributes nothing. Measured: the bound of a 5 km field fell from
+    // 1.3× to ~1.0× the last whole head where partial slow edges set it.
+    // The bound must still reach every drawing state's optimal predecessor:
+    // that predecessor is WHOLE (its length is below the entry's), so the
+    // latest whole head covers all of them — a whole state contributes its
+    // own arrival whatever its twin.
+    let twin_of_bound = state.twin_of();
+    let cut_time_depart = |rank: u32, t: u32, l: u32| -> Option<u32> {
+        let orig = orig_of_rank(rank);
+        let (wl, wt) = edge_w(orig)?;
+        let (wl, wt) = (wl as u64, wt as u64);
+        let el = (l as u64).saturating_sub(wl);
+        if el >= budget_len as u64 {
+            return None;
+        }
+        let whole_head = (l <= budget_len).then_some(t);
+        let twin = twin_of_bound
+            .get(orig as usize)
+            .copied()
+            .unwrap_or(u32::MAX);
+        let contest = (twin != u32::MAX)
+            .then(|| edge_w(twin))
+            .flatten()
+            .map(|(_, wt2)| {
+                let x = wl.min(budget_len as u64 - el);
+                let at_cut = (t as u64)
+                    .saturating_sub(wt)
+                    .saturating_add((x * wt).div_ceil(wl));
+                at_cut.saturating_sub((wl - x) * wt2 as u64 / wl) as u32
+            });
+        match (whole_head, contest) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    };
+    // #620: the reach model's entries — `(entry length, entry time)` by
+    // original EBG id: for depart `(l − w_len, t − w_time)`, standing at the
+    // edge's TAIL about to drive it; for arrive the normalised label, the
+    // cost from the HEAD to the snap. Read in place from the scan: the states
+    // whose entry is within budget (they draw) and the twins of those (they
+    // cut), fetched by rank — never every label of a wide field (hashing
+    // them all cost 2.6× at 20 km). A state whose length label is past
+    // `budget + longest edge` cannot be entered within budget: one compare
+    // spares the lookup on most of the field.
+    let twin_of = state.twin_of();
+    let max_edge = state.max_edge_len_m();
+    let mut entries: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
+    let mut phast_settled_2ch: Vec<(u32, u32)> = Vec::new();
+    let mut read_2ch =
+        |labels: &crate::range::phast_seeded::ScanLabels<'_, 2>,
+         to_entry: &dyn Fn(u32, u32, u32, u32) -> (u32, u32)| {
+            let mut twins: Vec<u32> = Vec::new();
+            labels.for_each(|rank, v| {
+                let (t, l) = (v[0], v[1]);
+                if l <= budget_len {
+                    phast_settled_2ch.push((rank, l));
+                }
+                if l >= budget_len.saturating_add(max_edge) {
+                    return;
+                }
+                let orig = orig_of_rank(rank);
+                let Some((wl, wt)) = edge_w(orig) else {
+                    return;
+                };
+                let e = to_entry(t, l, wl, wt);
+                if e.0 < max_threshold {
+                    entries.insert(orig, e);
+                    if let Some(&tw) = twin_of.get(orig as usize)
+                        && tw != u32::MAX
+                    {
+                        twins.push(tw);
+                    }
+                }
+            });
+            for tw in twins {
+                if entries.contains_key(&tw) {
+                    continue;
+                }
+                let Some((wl, wt)) = edge_w(tw) else {
+                    continue;
+                };
+                let rank = mode_data.orig_to_rank[tw as usize];
+                if let Some(v) = labels.get(rank) {
+                    entries.insert(tw, to_entry(v[0], v[1], wl, wt));
+                }
+            }
+        };
     let (phast_settled, shift) = match len_flats {
         None => {
             let f = if q.reverse {
@@ -927,16 +1307,22 @@ pub fn isochrone_polygons(
             (f, shift)
         }
         Some((up_len, down_fwd_len, down_rev_len)) => {
-            let raw = if q.reverse {
+            if q.reverse {
+                // Arrive labels carry the seed shift on both channels
+                // (#544/#612); the mirror reads them normalised.
                 crate::range::phast_seeded::run_phast_reverse_seeded_2ch_by_len(
                     up,
                     down_rev,
                     up_len,
                     down_rev_len,
                     &seeds_2ch,
-                    max_threshold.saturating_add(shift_len),
                     mode,
-                )
+                    |labels| {
+                        read_2ch(labels, &|t, l, _wl, _wt| {
+                            (l.saturating_sub(shift_len), t.saturating_sub(shift_time))
+                        })
+                    },
+                );
             } else {
                 crate::range::phast_seeded::run_phast_seeded_2ch_by_len(
                     up,
@@ -944,17 +1330,19 @@ pub fn isochrone_polygons(
                     up_len,
                     down_fwd_len,
                     &seeds_2ch,
-                    max_threshold.saturating_add(shift_len),
+                    budget_len,
                     mode,
-                )
-            };
-            // Drop the time channel: past this point every consumer — the
-            // contour threshold, the frontier, the reach model — reads the
-            // ONE label the metric is about.
-            (
-                raw.into_iter().map(|(r, _t, l)| (r, l)).collect(),
-                shift_len,
-            )
+                    cut_time_depart,
+                    |labels, _bound| {
+                        read_2ch(labels, &|t, l, wl, wt| {
+                            (l.saturating_sub(wl), t.saturating_sub(wt))
+                        })
+                    },
+                );
+            }
+            // The contour threshold reads the ONE label the metric is about,
+            // over the states within the budget.
+            (std::mem::take(&mut phast_settled_2ch), shift_len)
         }
     };
 
@@ -988,10 +1376,63 @@ pub fn isochrone_polygons(
         down_fwd: len_flats.map_or(down_fwd, |(_, d, _)| d),
         mode_data,
         node_weights,
+        // #620: an isodistance decides reach per physical segment from both
+        // twins' exact (time, length) entries, not per directed edge.
+        length: len_flats.map(|_| LengthReachCtx {
+            reverse: q.reverse,
+            entries,
+            twin_of,
+            w_len: &state.node_weights_dist,
+            w_time: &mode_data.node_weights,
+            nbg_edges: &state.nbg_geo.edges,
+        }),
     };
+    // Diagnostic (#620): `BUTTERFLY_ISO_TRACE=lon,lat,radius_m` logs, for an
+    // isodistance, every entry whose polyline passes within `radius_m` of the
+    // point — twin, weights, entry, fragment — so a served point can be
+    // explained from the engine's own numbers rather than inferred from
+    // `/table`. Read per query; costs nothing when unset.
+    let iso_trace: Option<(f64, f64, f64)> =
+        std::env::var("BUTTERFLY_ISO_TRACE").ok().and_then(|v| {
+            let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
+            Some((it.next()??, it.next()??, it.next()??))
+        });
     let mut topologies = Vec::with_capacity(q.thresholds.len());
     for &threshold in q.thresholds {
         let slot = frontiers.slot(threshold);
+        if let (Some(ctx), Some((tlon, tlat, radius))) = (&frontiers.length, iso_trace) {
+            let frac_of: FxHashMap<u32, f32> = frontiers.slots[slot].1.iter().copied().collect();
+            let kx = tlat.to_radians().cos() * 111_320.0;
+            for (&orig, &(el, et)) in &ctx.entries {
+                let node = &state.ebg_nodes.nodes[orig as usize];
+                let poly = state.edge_geom.polyline(node.geom_idx);
+                let near = poly.iter_lat_lon_e7().any(|(lat_e7, lon_e7)| {
+                    let dx = (lon_e7 as f64 / 1e7 - tlon) * kx;
+                    let dy = (lat_e7 as f64 / 1e7 - tlat) * 110_540.0;
+                    (dx * dx + dy * dy).sqrt() <= radius
+                });
+                if !near {
+                    continue;
+                }
+                let twin = ctx.twin_of.get(orig as usize).copied().unwrap_or(u32::MAX);
+                let nbg = state.nbg_geo.edges.get(node.geom_idx as usize);
+                tracing::info!(
+                    threshold,
+                    orig,
+                    twin,
+                    geom_idx = node.geom_idx,
+                    forward = nbg.is_none_or(|e| e.u_node == node.tail_nbg),
+                    w_len = ctx.w_len[orig as usize],
+                    w_time = ctx.w_time[orig as usize],
+                    entry_len = el,
+                    entry_time = et,
+                    twin_entry = ?twin_of_entry(ctx, twin),
+                    frac = ?frac_of.get(&orig),
+                    verts = poly.len(),
+                    "isodistance trace (#620)"
+                );
+            }
+        }
         topologies.push(build_isochrone_topology(
             &settled,
             threshold,
@@ -1008,7 +1449,7 @@ pub fn isochrone_polygons(
             },
             anchor,
             Some((q.lon, q.lat)),
-            &ReachModel::for_direction(q.reverse, &frontiers.slots[slot].1),
+            &frontiers.model(slot),
         ));
     }
 
@@ -1020,7 +1461,7 @@ pub fn isochrone_polygons(
             node_weights,
             &state.ebg_nodes,
             &state.edge_geom,
-            &ReachModel::for_direction(q.reverse, &frontiers.slots[slot].1),
+            &frontiers.model(slot),
         )
     });
 
@@ -1118,8 +1559,16 @@ pub(crate) fn frontier_orientation(
     }
 }
 
-/// Partial polyline from its first point to `fraction` of its VERTEX span
+/// Partial polyline from its first point to `fraction` of its LENGTH
 /// (lat-first `(lat_e7, lon_e7)`, matching the sparse contour stamper).
+///
+/// #620: the fraction every reach model hands over is a share of the edge's
+/// cost or length, and the vertices of a stored polyline are anything but
+/// evenly spaced — this used to cut at `fraction` of the VERTEX span, so a
+/// 17-vertex 1 007 m edge cut at 0.596 (600 m, the meeting point of its two
+/// arrivals) was served to its 11th vertex, 664 m in, and a 21-vertex edge
+/// cut at the 701 m budget was served 895 m in. The cut is now at
+/// `fraction` of the polyline's own length (equirectangular metres).
 fn partial_polyline(points: &[(i32, i32)], fraction: f32) -> Vec<(i32, i32)> {
     let n_pts = points.len();
 
@@ -1131,24 +1580,44 @@ fn partial_polyline(points: &[(i32, i32)], fraction: f32) -> Vec<(i32, i32)> {
         return points.to_vec();
     }
 
-    // Find the segment where the cut occurs
-    let n_segments = n_pts - 1;
-    let segment_frac = fraction * n_segments as f32;
-    let segment_idx = (segment_frac.floor() as usize).min(n_segments - 1);
-    let local_frac = segment_frac - segment_idx as f32;
-
-    // Include all points up to and including the start of the cut segment.
-    let mut out: Vec<(i32, i32)> = points[..=segment_idx].to_vec();
-
-    // Add the interpolated cut point
-    if local_frac > 0.0 && segment_idx + 1 < n_pts {
-        let (lat1, lon1) = points[segment_idx];
-        let (lat2, lon2) = points[segment_idx + 1];
-        let lat = lat1 + ((lat2 - lat1) as f32 * local_frac) as i32;
-        let lon = lon1 + ((lon2 - lon1) as f32 * local_frac) as i32;
-        out.push((lat, lon));
+    let kx = (points[0].0 as f64 / 1e7).to_radians().cos();
+    let seg_len = |i: usize| {
+        let (lat1, lon1) = points[i];
+        let (lat2, lon2) = points[i + 1];
+        let dy = (lat2 - lat1) as f64;
+        let dx = (lon2 - lon1) as f64 * kx;
+        (dx * dx + dy * dy).sqrt()
+    };
+    let total: f64 = (0..n_pts - 1).map(seg_len).sum();
+    if total <= 0.0 {
+        return points.to_vec();
     }
+    let target = fraction as f64 * total;
 
+    // Walk to the segment holding the cut, then interpolate inside it.
+    let mut walked = 0.0;
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(n_pts);
+    out.push(points[0]);
+    for i in 0..n_pts - 1 {
+        let l = seg_len(i);
+        if walked + l >= target || i == n_pts - 2 {
+            let local = if l > 0.0 {
+                ((target - walked) / l).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let (lat1, lon1) = points[i];
+            let (lat2, lon2) = points[i + 1];
+            let lat = lat1 + ((lat2 - lat1) as f64 * local).round() as i32;
+            let lon = lon1 + ((lon2 - lon1) as f64 * local).round() as i32;
+            if (lat, lon) != points[i] {
+                out.push((lat, lon));
+            }
+            break;
+        }
+        walked += l;
+        out.push(points[i + 1]);
+    }
     out
 }
 
@@ -1190,6 +1659,30 @@ mod frontier_orientation_tests {
         let mut rev = pts.to_vec();
         rev.reverse();
         assert_eq!(partial_polyline(&rev, 0.25), vec![(0, 2000), (0, 1500)]);
+    }
+
+    /// #620: the fraction is a share of the LENGTH, never of the vertex
+    /// count — vertices are dense on bends and sparse on straights.
+    #[test]
+    fn partial_polyline_cuts_by_length_not_by_vertex_count() {
+        // 4 vertices, 3 segments of 100, 100 and 1800 units: half the length
+        // (1000) lies 800 into the LAST segment, not at the 2nd vertex.
+        let pts = [(0, 0), (0, 100), (0, 200), (0, 2000)];
+        assert_eq!(
+            partial_polyline(&pts, 0.5),
+            vec![(0, 0), (0, 100), (0, 200), (0, 1000)]
+        );
+        // 10 % of the length (200) is exactly the third vertex: no
+        // duplicate point is appended.
+        assert_eq!(
+            partial_polyline(&pts, 0.1),
+            vec![(0, 0), (0, 100), (0, 200)]
+        );
+        // Reversed: 10 % of the length from the far end lies inside the
+        // long segment.
+        let mut rev = pts.to_vec();
+        rev.reverse();
+        assert_eq!(partial_polyline(&rev, 0.1), vec![(0, 2000), (0, 1800)]);
     }
 }
 
@@ -1566,5 +2059,176 @@ mod tests {
         );
         // Should only have the geometry-related keys
         assert!(obj.contains_key("coordinates_geojson"));
+    }
+}
+
+#[cfg(test)]
+mod length_reach_tests {
+    //! #620: reach on the carried channel is decided per physical segment
+    //! from both twins' entries. Numbers from the 2026-09-16 'rural WB'
+    //! offender: a 448 m two-way segment entered from its tail at
+    //! (3 425 m, 622 s) and from its head at (5 884 m, 635 s) for a 5 000 m
+    //! isodistance. The engine used to draw it whole from the tail and serve
+    //! its head — whose time-shortest path is the 5 884 m one.
+    use super::length_reach_fragments;
+    use rustc_hash::FxHashMap;
+
+    const LEN: u32 = 448;
+    const WT: u32 = 40; // ~40 km/h, both directions
+
+    fn fragments(entries: &[(u32, u32, u32)], twin_of: &[u32], budget: u32) -> Vec<(u32, f32)> {
+        let m: FxHashMap<u32, (u32, u32)> =
+            entries.iter().map(|&(id, l, t)| (id, (l, t))).collect();
+        let w_len = [LEN, LEN, 1000, 1000];
+        let w_time = [WT, WT, 60, 60];
+        length_reach_fragments(&m, budget, twin_of, &w_len, &w_time)
+    }
+
+    #[test]
+    fn a_fast_long_arrival_at_the_head_cuts_the_tail_side_at_the_meeting_point() {
+        // edge 0 = tail side (A->B), edge 1 = its twin (B->A).
+        let f = fragments(
+            &[(0, 3425, 622), (1, 5884, 635)],
+            &[1, 0, u32::MAX, u32::MAX],
+            5000,
+        );
+        // meeting point: 622 + x·40/448 = 635 + (448−x)·40/448 → x = (635+40−622)·448/80 = 296.8 m
+        let (id, frac) = f
+            .iter()
+            .copied()
+            .find(|&(id, _)| id == 0)
+            .expect("tail side is drawn");
+        assert_eq!(id, 0);
+        let x = frac as f64 * LEN as f64;
+        assert!(
+            (x - 296.8).abs() < 1.0,
+            "tail-side prefix must stop at the meeting point, got {x:.1} m"
+        );
+        // The head side's entry length is already past the budget: nothing.
+        assert!(
+            !f.iter().any(|&(id, _)| id == 1),
+            "the 5 884 m side draws nothing: {f:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_twin_only_the_budget_cuts() {
+        let f = fragments(
+            &[(0, 3425, 622)],
+            &[u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            5000,
+        );
+        assert_eq!(f, vec![(0, 1.0)], "3425 + 448 ≤ 5000: whole edge");
+        let f = fragments(
+            &[(0, 4800, 622)],
+            &[u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            5000,
+        );
+        let x = f[0].1 as f64 * LEN as f64;
+        assert!((x - 200.0).abs() < 0.5, "budget leaves 200 m, got {x:.1}");
+    }
+
+    #[test]
+    fn a_twin_faster_from_the_tail_on_draws_nothing_on_this_side() {
+        // Head side enters at 600 s: faster than the tail side (622 s) even at x = 0.
+        let f = fragments(
+            &[(0, 3425, 622), (1, 4000, 560)],
+            &[1, 0, u32::MAX, u32::MAX],
+            5000,
+        );
+        assert!(
+            !f.iter().any(|&(id, _)| id == 0),
+            "tail side is never the time-shortest arrival: {f:?}"
+        );
+        // and the head side draws its own admissible prefix (4000 + 448 ≤ 5000: whole).
+        assert!(f.iter().any(|&(id, frac)| id == 1 && frac >= 1.0), "{f:?}");
+    }
+
+    #[test]
+    fn an_entry_at_or_past_the_budget_is_dropped() {
+        let f = fragments(&[(0, 5000, 100), (2, 6000, 100)], &[u32::MAX; 4], 5000);
+        assert!(f.is_empty(), "{f:?}");
+    }
+
+    #[test]
+    fn output_is_sorted_by_edge_id() {
+        let f = fragments(&[(2, 100, 10), (0, 100, 10)], &[u32::MAX; 4], 5000);
+        assert_eq!(f.iter().map(|&(id, _)| id).collect::<Vec<_>>(), vec![0, 2]);
+    }
+}
+
+#[cfg(test)]
+mod length_reach_arrive_tests {
+    //! #620, arrive: the mirror. Labels are costs from the edge's HEAD to the
+    //! snap. Same 448 m two-way segment: from its head the snap is
+    //! (3 425 m, 622 s) away; from its tail (the twin's head) it is
+    //! (5 884 m, 635 s) away, via a long fast road.
+    use super::length_reach_fragments_arrive;
+    use rustc_hash::FxHashMap;
+
+    const LEN: u32 = 448;
+    const WT: u32 = 40;
+
+    fn fragments(labels: &[(u32, u32, u32)], twin_of: &[u32], budget: u32) -> Vec<(u32, f32)> {
+        let m: FxHashMap<u32, (u32, u32)> = labels.iter().map(|&(id, l, t)| (id, (l, t))).collect();
+        length_reach_fragments_arrive(
+            &m,
+            budget,
+            twin_of,
+            &[LEN, LEN, 1000, 1000],
+            &[WT, WT, 60, 60],
+        )
+    }
+
+    #[test]
+    fn the_suffix_starts_at_the_meeting_point_when_the_twin_leaves_faster_from_the_tail() {
+        let f = fragments(
+            &[(0, 3425, 622), (1, 5884, 635)],
+            &[1, 0, u32::MAX, u32::MAX],
+            5000,
+        );
+        // 622 + (448−x)·40/448 == 635 + x·40/448 → x_m = (622+40−635)·448/80 = 151.2 m
+        let (_, frac) = f
+            .iter()
+            .copied()
+            .find(|&(id, _)| id == 0)
+            .expect("head side is drawn");
+        let served_from_tail = LEN as f64 - frac as f64 * LEN as f64;
+        assert!(
+            (served_from_tail - 151.2).abs() < 1.0,
+            "suffix must start at the meeting point, got {served_from_tail:.1} m"
+        );
+        assert!(
+            !f.iter().any(|&(id, _)| id == 1),
+            "the 5 884 m side draws nothing: {f:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_twin_only_the_budget_cuts_from_the_head() {
+        let f = fragments(&[(0, 3425, 622)], &[u32::MAX; 4], 5000);
+        assert_eq!(f, vec![(0, 1.0)]);
+        let f = fragments(&[(0, 4800, 622)], &[u32::MAX; 4], 5000);
+        let x = f[0].1 as f64 * LEN as f64;
+        assert!(
+            (x - 200.0).abs() < 0.5,
+            "200 m of budget left from the head, got {x:.1}"
+        );
+    }
+
+    #[test]
+    fn a_twin_faster_all_the_way_to_the_head_draws_nothing_on_this_side() {
+        let f = fragments(
+            &[(0, 3425, 700), (1, 4000, 560)],
+            &[1, 0, u32::MAX, u32::MAX],
+            5000,
+        );
+        assert!(!f.iter().any(|&(id, _)| id == 0), "{f:?}");
+        assert!(f.iter().any(|&(id, frac)| id == 1 && frac >= 1.0), "{f:?}");
+    }
+
+    #[test]
+    fn a_label_at_or_past_the_budget_is_dropped() {
+        assert!(fragments(&[(0, 5000, 1), (2, 7000, 1)], &[u32::MAX; 4], 5000).is_empty());
     }
 }
