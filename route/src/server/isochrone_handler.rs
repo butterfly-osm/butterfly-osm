@@ -884,9 +884,11 @@ pub fn depart_frontier(
     out
 }
 
-/// #620: the exact `(entry length, entry time)` of every labelled state —
-/// `orig -> (label − w_len, label − w_time)`, the cost of standing at the
-/// edge's TAIL about to drive it along its time-shortest path.
+/// #620: the `(entry length, entry time)` the reach model reads, keyed by
+/// original EBG id — for depart `(label − w_len, label − w_time)`, the cost
+/// of standing at the edge's TAIL about to drive it along its time-shortest
+/// path; for arrive the normalised label itself, the cost from the HEAD to
+/// the snap (`to_entry` says which).
 ///
 /// No predecessor scan: the 2-channel field hands out every label it wrote,
 /// the shell beyond its bound included (`ScanLabels`). A state that draws
@@ -894,27 +896,56 @@ pub fn depart_frontier(
 /// within the bound, so it is labelled — exact, since its optimal
 /// predecessor is within the bound. A twin that decides where a two-way
 /// segment is cut is entered before the point it competes for, hence before
-/// the bound (the latest cut time): labelled, exact. What else the shell
-/// carries is an upper bound on a state that neither draws nor competes,
-/// and `length_reach_fragments` never lets it matter (a competitor entered
-/// at or after the cut cannot move the cut).
-pub fn depart_entries_2ch(
+/// the bound (the latest cut time): labelled, exact.
+///
+/// Only what the model reads is kept: the states whose entry length is
+/// within `budget` (they draw) and the twins of those (they cut). A 20 km
+/// field labels millions of states; hashing them all cost 2.6× the query.
+pub fn reach_entries_2ch(
     labelled: &[(u32, u32, u32)], // (rank, time label, length label)
+    budget: u32,
+    twin_of: &[u32],
     md: &super::state::ModeData,
     w_len: &[u32],
     w_time: &[u32],
+    to_entry: impl Fn(u32, u32, u32, u32) -> (u32, u32), // (t, l, w_len, w_time) -> (entry_len, entry_time)
 ) -> rustc_hash::FxHashMap<u32, (u32, u32)> {
     let rank_to_filtered = &md.cch_topo.rank_to_filtered;
     let filtered_to_original = &md.filtered_to_original;
-    let mut entries: rustc_hash::FxHashMap<u32, (u32, u32)> =
-        rustc_hash::FxHashMap::with_capacity_and_hasher(labelled.len(), Default::default());
+    let orig_of = |r: u32| filtered_to_original[rank_to_filtered[r as usize] as usize];
+    // Pass A: who draws, and whose twin therefore matters.
+    let mut need = vec![0u64; w_len.len().div_ceil(64)];
+    let mut n_need = 0usize;
     for &(r, t, l) in labelled {
-        let orig = filtered_to_original[rank_to_filtered[r as usize] as usize];
+        let orig = orig_of(r);
         let (wl, wt) = (w_len[orig as usize], w_time[orig as usize]);
         if wl == 0 || wl == u32::MAX || wt == u32::MAX {
             continue;
         }
-        entries.insert(orig, (l.saturating_sub(wl), t.saturating_sub(wt)));
+        if to_entry(t, l, wl, wt).0 < budget {
+            need[(orig >> 6) as usize] |= 1u64 << (orig & 63);
+            n_need += 1;
+            if let Some(&tw) = twin_of.get(orig as usize)
+                && tw != u32::MAX
+            {
+                need[(tw >> 6) as usize] |= 1u64 << (tw & 63);
+                n_need += 1;
+            }
+        }
+    }
+    // Pass B: their entries.
+    let mut entries: rustc_hash::FxHashMap<u32, (u32, u32)> =
+        rustc_hash::FxHashMap::with_capacity_and_hasher(n_need, Default::default());
+    for &(r, t, l) in labelled {
+        let orig = orig_of(r);
+        if (need[(orig >> 6) as usize] >> (orig & 63)) & 1 == 0 {
+            continue;
+        }
+        let (wl, wt) = (w_len[orig as usize], w_time[orig as usize]);
+        if wl == 0 || wl == u32::MAX || wt == u32::MAX {
+            continue;
+        }
+        entries.insert(orig, to_entry(t, l, wl, wt));
     }
     entries
 }

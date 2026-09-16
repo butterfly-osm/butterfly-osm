@@ -1204,10 +1204,12 @@ pub fn isochrone_polygons(
         )
     };
     let cut_time_arrive = |rank: u32, t: u32, l: u32| -> Option<u32> {
-        let (wl, wt) = edge_w(rank)?;
+        // The budget test first: the arrive scan is full, and this runs for
+        // every labelled rank — the weight lookups are for the few that draw.
         if l >= budget_len {
             return None;
         }
+        let (wl, wt) = edge_w(rank)?;
         let x = wl.min((budget_len - l) as u64);
         Some((t as u64).saturating_add((x * wt).div_ceil(wl)) as u32)
     };
@@ -1309,21 +1311,26 @@ pub fn isochrone_polygons(
                 entries: if q.reverse {
                     // Arrive labels carry the seed shift on both channels
                     // (#544/#612); the mirror reads them normalised.
-                    raw.iter()
-                        .map(|&(r, t, l)| {
-                            let f = mode_data.cch_topo.rank_to_filtered[r as usize];
-                            (
-                                mode_data.filtered_to_original[f as usize],
-                                (l.saturating_sub(shift_len), t.saturating_sub(shift_time)),
-                            )
-                        })
-                        .collect()
-                } else {
-                    crate::server::isochrone_handler::depart_entries_2ch(
+                    crate::server::isochrone_handler::reach_entries_2ch(
                         raw,
+                        max_threshold,
+                        state.twin_of(),
                         mode_data,
                         &state.node_weights_dist,
                         &mode_data.node_weights,
+                        |t, l, _wl, _wt| {
+                            (l.saturating_sub(shift_len), t.saturating_sub(shift_time))
+                        },
+                    )
+                } else {
+                    crate::server::isochrone_handler::reach_entries_2ch(
+                        raw,
+                        max_threshold,
+                        state.twin_of(),
+                        mode_data,
+                        &state.node_weights_dist,
+                        &mode_data.node_weights,
+                        |t, l, wl, wt| (l.saturating_sub(wl), t.saturating_sub(wt)),
                     )
                 },
                 twin_of: state.twin_of(),
