@@ -2044,6 +2044,7 @@ mod pipeline_tests {
             way_names: crate::server::state::WayNames::Heap(HashMap::new()),
             node_weights_dist: vec![0; 4],
             twin_of: std::sync::OnceLock::new(),
+            max_edge_len_m: std::sync::OnceLock::new(),
             edge_exclude_flags: vec![0; 4],
             avoid_cache: crate::server::avoid::AvoidWeightCache::default(),
             transit: None,
