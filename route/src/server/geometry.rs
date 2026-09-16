@@ -1188,19 +1188,47 @@ pub fn isochrone_polygons(
         let (wl, wt) = (state.node_weights_dist[o], mode_data.node_weights[o]);
         (wl != 0 && wl != u32::MAX && wt != u32::MAX).then_some((wl, wt))
     };
+    // What the bound must cover is not the cut itself but the latest ENTRY
+    // of a twin that can still contest it: a state that draws is exact at
+    // any bound (its optimal predecessor is within the length gate), so the
+    // bound exists for the OTHER side of its segment. A twin entered at
+    // `e'` reaches the cut `x` of `s` at `e' + (len − x)·w_t(s')/len`, so it
+    // contests the drawn prefix only if `e' < t_cut(s) − (len − x)·w_t(s')/len`
+    // — that, not `t_cut(s)`, is the state's contribution; a one-way segment
+    // contributes nothing. Measured: the bound of a 5 km field fell from
+    // 1.3× to ~1.0× the last whole head where partial slow edges set it.
+    // The bound must still reach every drawing state's optimal predecessor:
+    // that predecessor is WHOLE (its length is below the entry's), so the
+    // latest whole head covers all of them — a whole state contributes its
+    // own arrival whatever its twin.
+    let twin_of_bound = state.twin_of();
     let cut_time_depart = |rank: u32, t: u32, l: u32| -> Option<u32> {
-        let (wl, wt) = edge_w(orig_of_rank(rank))?;
+        let orig = orig_of_rank(rank);
+        let (wl, wt) = edge_w(orig)?;
         let (wl, wt) = (wl as u64, wt as u64);
         let el = (l as u64).saturating_sub(wl);
         if el >= budget_len as u64 {
             return None;
         }
-        let x = wl.min(budget_len as u64 - el);
-        Some(
-            (t as u64)
-                .saturating_sub(wt)
-                .saturating_add((x * wt).div_ceil(wl)) as u32,
-        )
+        let whole_head = (l <= budget_len).then_some(t);
+        let twin = twin_of_bound
+            .get(orig as usize)
+            .copied()
+            .unwrap_or(u32::MAX);
+        let contest = (twin != u32::MAX)
+            .then(|| edge_w(twin))
+            .flatten()
+            .map(|(_, wt2)| {
+                let x = wl.min(budget_len as u64 - el);
+                let at_cut = (t as u64)
+                    .saturating_sub(wt)
+                    .saturating_add((x * wt).div_ceil(wl));
+                at_cut.saturating_sub((wl - x) * wt2 as u64 / wl) as u32
+            });
+        match (whole_head, contest) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
     };
     // #620: the reach model's entries — `(entry length, entry time)` by
     // original EBG id: for depart `(l − w_len, t − w_time)`, standing at the
