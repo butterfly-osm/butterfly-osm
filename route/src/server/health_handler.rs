@@ -16,7 +16,9 @@ use super::regions::RegionsState;
                    verification status is on `/regions`; cache gauges on `/metrics`. \
                    `transit_feeds` names the operators the loaded timetable holds, the \
                    ones knowingly excluded with their reason, and any undeclared gap \
-                   (#603); null when transit is not installed.",
+                   (#603); null when nothing is loaded. `transit` says why: \
+                   `loaded`, `not_loaded` (no transit/ directory) or `disabled` \
+                   (`--transit off`) — the last two used to be indistinguishable (#614).",
     responses(
         (status = 200, description = "Server is healthy"),
     )
@@ -73,6 +75,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         "regions": regions.region_ids(),
         "total_nodes_count": total_nodes,
         "total_edges_count": total_edges,
+        // #614: "disabled by flag" and "nothing to load" both left
+        // `transit_feeds` null and were indistinguishable from outside.
+        "transit": super::transit_status_word(super::transit_enabled(), transit.is_some()),
         "transit_feeds": transit,
     }))
 }
