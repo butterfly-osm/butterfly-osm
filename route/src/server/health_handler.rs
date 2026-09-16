@@ -71,6 +71,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         "named_roads_count": primary_loaded.as_ref().map(|p| p.way_names.len()).unwrap_or(0),
         "regions_count": regions.len(),
         "regions": regions.region_ids(),
+        // Which `exclude=` masks answer from cache on the primary region; any
+        // other mask is a cold recustomization (minutes on a slow host).
+        "exclude_warm": primary_loaded.as_ref().map(|p| p.warm_exclude_names()).unwrap_or_default(),
         "total_nodes_count": total_nodes,
         "total_edges_count": total_edges,
         "transit_feeds": transit,
