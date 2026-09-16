@@ -8,6 +8,10 @@
 # still gates the PR).
 set -uo pipefail
 [ "${BUTTERFLY_NO_VERIFY:-0}" = "1" ] && { echo "[pre-push] SKIPPED (BUTTERFLY_NO_VERIFY=1)"; exit 0; }
+# git exports GIT_DIR into hooks run from a linked worktree; every `git -C`
+# in the CI steps would then act on the real repository (2026-09-16). The
+# steps run from $ROOT and need nothing from the hook's environment.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT" || exit 1
 echo "[pre-push] local CI — $(bash scripts/ci-steps.sh --list | tr '\n' ',' | sed 's/,$//')"
