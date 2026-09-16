@@ -530,6 +530,72 @@ pub fn run_seeded_gated<const C: usize, const GATE: usize, D: ScanDir>(
     mode: Mode,
     mut collect: impl FnMut(u32, [u32; C]),
 ) {
+    run_seeded_core::<C, GATE, D>(flats, seeds, threshold, mode, |labels| {
+        // The gated channel decides membership too, or a length-gated
+        // pass would hand out every node the time field happens to reach.
+        labels.for_each(|rank, v| {
+            if v[GATE] <= threshold {
+                collect(rank, v);
+            }
+        });
+    })
+}
+
+/// Every label one seeded scan wrote, readable once its downward phase is
+/// done: the nodes within the bound AND the shell beyond it — the nodes an
+/// in-bound node relaxed an arc into, which stop there (#620).
+///
+/// A shell label is the cost of a real path, so an upper bound; it is EXACT
+/// whenever the node's optimal predecessor lies within the bound, i.e.
+/// whenever the node is ENTERED before the bound (its last hierarchy arc
+/// costs at least its own weight). That is what lets an isodistance read
+/// the `(time, length)` of a twin whose length is past the budget but whose
+/// arrival competes for the segment — the class of node every "settled
+/// within the budget" surface filtered away, and the #620 over-reach.
+pub struct ScanLabels<'a, const C: usize> {
+    state: &'a PhastState,
+    n_nodes: usize,
+    pull: bool,
+}
+
+impl<const C: usize> ScanLabels<'_, C> {
+    /// Every labelled node, in increasing rank order. The PUSH side walks
+    /// only the active blocks (a relaxation activates its target's block);
+    /// the PULL side has no block gating to lean on.
+    pub fn for_each(&self, mut f: impl FnMut(u32, [u32; C])) {
+        let st = self.state;
+        if !self.pull {
+            for block_idx in 0..st.n_blocks {
+                if !st.is_block_active(block_idx) {
+                    continue;
+                }
+                let block_start = block_idx * PHAST_BLOCK_SIZE;
+                let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(self.n_nodes);
+                for rank in block_start..block_end {
+                    if st.version[rank] == st.current_gen {
+                        f(rank as u32, st.label::<C>(rank));
+                    }
+                }
+            }
+        } else {
+            for rank in 0..self.n_nodes {
+                if st.version[rank] == st.current_gen {
+                    f(rank as u32, st.label::<C>(rank));
+                }
+            }
+        }
+    }
+}
+
+/// The engine behind [`run_seeded_gated`]: the sweeps, then `finish` with
+/// every label the scan wrote (see [`ScanLabels`]).
+fn run_seeded_core<const C: usize, const GATE: usize, D: ScanDir>(
+    flats: ScanFlats<'_, D>,
+    seeds: impl Iterator<Item = (u32, [u32; C])> + Clone,
+    threshold: u32,
+    mode: Mode,
+    finish: impl FnOnce(&ScanLabels<'_, C>),
+) {
     const {
         assert!(
             C == 1 || C == 2,
@@ -715,44 +781,15 @@ pub fn run_seeded_gated<const C: usize, const GATE: usize, D: ScanDir>(
             }
             let downward_us = downward_start.elapsed().as_micros();
 
-            // Phase 3: hand over the settled nodes within threshold, in
-            // increasing rank order. The PUSH side scans only active blocks —
-            // much faster than a full n_nodes scan; the PULL side has no
-            // block gating to lean on.
+            // Phase 3: hand the labels over, in increasing rank order.
+            // Membership is the caller's: `run_seeded_gated` keeps the gated
+            // channel within the bound, an isodistance reads the shell too.
             let collect_start = std::time::Instant::now();
-            let mut settled_nodes = 0usize;
-            // The gated channel decides membership too, or a length-gated
-            // pass would hand out every node the time field happens to reach.
-            let within = |state: &PhastState, rank: usize| {
-                state.version[rank] == state.current_gen
-                    && if GATE == 0 {
-                        state.dist[rank] <= threshold
-                    } else {
-                        state.len[rank] <= threshold
-                    }
-            };
-            if !D::PULL {
-                for block_idx in 0..state.n_blocks {
-                    if !state.is_block_active(block_idx) {
-                        continue;
-                    }
-                    let block_start = block_idx * PHAST_BLOCK_SIZE;
-                    let block_end = ((block_idx + 1) * PHAST_BLOCK_SIZE).min(n_nodes);
-                    for rank in block_start..block_end {
-                        if within(state, rank) {
-                            settled_nodes += 1;
-                            collect(rank as u32, state.label::<C>(rank));
-                        }
-                    }
-                }
-            } else {
-                for rank in 0..n_nodes {
-                    if within(state, rank) {
-                        settled_nodes += 1;
-                        collect(rank as u32, state.label::<C>(rank));
-                    }
-                }
-            }
+            finish(&ScanLabels::<C> {
+                state: &*state,
+                n_nodes,
+                pull: D::PULL,
+            });
             let collect_us = collect_start.elapsed().as_micros();
             let total_us = total_start.elapsed().as_micros();
 
@@ -765,7 +802,6 @@ pub fn run_seeded_gated<const C: usize, const GATE: usize, D: ScanDir>(
                 collect_us = collect_us,
                 total_us = total_us,
                 upward_settled = upward_settled,
-                settled_nodes = settled_nodes,
                 // 0 on the PULL side, which has no block gating.
                 blocks_active = blocks_active,
                 blocks_total = state.n_blocks,
@@ -932,6 +968,23 @@ pub fn run_phast_bounded_fast_seeded_2ch(
 ///
 /// The arrive mirror gets no such win and deliberately does not try — see
 /// [`run_phast_reverse_seeded_2ch_by_len`].
+///
+/// **#620 — what is handed out, and the bound.** The result is EVERY label
+/// pass 2 wrote: the nodes within its time bound (exact) and the shell
+/// beyond it ([`ScanLabels`]: exact when entered before the bound). The
+/// caller filters `length ≤ max_len` for the served field; the reach model
+/// reads the rest, because the twin that decides where a two-way segment is
+/// cut can be a node whose LENGTH is past the budget — entered fast by a
+/// long road — and every "settled within the budget" filter erased it. The
+/// bound itself is `cut_time`'s maximum over pass 1's labels, shell
+/// included: `cut_time(rank, time, length)` is the caller's latest time at
+/// which that node still draws something (the arrival at its head for a
+/// whole edge, the arrival at the budget cut for a partial one; `None` when
+/// it draws nothing). A twin competes for a drawn point only if it is
+/// entered before that point's arrival, so any twin that matters is entered
+/// before the bound — labelled exact. Pass 1's labels are upper bounds and
+/// exact for every node that draws (its optimal predecessor is within the
+/// length gate), so the maximum is a sound bound.
 pub fn run_phast_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_adj_flat: &DownAdjFlat,
@@ -940,6 +993,7 @@ pub fn run_phast_seeded_2ch_by_len(
     seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
     max_len: u32,
     mode: Mode,
+    cut_time: impl Fn(u32, u32, u32) -> Option<u32>,
 ) -> Vec<(u32, u32, u32)> {
     let flats = || {
         ScanFlats::with_len(
@@ -950,50 +1004,56 @@ pub fn run_phast_seeded_2ch_by_len(
         )
     };
 
-    // Pass 1: the completeness bound. Nothing here is served.
+    // Pass 1: the completeness bound. Nothing here is served. A partial
+    // edge is a shell node of the length gate, so the shell is read too.
     let mut time_bound: Option<u32> = None;
     let mut pass1_nodes = 0usize;
-    run_seeded_gated::<2, 1, Forward>(
+    run_seeded_core::<2, 1, Forward>(
         flats(),
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         max_len,
         mode,
-        |_rank, v| {
-            pass1_nodes += 1;
-            time_bound = Some(time_bound.map_or(v[0], |t| t.max(v[0])));
+        |labels| {
+            labels.for_each(|rank, v| {
+                pass1_nodes += 1;
+                if let Some(c) = cut_time(rank, v[0], v[1]) {
+                    time_bound = Some(time_bound.map_or(c, |t| t.max(c)));
+                }
+            });
         },
     );
-    // No node is within the budget — not even a seed. The unbounded scan
-    // would have filtered every settled node away, so: nothing.
+    // Nothing draws — not even a seed. The unbounded scan would have
+    // filtered every settled node away, so: nothing.
     let Some(time_bound) = time_bound else {
         return Vec::new();
     };
 
     // Pass 2: the field that is served, bounded where pass 1 proved it can
-    // be, and exact inside that bound.
+    // be, exact inside that bound, its shell handed out with it.
     let mut result: Vec<(u32, u32, u32)> = Vec::new();
-    run_seeded::<2, Forward>(
+    run_seeded_core::<2, 0, Forward>(
         flats(),
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         time_bound,
         mode,
-        |rank, v| {
-            if v[1] <= max_len {
-                result.push((rank, v[0], v[1]));
-            }
-        },
+        |labels| labels.for_each(|rank, v| result.push((rank, v[0], v[1]))),
     );
     // `bound` vs `bound_tight` is how loose pass 1's certificate was: the
-    // tight one is the largest time the answer actually contains, the bound
-    // is what pass 2 had to be run at because pass 1 could not tell the
-    // admissible nodes from the over-estimated ones. Their ratio is the
-    // headroom a target-restricted scan would recover.
+    // tight one is the largest time the served field actually contains, the
+    // bound is what pass 2 had to be run at. Their ratio is the headroom a
+    // target-restricted scan would recover.
     tracing::debug!(
         max_len = max_len,
         pass1_nodes = pass1_nodes,
         bound_s = time_bound,
-        bound_tight_s = result.iter().map(|&(_, t, _)| t).max().unwrap_or(0),
-        admissible = result.len(),
+        bound_tight_s = result
+            .iter()
+            .filter(|&&(_, _, l)| l <= max_len)
+            .map(|&(_, t, _)| t)
+            .max()
+            .unwrap_or(0),
+        admissible = result.iter().filter(|&&(_, _, l)| l <= max_len).count(),
+        labelled = result.len(),
         "isodistance two-pass bound"
     );
     result
@@ -1083,17 +1143,24 @@ pub fn run_phast_bounded_fast_reverse_seeded_2ch(
 /// would speed up every arrive query, not just this one, and costs a new
 /// per-mode flat (RSS). Out of scope here; measured and written up in the
 /// #613 report.
+///
+/// **#620:** like the depart surface, the result is not filtered on length:
+/// it is every label whose TIME is within `cut_time`'s maximum over the
+/// field — the latest departure at which a node still draws something — so
+/// the twin that decides a two-way segment's cut is present whatever its
+/// length. The scan is full, so every label is exact; the bound only keeps
+/// the handed-out set proportionate.
 pub fn run_phast_reverse_seeded_2ch_by_len(
     up_adj_flat: &UpAdjFlat,
     down_rev_flat: &DownReverseAdjFlat,
     up_adj_flat_len: &UpAdjFlat,
     down_rev_flat_len: &DownReverseAdjFlat,
     seeds: &[(u32, u32, u32)], // (rank, time_cost, len_cost)
-    max_len: u32,
     mode: Mode,
+    cut_time: impl Fn(u32, u32, u32) -> Option<u32>,
 ) -> Vec<(u32, u32, u32)> {
     let mut result: Vec<(u32, u32, u32)> = Vec::new();
-    run_seeded::<2, Reverse>(
+    run_seeded_core::<2, 0, Reverse>(
         ScanFlats::with_len(
             down_rev_flat,
             up_adj_flat,
@@ -1103,10 +1170,21 @@ pub fn run_phast_reverse_seeded_2ch_by_len(
         seeds.iter().map(|&(r, t, l)| (r, [t, l])),
         u32::MAX,
         mode,
-        |rank, v| {
-            if v[1] <= max_len {
-                result.push((rank, v[0], v[1]));
-            }
+        |labels| {
+            let mut bound: Option<u32> = None;
+            labels.for_each(|rank, v| {
+                if let Some(c) = cut_time(rank, v[0], v[1]) {
+                    bound = Some(bound.map_or(c, |t| t.max(c)));
+                }
+            });
+            let Some(bound) = bound else {
+                return;
+            };
+            labels.for_each(|rank, v| {
+                if v[0] <= bound {
+                    result.push((rank, v[0], v[1]));
+                }
+            });
         },
     );
     result
@@ -1348,14 +1426,103 @@ mod isodistance_bound_tests {
             &[(0u32, 0u32, 0u32)],
             100,
             Mode::from_u8(0),
+            |_, t, l| (l <= 100).then_some(t),
         );
-        let ranks: Vec<u32> = out.iter().map(|&(r, _, _)| r).collect();
+        let ranks: Vec<u32> = out
+            .iter()
+            .filter(|&&(_, _, l)| l <= 100)
+            .map(|&(r, _, _)| r)
+            .collect();
         assert_eq!(
             ranks,
             vec![0, 2],
             "node 3's length along its TIME-shortest path is 1010 > 100, and \
              node 1's is 1000 > 100: only the seed and node 2 are within \
              budget"
+        );
+        // #620: the nodes past the budget are handed out too, and EXACT —
+        // node 3 with the (2, 1010) of its time-shortest path, not the
+        // (51, 20) the length-gated pass had for it.
+        let label = |r: u32| {
+            out.iter()
+                .find(|&&(x, _, _)| x == r)
+                .map(|&(_, t, l)| (t, l))
+        };
+        assert_eq!(
+            label(1),
+            Some((1, 1000)),
+            "entered fast by a long arc: present, exact"
+        );
+        assert_eq!(label(3), Some((2, 1010)), "past the budget, exact: {out:?}");
+    }
+
+    /// #620: the bound is the latest CUT time, not the latest whole head.
+    /// A slow partial edge is still being driven after every whole edge's
+    /// head has been reached, and a twin entered in that window decides
+    /// where the partial edge is cut — it must be labelled.
+    #[test]
+    fn a_twin_entered_after_the_last_whole_head_but_before_the_last_cut_is_labelled() {
+        // 0 → 1 (t 10, l 100): whole under a 150 m budget.
+        // 1 → 2 (t 100, l 1000): a slow, long edge entered at (10, 100) —
+        //        partial; with w(2) = (100 s, 1000 m) its budget cut is at
+        //        50 m, reached at 10 + 50·100/1000 = 15 s.
+        // 0 → 4 (t 11, l 200): past the budget, entered at 11 s — after the
+        //        last whole head (10 s) and before the last cut (15 s).
+        // 4 → 5 (t 1, l 100): the twin that matters, labelled only if 4
+        //        propagates, i.e. only if pass 2 runs to 15 s, not 10 s.
+        // (rank 3 is an isolated node, so every arc goes up in rank.)
+        let up_t = up_flat(
+            vec![0, 2, 3, 3, 3, 4, 4],
+            vec![1, 4, 2, 5],
+            vec![10, 11, 100, 1],
+        );
+        let up_l = up_flat(
+            vec![0, 2, 3, 3, 3, 4, 4],
+            vec![1, 4, 2, 5],
+            vec![100, 200, 1000, 100],
+        );
+        let dn_t = down_flat(vec![0; 7], Vec::new(), Vec::new());
+        let dn_l = down_flat(vec![0; 7], Vec::new(), Vec::new());
+        let w_len = [0u32, 100, 1000, 0, 200, 100];
+        let w_time = [0u32, 10, 100, 0, 11, 1];
+        let budget = 150u32;
+        let cut_time = |rank: u32, t: u32, l: u32| {
+            let (wl, wt) = (w_len[rank as usize], w_time[rank as usize]);
+            if wl == 0 {
+                return Some(t);
+            }
+            let el = l.saturating_sub(wl);
+            if el >= budget {
+                return None;
+            }
+            let x = wl.min(budget - el) as u64;
+            Some(t.saturating_sub(wt) + (x * wt as u64).div_ceil(wl as u64) as u32)
+        };
+        let out = run_phast_seeded_2ch_by_len(
+            &up_t,
+            &dn_t,
+            &up_l,
+            &dn_l,
+            &[(0u32, 0u32, 0u32)],
+            budget,
+            Mode::from_u8(0),
+            cut_time,
+        );
+        let label = |r: u32| {
+            out.iter()
+                .find(|&&(x, _, _)| x == r)
+                .map(|&(_, t, l)| (t, l))
+        };
+        assert_eq!(
+            label(2),
+            Some((110, 1100)),
+            "the partial edge is handed out, exact"
+        );
+        assert_eq!(label(4), Some((11, 200)), "entered in the window: present");
+        assert_eq!(
+            label(5),
+            Some((12, 300)),
+            "reached only through 4, which propagates only under the cut-time bound: {out:?}"
         );
     }
 
@@ -1430,7 +1597,7 @@ mod isodistance_bound_tests {
                 .into_iter()
                 .filter(|&(_, _, l)| l <= max_len)
                 .collect();
-                let got = run_phast_seeded_2ch_by_len(
+                let all = run_phast_seeded_2ch_by_len(
                     &up_t,
                     &dn_t,
                     &up_l,
@@ -1438,12 +1605,47 @@ mod isodistance_bound_tests {
                     &seeds,
                     max_len,
                     Mode::from_u8(0),
+                    |_, t, l| (l <= max_len).then_some(t),
                 );
+                let got: Vec<(u32, u32, u32)> = all
+                    .iter()
+                    .copied()
+                    .filter(|&(_, _, l)| l <= max_len)
+                    .collect();
                 assert_eq!(
                     got, want,
                     "case {case}, budget {max_len}: the bounded field must be \
                      the unbounded one filtered, not an approximation of it"
                 );
+                // #620: whatever else is handed out is a real label — never
+                // below the unbounded truth, and exact when within the bound.
+                let truth = run_phast_bounded_fast_seeded_2ch(
+                    &up_t,
+                    &dn_t,
+                    &up_l,
+                    &dn_l,
+                    &seeds,
+                    u32::MAX,
+                    Mode::from_u8(0),
+                );
+                let bound = want.iter().map(|&(_, t, _)| t).max().unwrap_or(0);
+                for &(r, t, l) in &all {
+                    let &(_, tt, tl) = truth
+                        .iter()
+                        .find(|&&(x, _, _)| x == r)
+                        .expect("a handed-out node is reachable");
+                    assert!(
+                        (t, l) >= (tt, tl),
+                        "case {case}: label below truth at rank {r}"
+                    );
+                    if t <= bound {
+                        assert_eq!(
+                            (t, l),
+                            (tt, tl),
+                            "case {case}: inexact within the bound at rank {r}"
+                        );
+                    }
+                }
             }
         }
     }

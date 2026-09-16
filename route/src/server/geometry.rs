@@ -1164,6 +1164,48 @@ pub fn isochrone_polygons(
     // The label and the shift live in the metric's own unit: seconds for a
     // time field, metres for an isodistance.
     let mut raw_2ch: Option<Vec<(u32, u32, u32)>> = None;
+    // The time shift outlives the rebinding below: an isodistance field is
+    // read on the length channel (its `shift` is `shift_len`), but its time
+    // labels are normalised by the TIME shift (#620: the arrive mirror used
+    // to subtract metres from seconds, clamping the near-snap twins to 0 s).
+    let shift_time = shift;
+    // #620: the latest time at which a labelled state still draws something
+    // — the bound both isodistance fields run to, so every twin that can
+    // decide a cut is labelled exact. Depart: a state entered at
+    // `(l − w_len, t − w_time)` draws `min(w_len, budget − entry_len)` metres
+    // of itself; arrive: a label is the cost from the HEAD, it draws
+    // `min(w_len, budget − label_len)` metres into that head.
+    let budget_len = max_threshold.saturating_add(shift_len);
+    let orig_of_rank = |rank: u32| {
+        mode_data.filtered_to_original[mode_data.cch_topo.rank_to_filtered[rank as usize] as usize]
+            as usize
+    };
+    let edge_w = |rank: u32| -> Option<(u64, u64)> {
+        let o = orig_of_rank(rank);
+        let (wl, wt) = (state.node_weights_dist[o], mode_data.node_weights[o]);
+        (wl != 0 && wl != u32::MAX && wt != u32::MAX).then_some((wl as u64, wt as u64))
+    };
+    let cut_time_depart = |rank: u32, t: u32, l: u32| -> Option<u32> {
+        let (wl, wt) = edge_w(rank)?;
+        let el = (l as u64).saturating_sub(wl);
+        if el >= budget_len as u64 {
+            return None;
+        }
+        let x = wl.min(budget_len as u64 - el);
+        Some(
+            (t as u64)
+                .saturating_sub(wt)
+                .saturating_add((x * wt).div_ceil(wl)) as u32,
+        )
+    };
+    let cut_time_arrive = |rank: u32, t: u32, l: u32| -> Option<u32> {
+        let (wl, wt) = edge_w(rank)?;
+        if l >= budget_len {
+            return None;
+        }
+        let x = wl.min((budget_len - l) as u64);
+        Some((t as u64).saturating_add((x * wt).div_ceil(wl)) as u32)
+    };
     let (phast_settled, shift) = match len_flats {
         None => {
             let f = if q.reverse {
@@ -1196,8 +1238,8 @@ pub fn isochrone_polygons(
                     up_len,
                     down_rev_len,
                     &seeds_2ch,
-                    max_threshold.saturating_add(shift_len),
                     mode,
+                    cut_time_arrive,
                 )
             } else {
                 crate::range::phast_seeded::run_phast_seeded_2ch_by_len(
@@ -1206,17 +1248,21 @@ pub fn isochrone_polygons(
                     up_len,
                     down_fwd_len,
                     &seeds_2ch,
-                    max_threshold.saturating_add(shift_len),
+                    budget_len,
                     mode,
+                    cut_time_depart,
                 )
             };
-            // The contour threshold reads the ONE label the metric is about;
-            // the depart reach model keeps both channels (#620).
-            raw_2ch = Some(raw.clone());
-            (
-                raw.into_iter().map(|(r, _t, l)| (r, l)).collect(),
-                shift_len,
-            )
+            // The contour threshold reads the ONE label the metric is about,
+            // over the states within the budget; the reach model keeps both
+            // channels of EVERY label, past the budget included (#620).
+            let settled: Vec<(u32, u32)> = raw
+                .iter()
+                .filter(|&&(_, _, l)| l <= budget_len)
+                .map(|&(r, _t, l)| (r, l))
+                .collect();
+            raw_2ch = Some(raw);
+            (settled, shift_len)
         }
     };
 
@@ -1253,7 +1299,7 @@ pub fn isochrone_polygons(
         // #620: a depart isodistance decides reach per physical segment from
         // both twins' exact (time, length) entries, not per directed edge.
         length: match (&raw_2ch, len_flats) {
-            (Some(raw), Some((up_len, down_fwd_len, _))) => Some(LengthReachCtx {
+            (Some(raw), Some(_)) => Some(LengthReachCtx {
                 reverse: q.reverse,
                 entries: if q.reverse {
                     // Arrive labels carry the seed shift on both channels
@@ -1263,18 +1309,13 @@ pub fn isochrone_polygons(
                             let f = mode_data.cch_topo.rank_to_filtered[r as usize];
                             (
                                 mode_data.filtered_to_original[f as usize],
-                                (l.saturating_sub(shift_len), t.saturating_sub(shift)),
+                                (l.saturating_sub(shift_len), t.saturating_sub(shift_time)),
                             )
                         })
                         .collect()
                 } else {
                     crate::server::isochrone_handler::depart_entries_2ch(
                         raw,
-                        max_threshold,
-                        up_len,
-                        down_fwd_len,
-                        up,
-                        down_fwd,
                         mode_data,
                         &state.node_weights_dist,
                         &mode_data.node_weights,
