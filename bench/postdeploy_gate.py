@@ -1557,6 +1557,15 @@ def snap_unambiguous(base, p, polyline, mode):
                 return True
         return False
 
+    # A saturated list is not evidence: eight samples within the slack
+    # means there may be a ninth the phantom would seed (the phantom applies
+    # its own role filter and can rank a junction's edges differently).
+    # Traced 2026-09-16: a point 14 m from a junction on a 426 m edge — every
+    # /nearest sample on our polyline, yet /table answered for ANOTHER edge
+    # of that junction (720 s / 5 364 m vs the served road's 721 s / 3 721 m,
+    # exact, confirmed by /route and the time isochrone).
+    if len(w) >= 8 and all(x["distance"] <= slack for x in w):
+        return False
     return all(x["distance"] > slack or on_polyline(x["location"]) for x in w)
 
 
