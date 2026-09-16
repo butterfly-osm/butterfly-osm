@@ -15,6 +15,16 @@
 # ============================================================================
 set -uo pipefail
 
+# The fixture repos below are built with `git -C "$dir" …`. `-C` only sets the
+# working directory: if GIT_DIR is in the environment — and git EXPORTS it into
+# every hook it runs from a linked worktree — every fixture command lands on
+# the REAL repository instead. On 2026-09-16 a push from a worktree ran this
+# self-test through the pre-push hook and left the engine's checkout bare,
+# with `main` deleted, `feature` and `lonely` created and two fixture commits
+# on the developer's branch. The sandbox is the whole point of a fixture; make
+# it unconditional, and prove it below (case 5).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GUARD="$REPO_ROOT/scripts/check-upstream-clean.sh"
 [[ -f "$GUARD" ]] || {
@@ -28,6 +38,17 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # The k8s CLI name — one of the terms the guard forbids. Assembled from two
 # fragments so the literal never appears in this file.
 FORBIDDEN="kube$(printf 'ctl')"
+
+# `--inner-sandbox-probe`: build one fixture and say where its git dir went.
+# Case 5 runs this under an exported GIT_DIR; the unset above must win.
+if [[ "${1:-}" == "--inner-sandbox-probe" ]]; then
+  d="$TMPROOT/probe"
+  mkdir -p "$d"
+  git -C "$d" init -q -b main
+  gd=$(git -C "$d" rev-parse --absolute-git-dir)
+  [[ "$gd" == "$d/.git" ]] && echo "sandbox probe ok" || echo "sandbox probe LEAKED to $gd"
+  exit 0
+fi
 
 pass=0
 fail=0
@@ -48,6 +69,13 @@ make_repo() {
   local dir="$TMPROOT/$1"
   mkdir -p "$dir/scripts"
   git -C "$dir" init -q -b main
+  # Refuse to continue unless the repo we just made is the one we will act on.
+  local gd
+  gd=$(git -C "$dir" rev-parse --absolute-git-dir)
+  [[ "$gd" == "$dir/.git" ]] || {
+    echo "[guard-test] FIXTURE IS NOT SANDBOXED: git dir is $gd, expected $dir/.git — aborting before touching anything" >&2
+    exit 2
+  }
   git -C "$dir" config user.email t@example.invalid
   git -C "$dir" config user.name Test
   cp "$GUARD" "$dir/scripts/check-upstream-clean.sh"
@@ -112,6 +140,25 @@ rc=$?
 check "exits non-zero when no commit range can be resolved" "$r" "$out"
 grep -q '✓ upstream clean' <<<"$out" && r=1 || r=0
 check "never prints the success line on an unscanned history" "$r" "$out"
+
+echo "[guard-test] 5/5 GIT_DIR exported to a decoy repo → the decoy must be untouched"
+# Rebuild the worktree-hook situation: a real-looking repo elsewhere, GIT_DIR
+# pointing at it, and this script's fixture machinery running underneath.
+decoy="$TMPROOT/decoy"
+mkdir -p "$decoy"
+git -C "$decoy" init -q -b main
+git -C "$decoy" config user.email t@example.invalid
+git -C "$decoy" config user.name Test
+echo "precious" >"$decoy/keep.txt"
+git -C "$decoy" add -A
+git -C "$decoy" commit -q -m "chore: precious"
+before=$(git -C "$decoy" for-each-ref --format='%(refname) %(objectname)'; git -C "$decoy" config core.bare)
+out=$(GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" bash "$0" --inner-sandbox-probe 2>&1) || true
+after=$(git -C "$decoy" for-each-ref --format='%(refname) %(objectname)'; git -C "$decoy" config core.bare)
+[[ "$before" == "$after" ]] && r=0 || r=1
+check "a fixture built under an exported GIT_DIR leaves the decoy repo untouched" "$r" "$(diff <(echo "$before") <(echo "$after") || true)"
+grep -q 'sandbox probe ok' <<<"$out" && r=0 || r=1
+check "the probe ran its fixture inside the sandbox" "$r" "$out"
 
 echo "[guard-test] $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
