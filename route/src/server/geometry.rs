@@ -740,6 +740,11 @@ pub fn length_reach_fragments_arrive(
     out
 }
 
+fn twin_of_entry(ctx: &LengthReachCtx<'_>, twin: u32) -> Option<(u32, u32, u32, u32)> {
+    let &(l, t) = ctx.entries.get(&twin)?;
+    Some((l, t, ctx.w_len[twin as usize], ctx.w_time[twin as usize]))
+}
+
 /// The `DepartLength` / `ArriveLength` polylines: every fragment from ITS
 /// edge's tail (depart) or into its head (arrive), the edge oriented exactly
 /// on the shared polyline. The anchor keeps the legacy definition (start of
@@ -1329,9 +1334,52 @@ pub fn isochrone_polygons(
             _ => None,
         },
     };
+    // Diagnostic (#620): `BUTTERFLY_ISO_TRACE=lon,lat,radius_m` logs, for an
+    // isodistance, every entry whose polyline passes within `radius_m` of the
+    // point — twin, weights, entry, fragment — so a served point can be
+    // explained from the engine's own numbers rather than inferred from
+    // `/table`. Read per query; costs nothing when unset.
+    let iso_trace: Option<(f64, f64, f64)> =
+        std::env::var("BUTTERFLY_ISO_TRACE").ok().and_then(|v| {
+            let mut it = v.split(',').map(|x| x.trim().parse::<f64>().ok());
+            Some((it.next()??, it.next()??, it.next()??))
+        });
     let mut topologies = Vec::with_capacity(q.thresholds.len());
     for &threshold in q.thresholds {
         let slot = frontiers.slot(threshold);
+        if let (Some(ctx), Some((tlon, tlat, radius))) = (&frontiers.length, iso_trace) {
+            let frac_of: FxHashMap<u32, f32> = frontiers.slots[slot].1.iter().copied().collect();
+            let kx = tlat.to_radians().cos() * 111_320.0;
+            for (&orig, &(el, et)) in &ctx.entries {
+                let node = &state.ebg_nodes.nodes[orig as usize];
+                let poly = state.edge_geom.polyline(node.geom_idx);
+                let near = poly.iter_lat_lon_e7().any(|(lat_e7, lon_e7)| {
+                    let dx = (lon_e7 as f64 / 1e7 - tlon) * kx;
+                    let dy = (lat_e7 as f64 / 1e7 - tlat) * 110_540.0;
+                    (dx * dx + dy * dy).sqrt() <= radius
+                });
+                if !near {
+                    continue;
+                }
+                let twin = ctx.twin_of.get(orig as usize).copied().unwrap_or(u32::MAX);
+                let nbg = state.nbg_geo.edges.get(node.geom_idx as usize);
+                tracing::info!(
+                    threshold,
+                    orig,
+                    twin,
+                    geom_idx = node.geom_idx,
+                    forward = nbg.is_none_or(|e| e.u_node == node.tail_nbg),
+                    w_len = ctx.w_len[orig as usize],
+                    w_time = ctx.w_time[orig as usize],
+                    entry_len = el,
+                    entry_time = et,
+                    twin_entry = ?twin_of_entry(ctx, twin),
+                    frac = ?frac_of.get(&orig),
+                    verts = poly.len(),
+                    "isodistance trace (#620)"
+                );
+            }
+        }
         topologies.push(build_isochrone_topology(
             &settled,
             threshold,
@@ -1458,8 +1506,16 @@ pub(crate) fn frontier_orientation(
     }
 }
 
-/// Partial polyline from its first point to `fraction` of its VERTEX span
+/// Partial polyline from its first point to `fraction` of its LENGTH
 /// (lat-first `(lat_e7, lon_e7)`, matching the sparse contour stamper).
+///
+/// #620: the fraction every reach model hands over is a share of the edge's
+/// cost or length, and the vertices of a stored polyline are anything but
+/// evenly spaced — this used to cut at `fraction` of the VERTEX span, so a
+/// 17-vertex 1 007 m edge cut at 0.596 (600 m, the meeting point of its two
+/// arrivals) was served to its 11th vertex, 664 m in, and a 21-vertex edge
+/// cut at the 701 m budget was served 895 m in. The cut is now at
+/// `fraction` of the polyline's own length (equirectangular metres).
 fn partial_polyline(points: &[(i32, i32)], fraction: f32) -> Vec<(i32, i32)> {
     let n_pts = points.len();
 
@@ -1471,24 +1527,44 @@ fn partial_polyline(points: &[(i32, i32)], fraction: f32) -> Vec<(i32, i32)> {
         return points.to_vec();
     }
 
-    // Find the segment where the cut occurs
-    let n_segments = n_pts - 1;
-    let segment_frac = fraction * n_segments as f32;
-    let segment_idx = (segment_frac.floor() as usize).min(n_segments - 1);
-    let local_frac = segment_frac - segment_idx as f32;
-
-    // Include all points up to and including the start of the cut segment.
-    let mut out: Vec<(i32, i32)> = points[..=segment_idx].to_vec();
-
-    // Add the interpolated cut point
-    if local_frac > 0.0 && segment_idx + 1 < n_pts {
-        let (lat1, lon1) = points[segment_idx];
-        let (lat2, lon2) = points[segment_idx + 1];
-        let lat = lat1 + ((lat2 - lat1) as f32 * local_frac) as i32;
-        let lon = lon1 + ((lon2 - lon1) as f32 * local_frac) as i32;
-        out.push((lat, lon));
+    let kx = (points[0].0 as f64 / 1e7).to_radians().cos();
+    let seg_len = |i: usize| {
+        let (lat1, lon1) = points[i];
+        let (lat2, lon2) = points[i + 1];
+        let dy = (lat2 - lat1) as f64;
+        let dx = (lon2 - lon1) as f64 * kx;
+        (dx * dx + dy * dy).sqrt()
+    };
+    let total: f64 = (0..n_pts - 1).map(seg_len).sum();
+    if total <= 0.0 {
+        return points.to_vec();
     }
+    let target = fraction as f64 * total;
 
+    // Walk to the segment holding the cut, then interpolate inside it.
+    let mut walked = 0.0;
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(n_pts);
+    out.push(points[0]);
+    for i in 0..n_pts - 1 {
+        let l = seg_len(i);
+        if walked + l >= target || i == n_pts - 2 {
+            let local = if l > 0.0 {
+                ((target - walked) / l).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let (lat1, lon1) = points[i];
+            let (lat2, lon2) = points[i + 1];
+            let lat = lat1 + ((lat2 - lat1) as f64 * local).round() as i32;
+            let lon = lon1 + ((lon2 - lon1) as f64 * local).round() as i32;
+            if (lat, lon) != points[i] {
+                out.push((lat, lon));
+            }
+            break;
+        }
+        walked += l;
+        out.push(points[i + 1]);
+    }
     out
 }
 
@@ -1530,6 +1606,30 @@ mod frontier_orientation_tests {
         let mut rev = pts.to_vec();
         rev.reverse();
         assert_eq!(partial_polyline(&rev, 0.25), vec![(0, 2000), (0, 1500)]);
+    }
+
+    /// #620: the fraction is a share of the LENGTH, never of the vertex
+    /// count — vertices are dense on bends and sparse on straights.
+    #[test]
+    fn partial_polyline_cuts_by_length_not_by_vertex_count() {
+        // 4 vertices, 3 segments of 100, 100 and 1800 units: half the length
+        // (1000) lies 800 into the LAST segment, not at the 2nd vertex.
+        let pts = [(0, 0), (0, 100), (0, 200), (0, 2000)];
+        assert_eq!(
+            partial_polyline(&pts, 0.5),
+            vec![(0, 0), (0, 100), (0, 200), (0, 1000)]
+        );
+        // 10 % of the length (200) is exactly the third vertex: no
+        // duplicate point is appended.
+        assert_eq!(
+            partial_polyline(&pts, 0.1),
+            vec![(0, 0), (0, 100), (0, 200)]
+        );
+        // Reversed: 10 % of the length from the far end lies inside the
+        // long segment.
+        let mut rev = pts.to_vec();
+        rev.reverse();
+        assert_eq!(partial_polyline(&rev, 0.1), vec![(0, 2000), (0, 1800)]);
     }
 }
 
