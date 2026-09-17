@@ -289,9 +289,13 @@ fn route_batch_schema() -> Schema {
 /// for that reason; every other column is as it was.
 fn isochrone_schema() -> Schema {
     Schema::new(vec![
+        // #624: the origin's index in the request (0 for the single form).
+        Field::new("origin_idx", DataType::UInt32, false),
         Field::new("interval_s", DataType::UInt32, true),
         Field::new("interval_m", DataType::UInt32, true),
-        Field::new("polygon_wkb", DataType::Binary, false),
+        // NULL when the origin could not be snapped (batch semantics — the
+        // single form still fails the call, as before).
+        Field::new("polygon_wkb", DataType::Binary, true),
     ])
 }
 
@@ -2546,8 +2550,17 @@ fn do_route_batch(
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)] // #548: a stale/mistyped field must fail loud, not be ignored
 struct IsochroneParams {
-    lon: f64,
-    lat: f64,
+    /// #624: a BATCH is Flight, a single query is REST. `origins` is the
+    /// batch (`[[lon, lat], …]`, up to `MAX_BULK_ORIGINS`); the single
+    /// `lon`/`lat` form is kept as the batch of one. Rows carry
+    /// `origin_idx`; an origin that cannot be snapped yields one row per
+    /// contour with a NULL polygon — never a silent drop.
+    #[serde(default)]
+    origins: Option<Vec<[f64; 2]>>,
+    #[serde(default)]
+    lon: Option<f64>,
+    #[serde(default)]
+    lat: Option<f64>,
     /// Time thresholds in seconds. Exactly one of `intervals` /
     /// `intervals_m` must be given (#612).
     #[serde(default)]
@@ -2576,6 +2589,36 @@ struct IsochroneParams {
 
 fn default_direction() -> String {
     "depart".to_string()
+}
+
+impl IsochroneParams {
+    /// The batch: `origins`, or `lon`/`lat` as a batch of one — exactly one
+    /// of the two forms, validated coordinate by coordinate (#624).
+    fn origins(&self) -> std::result::Result<Vec<[f64; 2]>, Status> {
+        let origins = match (&self.origins, self.lon, self.lat) {
+            (Some(o), None, None) => o.clone(),
+            (None, Some(lon), Some(lat)) => vec![[lon, lat]],
+            _ => {
+                return Err(Status::invalid_argument(
+                    "give either `origins` ([[lon, lat], …]) or a single `lon`/`lat`",
+                ));
+            }
+        };
+        if origins.is_empty() {
+            return Err(Status::invalid_argument("origins cannot be empty"));
+        }
+        if origins.len() > super::isochrone_handler::MAX_BULK_ORIGINS {
+            return Err(Status::invalid_argument(format!(
+                "too many origins: {} exceeds maximum of {}",
+                origins.len(),
+                super::isochrone_handler::MAX_BULK_ORIGINS
+            )));
+        }
+        for (i, &[lon, lat]) in origins.iter().enumerate() {
+            validate_coord(lon, lat, &format!("origin[{i}]"))?;
+        }
+        Ok(origins)
+    }
 }
 
 fn do_isochrone(
@@ -2640,47 +2683,58 @@ fn do_isochrone(
     // seeds (#506) -> seeded PHAST -> per-interval depart frontier ->
     // topology. Shared verbatim with REST /isochrone, bands, the bulk
     // endpoint and the catchment hull.
-    let field = isochrone_polygons(
-        state,
-        &mode_data,
-        mode,
-        &IsochroneQuery {
-            metric: requested.metric,
-            lon: params.lon,
-            lat: params.lat,
-            // Intervals are user-input seconds (weights are also seconds,
-            // post-#297) or metres, per `metric`; either way they pass
-            // through unchanged.
-            thresholds: &requested.values,
-            reverse: is_reverse,
-            mode_name,
-            snap_mask: Some(snap_mask),
-            flats,
-            include_network: false,
-        },
-    )
-    .map_err(|e| match e {
+    let origins = params.origins()?;
+    let thresholds = &requested.values[..];
+    let snap_err = |e: IsochroneSnapError| match e {
         IsochroneSnapError::NoSnap => Status::not_found("Could not snap to road network"),
         IsochroneSnapError::NotAccessible => {
             Status::not_found("Snapped node not accessible for this mode")
         }
-        // A property of the request, not of the network.
         other => Status::invalid_argument(isochrone_error_message(other)),
-    })?;
-
-    let wkb_data: Vec<Vec<u8>> = field
-        .topologies
-        .into_iter()
-        .map(|topology| {
-            encode_polygon_wkb(&ContourResult::from_topology(topology)).unwrap_or_default()
+    };
+    // THE pipeline (#549), one origin per rayon task — the same call REST
+    // /isochrone and /isochrone/bulk make, so the bytes cannot differ.
+    let per_origin: Vec<std::result::Result<Vec<Vec<u8>>, IsochroneSnapError>> = origins
+        .par_iter()
+        .map(|&[lon, lat]| {
+            let field = isochrone_polygons(
+                state,
+                &mode_data,
+                mode,
+                &IsochroneQuery {
+                    metric: requested.metric,
+                    lon,
+                    lat,
+                    thresholds,
+                    reverse: is_reverse,
+                    mode_name,
+                    snap_mask: Some(snap_mask),
+                    flats,
+                    include_network: false,
+                },
+            )?;
+            Ok(field
+                .topologies
+                .into_iter()
+                .map(|topology| {
+                    encode_polygon_wkb(&ContourResult::from_topology(topology)).unwrap_or_default()
+                })
+                .collect())
         })
         .collect();
+    // The single form keeps its contract: an origin that cannot be snapped
+    // is the call's error. A batch reports it as NULL rows for that origin.
+    if origins.len() == 1
+        && let Err(e) = per_origin[0]
+    {
+        return Err(snap_err(e));
+    }
 
     let schema = Arc::new(isochrone_schema());
     let n = requested.values.len();
-
+    let rows = n * origins.len();
     // The threshold is echoed in its own unit; the other column is all-null.
-    let (secs, metres): (Vec<Option<u32>>, Vec<Option<u32>>) = match requested.metric {
+    let (secs_one, metres_one): (Vec<Option<u32>>, Vec<Option<u32>>) = match requested.metric {
         ThresholdMetric::Time => (
             requested.values.iter().copied().map(Some).collect(),
             vec![None; n],
@@ -2690,15 +2744,27 @@ fn do_isochrone(
             requested.values.iter().copied().map(Some).collect(),
         ),
     };
-    let mut wkb_builder = BinaryBuilder::with_capacity(n, wkb_data.iter().map(|w| w.len()).sum());
-    for wkb in &wkb_data {
-        wkb_builder.append_value(wkb);
+    let mut origin_idx: Vec<u32> = Vec::with_capacity(rows);
+    let mut secs: Vec<Option<u32>> = Vec::with_capacity(rows);
+    let mut metres: Vec<Option<u32>> = Vec::with_capacity(rows);
+    let mut wkb_builder = BinaryBuilder::with_capacity(rows, 0);
+    for (idx, res) in per_origin.iter().enumerate() {
+        for k in 0..n {
+            origin_idx.push(idx as u32);
+            secs.push(secs_one[k]);
+            metres.push(metres_one[k]);
+            match res {
+                Ok(wkbs) => wkb_builder.append_value(&wkbs[k]),
+                Err(_) => wkb_builder.append_null(),
+            }
+        }
     }
 
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(UInt32Array::from(secs)) as ArrayRef,
+            Arc::new(UInt32Array::from(origin_idx)) as ArrayRef,
+            Arc::new(UInt32Array::from(secs)),
             Arc::new(UInt32Array::from(metres)),
             Arc::new(wkb_builder.finish()),
         ],
@@ -3766,13 +3832,18 @@ pub fn do_transit_bulk(
         {
             // Per-query results in original order. Each entry is
             // either Ok(response) or Err((http_status, error_msg)).
+            // #624: the origin-grouped batch engine (one access leg per
+            // origin group) that the removed REST bulk ran — now the
+            // action's own path, not a per-query loop.
             let chunk_results: Vec<
                 std::result::Result<super::transit_handler::TransitResponse, (u16, String)>,
-            > = chunk
-                .par_iter()
-                .map(|q| {
-                    super::transit_handler::compute_transit_journey(state.as_ref(), q)
-                        .map_err(|(sc, err)| (sc.as_u16(), err.0.error.clone()))
+            > = super::transit_handler::run_bulk(state.as_ref(), chunk)
+                .into_iter()
+                .map(|r| match r {
+                    super::transit_handler::TransitBulkResult::Ok { journey } => Ok(*journey),
+                    super::transit_handler::TransitBulkResult::Err { status, error } => {
+                        Err((status, error))
+                    }
                 })
                 .collect();
 
@@ -4697,7 +4768,7 @@ impl FlightService for ButterflyFlight {
                     serde_json::from_str(&parsed.params_json).map_err(|e| {
                         Status::invalid_argument(format!("Invalid isochrone params: {}", e))
                     })?;
-                validate_coord(params.lon, params.lat, "origin")?;
+                let origins = params.origins()?;
                 // #613: bands are hidden best/worst CAR weight sets, and an
                 // exclusion recustomizes THIS request's weights — nothing
                 // recustomizes the band sets to match. The same refusal
@@ -4710,9 +4781,15 @@ impl FlightService for ButterflyFlight {
                     ));
                 }
 
-                let state = self
-                    .dispatch_for_point(params.lon, params.lat, &parsed.profile)?
-                    .state;
+                // Every origin of a batch must snap to the same region —
+                // the rule REST /isochrone/bulk applies (#91).
+                let state = QueryContext::from_points(
+                    &self.regions,
+                    origins.iter().map(|&[lon, lat]| (lon, lat)),
+                    &parsed.profile,
+                )
+                .map_err(dispatch_to_status)?
+                .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
@@ -6536,6 +6613,40 @@ mod isochrone_options_tests {
                 .find("\n// ====")
                 .expect("a section banner follows");
         &src[at..end]
+    }
+
+    /// #624: `origins` is the batch, `lon`/`lat` the batch of one — never
+    /// both, never neither, never empty, never past the shared cap.
+    #[test]
+    fn the_action_takes_a_batch_of_origins_or_one_point() {
+        let one: IsochroneParams =
+            serde_json::from_str(r#"{"lon":4.35,"lat":50.85,"intervals":[600]}"#).unwrap();
+        assert_eq!(one.origins().unwrap(), vec![[4.35, 50.85]]);
+        let many: IsochroneParams = serde_json::from_str(
+            r#"{"origins":[[4.35,50.85],[4.40,50.86]],"intervals":[300,600]}"#,
+        )
+        .unwrap();
+        assert_eq!(many.origins().unwrap().len(), 2);
+        for bad in [
+            r#"{"origins":[[4.35,50.85]],"lon":4.35,"lat":50.85,"intervals":[600]}"#,
+            r#"{"lon":4.35,"intervals":[600]}"#,
+            r#"{"intervals":[600]}"#,
+            r#"{"origins":[],"intervals":[600]}"#,
+            r#"{"origins":[[4.35,95.0]],"intervals":[600]}"#,
+        ] {
+            let p: IsochroneParams = serde_json::from_str(bad).unwrap();
+            assert!(p.origins().is_err(), "{bad} must be refused");
+        }
+        let too_many = format!(
+            r#"{{"origins":{},"intervals":[600]}}"#,
+            serde_json::to_string(&vec![
+                [4.35f64, 50.85];
+                super::super::isochrone_handler::MAX_BULK_ORIGINS + 1
+            ])
+            .unwrap()
+        );
+        let p: IsochroneParams = serde_json::from_str(&too_many).unwrap();
+        assert!(p.origins().is_err(), "past the shared cap");
     }
 
     #[test]

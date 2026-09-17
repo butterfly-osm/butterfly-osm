@@ -163,7 +163,7 @@ Five candidate causes, in rough order of frequency:
 
 **Diagnosis**
 
-`/transit` and `/transit/bulk` return 503 when the server booted without transit (no `transit/` directory under `--data-dir`, or every feed failed to load). `timetable has zero stops` is a stronger variant — the feeds parsed but produced an empty timetable, which is almost always a calendar / service-id mismatch.
+`/transit` (and the Flight `transit_bulk` action; the REST `/transit/bulk` was removed in #624) return 503 when the server booted without transit (no `transit/` directory under `--data-dir`, or every feed failed to load). `timetable has zero stops` is a stronger variant — the feeds parsed but produced an empty timetable, which is almost always a calendar / service-id mismatch.
 
 **Fix**
 
