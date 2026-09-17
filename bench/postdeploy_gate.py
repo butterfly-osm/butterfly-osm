@@ -3040,6 +3040,55 @@ def gate_route_batch_max_meters(base):
     passed &= check("every returned pair ≤ B", len(over) == 0, f"{len(over)} over-bound leaked")
     return passed
 
+def gate_flight_isochrone_batch(base):
+    """#624: a BATCH is Flight. The `isochrone` action takes `origins` and
+    several `intervals`, computed in ONE pass per origin, and its rows
+    `(origin_idx, interval_s, polygon_wkb)` are the SAME BYTES as
+    (a) N single Flight calls and (b) REST /isochrone (per origin and per
+    contour). An origin off the network yields NULL polygons for every
+    contour, never a silent drop (#625 measured the double pass the removed
+    REST bulk forced)."""
+    print("== Flight isochrone batch == origins × intervals, same bytes as the single calls (#624) ==")
+    passed = True
+    origins = [(p[1], p[2]) for p in ISO_POINTS[:4]]
+    intervals = [300, 600]
+    try:
+        tb = flight_table(base, "isochrone", "car",
+            {"origins": [list(o) for o in origins], "intervals": intervals})
+    except Exception as e:  # noqa: BLE001
+        return check("Flight isochrone batch answers", False, str(e)[:120])
+    rows = {(tb.column("origin_idx")[i].as_py(), tb.column("interval_s")[i].as_py()):
+            tb.column("polygon_wkb")[i].as_py() for i in range(tb.num_rows)}
+    passed &= check("batch: one row per origin × interval",
+        len(rows) == len(origins) * len(intervals) and tb.num_rows == len(rows),
+        f"{tb.num_rows} rows for {len(origins)}×{len(intervals)}")
+    same_single = same_rest = 0
+    for i, (lon, lat) in enumerate(origins):
+        one = flight_table(base, "isochrone", "car", {"lon": lon, "lat": lat, "intervals": intervals})
+        for j in range(one.num_rows):
+            k = (0, one.column("interval_s")[j].as_py())
+            if rows.get((i, k[1])) == one.column("polygon_wkb")[j].as_py():
+                same_single += 1
+        for t in intervals:
+            r = http_bytes(f"{base}/isochrone?" + urllib.parse.urlencode(
+                {"lon": lon, "lat": lat, "mode": "car", "time_s": t}),
+                timeout=300, headers={"Accept": "application/octet-stream"})
+            if rows.get((i, t)) == r:
+                same_rest += 1
+    n = len(origins) * len(intervals)
+    passed &= check("batch ≡ N single Flight calls, byte for byte", same_single == n, f"{same_single}/{n}")
+    passed &= check("batch ≡ REST /isochrone, byte for byte", same_rest == n, f"{same_rest}/{n}")
+    # An origin in the North Sea: NULL rows, the others untouched.
+    sea = flight_table(base, "isochrone", "car",
+        {"origins": [list(origins[0]), [2.5, 51.6]], "intervals": intervals})
+    nulls = [sea.column("origin_idx")[j].as_py() for j in range(sea.num_rows)
+             if sea.column("polygon_wkb")[j].as_py() is None]
+    passed &= check("an unsnappable origin yields NULL rows, never a drop",
+        sea.num_rows == 2 * len(intervals) and sorted(set(nulls)) == [1] and len(nulls) == len(intervals),
+        f"{sea.num_rows} rows, null origins {sorted(set(nulls))}")
+    return passed
+
+
 def gate_isochrone_transports_agree(base):
     """#613: the SAME isochrone request must come back as the SAME BYTES from
     `/isochrone` and from the Flight `isochrone` action — with an exclusion
@@ -3269,11 +3318,6 @@ def rest_probes():
             "stores": [{"id": "s1", "lon": o[0], "lat": o[1]}],
             "clients": [{"lon": 4.36, "lat": 50.86}, {"lon": 4.34, "lat": 50.84},
                         {"lon": 4.40, "lat": 50.88}]}),
-        "/isochrone/bulk": ("POST", "/isochrone/bulk",
-                            {"origins": [list(o), list(d)], "time_s": 300, "mode": "car"}),
-        "/transit/bulk": ("POST", "/transit/bulk", {"queries": [
-            {"origin_lon": o[0], "origin_lat": o[1],
-             "destination_lon": d[0], "destination_lat": d[1]}]}),
     }
 
 
@@ -3306,11 +3350,6 @@ def rest_invalid_probes():
             "mode": "car", "hull_shape": "road", "percentiles": [50], "remove_outliers": False,
             "stores": [{"id": "s1", "lon": bad[0], "lat": bad[1]}],
             "clients": [{"lon": d[0], "lat": d[1]}]}),
-        "/isochrone/bulk": ("POST", "/isochrone/bulk",
-                            {"origins": [list(bad)], "time_s": 300, "mode": "car"}),
-        "/transit/bulk": ("POST", "/transit/bulk", {"queries": [
-            {"origin_lon": bad[0], "origin_lat": bad[1],
-             "destination_lon": d[0], "destination_lat": d[1]}]}),
     }
 
 
@@ -3320,7 +3359,6 @@ REST_PROBE_SKIPS = {
     "/height": {404: "not mounted — <data>/srtm/ absent; lean containers 404 by design"},
     "/transit": {503: "transit subsystem not loaded (no transit/ directory)",
                  404: "no journey for the probe pair — a valid documented answer"},
-    "/transit/bulk": {503: "transit subsystem not loaded (no transit/ directory)"},
 }
 
 
@@ -3523,6 +3561,7 @@ def build_gates(args):
         # recustomization (the avoid ring) instead of three.
         ("isochrone_transports_agree", True,
          lambda: gate_isochrone_transports_agree(b)),
+        ("flight_isochrone_batch", True, lambda: gate_flight_isochrone_batch(b)),
         ("edges_batch", True, lambda: gate_edges_batch(b)),
         ("matrix_sparse", True, lambda: gate_matrix_sparse(b)),
         ("matrix_sparse_streaming", True, lambda: gate_matrix_sparse_streaming(b)),

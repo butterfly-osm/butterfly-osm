@@ -35,9 +35,9 @@ faster than OSRM at scale.
   at 500×500, **4.8× faster** at 1000×1000 over HTTP.
 - **Matrix 10k×10k via Flight gRPC**: 32.5 s end-to-end (vs drivetimes/libosrm 614 s — 19× faster on the wire).
 - **Flight gRPC matrix 50k×50k**: 9.61 min (parity with the historical `/table/stream` baseline; OSRM cannot run it).
-- **`/isochrone` 30-min**: 5 ms p50; bulk endpoint sustains **1 526 iso/sec**.
+- **`/isochrone` 30-min**: 5 ms p50; the Flight `isochrone` batch sustains **1 526 iso/sec** (figure measured on the removed REST bulk, same pipeline).
 - **`/route?avoid_polygons=...`**: ~780 ms cold MISS, ~22 ms warm HIT (incremental recustomization + LRU cache, #240).
-- **`/transit` single warm**: 35 ms p50; `/transit/bulk` sustains 311 q/s on varied queries.
+- **`/transit` single warm**: 35 ms p50; Flight `transit_bulk` sustains 311 q/s on varied queries (the REST `/transit/bulk` path was removed in #624 — a batch is Flight).
 - **Coverage**: 4 modes (car, bike, foot, truck) × 4 merged transit feeds (SNCB, De Lijn, TEC, STIB).
 - Belgium artifact `data/belgium/baseline.butterfly` deployed to the production `belgium-latest` container.
 
@@ -125,13 +125,13 @@ Support directories: `bench/` (regression and competitor benches),
   (#613): REST and the Flight `isochrone` action resolve them through one
   weight plan — mask included — and answer byte-identical WKB.
 - GeoJSON or WKB output; CCW outer rings, 5-decimal precision.
-- `POST /isochrone/bulk` length-prefixed WKB stream.
+- Flight `isochrone` action with `origins` (the batch; #624) — the REST `POST /isochrone/bulk` was removed.
 
 ### Multimodal transit
 - RAPTOR rounds over a merged `Timetable` (GTFS + NeTEx-EPIP via streaming `quick-xml` parser, Lambert-93 → WGS84 reprojection).
 - ULTRA-preprocessed stop-to-stop transfer graph (66 512 stops, 668 K edges on Belgium).
 - Cross-feed equivalence bridges (SNCB ↔ STIB, SNCB ↔ De Lijn) and same-station parent-child transfers, injected before ULTRA dominance restriction.
-- `GET /transit` JSON, `POST /transit/bulk` (up to 100 K queries/call), Flight `transit_bulk` action (up to 500 K queries/call).
+- `GET /transit` JSON (single), Flight `transit_bulk` action (batch; the REST `POST /transit/bulk` was removed in #624) (up to 500 K queries/call).
 - NeTEx calendar fallback: if the active day set is empty (stale publication), remap to the same weekday in the latest published period.
 
 ### Other queries

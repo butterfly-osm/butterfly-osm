@@ -58,7 +58,7 @@ docker run -d --name butterfly \
 **Recommended resources:**
 
 - **32 GB RAM.** Belgium steady-state RSS is ~24 GB with 4 modes (~5.13M EBG nodes per mode) plus the 754K-entry road-name index, the merged transit timetable, the ULTRA transfer graph, and the per-region `AvoidWeightCache` (default 8 entries × ~100-200 MB = up to 1.6 GB ceiling). Headroom matters: avoid-polygon and exclude recustomizations briefly allocate a second weight set. Below 28 GB you will OOM on first avoid query.
-- **8+ vCPUs.** Matrix and isochrone parallelism saturate near 8 cores (memory-bandwidth limited beyond that). REST concurrency is capped at 32 in-flight requests and 4 for `/isochrone/bulk`; gRPC Flight is unbounded but bound by the same backends.
+- **8+ vCPUs.** Matrix and isochrone parallelism saturate near 8 cores (memory-bandwidth limited beyond that). REST concurrency is capped at 32 in-flight requests and 4 for `/isochrone/bulk`; gRPC Flight is unbounded but bound by the same backends. (historical: `/isochrone/bulk` was removed in #624)
 - **Fast local disk for first-load mmap.** All step artefacts are mmap'd; pages fault in during boot. On NVMe the difference between cold and warm boot is ~10 s.
 
 **Boot time expectations:**
@@ -336,7 +336,7 @@ groups:
 The server installs SIGINT and SIGTERM handlers (see `server::shutdown_signal`). On signal:
 
 1. Both REST (Axum `with_graceful_shutdown`) and gRPC (tonic `serve_with_shutdown`) stop accepting new connections.
-2. In-flight requests run to completion, bounded by the per-route timeout (120 s for normal endpoints, 600 s for `/isochrone/bulk`).
+2. In-flight requests run to completion, bounded by the per-route timeout (120 s for normal endpoints, 600 s for `/isochrone/bulk`). (historical: `/isochrone/bulk` was removed in #624)
 3. `tracing::info!("server shut down gracefully")` is emitted and the process exits 0.
 
 There is no explicit drain timeout in code beyond the route timeouts. For Kubernetes:
@@ -345,7 +345,7 @@ There is no explicit drain timeout in code beyond the route timeouts. For Kubern
 terminationGracePeriodSeconds: 660   # 600s stream timeout + 60s slack
 ```
 
-If you don't run `/isochrone/bulk`, drop to 180 s. Docker's default `docker stop --time` is 10 s — set it explicitly: `docker stop --time 180 butterfly`.
+(The removed `/isochrone/bulk` was the reason for the 600 s tier; 180 s is enough now.) Docker's default `docker stop --time` is 10 s — set it explicitly: `docker stop --time 180 butterfly`.
 
 ## Deployment topology
 
@@ -392,4 +392,4 @@ The load balancer routes by region (host header, path prefix, or client logic). 
 - **Cache locality is per-process.** Every replica has its own `AvoidWeightCache`. Multi-replica deployments amortize recustomization cost independently per replica — a polygon that hits the cache on replica A still costs the #240 incremental-BFS MISS (~0.8–1.2 s on Belgium, polygon-size dependent) on replica B the first time. For predictable latency, pin clients (consistent hash on polygon hash) or accept the cold-cache outliers.
 - **gRPC Flight is single-region in #91 Phase 1.** With multiple regions loaded, the Flight server only serves the primary region (the lexicographically first one or whichever was discovered first). REST handles all regions. Cross-region Flight is tracked for a future PR.
 - **Memory scales with modes, not query volume.** Doubling QPS does not double RSS; adding a mode does (~5-6 GB per mode on Belgium). Trim with `--modes`.
-- **HTTP concurrency is bounded.** 32 in-flight `/route`/`/table`/etc., 4 in-flight `/isochrone/bulk`. Past those limits clients see a queue, not a 503; size your timeouts accordingly.
+- **HTTP concurrency is bounded.** 32 in-flight `/route`/`/table`/etc., 4 in-flight `/isochrone/bulk`. Past those limits clients see a queue, not a 503; size your timeouts accordingly. (historical: `/isochrone/bulk` was removed in #624)
