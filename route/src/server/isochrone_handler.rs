@@ -886,6 +886,10 @@ pub fn depart_frontier(
 
 // ============ Bulk Isochrone Handler ============
 
+/// Origins per batch — REST `/isochrone/bulk` and the Flight `isochrone`
+/// action share the one cap (#624).
+pub const MAX_BULK_ORIGINS: usize = 10_000;
+
 /// POST /isochrone/bulk - Compute multiple isochrones in parallel, return WKB stream
 ///
 /// Returns a binary stream of WKB polygons with length-prefixed format:
@@ -925,7 +929,6 @@ fn isochrone_bulk_sync(
         )
             .into_response();
     }
-    const MAX_BULK_ORIGINS: usize = 10_000;
     if req.origins.len() > MAX_BULK_ORIGINS {
         return (
             StatusCode::BAD_REQUEST,

@@ -10,6 +10,30 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-17 — A batch is Flight, a single query is REST: the `isochrone` action takes a batch; REST `/transit/bulk` is gone (#624, #625)
+
+The rule was implicit and violated twice: the Flight `isochrone` action took
+ONE origin while REST carried `POST /isochrone/bulk`, and REST carried
+`POST /transit/bulk` although Flight had `transit_bulk`. #625 measured what
+the REST bulk cost: 44 007 origins at 5 and 10 minutes took 76 s through the
+bulk path against 63 s through 44 007 single calls, because a one-threshold
+bulk runs two full passes for two contours.
+
+- Flight `isochrone` takes `origins: [[lon, lat], …]` (up to 10 000, the
+  cap shared with the REST bulk) with several `intervals` / `intervals_m`,
+  computed in ONE pass per origin, one rayon task per origin, through the
+  very pipeline `GET /isochrone` runs. Rows are `(origin_idx, interval_s |
+  interval_m, polygon_wkb)`, ordered by origin then contour; an origin that
+  cannot be snapped yields NULL polygons for every contour — never a
+  silent drop. The single `lon`/`lat` form is the batch of one and keeps
+  its error contract. Gate `flight_isochrone_batch`: batch ≡ N single
+  Flight calls ≡ REST `/isochrone` ≡ REST `/isochrone/bulk`, byte for
+  byte, plus the NULL-row rule.
+- REST `POST /transit/bulk` removed (`REMOVED_PATHS`; docs say so). Its
+  batch is the Flight `transit_bulk` action.
+- REST `POST /isochrone/bulk` is deprecated: kept only until its last
+  consumer (gondola) is on the Flight batch, then removed the same way.
+
 ### 2026-09-16 — An isodistance is exact where its truth is defined: the field's shell, the latest cut time, length-proportional cuts (#620)
 
 Two directed twins run every two-way segment, and an isodistance (length

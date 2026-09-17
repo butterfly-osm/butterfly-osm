@@ -412,7 +412,11 @@ Polygon ring orientation is enforced CCW for outer rings (GeoJSON spec). JSON co
 
 ---
 
-### `POST /isochrone/bulk`
+### `POST /isochrone/bulk` *(deprecated — a batch is Flight, #624)*
+
+Kept only until its last consumer is on the Flight `isochrone` action, which
+takes `origins` AND several `intervals` in one pass; this path takes ONE
+threshold per call and will be removed.
 
 Parallel batch isochrones (rayon-fanned PHAST), returns a length-prefixed WKB stream. Source: `route/src/server/isochrone_handler.rs:1062`.
 
@@ -596,40 +600,9 @@ Single multimodal transit journey: access leg (any road mode) → RAPTOR rounds 
 
 ---
 
-### `POST /transit/bulk`
+### `POST /transit/bulk` — removed (#624)
 
-Batch multimodal routing. Source: `route/src/server/transit_handler.rs:966`.
-
-**Request body**
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `queries` | array of `TransitRequest` | Max 100000 |
-| `max_walk_m` | u32 | Per-batch default for any query that omits the field |
-| `access_mode` | string | Per-batch default |
-| `egress_mode` | string | Per-batch default |
-
-**Response**
-
-```
-{ "count": N, "results": [
-    { "kind": "ok", "journey": { ... TransitResponse ... } }
-  | { "kind": "err", "status": 400, "error": "..." }
-] }
-```
-
-**Errors**
-
-- 413 — batch larger than 100000
-- 503 — transit subsystem not loaded
-
-**Notes**
-
-- Origin grouping (#120): queries with the same quantised origin + access params share the access fan-out (snap + R-tree + CCH 1-to-N).
-- Sustained 311 q/s on 1000 varied queries; 7× speed-up on 20 same-origin queries vs serial (CLAUDE.md).
-- For larger / Arrow-shaped workloads use the Flight `transit_bulk` action (port 3002, up to 500000 queries per call).
-
----
+A batch is Flight: use the `transit_bulk` action. This REST path was removed on 2026-09-17 and answers 404.
 
 ### `GET /health`
 
@@ -752,10 +725,17 @@ Each pair gets K-best snap (`SNAP_K=64`) + bounded combo fallback (mirror of `/r
 
 ### Action: `isochrone`
 
+**A batch is Flight, a single query is REST (#624).** The action takes a
+batch of origins; the single `lon`/`lat` form is the batch of one. Every
+contour of every origin comes from ONE pass per origin (#625 measured the
+double pass a one-threshold bulk forced), one rayon task per origin,
+through the very pipeline `GET /isochrone` runs — the same bytes, gated.
+
 Params:
 
 ```json
-{ "lon": f64, "lat": f64,
+{ "origins": [[lon, lat], ...],  // up to 10 000 — OR the single form:
+  "lon": f64, "lat": f64,
   "intervals": [u32, ...],      // seconds, 1-10 values each 1-7200
   "intervals_m": [u32, ...],    // OR metres, 1-10 values each 1-100000 (#612)
   "direction": "depart" | "arrive",
@@ -781,9 +761,13 @@ sets and nothing recustomizes them to match one request's exclusion.
 
 | Column | Arrow type | Notes |
 |--------|------------|-------|
+| `origin_idx` | u32 | index of the origin in `origins` (0 for the single form) (#624) |
 | `interval_s` | u32 | seconds; null on an isodistance |
 | `interval_m` | u32 | metres of length along the time-shortest path; null on a time isochrone (#612). Ask for one with `intervals_m` instead of `intervals`. |
-| `polygon_wkb` | binary | WKB Polygon, CCW outer ring |
+| `polygon_wkb` | binary | WKB Polygon, CCW outer ring; **null** for every contour of an origin that could not be snapped — a batch never drops an origin silently. The single form still fails the call (404) as before. |
+
+Rows are ordered by `origin_idx`, then by contour. All origins of a batch
+must snap to the same region (the rule REST `/isochrone/bulk` applies).
 
 ### Action: `catchment` *(DoExchange)*
 
@@ -917,7 +901,7 @@ Cache key is a quantised, deduped hash of the polygon JSON (`avoid.rs:hash_avoid
 | 400 | Validation: bad coord, bad mode, bad token (annotation/exclude/bearing/direction), empty required field, matrix too large, batch too large for the JSON endpoint |
 | 404 | `/route` only: no path between src and dst after the K-best fallback |
 | 408 | Request timeout — 120 s on most endpoints, 600 s on `/isochrone/bulk`; emitted by `TimeoutLayer` |
-| 413 | `/transit/bulk` batch larger than 100000 |
+| 413 | (historical) the removed `/transit/bulk` refused batches larger than 100000 |
 | 500 | Internal bug. Panics are caught by `CatchPanicLayer` and turned into 500 instead of dropping the connection |
 | 503 | Subsystem unavailable: `/height` with no SRTM tiles loaded, `/transit*` with no feeds loaded |
 | 501 | Mixed-region inputs to a same-region endpoint, with no cross-region overlay loaded |

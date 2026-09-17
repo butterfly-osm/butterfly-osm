@@ -42,7 +42,6 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::regions_handler::regions_handler,
         super::catchment::catchment_handler,
         super::transit_handler::transit_handler,
-        super::transit_handler::transit_bulk_handler,
         version_handler,
     ),
     components(schemas(
@@ -139,10 +138,6 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
         .route("/match", post(super::matching::match_trace_handler))
         .route("/catchment", post(super::catchment::catchment_handler))
         .route("/transit", get(super::transit_handler::transit_handler))
-        .route(
-            "/transit/bulk",
-            post(super::transit_handler::transit_bulk_handler),
-        )
         .route("/health", get(super::health_handler::health_handler))
         .route("/version", get(version_handler))
         .route("/regions", get(super::regions_handler::regions_handler));
@@ -210,7 +205,6 @@ pub const MOUNTED_PATHS: &[&str] = &[
     "/match",
     "/catchment",
     "/transit",
-    "/transit/bulk",
     "/health",
     "/version",
     "/regions",
@@ -218,10 +212,11 @@ pub const MOUNTED_PATHS: &[&str] = &[
 ];
 
 /// REST paths that once existed and were REMOVED — `/table/stream`, the
-/// pre-Flight Arrow-over-HTTP exception, went in #547. The docs may mention
+/// pre-Flight Arrow-over-HTTP exception, went in #547; `/transit/bulk` went
+/// in #624 (a batch is Flight: the `transit_bulk` action). The docs may mention
 /// them only as history (a line that says `removed` / `not mounted` /
 /// `historical`); `docs_parity` below fails the build otherwise (#588).
-pub const REMOVED_PATHS: &[&str] = &["/table/stream"];
+pub const REMOVED_PATHS: &[&str] = &["/table/stream", "/transit/bulk"];
 
 #[cfg(test)]
 mod docs_parity {
@@ -536,10 +531,6 @@ mod openapi_parity {
         let transit = json!({"origin_lon": 4.35, "origin_lat": 50.85,
                              "destination_lon": 4.40, "destination_lat": 51.22});
         refuses::<super::super::transit_handler::TransitRequest>("/transit", transit.clone());
-        refuses::<super::super::transit_handler::TransitBulkRequest>(
-            "/transit/bulk",
-            json!({"queries": [transit]}),
-        );
         refuses::<super::super::elevation::HeightRequest>(
             "/height",
             json!({"coordinates": "4.3517,50.8503"}),

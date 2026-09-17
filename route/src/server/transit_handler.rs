@@ -42,7 +42,7 @@ use crate::transit::timetable::{StopIdx, Timetable};
 use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::state::ServerState;
-use super::types::{ErrorResponse, ValidatedJson, ValidatedQuery};
+use super::types::{ErrorResponse, ValidatedQuery};
 
 /// Per-mode defaults for access/egress fan-out. `(radius_m, max_stops, speed_mps)`.
 ///
@@ -868,31 +868,14 @@ pub fn compute_transit_journey_with_access(
     })
 }
 
-// =====================================================================
-// Bulk endpoint: POST /transit/bulk (issue #105, #120)
-// =====================================================================
-
-/// Request body for `POST /transit/bulk`. Carries a batch of
-/// independent transit queries and an optional per-batch override
-/// of the per-query parameters (applied as defaults to each query
-/// that doesn't set them explicitly).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
-pub struct TransitBulkRequest {
-    pub queries: Vec<TransitRequest>,
-    /// Optional per-batch default: passed down to any query that
-    /// omits its own `max_walk_m`.
-    #[serde(default)]
-    pub max_walk_m: Option<u32>,
-    /// Optional per-batch default: passed down to any query that
-    /// omits its own `access_mode`.
-    #[serde(default)]
-    pub access_mode: Option<String>,
-    /// Optional per-batch default: passed down to any query that
-    /// omits its own `egress_mode`.
-    #[serde(default)]
-    pub egress_mode: Option<String>,
-}
+// =============================================================================
+// Batch multimodal routing (#105, #120). The surface is the Arrow Flight
+// `transit_bulk` action (flight.rs); the REST `POST /transit/bulk` handler
+// that used to sit here was removed on 2026-09-17 (#624): a batch is Flight,
+// a single query is REST. What stays is the batch ENGINE — origin grouping so
+// same-origin queries share one access leg (7× vs serial, measured) — which
+// the Flight action runs chunk by chunk.
+// =============================================================================
 
 /// One result slot in a bulk response. Either a successful
 /// [`TransitResponse`] or a machine-readable error with HTTP status.
@@ -901,12 +884,6 @@ pub struct TransitBulkRequest {
 pub enum TransitBulkResult {
     Ok { journey: Box<TransitResponse> },
     Err { status: u16, error: String },
-}
-
-#[derive(Debug, Serialize)]
-pub struct TransitBulkResponse {
-    pub count: usize,
-    pub results: Vec<TransitBulkResult>,
 }
 
 /// Origin grouping key for `/transit/bulk` (#120).
@@ -956,233 +933,7 @@ impl OriginGroupKey {
     }
 }
 
-/// `/transit/bulk`'s own mixed-region rejection: query `query_idx`
-/// carries a coordinate the bbox tier proved is outside the region the
-/// batch resolved to. 501, like every other cross-region rejection, but
-/// worded to point at the offending query and side.
-///
-/// Split out of the preflight loop so the wording is checkable without
-/// a loaded multi-region container (#577).
-fn bulk_out_of_region(
-    query_idx: usize,
-    endpoint: crate::server::regions::Endpoint,
-    lon: f64,
-    lat: f64,
-    region_id: &str,
-) -> (StatusCode, ErrorResponse) {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        ErrorResponse::new(format!(
-            "query[{}]: {} ({:.4},{:.4}) does not snap to region {}",
-            query_idx,
-            match endpoint {
-                crate::server::regions::Endpoint::Source => "origin",
-                crate::server::regions::Endpoint::Destination => "destination",
-                _ => "coord",
-            },
-            lon,
-            lat,
-            region_id
-        )),
-    )
-}
-
-/// `/transit/bulk`'s rejection for a query the bbox tier could not
-/// decide: the full snap ran and failed. Same status and wording as
-/// every other surface, prefixed with the query index.
-fn bulk_query_dispatch_error(
-    query_idx: usize,
-    err: crate::server::regions::DispatchError,
-) -> (StatusCode, ErrorResponse) {
-    let (status, mut body) = err.into_response_parts();
-    body.error = format!("query[{}]: {}", query_idx, body.error);
-    (status, body)
-}
-
-#[utoipa::path(post, path = "/transit/bulk", tag = "Transit", summary = "Batch multimodal transit journeys",
-    request_body(content = serde_json::Value, description = "{queries:[TransitRequest], defaults}"),
-    responses((status = 200, description = "Per-query journeys"),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-        (status = 503, description = "Transit not loaded", body = ErrorResponse)))]
-/// `POST /transit/bulk` — batch multimodal routing.
-///
-/// Runs every query in the batch in parallel via Rayon. Two performance
-/// tricks compound here:
-///
-/// 1. **Origin grouping (#120)** — queries are grouped by
-///    [`OriginGroupKey`] and the access fan-out (snap + R-tree + CCH
-///    1-to-N, ~30–40 % of single-query cost) is computed once per
-///    unique group, then shared across every query in the group via
-///    [`compute_transit_journey_with_access`].
-/// 2. **Thread-local scratch reuse** — each Rayon worker reuses its
-///    `RAPTOR_STATE` and `CCH_QUERY_STATE` thread-locals across calls.
-///
-/// For a workload of N queries with M ≪ N unique origins, the access
-/// phase amortises by a factor of N / M. For matrix-shaped workloads
-/// (every origin distinct), grouping is a no-op and the overhead is
-/// the cost of a single HashMap insert per query.
-///
-/// Validation runs **per query**, not per group — a malformed query in
-/// a group still yields a typed `TransitBulkResult::Err` instead of
-/// poisoning the rest.
-///
-/// Cancellation: if the client disconnects, Axum drops the handler
-/// future. This is not yet plumbed through to a cooperative
-/// per-query cancellation flag — a follow-up.
-pub async fn transit_bulk_handler(
-    State(regions): State<Arc<RegionsState>>,
-    ValidatedJson(req): ValidatedJson<TransitBulkRequest>,
-) -> Result<Json<TransitBulkResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // #334: dispatch by the first query's access origin region. Every
-    // query in the batch must dispatch to the same region; mixed-region
-    // batches return 501 (the existing cross-region semantic).
-    // Soft cap on batch size. 100k is generous for interactive use;
-    // operators doing matrix-style work should use the Flight `matrix`
-    // action for the road side and Flight `transit_bulk` (up to 500k
-    // queries/call) for transit.
-    const MAX_BATCH: usize = 100_000;
-    if req.queries.len() > MAX_BATCH {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ErrorResponse::new(format!(
-                "bulk batch size {} exceeds MAX_BATCH {MAX_BATCH}",
-                req.queries.len()
-            ))),
-        ));
-    }
-    if req.queries.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new("queries must not be empty".to_string())),
-        ));
-    }
-
-    // Snap the first query's origin to pick the region, then preflight
-    // EVERY query: each origin and destination must snap into the same
-    // region as the first query. Mixed-region batches return 501 — the
-    // canonical cross-region semantic also used by /transit, /route and
-    // /table. Validating up front lets us return one clear error
-    // instead of fanning out N per-query 404s.
-    let first_access_mode = req.queries[0]
-        .access_mode
-        .as_deref()
-        .or(req.access_mode.as_deref())
-        .map(|s| s.to_lowercase())
-        .unwrap_or_else(|| "foot".to_string());
-    // #343: snap query[0] once to pick the winning region, then for
-    // queries[1..] use the cheap bbox-tier confirm_in_region check
-    // before falling back to full snap. On a 100 k same-origin-region
-    // batch this drops preflight from ~1 s of full snaps to ~50 ms of
-    // bbox comparisons + a handful of border-overlap fallbacks.
-    let ctx = match QueryContext::from_pair(
-        &regions,
-        req.queries[0].origin_lon,
-        req.queries[0].origin_lat,
-        req.queries[0].destination_lon,
-        req.queries[0].destination_lat,
-        &first_access_mode,
-    ) {
-        Ok(ctx) => ctx,
-        Err(err) => {
-            let (status, body) = err.into_response_parts();
-            return Err((status, Json(body)));
-        }
-    };
-    let state = Arc::clone(&ctx.state);
-    for (i, q) in req.queries.iter().enumerate().skip(1) {
-        let q_mode = q
-            .access_mode
-            .as_deref()
-            .or(req.access_mode.as_deref())
-            .map(|s| s.to_lowercase())
-            .unwrap_or_else(|| "foot".to_string());
-        // Confirm origin first then destination, taking the bbox-tier
-        // fast path when neither point sits in a border-overlap zone.
-        for (lon, lat, ep) in [
-            (
-                q.origin_lon,
-                q.origin_lat,
-                crate::server::regions::Endpoint::Source,
-            ),
-            (
-                q.destination_lon,
-                q.destination_lat,
-                crate::server::regions::Endpoint::Destination,
-            ),
-        ] {
-            match regions.confirm_in_region(ctx.region_idx, lon, lat) {
-                crate::server::regions::RegionAffinity::In => {}
-                crate::server::regions::RegionAffinity::OutOfBbox => {
-                    // Definite cross-region — surface 501 with the
-                    // query index + the offending side.
-                    let (status, body) = bulk_out_of_region(i, ep, lon, lat, &ctx.region_id);
-                    return Err((status, Json(body)));
-                }
-                crate::server::regions::RegionAffinity::Ambiguous => {
-                    // Bbox overlap — must run a full snap to confirm.
-                    if let Err(err) = regions.dispatch_p2p(lon, lat, lon, lat, &q_mode) {
-                        let (status, body) = bulk_query_dispatch_error(i, err);
-                        return Err((status, Json(body)));
-                    }
-                }
-            }
-        }
-    }
-    if state.transit.is_none() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse::new(format!(
-                "{} (region {})",
-                super::transit_unavailable_reason(super::transit_enabled()),
-                ctx.region_id
-            ))),
-        ));
-    }
-
-    // Apply per-batch defaults to every query that omits the field.
-    let batch_max_walk_m = req.max_walk_m;
-    let batch_access_mode = req.access_mode.clone();
-    let batch_egress_mode = req.egress_mode.clone();
-    let mut queries = req.queries;
-    for q in &mut queries {
-        if q.max_walk_m.is_none()
-            && let Some(m) = batch_max_walk_m
-        {
-            q.max_walk_m = Some(m);
-        }
-        if q.access_mode.is_none()
-            && let Some(ref s) = batch_access_mode
-        {
-            q.access_mode = Some(s.clone());
-        }
-        if q.egress_mode.is_none()
-            && let Some(ref s) = batch_egress_mode
-        {
-            q.egress_mode = Some(s.clone());
-        }
-    }
-    let count = queries.len();
-
-    // Move the actual work off the async executor onto the Rayon
-    // thread pool via `spawn_blocking` — single-query transit work
-    // is pure CPU and non-trivially long, so holding a Tokio worker
-    // for the whole batch is wrong.
-    let state_clone = Arc::clone(&state);
-    let results: Vec<TransitBulkResult> =
-        tokio::task::spawn_blocking(move || run_bulk(state_clone.as_ref(), &queries))
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(format!("bulk task panicked: {e}"))),
-                )
-            })?;
-
-    ctx.record("transit");
-    Ok(Json(TransitBulkResponse { count, results }))
-}
-
-/// Synchronous core of `transit_bulk_handler`. Exposed so tests can
+/// Synchronous core of `Flight `transit_bulk` action`. Exposed so tests can
 /// drive the grouped path without an axum runtime.
 ///
 /// Groups queries by [`OriginGroupKey`], computes one
@@ -1251,7 +1002,6 @@ pub fn run_bulk(state: &ServerState, queries: &[TransitRequest]) -> Vec<TransitB
         })
         .collect()
 }
-
 fn bad_request(msg: &str) -> (StatusCode, Json<ErrorResponse>) {
     (
         StatusCode::BAD_REQUEST,
@@ -1405,67 +1155,4 @@ fn snap_to_rank_role(
         .snap_index
         .snap_filtered_role(lon, lat, mode_idx, None, role_filter)?;
     mode_data.rank_for_original(orig)
-}
-
-#[cfg(test)]
-mod bulk_reject_tests {
-    use super::{bulk_out_of_region, bulk_query_dispatch_error};
-    use crate::server::regions::{DispatchError, Endpoint};
-    use axum::http::StatusCode;
-
-    /// #577: `/transit/bulk` rejects a mixed-region batch on its own
-    /// wording, not the dispatcher's — the bbox tier decides for
-    /// `queries[1..]`, so the message names the query and the side.
-    /// Byte-exact: this is the rejection the prologue was carrying.
-    #[test]
-    fn out_of_region_query_is_501_with_the_query_index_and_side() {
-        let (status, body) = bulk_out_of_region(7, Endpoint::Source, 6.1296, 49.6116, "BE");
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(
-            body.error,
-            "query[7]: origin (6.1296,49.6116) does not snap to region BE"
-        );
-
-        let (status, body) = bulk_out_of_region(0, Endpoint::Destination, 4.3517, 50.8503, "LU");
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(
-            body.error,
-            "query[0]: destination (4.3517,50.8503) does not snap to region LU"
-        );
-    }
-
-    /// The border-overlap fallback: the full snap ran and returned a
-    /// dispatch error. Status and wording stay the dispatcher's, with
-    /// the query index prefixed.
-    #[test]
-    fn ambiguous_query_keeps_the_dispatcher_status_and_wording() {
-        let (status, body) = bulk_query_dispatch_error(
-            3,
-            DispatchError::CrossRegion {
-                src_region: "BE".to_string(),
-                dst_region: "LU".to_string(),
-            },
-        );
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(
-            body.error,
-            "query[3]: route spans regions BE \u{2192} LU; cross-region overlay not yet implemented (#91 Phase 2)"
-        );
-
-        let (status, body) = bulk_query_dispatch_error(
-            1,
-            DispatchError::NoRegion {
-                endpoint: Endpoint::Source,
-                lon: 0.0,
-                lat: 0.0,
-                mode: "foot".to_string(),
-                tried: vec!["BE".to_string()],
-            },
-        );
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body.error,
-            "query[1]: No road found within snap distance for source (0, 0) mode=foot"
-        );
-    }
 }
