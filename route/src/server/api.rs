@@ -5,7 +5,6 @@
 
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
     http::StatusCode,
     routing::{get, post},
 };
@@ -33,7 +32,6 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::route::route_handler,
         super::table::table_post_handler,
         super::isochrone_handler::isochrone_handler,
-        super::isochrone_handler::isochrone_bulk_handler,
         super::nearest::nearest_handler,
         super::matching::match_trace_handler,
         super::trip::trip_handler,
@@ -55,7 +53,6 @@ pub use super::types::{ErrorResponse, Waypoint, parse_mode, validate_coord};
         super::route::StepManeuver,
         super::table::TablePostRequest,
         super::table::TableResponse,
-        super::isochrone_handler::BulkIsochroneRequest,
         super::isochrone_handler::IsochroneRequest,
         super::isochrone_handler::IsochroneResponse,
         super::isochrone_handler::ContourFeature,
@@ -155,25 +152,12 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
             Duration::from_secs(120),
         ));
 
-    // Streaming routes: longer timeout, larger body limit, no compression, stricter concurrency
-    // Streaming routes are memory-intensive (Arrow IPC, bulk isochrones), so limit to 4 concurrent
-    // /table/stream has been replaced by Arrow Flight gRPC (see server/flight.rs)
-    let stream_routes = Router::new()
-        .route(
-            "/isochrone/bulk",
-            post(super::isochrone_handler::isochrone_bulk_handler),
-        )
-        .layer(DefaultBodyLimit::max(256 * 1024 * 1024)) // 256MB
-        .layer(ConcurrencyLimitLayer::new(4))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(600),
-        ));
+    // No streaming REST routes remain: `/table/stream` went to Flight in
+    // #547, `/isochrone/bulk` and `/transit/bulk` in #624 — a batch is Flight.
 
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .merge(api_routes)
-        .merge(stream_routes)
         .route("/metrics", get(|| async move { metric_handle.render() }))
         .layer(CatchPanicLayer::new())
         .layer(prometheus_layer)
@@ -200,7 +184,6 @@ pub const MOUNTED_PATHS: &[&str] = &[
     "/nearest",
     "/table",
     "/isochrone",
-    "/isochrone/bulk",
     "/trip",
     "/match",
     "/catchment",
@@ -212,11 +195,12 @@ pub const MOUNTED_PATHS: &[&str] = &[
 ];
 
 /// REST paths that once existed and were REMOVED — `/table/stream`, the
-/// pre-Flight Arrow-over-HTTP exception, went in #547; `/transit/bulk` went
-/// in #624 (a batch is Flight: the `transit_bulk` action). The docs may mention
+/// pre-Flight Arrow-over-HTTP exception, went in #547; `/transit/bulk` and
+/// `/isochrone/bulk` went in #624 (a batch is Flight: the `transit_bulk` and
+/// `isochrone` actions). The docs may mention
 /// them only as history (a line that says `removed` / `not mounted` /
 /// `historical`); `docs_parity` below fails the build otherwise (#588).
-pub const REMOVED_PATHS: &[&str] = &["/table/stream", "/transit/bulk"];
+pub const REMOVED_PATHS: &[&str] = &["/table/stream", "/transit/bulk", "/isochrone/bulk"];
 
 #[cfg(test)]
 mod docs_parity {
@@ -515,10 +499,6 @@ mod openapi_parity {
         refuses::<super::super::isochrone_handler::IsochroneRequest>(
             "/isochrone",
             json!({"lon": 4.35, "lat": 50.85, "mode": "car", "time_s": 600}),
-        );
-        refuses::<super::super::isochrone_handler::BulkIsochroneRequest>(
-            "/isochrone/bulk",
-            json!({"origins": pair, "time_s": 600, "mode": "car"}),
         );
         refuses::<super::super::trip::TripRequest>("/trip", json!({"points": pair}));
         refuses::<super::super::matching::MatchRequest>("/match", json!({"points": pair}));
