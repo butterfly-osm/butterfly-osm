@@ -119,11 +119,11 @@ human units — seconds and metres, suffixed `_s` / `_m` (`duration_s`,
 | `GET /nearest` | snap a coordinate to nearby road segments |
 | `POST /table` | many-to-many duration / distance matrix |
 | `GET /isochrone` | one reachability polygon (GeoJSON or WKB), `direction=depart\|arrive`, multiple `contours` |
-| `POST /isochrone/bulk` | batch isochrones as a WKB stream |
+| (`POST /isochrone/bulk`) | removed in #624 — batches are the Flight `isochrone` action |
 | `POST /trip` | TSP / trip optimisation (nearest-neighbour + 2-opt + or-opt) |
 | `POST /match` | map-match a GPS trace |
 | `POST /catchment` | catchment hulls around stores from client points |
-| `GET /transit`, `POST /transit/bulk` | multimodal journeys, single and batched |
+| `GET /transit` | multimodal journeys, single (batches: Flight `transit_bulk`; the REST `/transit/bulk` was removed in #624) |
 | `GET /health`, `/version`, `/regions`, `/metrics` | liveness, build, loaded regions, Prometheus |
 | `GET /height`, `/swagger-ui`, `/api-docs/openapi.json` | elevation (only mounted when DEM tiles are present); interactive docs |
 

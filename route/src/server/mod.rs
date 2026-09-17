@@ -8,7 +8,7 @@
 //! - `GET /nearest` - Snap to nearest road segments
 //! - `POST /table` - Distance matrix (bucket M2M)
 //! - `GET /isochrone` - Reachability polygon (GeoJSON/WKB)
-//! - `POST /isochrone/bulk` - Parallel batch isochrones (WKB stream)
+//! - (`POST /isochrone/bulk` — removed in #624; batches are the Flight `isochrone` action)
 //! - `POST /trip` - TSP/trip optimization
 //! - `POST /match` - GPS trace map matching (HMM + Viterbi)
 //! - `GET /height` - Elevation lookup (SRTM DEM)

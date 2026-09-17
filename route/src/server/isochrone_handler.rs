@@ -1,13 +1,7 @@
-//! /isochrone and /isochrone/bulk handlers — reachability polygons
+//! /isochrone handler — reachability polygons (the REST /isochrone/bulk
+//! handler was removed in #624: a batch is the Flight `isochrone` action)
 
-use axum::{
-    Json,
-    body::Body,
-    extract::State,
-    http::{StatusCode, header},
-    response::{IntoResponse, Response},
-};
-use rayon::prelude::*;
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
@@ -20,7 +14,7 @@ use super::query_context::QueryContext;
 use super::regions::RegionsState;
 use super::route::{default_direction, default_geometries};
 use super::state::ServerState;
-use super::types::{ErrorResponse, ValidatedJson, ValidatedQuery, parse_mode, validate_coord};
+use super::types::{ErrorResponse, ValidatedQuery, parse_mode, validate_coord};
 use crate::range::ContourPolygon;
 
 // ============ Types ============
@@ -168,35 +162,6 @@ pub struct IsochroneResponse {
     /// Each segment is [[lon, lat], [lon, lat], ...]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<Vec<Vec<[f64; 2]>>>,
-}
-
-/// Bulk isochrone request
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)] // #612: a parameter we cannot honour is refused, not ignored
-pub struct BulkIsochroneRequest {
-    /// List of origins as [lon, lat] pairs (max 10,000)
-    #[schema(example = json!([[4.3517, 50.8503], [4.3617, 50.8553], [4.3717, 50.8603]]))]
-    origins: Vec<[f64; 2]>,
-    /// Time limit in seconds (1-7200). The one-contour time threshold;
-    /// exactly one of `time_s` / `distance_m` must be set.
-    #[serde(default)]
-    #[schema(example = 600)]
-    time_s: Option<u32>,
-    /// Isodistance threshold in METRES (1-100000) of road length along the
-    /// time-shortest path (#612). Exactly one of `time_s` / `distance_m`
-    /// must be set.
-    #[serde(default)]
-    #[schema(example = json!(null))]
-    distance_m: Option<u32>,
-    /// Transport mode: car, bike, or foot
-    #[schema(example = "car")]
-    mode: String,
-    /// Exclude road types: comma-separated list of "toll", "ferry", "motorway"
-    #[serde(default)]
-    exclude: Option<String>,
-    /// Avoid polygon(s) as JSON array of coordinate rings
-    #[serde(default)]
-    avoid_polygons: Option<String>,
 }
 
 /// ONE rendering of every reason [`isochrone_polygons`] can refuse to start,
@@ -886,206 +851,9 @@ pub fn depart_frontier(
 
 // ============ Bulk Isochrone Handler ============
 
-/// POST /isochrone/bulk - Compute multiple isochrones in parallel, return WKB stream
-///
-/// Returns a binary stream of WKB polygons with length-prefixed format:
-/// For each isochrone: [4 bytes: origin_idx as u32][4 bytes: wkb_len as u32][wkb_len bytes: WKB]
-#[utoipa::path(
-    post,
-    path = "/isochrone/bulk",
-    tag = "Isochrone",
-    summary = "Compute multiple isochrones in parallel",
-    description = "Computes isochrones for multiple origins in parallel using rayon + PHAST.\nReturns a binary stream of WKB polygons with length-prefixed framing.\n\nBinary format per isochrone:\n- 4 bytes: origin index (u32 LE)\n- 4 bytes: WKB length (u32 LE)\n- N bytes: WKB polygon\n\nMaximum 10,000 origins. Supports cooperative cancellation on client disconnect.",
-    request_body(content = BulkIsochroneRequest, description = "Origins, time limit, and mode"),
-    responses(
-        (status = 200, description = "Binary WKB stream", content_type = "application/octet-stream"),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-    )
-)]
-pub async fn isochrone_bulk_handler(
-    State(regions): State<Arc<RegionsState>>,
-    ValidatedJson(req): ValidatedJson<BulkIsochroneRequest>,
-) -> impl IntoResponse {
-    // #539: seconds of sync rayon work — demote this worker out of the async
-    // scheduler so bulk storms can't starve /health (liveness kills).
-    tokio::task::block_in_place(move || isochrone_bulk_sync(regions, req))
-}
-
-fn isochrone_bulk_sync(
-    regions: Arc<RegionsState>,
-    req: BulkIsochroneRequest,
-) -> axum::response::Response {
-    use crate::range::contour::ContourResult;
-    use crate::range::wkb_stream::encode_polygon_wkb;
-
-    if req.origins.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new("origins cannot be empty")),
-        )
-            .into_response();
-    }
-    const MAX_BULK_ORIGINS: usize = 10_000;
-    if req.origins.len() > MAX_BULK_ORIGINS {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(format!(
-                "too many origins: {} exceeds maximum of {}",
-                req.origins.len(),
-                MAX_BULK_ORIGINS
-            ))),
-        )
-            .into_response();
-    }
-    for (i, &[lon, lat]) in req.origins.iter().enumerate() {
-        if let Err(e) = validate_coord(lon, lat, &format!("origin[{}]", i)) {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-        }
-    }
-    // One threshold, in seconds or in metres (#612) — the same parser the
-    // single endpoint uses, so the two cannot disagree about what is valid.
-    let requested =
-        match parse_requested_contours(req.time_s, None, req.distance_m, None, &REST_SPELLING) {
-            Ok(r) => r,
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-            }
-        };
-
-    // Region dispatch (#91): every origin must snap to the same
-    // region. Mixed-region bulk is rejected with 501 — same rule as
-    // single /isochrone.
-    let coords_iter = req.origins.iter().map(|&[lon, lat]| (lon, lat));
-    let ctx = match QueryContext::from_points(&regions, coords_iter, &req.mode) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            let (code, body) = e.into_response_parts();
-            return (code, Json(body)).into_response();
-        }
-    };
-    let state = Arc::clone(&ctx.state);
-
-    let mode = match parse_mode(&req.mode, &state.mode_lookup) {
-        Ok(m) => m,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-        }
-    };
-
-    // Parse exclude parameter
-    let exclude_mask = match super::exclude::parse_exclude_option(&req.exclude) {
-        Ok(m) => m,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-        }
-    };
-
-    // Parse avoid_polygons
-    let avoid_json = match super::avoid::parse_avoid_option(&req.avoid_polygons) {
-        Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-        }
-    };
-
-    let mode_data = state.get_mode(mode);
-
-    // #566: one resolution of exclude + avoid_polygons. #561: the snap
-    // mask is BORROWED when neither option is present — /isochrone/bulk
-    // used to clone the whole edge bitset on every request.
-    let weight_plan = match super::avoid::resolve_weights(
-        &state,
-        &mode_data,
-        mode,
-        exclude_mask,
-        avoid_json.as_deref(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
-        }
-    };
-    let snap_mask: &[u64] = &weight_plan.snap_mask;
-
-    // Recustomized flats (avoid > exclude). `Some` also selects the legacy
-    // single seed inside the core — phantom partials assume base weights.
-    // Bulk is depart-only, so `down_rev` is never read; it is carried so the
-    // one query shape serves every surface.
-    let flats = weight_plan.weights().map(|w| IsochroneFlats {
-        up: &w.time_up_flat,
-        down_fwd: &w.time_down_fwd_flat,
-        down_rev: &w.time_down_flat,
-    });
-
-    // Bulk isochrones are depart-only (no `direction` field), so origins
-    // act as sources.
-    let thresholds = &requested.values[..];
-
-    // Process all origins in parallel
-    let results: Vec<(u32, Vec<u8>)> = req
-        .origins
-        .par_iter()
-        .enumerate()
-        .filter_map(|(idx, &[lon, lat])| {
-            // THE pipeline (#549) — same seeds, same frontier, same anchor
-            // and pin as REST /isochrone.
-            let field = isochrone_polygons(
-                &state,
-                &mode_data,
-                mode,
-                &IsochroneQuery {
-                    metric: requested.metric,
-                    lon,
-                    lat,
-                    thresholds,
-                    reverse: false,
-                    mode_name: &req.mode,
-                    snap_mask: Some(snap_mask),
-                    flats,
-                    include_network: false,
-                },
-            )
-            .ok()?;
-            let contour = ContourResult::from_topology(
-                field.topologies.into_iter().next().unwrap_or_default(),
-            );
-
-            // Encode WKB
-            encode_polygon_wkb(&contour).map(|wkb| (idx as u32, wkb))
-        })
-        .collect();
-
-    // Build response: concatenated length-prefixed WKB
-    let n_total_origins = req.origins.len();
-    let n_successful = results.len();
-    let mut response = Vec::with_capacity(results.len() * 500);
-    for (origin_idx, wkb) in results {
-        response.extend_from_slice(&origin_idx.to_le_bytes());
-        response.extend_from_slice(&(wkb.len() as u32).to_le_bytes());
-        response.extend_from_slice(&wkb);
-    }
-
-    ctx.record("isochrone_bulk");
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        // Progress tracking headers
-        .header("X-Total-Origins", n_total_origins.to_string())
-        .header("X-Successful-Isochrones", n_successful.to_string())
-        .header(
-            "X-Failed-Isochrones",
-            (n_total_origins - n_successful).to_string(),
-        )
-        .body(Body::from(response))
-        .unwrap_or_else(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to build bulk isochrone response",
-            )
-                .into_response()
-        })
-}
+/// Origins per Flight `isochrone` batch (#624; the removed REST
+/// `/isochrone/bulk` had the same cap).
+pub const MAX_BULK_ORIGINS: usize = 10_000;
 
 #[cfg(test)]
 mod threshold_tests {
