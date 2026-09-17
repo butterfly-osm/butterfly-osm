@@ -6710,10 +6710,11 @@ mod isochrone_options_tests {
         }
     }
 
-    /// Every surface spells the recustomized flats the SAME way. Three
-    /// constructions exist (REST single, REST bulk, Flight action); if they
-    /// ever disagree about which flat feeds which direction, one transport
-    /// answers a different polygon under an exclusion and nothing says so.
+    /// Every surface spells the recustomized flats the SAME way. Two
+    /// constructions exist (REST single, Flight action — the REST bulk went
+    /// in #624); if they ever disagree about which flat feeds which
+    /// direction, one transport answers a different polygon under an
+    /// exclusion and nothing says so.
     #[test]
     fn every_surface_spells_the_recustomized_flats_identically() {
         fn blocks(src: &str) -> Vec<String> {
@@ -6731,8 +6732,8 @@ mod isochrone_options_tests {
         all.extend(blocks(include_str!("isochrone_handler.rs")));
         assert_eq!(
             all.len(),
-            3,
-            "expected the three surfaces' flats literals, found {}: {all:?}",
+            2,
+            "expected the two surfaces' flats literals, found {}: {all:?}",
             all.len()
         );
         assert!(

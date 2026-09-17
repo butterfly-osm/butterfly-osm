@@ -3044,10 +3044,10 @@ def gate_flight_isochrone_batch(base):
     """#624: a BATCH is Flight. The `isochrone` action takes `origins` and
     several `intervals`, computed in ONE pass per origin, and its rows
     `(origin_idx, interval_s, polygon_wkb)` are the SAME BYTES as
-    (a) N single Flight calls, (b) REST /isochrone (per origin and per
-    contour) and (c) REST /isochrone/bulk (one threshold per call). An origin
-    off the network yields NULL polygons for every contour, never a silent
-    drop (#625 measured the double pass the REST bulk forced)."""
+    (a) N single Flight calls and (b) REST /isochrone (per origin and per
+    contour). An origin off the network yields NULL polygons for every
+    contour, never a silent drop (#625 measured the double pass the removed
+    REST bulk forced)."""
     print("== Flight isochrone batch == origins × intervals, same bytes as the single calls (#624) ==")
     passed = True
     origins = [(p[1], p[2]) for p in ISO_POINTS[:4]]
@@ -3062,7 +3062,7 @@ def gate_flight_isochrone_batch(base):
     passed &= check("batch: one row per origin × interval",
         len(rows) == len(origins) * len(intervals) and tb.num_rows == len(rows),
         f"{tb.num_rows} rows for {len(origins)}×{len(intervals)}")
-    same_single = same_rest = same_bulk = 0
+    same_single = same_rest = 0
     for i, (lon, lat) in enumerate(origins):
         one = flight_table(base, "isochrone", "car", {"lon": lon, "lat": lat, "intervals": intervals})
         for j in range(one.num_rows):
@@ -3075,24 +3075,9 @@ def gate_flight_isochrone_batch(base):
                 timeout=300, headers={"Accept": "application/octet-stream"})
             if rows.get((i, t)) == r:
                 same_rest += 1
-    for t in intervals:
-        body = json.dumps({"origins": [list(o) for o in origins], "time_s": t, "mode": "car"}).encode()
-        req = urllib.request.Request(f"{base}/isochrone/bulk", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            blob = resp.read()
-        pos = 0
-        while pos + 8 <= len(blob):
-            idx = int.from_bytes(blob[pos:pos + 4], "little")
-            ln = int.from_bytes(blob[pos + 4:pos + 8], "little")
-            wkb = blob[pos + 8:pos + 8 + ln]
-            pos += 8 + ln
-            if rows.get((idx, t)) == wkb:
-                same_bulk += 1
     n = len(origins) * len(intervals)
     passed &= check("batch ≡ N single Flight calls, byte for byte", same_single == n, f"{same_single}/{n}")
     passed &= check("batch ≡ REST /isochrone, byte for byte", same_rest == n, f"{same_rest}/{n}")
-    passed &= check("batch ≡ REST /isochrone/bulk, byte for byte", same_bulk == n, f"{same_bulk}/{n}")
     # An origin in the North Sea: NULL rows, the others untouched.
     sea = flight_table(base, "isochrone", "car",
         {"origins": [list(origins[0]), [2.5, 51.6]], "intervals": intervals})
@@ -3333,8 +3318,6 @@ def rest_probes():
             "stores": [{"id": "s1", "lon": o[0], "lat": o[1]}],
             "clients": [{"lon": 4.36, "lat": 50.86}, {"lon": 4.34, "lat": 50.84},
                         {"lon": 4.40, "lat": 50.88}]}),
-        "/isochrone/bulk": ("POST", "/isochrone/bulk",
-                            {"origins": [list(o), list(d)], "time_s": 300, "mode": "car"}),
     }
 
 
@@ -3367,8 +3350,6 @@ def rest_invalid_probes():
             "mode": "car", "hull_shape": "road", "percentiles": [50], "remove_outliers": False,
             "stores": [{"id": "s1", "lon": bad[0], "lat": bad[1]}],
             "clients": [{"lon": d[0], "lat": d[1]}]}),
-        "/isochrone/bulk": ("POST", "/isochrone/bulk",
-                            {"origins": [list(bad)], "time_s": 300, "mode": "car"}),
     }
 
 

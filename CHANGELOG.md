@@ -31,8 +31,9 @@ bulk runs two full passes for two contours.
   byte, plus the NULL-row rule.
 - REST `POST /transit/bulk` removed (`REMOVED_PATHS`; docs say so). Its
   batch is the Flight `transit_bulk` action.
-- REST `POST /isochrone/bulk` is deprecated: kept only until its last
-  consumer (gondola) is on the Flight batch, then removed the same way.
+- REST `POST /isochrone/bulk` removed the same way — its last consumer had
+  already moved to single calls (gondola, 2026-09-17), so nothing was left
+  on it. The 600 s / 256 MiB streaming tier of the Axum router went with it.
 
 ### 2026-09-16 — An isodistance is exact where its truth is defined: the field's shell, the latest cut time, length-proportional cuts (#620)
 
