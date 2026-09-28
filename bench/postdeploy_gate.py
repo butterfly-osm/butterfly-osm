@@ -2130,7 +2130,7 @@ def gate_route_choice(base, trips_path):
     return passed
 
 
-def gate_bands(base, refs_prefix):
+def gate_bands(base, refs_prefix_override=None):
     """best / typical / worst (2026-09-03). ONE public car profile = typical
     (weekday 07-19 h), two opt-in bands on the same artefact: best = nights
     (free-flow), worst = weekday peaks. Invariants:
@@ -2253,7 +2253,16 @@ def gate_bands(base, refs_prefix):
                 "best", "typical", "worst"}
         passed &= check("Flight isochrone uncertainty=bands: one polygon per band", oki, f"{len(iso)} rows")
 
-    # ---- (c) level per profile against its time-stamped reference set
+    # ---- (c) level per profile against its time-stamped reference set.
+    # Resolved HERE, not at registration (2026-09-28): (a) and (b) need no
+    # reference set, so an engine that serves the bands is still held to
+    # every-API coverage and ordering when the sets are retired — only the
+    # level part skips, by name.
+    try:
+        refs_prefix = refs_path(REFS_PREFIX, refs_prefix_override)
+    except RefsRetired as e:
+        print(f"  [SKIP] band levels vs reference: {e}")
+        return passed
     lo, hi = t["band_level"]
     for name, field in (("typical", "min"), ("best", "best_min"), ("worst", "worst_min")):
         path = f"{refs_prefix}_{name}.csv"
@@ -3590,7 +3599,7 @@ def build_gates(args):
         ("isochrone_topology", False, lambda: gate_isochrone_topology(b)),
         ("isochrone_reach_truth", False, lambda: gate_isochrone_reach_truth(b)),
         ("isochrone_upper_bound", False, lambda: gate_isochrone_upper_bound(b)),
-        ("bands", False, lambda: gate_bands(b, refs_path(REFS_PREFIX, args.refs_prefix))),
+        ("bands", False, lambda: gate_bands(b, args.refs_prefix)),
         ("ticket_invariants", False, lambda: gate_ticket_invariants(b)),
         ("lopsided_matrix", False, lambda: gate_lopsided(b)),
         # AFTER lopsided_matrix, and that is load-bearing (#612 — asserted by
