@@ -250,17 +250,15 @@ THRESHOLDS = {
     "foot_speed_kmh": (2.0, 8.0),  # #522: foot routes reported up to 19 km/h
     "bike_speed_kmh": (5.0, 32.0),
     "motorway_floor_kmh": 50.0,
-    # #606 `exclude=motorway`. `fast_share_floor_kmh` is the speed above which
-    # the engine's own per-edge annotation means "unobstructed high-speed
-    # link"; `exclude_fast_share_ratio` bounds how much of THAT share may
-    # survive the exclusion, as a fraction of the SAME route's unrestricted
-    # share — a ratio, so it encodes no level and moves with the profile.
-    # Belgium keeps a real floor of non-motorway expressway (`trunk` at
-    # 120 km/h, e.g. the N4), so the honest bound is small-but-nonzero:
-    # measured 0.9-10.7 % after the fix against ~92 % before it, and the
-    # bound sits between with >2x headroom on both sides.
-    "fast_share_floor_kmh": 100.0,
-    "exclude_fast_share_ratio": 0.25,
+    # #606 `exclude=motorway`. The excluded route must carry ZERO edges of the
+    # excluded class — exact, read from `annotations=classes` (the flags the
+    # mask is built from), no constant. This one is structural: the fixture
+    # corridors must BE motorway-dominated for that zero to mean anything
+    # (share of the unrestricted route's length on motorway-class edges).
+    # Until 2026-09-28 the check inferred "motorway" from speed >= 100 km/h,
+    # which held only on the calibrated car: the clean base car annotates the
+    # N4 (`trunk`, 120 km/h) above 100 km/h too and the ratio failed.
+    "exclude_corridor_class_share_min": 0.25,
     "car_foot_detour_max": 3.0,
     "car_foot_holes_max": 2,
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
@@ -1230,6 +1228,22 @@ def gate_motorway_speed_floor(base):
     return passed
 
 
+def class_share(d, cls):
+    """Share of a /route's LENGTH on edges whose `classes` annotation carries
+    `cls` (2026-09-28). `classes` is per edge, comma-joined in the engine's
+    canonical order; `distance` is per edge too and clipped at the phantom
+    ends like the totals. None when either annotation is missing (an engine
+    without the annotation answers 400 before this is reached)."""
+    ann = d.get("annotations") or {}
+    dist, classes = ann.get("distance"), ann.get("classes")
+    if dist is None or classes is None or len(dist) != len(classes):
+        return None
+    total = sum(dist)
+    if total <= 0:
+        return None
+    return sum(x for x, c in zip(dist, classes) if cls in c.split(",")) / total
+
+
 def gate_exclude_motorway(base):
     """#606: `exclude=motorway` was close to a no-op — it moved an inter-city
     duration by under 4 % and left an 18.6 km "motorway-free" route 80 % on
@@ -1252,15 +1266,17 @@ def gate_exclude_motorway(base):
          mask. Two independent engines (bidirectional CCH, bucket M2M) read
          the same recustomized weights, so a half-applied mask shows up as a
          disagreement.
-      4. The corridor is actually abandoned. The unrestricted route runs
-         mostly on links the engine itself annotates at motorway speed; the
-         restricted one must not. The bound is RELATIVE — a fraction of the
-         SAME route's unrestricted share — so it encodes no level and moves
-         with the profile. Belgium leaves a real floor of non-motorway
-         expressway (the N4 to Arlon is `trunk` at 120 km/h and is correctly
-         NOT excluded), which is why the check is a ratio and not "zero":
-         measured 0.9-10.7 % of the unrestricted share after the fix, ~92 %
-         before it.
+      4. EXACT, no constant — the corridor is actually abandoned. Every route
+         edge reports the exclusion classes it carries (`annotations=classes`,
+         the very flags the mask is built from, 2026-09-28): the unrestricted
+         route runs mostly on `motorway` edges (structural: the fixture is a
+         motorway corridor), the restricted one carries NONE, and under
+         `motorway,toll,ferry` none of the three. Until 2026-09-28 this
+         inferred "motorway" from the speed annotation (>= 100 km/h, bounded
+         as a ratio of the unrestricted share), which held only on the
+         calibrated car: on the clean base car the N4 (`trunk`, 120 km/h,
+         correctly NOT excluded) annotates above 100 km/h too and the ratio
+         failed while the exclusion was exact.
     """
     print("== exclude=motorway is strict (#606) ==")
     corridors = [("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
@@ -1270,23 +1286,13 @@ def gate_exclude_motorway(base):
         # high-level shortcuts almost exclusively, a short one uses more base
         # edges, so the two ends of the hierarchy are both covered.
         ("Mechelen→Antwerp (E19)", 4.4800, 51.0259, 4.4025, 51.2194)]
-    floor_kmh = THRESHOLDS["fast_share_floor_kmh"]
-    max_ratio = THRESHOLDS["exclude_fast_share_ratio"]
+    share_min = THRESHOLDS["exclude_corridor_class_share_min"]
     cell_tol = THRESHOLDS["matrix_cell_tol"]
     passed = True
 
-    def fast_share(d):
-        """Share of route LENGTH the engine annotates at >= floor_kmh."""
-        ann = d.get("annotations") or {}
-        dist, spd = ann.get("distance") or [], ann.get("speed") or []
-        total = sum(dist)
-        if total <= 0:
-            return None
-        return sum(x for x, s in zip(dist, spd) if s >= floor_kmh) / total
-
     for name, olon, olat, dlon, dlat in corridors:
         try:
-            ann = "distance,duration,speed"
+            ann = "distance,duration,classes"
             plain = route_json(base, olon, olat, dlon, dlat, annotations=ann, timeout=600)
             excl = route_json(base, olon, olat, dlon, dlat, annotations=ann,
                 exclude="motorway", timeout=600)
@@ -1307,18 +1313,20 @@ def gate_exclude_motorway(base):
         passed &= check(f"{name}: /table agrees under the same mask",
             ok_cell, f"/route {d1:.0f}s vs /table {cell if cell is None else f'{cell:.0f}'}s")
 
-        s0, s1 = fast_share(plain), fast_share(excl)
-        if s0 is None or s1 is None:
-            passed &= check(f"{name}: fast-link share", False, "no annotations returned")
+        s0 = class_share(plain, "motorway")
+        s1 = class_share(excl, "motorway")
+        s2 = max(class_share(more, c) for c in ("motorway", "toll", "ferry"))
+        if None in (s0, s1, s2):
+            passed &= check(f"{name}: class annotations", False, "no classes/distance annotations returned")
             continue
-        # The corridor must be motorway-dominated for the check to mean
+        # The corridor must be motorway-dominated for the zero to mean
         # anything — gate_motorway_speed_floor asserts the same thing by speed.
         passed &= check(f"{name}: the corridor IS motorway",
-            s0 >= 0.25, f"{100 * s0:.0f}% of its length at >= {floor_kmh:.0f} km/h")
-        passed &= check(f"{name}: the excluded route leaves it",
-            s1 <= s0 * max_ratio,
-            f"{100 * s1:.1f}% at >= {floor_kmh:.0f} km/h "
-            f"(<= {100 * s0 * max_ratio:.1f}% = {max_ratio:g} x the unrestricted {100 * s0:.0f}%)")
+            s0 >= share_min, f"{100 * s0:.0f}% of its length on motorway-class edges (>= {100 * share_min:.0f}%)")
+        passed &= check(f"{name}: the excluded route carries NO motorway edge",
+            s1 == 0.0, f"{100 * s1:.2f}% of its length on motorway-class edges (unrestricted: {100 * s0:.0f}%)")
+        passed &= check(f"{name}: under motorway,toll,ferry no edge of any excluded class",
+            s2 == 0.0, f"max class share {100 * s2:.2f}%")
     return passed
 
 

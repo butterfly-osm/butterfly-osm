@@ -29,6 +29,15 @@ FAILED on the 400.
   follow `/health.bands` — read once — and skip when it is `false`. An engine
   that does not report the field is taken as serving the bands, so an older
   engine's probes fail loudly rather than skip.
+- `GET /route` gains `annotations=classes`: per route edge, the exclusion
+  classes it carries (`toll`, `ferry`, `motorway`; the flags `exclude=` masks
+  from). `gate_exclude_motorway` now asserts the exact invariant — the
+  excluded route carries NO edge of the excluded class, and under
+  `motorway,toll,ferry` none of the three — instead of inferring "motorway"
+  from speed >= 100 km/h, a proxy that held only on the calibrated car (the
+  base car annotates the N4 `trunk` at 120 km/h above 100 km/h too, and the
+  ratio failed while the exclusion was exact). Two speed-proxy thresholds
+  are gone from the table.
 - Nothing else is loosened: every other gate runs and must PASS.
 
 ### 2026-09-17 — A batch is Flight, a single query is REST: the `isochrone` action takes a batch; REST `/transit/bulk` is gone (#624, #625)

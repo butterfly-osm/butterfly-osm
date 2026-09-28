@@ -52,7 +52,7 @@ pub struct RouteRequest {
     /// Include turn-by-turn step instructions
     #[serde(default)]
     steps: bool,
-    /// Annotations: comma-separated list of "duration", "distance", "speed"
+    /// Annotations: comma-separated list of "duration", "distance", "speed", "classes"
     /// (one entry per route edge) and "nodes" (OSM node ids along the route)
     #[serde(default)]
     annotations: Option<String>,
@@ -131,6 +131,16 @@ pub struct RouteAnnotations {
     /// process and unstable across artifact rebuilds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nodes: Option<Vec<i64>>,
+    /// Per-edge exclusion classes (2026-09-28): the classes the edge carries
+    /// among `toll`, `ferry`, `motorway`, comma-joined in canonical order
+    /// (`"motorway,toll"`), empty when it carries none. These are the very
+    /// flags `exclude=` blocks, so a client — the post-deploy gate first —
+    /// can verify an exclusion EXACTLY: a route served under
+    /// `exclude=motorway` has no edge whose classes contain `motorway`. A
+    /// speed threshold cannot stand in for this: on the clean base car a
+    /// `trunk` at 120 km/h annotates faster than 100 km/h too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -229,7 +239,7 @@ pub struct StepManeuver {
         ("geometries" = Option<String>, Query, description = "Geometry encoding: polyline6 (default), geojson, points", example = "polyline6"),
         ("alternatives" = Option<u32>, Query, description = "Number of alternative routes (0-5)", example = 0),
         ("steps" = Option<bool>, Query, description = "Include turn-by-turn instructions with road names", example = true),
-        ("annotations" = Option<String>, Query, description = "Comma-separated list of 'duration', 'distance', 'speed' (one entry per route edge) and 'nodes' (OSM node ids along the route, geometry-shaped)", example = json!(null)),
+        ("annotations" = Option<String>, Query, description = "Comma-separated list of 'duration', 'distance', 'speed', 'classes' (one entry per route edge; classes = the exclusion classes the edge carries among toll, ferry, motorway) and 'nodes' (OSM node ids along the route, geometry-shaped)", example = json!(null)),
         ("bearings" = Option<String>, Query, description = "Bearing hints: 'angle,range;angle,range' (source;destination). Filters snap by edge bearing.", example = json!(null)),
         ("exclude" = Option<String>, Query, description = "Exclude road types: comma-separated list of 'toll', 'ferry', 'motorway'", example = json!(null)),
         ("uncertainty" = Option<String>, Query, description = "Set to 'bands' to also return duration_best_s/duration_worst_s (best = nights/free-flow, worst = weekday peaks; car only; 2 extra queries)", example = json!(null)),
@@ -323,6 +333,7 @@ pub async fn route_handler(
         let mut want_distance = false;
         let mut want_speed = false;
         let mut want_nodes = false;
+        let mut want_classes = false;
         if !ann_str.is_empty() {
             for token in ann_str.split(',') {
                 let token = token.trim();
@@ -331,11 +342,12 @@ pub async fn route_handler(
                     "distance" => want_distance = true,
                     "speed" => want_speed = true,
                     "nodes" => want_nodes = true,
+                    "classes" => want_classes = true,
                     other => {
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(ErrorResponse::new(format!(
-                                "Unknown annotation '{}'. Valid: duration, distance, speed, nodes",
+                                "Unknown annotation '{}'. Valid: duration, distance, speed, nodes, classes",
                                 other
                             ))),
                         )
@@ -344,7 +356,13 @@ pub async fn route_handler(
                 }
             }
         }
-        Some((want_duration, want_distance, want_speed, want_nodes))
+        Some((
+            want_duration,
+            want_distance,
+            want_speed,
+            want_nodes,
+            want_classes,
+        ))
     } else {
         None
     };
@@ -1075,12 +1093,13 @@ pub async fn route_handler(
 
     // Build per-edge annotations if requested
     let route_annotations =
-        if let Some((want_dur, want_dist, want_spd, want_nds)) = annotation_flags {
+        if let Some((want_dur, want_dist, want_spd, want_nds, want_cls)) = annotation_flags {
             let mut ann = RouteAnnotations {
                 duration: None,
                 distance: None,
                 speed: None,
                 nodes: None,
+                classes: None,
             };
             // Per-edge scale factors for the clipped first/last edges (#522):
             // annotations must sum to what duration_s/distance_m report.
@@ -1149,6 +1168,23 @@ pub async fn route_handler(
                     &state.nbg_node_to_osm,
                     &ebg_path,
                 ));
+            }
+            if want_cls {
+                // The flags `exclude=` masks from, per original EBG edge.
+                ann.classes = Some(
+                    ebg_path
+                        .iter()
+                        .map(|&eid| {
+                            super::exclude::exclude_mask_name(
+                                state
+                                    .edge_exclude_flags
+                                    .get(eid as usize)
+                                    .copied()
+                                    .unwrap_or(0),
+                            )
+                        })
+                        .collect(),
+                );
             }
             Some(ann)
         } else {

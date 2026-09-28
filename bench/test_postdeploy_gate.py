@@ -257,6 +257,31 @@ class Geometry(unittest.TestCase):
         self.assertEqual(g.outlier_frac([]), (0, 0.0))
 
 
+class ClassShare(unittest.TestCase):
+    """2026-09-28: exclusions are judged on the engine's per-edge classes."""
+
+    def test_share_by_length_and_token(self):
+        d = {"annotations": {"distance": [100.0, 300.0, 600.0],
+                             "classes": ["", "motorway,toll", "toll"]}}
+        self.assertAlmostEqual(g.class_share(d, "motorway"), 0.3)
+        self.assertAlmostEqual(g.class_share(d, "toll"), 0.9)
+        self.assertEqual(g.class_share(d, "ferry"), 0.0)
+
+    def test_token_not_substring(self):
+        d = {"annotations": {"distance": [1.0], "classes": ["motorway_link_is_not_a_class"]}}
+        self.assertEqual(g.class_share(d, "motorway"), 0.0)
+
+    def test_missing_or_mismatched_is_none(self):
+        self.assertIsNone(g.class_share({"annotations": {"distance": [1.0]}}, "motorway"))
+        self.assertIsNone(g.class_share({"annotations": {"distance": [1.0, 2.0], "classes": [""]}}, "motorway"))
+        self.assertIsNone(g.class_share({}, "motorway"))
+
+    def test_thresholds_carry_no_speed_proxy(self):
+        self.assertNotIn("fast_share_floor_kmh", g.THRESHOLDS)
+        self.assertNotIn("exclude_fast_share_ratio", g.THRESHOLDS)
+        self.assertIn("exclude_corridor_class_share_min", g.THRESHOLDS)
+
+
 class BandsServed(unittest.TestCase):
     """2026-09-28: band probes follow the plan /health declares, read once."""
 
