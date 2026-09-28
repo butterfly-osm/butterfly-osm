@@ -22,7 +22,7 @@ mapfile -t FILES < <(
 )
 
 # competitive_landscape.md legitimately names market COMPETITORS (Google, HERE,
-# the routing provider, …) as public market analysis — exempt it from the provider check only.
+# named commercial providers) as public market analysis — exempt it from the provider check only.
 mapfile -t FILES_NO_MKT < <(printf '%s\n' "${FILES[@]}" | grep -vE '^competitive_landscape\.md$')
 
 fail=0
@@ -46,7 +46,7 @@ scan "infra / deploy / private repo / client" \
 
 # Licensed data-provider names — competitive_landscape.md exempt (see above).
 scan "data provider" \
-  'routing-provider|telraam|\bwaze\b' \
+  't[o]mt[o]m|telraam|\bwaze\b' \
   "${FILES_NO_MKT[@]}"
 
 # Commit MESSAGES are published too. Scan every commit that is not yet
@@ -87,7 +87,7 @@ if [[ -z "$msg_base" ]]; then
   exit 1
 fi
 msg_hits=$(git log "$msg_base..HEAD" --format='%h %s%n%b' 2>/dev/null |
-  grep -niE 'kubectl|argocd|registry\.lan|\bminio\b|staging\.lan|10\.0\.[0-9]+\.[0-9]+|butterfly-deploy|butterfly-speeds|drivetimes-survey|sirius_map|routing-provider|telraam|\bwaze\b|s3://' || true)
+  grep -niE 'kubectl|argocd|registry\.lan|\bminio\b|staging\.lan|10\.0\.[0-9]+\.[0-9]+|butterfly-deploy|butterfly-speeds|drivetimes-survey|sirius_map|t[o]mt[o]m|telraam|\bwaze\b|s3://' || true)
 if [[ -n "$msg_hits" ]]; then
   echo "❌ upstream leak — commit message(s) in $msg_range:"
   echo "$msg_hits" | sed 's/^/    /'

@@ -38,7 +38,7 @@ The routing engine ecosystem has three tiers:
 - pgRouting / BRouter / Routino — niche use cases
 
 **Tier 3 — Commercial APIs** (proprietary data moats):
-- Google Maps, HERE, the routing provider — live traffic, toll costs, EV routing, massive matrix scale
+- Google Maps, HERE — live traffic, toll costs, EV routing, massive matrix scale
 - Mapbox — OSRM-based with traffic layer and mobile SDKs
 - Azure Maps, AWS Location Service — cloud platform integration
 
@@ -364,7 +364,7 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 | LM (car) | ~3.5 hours | 60 GB heap |
 
 #### Strengths
-- **Richest commercial ecosystem**: VRP, clustering, geocoding, traffic (the routing provider)
+- **Richest commercial ecosystem**: VRP, clustering, geocoding, traffic
 - **Custom models**: JSON-based per-request customization (similar to Butterfly's approach)
 - **Most transport modes** in open source (11+)
 - **Extensive encoded values**: curvature, hike_rating, mtb_rating, lanes, hazmat
@@ -430,7 +430,7 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 | **Reverse Isochrone** | Yes | N/A | Yes | Yes |
 | **Network Isochrone** | Yes (primal) | N/A | No | No |
 | | | | | |
-| **Time-Dependent** | No | MLD only | Yes | Commercial (the routing provider) |
+| **Time-Dependent** | No | MLD only | Yes | Commercial |
 | **Live Traffic** | CCH recustomize (~1s) | MLD customize | Runtime costing | Commercial |
 | **Transit/Multimodal** | No | No | Yes | Limited |
 | **Toll Costs** | No | No | No | No |
@@ -519,7 +519,7 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 
 ### Cross-Cutting Comparison
 
-| Feature | Google | HERE | the routing provider | Mapbox | Azure | AWS | Stadia | Geoapify |
+| Feature | Google | HERE | Mapbox | Azure | AWS | Stadia | Geoapify |
 |---------|--------|------|--------|--------|-------|-----|--------|----------|
 | **Car** | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | **Truck** | No | Yes | Yes | No | Yes | Yes | Yes | Yes (6 types) |
@@ -539,7 +539,6 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 |----------|-----------|---------|
 | Google (Essentials) | 10K/month | $5.00 |
 | HERE (basic) | 30K/month | $0.75 |
-| the routing provider | 2.5K/day | $0.75 |
 | Mapbox | ~100K elements/mo | ~$2-5 |
 | Azure Maps | 5K free | $0.50-4.50 |
 | Geoapify | 3K credits/day | $59-860/month flat |
@@ -547,15 +546,15 @@ Commercial adds: `small_truck`, `scooter`, `ecargobike`
 
 ### Features Only in Commercial APIs (Not in Any Open-Source Engine)
 
-1. **Live traffic** (Google/HERE/the routing provider) — probe data from billions of devices
+1. **Live traffic** (Google/HERE) — probe data from billions of devices
 2. **Predictive ETAs** (Google DeepMind GNNs) — >97% accuracy
 3. **Toll cost calculation** (HERE/AWS) — exact costs by vehicle class, time, payment method
-4. **EV routing with consumption models** (HERE/the routing provider) — battery SoC, charging curves, temperature
-5. **Fuel consumption estimation** (HERE/the routing provider)
+4. **EV routing with consumption models** (HERE) — battery SoC, charging curves, temperature
+5. **Fuel consumption estimation** (HERE)
 6. **Transit with real-time departures** (Google/HERE)
-7. **Speed limit database** (HERE/the routing provider/AWS) — near-complete coverage
+7. **Speed limit database** (HERE/AWS) — near-complete coverage
 8. **Weather-aware routing** (HERE)
-9. **Vignette avoidance** (the routing provider) — country-level toll sticker routing
+9. **Vignette avoidance** — country-level toll sticker routing
 
 ---
 
