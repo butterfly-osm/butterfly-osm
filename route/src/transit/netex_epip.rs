@@ -515,7 +515,9 @@ fn handle_start<R: BufRead>(
                 state.text_target = TextTarget::None;
             }
         }
-        b"PublicCode" => {
+        // `ShortName` is where the multi-file publication puts the public
+        // line number (#628); `PublicCode` is the single-file spelling.
+        b"PublicCode" | b"ShortName" => {
             state.text_target = if state.stack.last() == Some(&ElementKind::Line) {
                 TextTarget::LinePublicCode
             } else {
@@ -857,7 +859,10 @@ fn handle_text(state: &mut ParseState, t: &quick_xml::events::BytesText<'_>) -> 
         }
         TextTarget::LinePublicCode => {
             if let Some(line) = state.current_line.as_mut() {
-                line.public_code = s;
+                // PublicCode wins over ShortName when a Line carries both.
+                if line.public_code.is_empty() || state.stack.last() != Some(&ElementKind::Line) {
+                    line.public_code = s;
+                }
             }
         }
         TextTarget::LineTransportMode => {
@@ -1409,7 +1414,18 @@ fn resolve_pattern_line_meta(state: &ParseState, pattern: &JourneyPatternRec) ->
         .strip_suffix("_R:")
         .map(|s| format!("{s}:"))
         .unwrap_or(line_id);
-    let Some(line) = state.lines.get(&stripped) else {
+    // #628: the multi-file publication's routes are `Route:<line id>-<stop
+    // ids…>` and its lines `<line id>` — the line is the route id minus
+    // the `Route:` prefix, cut at the first `-`.
+    let multi_file = || {
+        let r = route_ref.strip_prefix("Route:").unwrap_or(route_ref);
+        r.split('-').next().unwrap_or(r).to_string()
+    };
+    let Some(line) = state
+        .lines
+        .get(&stripped)
+        .or_else(|| state.lines.get(&multi_file()))
+    else {
         return (String::new(), String::new());
     };
     // GTFS short_name is the public-facing line number (e.g. "1" for
@@ -1630,6 +1646,31 @@ mod tests {
         assert_eq!(resolve_stop_name(&state, "ssp:a"), "PARKING C");
         // An assignment that already names a StopPlace is left alone.
         assert_eq!(state.passenger_stop_assignments["ssp:b"].quay_ref, None);
+    }
+
+    /// #628: `Route:<line>-<stops…>` resolves to `<line>`, whose public
+    /// number sits in `ShortName`.
+    #[test]
+    fn multi_file_route_ref_resolves_to_its_line() {
+        let line = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PublicationDelivery xmlns="http://www.netex.org.uk/netex"><dataObjects><CompositeFrame id="c" version="any"><frames>
+<ServiceFrame id="f" version="any"><lines><Line id="gr:stibmivb:92" version="any"><Name>PARKING C - HEYSEL</Name><ShortName>98</ShortName></Line></lines>
+<journeyPatterns><ServiceJourneyPattern id="ServiceJourneyPattern:gr:stibmivb:92-gs:stibmivb:2341" version="any">
+<RouteRef ref="Route:gr:stibmivb:92-gs:stibmivb:2341" version="any"/>
+<pointsInSequence><StopPointInJourneyPattern id="p-1" version="any" order="1"><ScheduledStopPointRef ref="ssp:1" version="any"/></StopPointInJourneyPattern></pointsInSequence>
+</ServiceJourneyPattern></journeyPatterns></ServiceFrame></frames></CompositeFrame></dataObjects></PublicationDelivery>"#;
+        let mut state = ParseState::default();
+        parse_into_state(&mut state, std::io::Cursor::new(line)).unwrap();
+        let pattern =
+            &state.journey_patterns["ServiceJourneyPattern:gr:stibmivb:92-gs:stibmivb:2341"];
+        assert_eq!(
+            pattern.route_ref.as_deref(),
+            Some("Route:gr:stibmivb:92-gs:stibmivb:2341")
+        );
+        assert_eq!(
+            resolve_pattern_line_meta(&state, pattern),
+            ("98".to_string(), "PARKING C - HEYSEL".to_string())
+        );
     }
 
     #[test]
