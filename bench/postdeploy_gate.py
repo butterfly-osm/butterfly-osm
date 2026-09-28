@@ -3425,6 +3425,35 @@ REST_PROBE_SKIPS = {
 }
 
 
+BELGIUM_TRANSIT_FEEDS = ("sncb", "delijn", "tec", "stib")
+
+
+def gate_transit_feeds(base):
+    """#628: when the transit subsystem is loaded, the timetable must hold
+    EVERY Belgian operator the region index declares — a feed whose fetch
+    failed used to drop out silently (STIB, 404 for weeks). `/health`
+    declares the plan: `transit` = "loaded" | "not_loaded" | "disabled", and
+    `transit_feeds` lists loaded / missing / excluded (#614). Not loaded or
+    disabled → SKIP by name; loaded → the four ids are loaded and none is
+    missing (a knowingly excluded feed, #603, is declared, not missing)."""
+    print("== transit feeds: every declared operator is in the loaded timetable (#628) ==")
+    h = http_json(f"{base}/health")
+    status = h.get("transit")
+    if status != "loaded":
+        print(f"  [SKIP] transit is {status!r} on this deployment — nothing to hold to")
+        return True
+    feeds = h.get("transit_feeds") or {}
+    loaded = set(feeds.get("loaded") or [])
+    missing = list(feeds.get("missing") or [])
+    excluded = {e.get("id") for e in (feeds.get("excluded") or []) if isinstance(e, dict)}
+    passed = check("no configured feed is missing from the loaded timetable", not missing,
+        f"missing={missing}")
+    want = set(BELGIUM_TRANSIT_FEEDS) - excluded
+    passed &= check("every declared Belgian operator is loaded", want <= loaded,
+        f"loaded={sorted(loaded)} excluded={sorted(excluded)} want={sorted(want)}")
+    return passed
+
+
 def gate_all_endpoints_smoke(base):
     """COVERAGE: ping EVERY documented REST endpoint and EVERY Flight action so
     a change that breaks one surface entirely is caught even if you were only
@@ -3636,6 +3665,7 @@ def build_gates(args):
         ("route_batch_max_meters", True, lambda: gate_route_batch_max_meters(b)),
         ("catchment_containment", True, lambda: gate_catchment_containment(b)),
         ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),
+        ("transit_feeds", False, lambda: gate_transit_feeds(b)),
     ]
     if not args.quick:
         gates.append(("ground_truth_duration", False,

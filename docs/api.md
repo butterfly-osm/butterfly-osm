@@ -582,6 +582,15 @@ Single multimodal transit journey: access leg (any road mode) → RAPTOR rounds 
 
 A batch is Flight: use the `transit_bulk` action. This REST path was removed on 2026-09-17 and answers 404.
 
+#### Transit feeds on disk
+
+`transit/gtfs/<id>.zip` for GTFS feeds; `transit/netex/<id>.zip` for a
+NeTEx-EPIP publication shipped as an archive (STIB since 2026-09-28: `stops.xml`,
+`common.xml`, one `line-*.xml` per line, read in place, stops → common → lines),
+or `transit/netex/<id>-epip.xml` for the single-file shape. A configured feed
+that is neither on disk nor declared excluded fails the transit load (#628);
+`/health.transit_feeds` lists `loaded` / `missing` / `excluded`.
+
 ### `GET /health`
 
 Health snapshot. Source: `route/src/server/health_handler.rs`.

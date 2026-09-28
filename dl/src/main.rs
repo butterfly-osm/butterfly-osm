@@ -73,6 +73,13 @@ struct Cli {
     /// Never overwrite existing files (fail if destination exists)
     #[arg(long)]
     no_clobber: bool,
+
+    /// For region-indexed downloads: keep going and exit 0 when a
+    /// transit feed fails to download. By default (#628) a failed feed
+    /// is a failed fetch: a timetable built without it would silently
+    /// lack that operator, and nothing downstream can tell.
+    #[arg(long)]
+    allow_missing_feeds: bool,
 }
 
 /// Output destination types
@@ -317,9 +324,11 @@ async fn run_region(cli: &Cli) -> Result<()> {
     }
 
     // Exit code policy: a missing PBF is fatal for routing (no road
-    // graph to build). Every other failure (one transit mirror dead,
-    // NeTEx publication temporarily down) is survivable — the
-    // operator sees the error line, the server still starts.
+    // graph to build). A failed transit feed is fatal too since #628 —
+    // the build went on without STIB for weeks and the shipped
+    // timetable was silently one operator short. `--allow-missing-feeds`
+    // restores the old survivable behaviour for an operator who has
+    // read the error lines and decided.
     //
     // Bubble fatal failures up via `Err` so the top-level `main` owns
     // the process exit code; `process::exit` here would skip cleanup
@@ -330,9 +339,17 @@ async fn run_region(cli: &Cli) -> Result<()> {
         ));
     }
     if any_err {
-        // Survivable failures: exit 0 but make sure the error lines
-        // were already printed above.
-        eprintln!("⚠️  one or more non-fatal entries failed; see lines above");
+        if cli.allow_missing_feeds {
+            eprintln!(
+                "⚠️  one or more transit feeds failed (--allow-missing-feeds: continuing without them)"
+            );
+        } else {
+            return Err(butterfly_dl::Error::DownloadFailed(
+                "one or more transit feeds failed to download; a timetable built now would silently \
+                 lack that operator — fix the feed or pass --allow-missing-feeds"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }

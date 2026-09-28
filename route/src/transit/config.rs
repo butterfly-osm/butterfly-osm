@@ -152,14 +152,21 @@ impl TransitConfig {
 
     /// Local path for a particular feed's static archive. GTFS feeds
     /// land under `transit/gtfs/<id>.zip`; NeTEx-EPIP feeds under
+    /// `transit/netex/<id>.zip` (the multi-file publication, #628) or,
+    /// when only the historical single-file shape is on disk,
     /// `transit/netex/<id>-epip.xml`.
     pub fn feed_zip_path(&self, feed: &FeedConfig) -> PathBuf {
         match feed.format {
             FeedFormat::Gtfs => self.gtfs_dir().join(format!("{}.zip", feed.id)),
-            FeedFormat::NetexEpip => self
-                .transit_dir()
-                .join("netex")
-                .join(format!("{}-epip.xml", feed.id)),
+            FeedFormat::NetexEpip => {
+                let netex = self.transit_dir().join("netex");
+                let archive = netex.join(format!("{}.zip", feed.id));
+                if archive.exists() {
+                    archive
+                } else {
+                    netex.join(format!("{}-epip.xml", feed.id))
+                }
+            }
         }
     }
 

@@ -71,7 +71,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -107,31 +107,42 @@ pub fn load_into_builder(
     tracing::info!(
         path = %path.display(),
         feed = feed_id.unwrap_or("<raw>"),
-        "parsing NeTEx-EPIP XML"
+        "parsing NeTEx-EPIP publication"
     );
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    // Large read buffer — the file is 720 MB and we want to minimise
-    // syscalls over the linear scan.
-    let reader = BufReader::with_capacity(4 * 1024 * 1024, file);
-    let mut xml = Reader::from_reader(reader);
-    xml.config_mut().trim_text(true);
-
     let mut state = ParseState::default();
-    let mut buf = Vec::with_capacity(4096);
-
-    loop {
-        match xml
-            .read_event_into(&mut buf)
-            .context("reading EPIP XML event")?
-        {
-            Event::Start(ref e) => handle_start(&mut state, e, &mut xml)?,
-            Event::Empty(ref e) => handle_empty(&mut state, e)?,
-            Event::End(ref e) => handle_end(&mut state, e)?,
-            Event::Text(ref t) => handle_text(&mut state, t)?,
-            Event::Eof => break,
-            _ => {}
+    let is_zip = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if is_zip {
+        // #628: the multi-file EPIP shape — `stops.xml` (StopPlaces and
+        // Quays with centroids), `common.xml` (operator, calendar, day
+        // types) and one `line-*.xml` per line (routes, patterns,
+        // ServiceJourneys). Every file is its own PublicationDelivery,
+        // but the line files reference stops and day types by id, so the
+        // whole set is streamed into ONE parse state and resolved once.
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut archive = zip::ZipArchive::new(BufReader::new(file))
+            .with_context(|| format!("reading zip {}", path.display()))?;
+        let names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index_raw(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        let order = publication_file_order(&names);
+        if order.is_empty() {
+            anyhow::bail!("{}: no .xml entry in the NeTEx-EPIP zip", path.display());
         }
-        buf.clear();
+        for name in &order {
+            let entry = archive
+                .by_name(name)
+                .with_context(|| format!("opening {name} in {}", path.display()))?;
+            tracing::info!(file = name.as_str(), "parsing NeTEx-EPIP part");
+            parse_into_state(&mut state, BufReader::with_capacity(4 * 1024 * 1024, entry))
+                .with_context(|| format!("parsing {name} in {}", path.display()))?;
+        }
+    } else {
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // Large read buffer — the historical single file is 720 MB and
+        // we want to minimise syscalls over the linear scan.
+        parse_into_state(&mut state, BufReader::with_capacity(4 * 1024 * 1024, file))?;
     }
 
     tracing::info!(
@@ -145,6 +156,52 @@ pub fn load_into_builder(
         "NeTEx-EPIP parse complete; resolving into builder"
     );
     emit_into_builder(state, feed_id, builder)
+}
+
+/// The order the parts of a multi-file publication are streamed in:
+/// stop places first, then the common frames (calendar, day types,
+/// operator), then every other `.xml` in name order — so that by the
+/// time a line file references a stop or a day type, the id is known.
+/// Non-XML entries and directories are ignored.
+pub(crate) fn publication_file_order(names: &[String]) -> Vec<String> {
+    let mut xml: Vec<&String> = names
+        .iter()
+        .filter(|n| !n.ends_with('/') && n.to_ascii_lowercase().ends_with(".xml"))
+        .collect();
+    let rank = |n: &str| -> u8 {
+        let base = n.rsplit('/').next().unwrap_or(n).to_ascii_lowercase();
+        if base.starts_with("stops") {
+            0
+        } else if base.starts_with("common") {
+            1
+        } else {
+            2
+        }
+    };
+    xml.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    xml.into_iter().cloned().collect()
+}
+
+/// Stream one PublicationDelivery document into `state`.
+fn parse_into_state<R: BufRead>(state: &mut ParseState, reader: R) -> Result<()> {
+    let mut xml = Reader::from_reader(reader);
+    xml.config_mut().trim_text(true);
+    let mut buf = Vec::with_capacity(4096);
+    loop {
+        match xml
+            .read_event_into(&mut buf)
+            .context("reading EPIP XML event")?
+        {
+            Event::Start(ref e) => handle_start(state, e, &mut xml)?,
+            Event::Empty(ref e) => handle_empty(state, e)?,
+            Event::End(ref e) => handle_end(state, e)?,
+            Event::Text(ref t) => handle_text(state, t)?,
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(())
 }
 
 // =====================================================================
@@ -220,6 +277,10 @@ enum TextTarget {
     None,
     StopPlaceName,
     QuayName,
+    StopPlaceLongitude,
+    StopPlaceLatitude,
+    QuayLongitude,
+    QuayLatitude,
     SspLocation,
     LineName,
     LinePublicCode,
@@ -237,11 +298,20 @@ enum TextTarget {
 struct StopPlaceRec {
     name: Option<String>,
     parent_site_ref: Option<String>,
+    /// `<Centroid><Location><Longitude>/<Latitude>` — WGS84 (#628: the
+    /// multi-file publication carries every coordinate here; its
+    /// ScheduledStopPoints are bare ids).
+    wgs84: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Default, Clone)]
 struct QuayRec {
     name: Option<String>,
+    wgs84: Option<(f64, f64)>,
+    /// The StopPlace this Quay is nested in (#628: the multi-file
+    /// publication's stop assignments name QUAYS in `StopPlaceRef`;
+    /// the umbrella station is the enclosing StopPlace).
+    parent_stop_place: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -319,10 +389,10 @@ struct PassingTimeRec {
 // Streaming event handlers.
 // =====================================================================
 
-fn handle_start(
+fn handle_start<R: BufRead>(
     state: &mut ParseState,
     e: &quick_xml::events::BytesStart<'_>,
-    _xml: &mut Reader<BufReader<File>>,
+    _xml: &mut Reader<R>,
 ) -> Result<()> {
     let qn = e.name();
     let name = element_local_name(qn.as_ref());
@@ -335,7 +405,10 @@ fn handle_start(
         }
         b"Quay" => {
             let id = attr(e, b"id").unwrap_or_default();
-            state.current_quay = Some(QuayRec::default());
+            state.current_quay = Some(QuayRec {
+                parent_stop_place: state.current_stop_place_id.clone(),
+                ..QuayRec::default()
+            });
             state.current_quay_id = Some(id);
             state.stack.push(ElementKind::Quay);
         }
@@ -419,6 +492,19 @@ fn handle_start(
                 _ => TextTarget::None,
             };
         }
+        b"Longitude" | b"Latitude" => {
+            // WGS84 centroid of the enclosing StopPlace / Quay (#628). A
+            // Quay's centroid is nested inside its StopPlace, so the
+            // stack top decides which record gets the value.
+            let is_lon = name == b"Longitude";
+            state.text_target = match state.stack.last() {
+                Some(ElementKind::Quay) if is_lon => TextTarget::QuayLongitude,
+                Some(ElementKind::Quay) => TextTarget::QuayLatitude,
+                Some(ElementKind::StopPlace) if is_lon => TextTarget::StopPlaceLongitude,
+                Some(ElementKind::StopPlace) => TextTarget::StopPlaceLatitude,
+                _ => TextTarget::None,
+            };
+        }
         b"pos" => {
             // <gml:pos> — only meaningful inside a ScheduledStopPoint's
             // Location; we ignore it for StopPlace / Quay because we
@@ -481,7 +567,11 @@ fn handle_start(
                 state.current_psa_quay_ref = attr(e, b"ref");
             }
         }
-        b"ServiceJourneyPatternRef" => {
+        // `JourneyPatternRef` is the spelling of the multi-file
+        // publication (#628); its value carries the same
+        // `ServiceJourneyPattern:` prefix as the pattern ids, so the
+        // lookup is direct.
+        b"ServiceJourneyPatternRef" | b"JourneyPatternRef" => {
             if state.stack.last() == Some(&ElementKind::ServiceJourney) {
                 if let Some(sj) = state.current_sj.as_mut() {
                     sj.pattern_ref = attr(e, b"ref");
@@ -522,6 +612,15 @@ fn handle_empty(state: &mut ParseState, e: &quick_xml::events::BytesStart<'_>) -
     let qn = e.name();
     let name = element_local_name(qn.as_ref());
     match name {
+        b"ScheduledStopPoint" => {
+            // #628: in the multi-file publication a ScheduledStopPoint is
+            // a bare id (`<ScheduledStopPoint id=".." version="any"/>`);
+            // its position comes from the PassengerStopAssignment's
+            // StopPlace / Quay at emit time.
+            if let Some(id) = attr(e, b"id") {
+                state.scheduled_stop_points.entry(id).or_default();
+            }
+        }
         b"ParentSiteRef" => {
             if state.stack.last() == Some(&ElementKind::StopPlace) {
                 if let Some(sp) = state.current_stop_place.as_mut() {
@@ -551,7 +650,11 @@ fn handle_empty(state: &mut ParseState, e: &quick_xml::events::BytesStart<'_>) -
                 state.current_psa_quay_ref = attr(e, b"ref");
             }
         }
-        b"ServiceJourneyPatternRef" => {
+        // `JourneyPatternRef` is the spelling of the multi-file
+        // publication (#628); its value carries the same
+        // `ServiceJourneyPattern:` prefix as the pattern ids, so the
+        // lookup is direct.
+        b"ServiceJourneyPatternRef" | b"JourneyPatternRef" => {
             if state.stack.last() == Some(&ElementKind::ServiceJourney) {
                 if let Some(sj) = state.current_sj.as_mut() {
                     sj.pattern_ref = attr(e, b"ref");
@@ -714,6 +817,29 @@ fn handle_text(state: &mut ParseState, t: &quick_xml::events::BytesText<'_>) -> 
                 q.name = Some(s);
             }
         }
+        TextTarget::StopPlaceLongitude
+        | TextTarget::StopPlaceLatitude
+        | TextTarget::QuayLongitude
+        | TextTarget::QuayLatitude => {
+            if let Ok(v) = s.trim().parse::<f64>() {
+                let is_lon = matches!(
+                    state.text_target,
+                    TextTarget::StopPlaceLongitude | TextTarget::QuayLongitude
+                );
+                let slot = if matches!(
+                    state.text_target,
+                    TextTarget::QuayLongitude | TextTarget::QuayLatitude
+                ) {
+                    state.current_quay.as_mut().map(|q| &mut q.wgs84)
+                } else {
+                    state.current_stop_place.as_mut().map(|sp| &mut sp.wgs84)
+                };
+                if let Some(slot) = slot {
+                    let (lon, lat) = slot.unwrap_or((f64::NAN, f64::NAN));
+                    *slot = Some(if is_lon { (v, lat) } else { (lon, v) });
+                }
+            }
+        }
         TextTarget::SspLocation => {
             let mut parts = s.split_whitespace();
             let x = parts.next().and_then(|p| p.parse::<f64>().ok());
@@ -831,6 +957,15 @@ fn emit_into_builder(
     feed_id: Option<&str>,
     builder: &mut TimetableBuilder,
 ) -> Result<()> {
+    let mut state = state;
+    let n_quay_refs = normalise_quay_refs(&mut state);
+    if n_quay_refs > 0 {
+        tracing::info!(
+            n_quay_refs,
+            "NeTEx-EPIP: stop assignments naming a Quay in StopPlaceRef rewritten (#628)"
+        );
+    }
+
     // Reprojection pipeline: Lambert-93 (EPSG:2154) → WGS84 lon/lat.
     // proj4rs returns radians for geographic CRSes, so we convert to
     // degrees at the tail. The source and destination Proj objects
@@ -891,15 +1026,20 @@ fn emit_into_builder(
     sorted_ssps.sort_by(|a, b| a.0.cmp(b.0));
 
     for (ssp_id, ssp_rec) in sorted_ssps {
-        let Some((x, y)) = ssp_rec.lambert else {
+        let (lon, lat) = if let Some((x, y)) = ssp_rec.lambert {
+            let mut coord = (x, y, 0.0_f64);
+            proj4rs::transform::transform(&lambert, &wgs84, &mut coord)
+                .with_context(|| format!("reprojecting SSP {ssp_id}"))?;
+            (coord.0.to_degrees(), coord.1.to_degrees())
+        } else if let Some(c) = assigned_centroid(&state, ssp_id) {
+            // #628: no `<gml:pos>` on the SSP — the multi-file
+            // publication positions stops on the StopPlace / Quay the
+            // PassengerStopAssignment names (WGS84, no reprojection).
+            c
+        } else {
             n_unresolved += 1;
             continue;
         };
-        let mut coord = (x, y, 0.0_f64);
-        proj4rs::transform::transform(&lambert, &wgs84, &mut coord)
-            .with_context(|| format!("reprojecting SSP {ssp_id}"))?;
-        let lon = coord.0.to_degrees();
-        let lat = coord.1.to_degrees();
 
         // Reject non-finite reprojection results. Casting NaN/Inf to
         // i64 below is implementation-defined (often saturates to 0 or
@@ -937,7 +1077,7 @@ fn emit_into_builder(
     if n_unresolved > 0 {
         tracing::warn!(
             n_unresolved,
-            "NeTEx-EPIP: {n_unresolved} ScheduledStopPoints have no Location — skipped"
+            "NeTEx-EPIP: {n_unresolved} ScheduledStopPoints have neither a Location nor an assigned StopPlace/Quay centroid — skipped"
         );
     }
     tracing::info!(
@@ -1282,6 +1422,51 @@ fn resolve_pattern_line_meta(state: &ParseState, pattern: &JourneyPatternRec) ->
 /// Resolve a ScheduledStopPoint's human-readable name via the
 /// PassengerStopAssignment chain. Falls back to the SSP id if no
 /// chain is available.
+/// #628: in the multi-file publication a `PassengerStopAssignment` says
+/// `<StopPlaceRef ref="gs:…"/>` where `gs:…` is a **Quay** id nested in a
+/// StopPlace. Rewrite such assignments into the shape the rest of the
+/// resolution expects — `quay_ref` = the quay, `stop_place_ref` = its
+/// enclosing StopPlace — so the centroid comes from the quay, the name
+/// prefers the quay and the parent station is the StopPlace. Returns how
+/// many assignments were rewritten.
+fn normalise_quay_refs(state: &mut ParseState) -> usize {
+    let mut n = 0;
+    for psa in state.passenger_stop_assignments.values_mut() {
+        let Some(r) = psa.stop_place_ref.as_deref() else {
+            continue;
+        };
+        if state.stop_places.contains_key(r) {
+            continue;
+        }
+        if let Some(q) = state.quays.get(r) {
+            let quay_id = r.to_string();
+            psa.stop_place_ref = q.parent_stop_place.clone();
+            psa.quay_ref.get_or_insert(quay_id);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// WGS84 centroid an SSP inherits through its PassengerStopAssignment:
+/// the Quay's if it has one, else the StopPlace's (#628).
+fn assigned_centroid(state: &ParseState, ssp_id: &str) -> Option<(f64, f64)> {
+    let psa = state.passenger_stop_assignments.get(ssp_id)?;
+    let from_quay = psa
+        .quay_ref
+        .as_ref()
+        .and_then(|q| state.quays.get(q))
+        .and_then(|q| q.wgs84);
+    let from_place = psa
+        .stop_place_ref
+        .as_ref()
+        .and_then(|sp| state.stop_places.get(sp))
+        .and_then(|sp| sp.wgs84);
+    from_quay
+        .or(from_place)
+        .filter(|(lon, lat)| lon.is_finite() && lat.is_finite())
+}
+
 fn resolve_stop_name(state: &ParseState, ssp_id: &str) -> String {
     if let Some(psa) = state.passenger_stop_assignments.get(ssp_id) {
         // Prefer Quay name (platform-level, more specific).
@@ -1324,6 +1509,127 @@ mod tests {
         // Bad input → None.
         assert_eq!(parse_hms(""), None);
         assert_eq!(parse_hms("abc"), None);
+    }
+
+    /// #628: the multi-file publication is streamed stops → common →
+    /// lines, so ids are defined before they are referenced.
+    #[test]
+    fn publication_parts_are_ordered_stops_common_then_lines() {
+        let names: Vec<String> = [
+            "line-gr:stibmivb:92.xml",
+            "common.xml",
+            "line-gr:stibmivb:1.xml",
+            "stops.xml",
+            "README.txt",
+            "sub/",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            publication_file_order(&names),
+            vec![
+                "stops.xml".to_string(),
+                "common.xml".to_string(),
+                "line-gr:stibmivb:1.xml".to_string(),
+                "line-gr:stibmivb:92.xml".to_string(),
+            ]
+        );
+    }
+
+    /// #628: parsing a publication split over several documents fills
+    /// ONE parse state — a stop defined in `stops.xml` is visible to a
+    /// line file's passenger stop assignment.
+    #[test]
+    fn split_publication_fills_one_parse_state() {
+        let stops = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PublicationDelivery xmlns="http://www.netex.org.uk/netex"><dataObjects><CompositeFrame id="c" version="any"><frames>
+<SiteFrame id="s" version="any"><stopPlaces>
+<StopPlace id="gs:stibmivb:1" version="any"><Name>ELISABETH</Name><Centroid><Location><Longitude>4.33142</Longitude><Latitude>50.862859</Latitude></Location></Centroid>
+<quays><Quay id="gs:stibmivb:8471" version="any"><Name>ELISABETH</Name><Centroid><Location><Longitude>4.33142</Longitude><Latitude>50.862859</Latitude></Location></Centroid></Quay></quays></StopPlace>
+</stopPlaces></SiteFrame></frames></CompositeFrame></dataObjects></PublicationDelivery>"#;
+        let line = r#"<?xml version="1.0" encoding="UTF-8"?>
+<PublicationDelivery xmlns="http://www.netex.org.uk/netex"><dataObjects><CompositeFrame id="c" version="any"><frames>
+<ServiceFrame id="f" version="any"><scheduledStopPoints><ScheduledStopPoint id="ssp:1" version="any"/></scheduledStopPoints>
+<stopAssignments><PassengerStopAssignment id="psa:1" version="any" order="1"><ScheduledStopPointRef ref="ssp:1" version="any"/><StopPlaceRef ref="gs:stibmivb:1"/></PassengerStopAssignment></stopAssignments>
+</ServiceFrame></frames></CompositeFrame></dataObjects></PublicationDelivery>"#;
+        let mut state = ParseState::default();
+        parse_into_state(&mut state, std::io::Cursor::new(stops)).unwrap();
+        parse_into_state(&mut state, std::io::Cursor::new(line)).unwrap();
+        assert_eq!(state.stop_places.len(), 1);
+        assert_eq!(state.quays.len(), 1);
+        assert_eq!(
+            state.scheduled_stop_points.len(),
+            1,
+            "a bare <ScheduledStopPoint/> is a stop"
+        );
+        assert_eq!(state.passenger_stop_assignments.len(), 1);
+        assert_eq!(
+            state.stop_places["gs:stibmivb:1"].wgs84,
+            Some((4.33142, 50.862859))
+        );
+        assert_eq!(
+            state.quays["gs:stibmivb:8471"].wgs84,
+            Some((4.33142, 50.862859))
+        );
+        // The SSP has no <gml:pos>; its position is the assigned StopPlace's centroid.
+        assert_eq!(
+            assigned_centroid(&state, "ssp:1"),
+            Some((4.33142, 50.862859))
+        );
+        // Split or not, the same documents give the same state.
+        let mut whole = ParseState::default();
+        parse_into_state(&mut whole, std::io::Cursor::new(line)).unwrap();
+        parse_into_state(&mut whole, std::io::Cursor::new(stops)).unwrap();
+        assert_eq!(whole.stop_places.len(), state.stop_places.len());
+        assert_eq!(
+            whole.passenger_stop_assignments.len(),
+            state.passenger_stop_assignments.len()
+        );
+    }
+
+    /// #628: the multi-file publication's `StopPlaceRef` names a Quay; the
+    /// assignment is rewritten to quay + enclosing StopPlace.
+    #[test]
+    fn stop_place_ref_naming_a_quay_is_rewritten() {
+        let mut state = ParseState::default();
+        state.stop_places.insert(
+            "gs:stibmivb:1".into(),
+            StopPlaceRec {
+                wgs84: Some((4.0, 50.0)),
+                ..Default::default()
+            },
+        );
+        state.quays.insert(
+            "gs:stibmivb:2341".into(),
+            QuayRec {
+                name: Some("PARKING C".into()),
+                wgs84: Some((4.1, 50.1)),
+                parent_stop_place: Some("gs:stibmivb:1".into()),
+            },
+        );
+        state.passenger_stop_assignments.insert(
+            "ssp:a".into(),
+            PsaRec {
+                stop_place_ref: Some("gs:stibmivb:2341".into()),
+                quay_ref: None,
+            },
+        );
+        state.passenger_stop_assignments.insert(
+            "ssp:b".into(),
+            PsaRec {
+                stop_place_ref: Some("gs:stibmivb:1".into()),
+                quay_ref: None,
+            },
+        );
+        assert_eq!(normalise_quay_refs(&mut state), 1);
+        let a = &state.passenger_stop_assignments["ssp:a"];
+        assert_eq!(a.quay_ref.as_deref(), Some("gs:stibmivb:2341"));
+        assert_eq!(a.stop_place_ref.as_deref(), Some("gs:stibmivb:1"));
+        assert_eq!(assigned_centroid(&state, "ssp:a"), Some((4.1, 50.1)));
+        assert_eq!(resolve_stop_name(&state, "ssp:a"), "PARKING C");
+        // An assignment that already names a StopPlace is left alone.
+        assert_eq!(state.passenger_stop_assignments["ssp:b"].quay_ref, None);
     }
 
     #[test]

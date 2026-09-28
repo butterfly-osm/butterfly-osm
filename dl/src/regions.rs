@@ -26,7 +26,8 @@
 //!
 //! - `[pbf]` → `<root>/<NAME>.pbf`
 //! - `[[gtfs]]` → `<root>/transit/gtfs/<id>.zip`
-//! - `[[netex_epip]]` → `<root>/transit/netex/<id>-epip.xml`
+//! - `[[netex_epip]]` → `<root>/transit/netex/<id>.zip` when the publication is a
+//!   zip (the multi-file EPIP shape, #628), else `<root>/transit/netex/<id>-epip.xml`
 //!
 //! Operators who want to override a path per-deployment can still
 //! maintain a local `transit.toml` that `butterfly-route` reads at
@@ -184,10 +185,16 @@ impl RegionIndex {
                 });
             }
             for feed in &self.netex_epip {
-                let target = data_root
-                    .join("transit")
-                    .join("netex")
-                    .join(format!("{}-epip.xml", feed.id));
+                // #628: the national access point now publishes STIB as a
+                // zip of one file per line plus `stops.xml` / `common.xml`;
+                // the engine's loader reads that archive directly. A bare
+                // XML publication keeps the historical target name.
+                let file_name = if feed.url.to_ascii_lowercase().ends_with(".zip") {
+                    format!("{}.zip", feed.id)
+                } else {
+                    format!("{}-epip.xml", feed.id)
+                };
+                let target = data_root.join("transit").join("netex").join(file_name);
                 out.push(RegionEntry {
                     id: feed.id.clone(),
                     url: feed.url.clone(),
@@ -549,10 +556,8 @@ mod tests {
             .iter()
             .find(|e| e.section == "netex_epip" && e.id == "stib")
             .unwrap();
-        assert_eq!(
-            stib.target,
-            Path::new("/tmp/data/transit/netex/stib-epip.xml")
-        );
+        // #628: the published STIB resource is a zip → the target is the archive.
+        assert_eq!(stib.target, Path::new("/tmp/data/transit/netex/stib.zip"));
     }
 
     #[test]

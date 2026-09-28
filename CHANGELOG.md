@@ -10,6 +10,28 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-28 — STIB NeTEx-EPIP: the relocated multi-file publication is read in place; a missing feed fails the build (#628)
+
+The national access point moved the STIB timetable from one 689 MB XML
+(last dated 2025-05-11) to a zip refreshed daily — `stops.xml`, `common.xml`
+and one `line-gr:stibmivb:<n>.xml` per line, 94 files, 1.3 GB of XML, 94 110
+ServiceJourneys — and the old URL answered 404 for weeks while the build
+went on without Brussels.
+
+- `butterfly-dl`: a `[[netex_epip]]` URL ending in `.zip` lands at
+  `transit/netex/<id>.zip`; a failed transit feed now fails the fetch
+  (`--allow-missing-feeds` restores the old survivable exit).
+- `netex_epip`: a zip is streamed part by part into ONE parse state
+  (stops → common → lines); StopPlace / Quay centroids are read
+  (WGS84) and a bare `<ScheduledStopPoint/>` takes its position from the
+  assigned Quay or StopPlace, so the new shape resolves every stop
+  without `<gml:pos>`. The single-file shape still loads.
+- `transit::load_from_disk`: a configured feed that is neither on disk nor
+  declared in `[[excluded_feeds]]` is an error
+  (`BUTTERFLY_TRANSIT_ALLOW_MISSING=1` to override).
+- Gate `transit_feeds`: when `/health` says transit is loaded, every
+  declared Belgian operator is in the loaded set and none is missing.
+
 ### 2026-09-28 — Deploying without a speeds table: `/health.bands`, the gate skips by name what it has no input for
 
 The fleet's per-edge speeds table and the reference trip sets were derived

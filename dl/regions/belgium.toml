@@ -11,7 +11,7 @@
 #   transit/gtfs/sncb.zip                      ← [[gtfs]] id = "sncb"
 #   transit/gtfs/delijn.zip                    ← [[gtfs]] id = "delijn"
 #   transit/gtfs/tec.zip                       ← [[gtfs]] id = "tec"
-#   transit/netex/stib-epip.xml                ← [[netex_epip]] id = "stib"
+#   transit/netex/stib.zip                     ← [[netex_epip]] id = "stib" (#628)
 #
 # This matches the layout butterfly-route's server already loads
 # from — no migration, no config change downstream.
@@ -39,10 +39,11 @@ url = "https://opendata.tec-wl.be/Current%20GTFS/TEC-GTFS.zip"
 
 [[netex_epip]]
 id  = "stib"
-# This is what the national access point publishes for this dataset as of
-# 2026-09-04 — and it answers 404. Probed the same day: the portal's
-# resource URL is unchanged, the publisher's blob is gone, and the
-# container itself does not list. There is no replacement to point at, so
-# the URL stays as published and the fetch fails loudly and by name
-# rather than quietly leaving the timetable a feed short (#537).
-url = "https://belgianmobility.blob.core.windows.net/epip-production/epip-stibmivb-bmc-latest.xml"
+# The national access point's resource for this dataset (metadata date
+# 2026-09-11): a zip refreshed daily — `stops.xml` (StopPlaces / Quays with
+# centroids), `common.xml` (operator, ServiceCalendar, DayTypes) and one
+# `line-gr:stibmivb:<n>.xml` per line (routes, patterns, ServiceJourneys).
+# The single-file publication it replaces (`epip-production/
+# epip-stibmivb-bmc-latest.xml`, last dated 2025-05-11) answers 404 since
+# 2026-09-04 and its container does not list (#628).
+url = "https://belgianmobilityversioned.blob.core.windows.net/netex/production/netex-stibmivb-latest.zip"

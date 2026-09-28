@@ -642,6 +642,7 @@ dependencies = [
  "utoipa",
  "utoipa-swagger-ui",
  "wiremock",
+ "zip 8.6.0",
  "zstd",
 ]
 
