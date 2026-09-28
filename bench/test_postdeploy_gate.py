@@ -282,6 +282,28 @@ class ClassShare(unittest.TestCase):
         self.assertIn("exclude_corridor_class_share_min", g.THRESHOLDS)
 
 
+class BandsGateWithoutRefs(unittest.TestCase):
+    """2026-09-28: the bands gate resolves the reference sets INSIDE, after
+    the API/ordering checks, so a served band surface is still gated when the
+    sets are retired."""
+
+    def test_registration_does_not_resolve_refs(self):
+        import argparse, inspect
+        g.REFS_DIR = None
+        try:
+            names = [n for n, _, _ in g.build_gates(argparse.Namespace(**g.GATE_ARGS_DEFAULTS))]
+            self.assertIn("bands", names)
+            src = inspect.getsource(g.build_gates)
+            self.assertNotIn("gate_bands(b, refs_path(", src)
+        finally:
+            g.REFS_DIR = os.environ.get("BUTTERFLY_REFS_DIR")
+
+    def test_level_section_skips_by_name_when_unset(self):
+        src = inspect_source = __import__("inspect").getsource(g.gate_bands)
+        self.assertIn("except RefsRetired", src)
+        self.assertIn("[SKIP] band levels vs reference", src)
+
+
 class BandsServed(unittest.TestCase):
     """2026-09-28: band probes follow the plan /health declares, read once."""
 
