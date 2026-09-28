@@ -76,6 +76,12 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         // Which `exclude=` masks answer from cache on the primary region; any
         // other mask is a cold recustomization (minutes on a slow host).
         "exclude_warm": primary_loaded.as_ref().map(|p| p.warm_exclude_names()).unwrap_or_default(),
+        // Whether `uncertainty=bands` is served: the best/worst weight sets
+        // exist only when a per-edge speeds table with those columns was
+        // staged at boot. Without one the car is the clean base and every
+        // bands request answers 400 — a documented-optional surface, like
+        // `transit` and `/height`, that the gate skips rather than fails.
+        "bands": primary_loaded.as_ref().is_some_and(|p| p.band_modes().is_some()),
         "total_nodes_count": total_nodes,
         "total_edges_count": total_edges,
         // #614: "disabled by flag" and "nothing to load" both left

@@ -89,7 +89,9 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   metres are spent on a slightly different route — the three polygons come
   out nearly the same size and are NOT nested, where the three polygons of a
   time isochrone are. A distance budget does not shrink because the traffic
-  got worse.
+  got worse. Whether bands are served at all is declared by `/health`
+  (`bands: true|false`); since 2026-09-28 no fleet environment stages a
+  speeds table, so the bands answer 400 there until a clean source exists.
 
 ## REST endpoints
 
@@ -589,6 +591,7 @@ Health snapshot. Source: `route/src/server/health_handler.rs`.
   "nodes_count": ..., "edges_count": ..., "named_roads_count": ...,
   "regions_count": ..., "regions": ["belgium"],
   "total_nodes_count": ..., "total_edges_count": ...,
+  "bands": bool,
   "verify_status": "ok" | "verified" | "pending" | "degraded",
   "verify": { "n_sections": ..., "n_verified": ..., "n_unverified": ...,
               "n_verifying": ..., "n_failed": ..., "failed": [...] },
@@ -598,6 +601,8 @@ Health snapshot. Source: `route/src/server/health_handler.rs`.
 ```
 
 Status field is always `"ok"` while the server can answer requests. `verify_status` and `avoid_cache` are the operational signals; tune `BUTTERFLY_AVOID_CACHE_CAP` based on the hit rate.
+
+`bands` (2026-09-28) says whether `uncertainty=bands` is served: `true` only when the speeds table staged at boot carries best/worst columns. Without one the car is the clean base and every bands request answers 400 — the post-deploy gate reads this field and skips its band probes by name, the same way it treats `transit: "not_loaded"`.
 
 ---
 

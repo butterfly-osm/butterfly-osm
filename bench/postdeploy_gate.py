@@ -117,10 +117,27 @@ REFS_PREFIX = "od"  # <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DI
 
 
 class RefsUnavailable(RuntimeError):
-    """#589: `$BUTTERFLY_REFS_DIR` is unset or not a directory. Raised by
+    """#589: `$BUTTERFLY_REFS_DIR` is set but not a directory. Raised by
     `refs_path()`, i.e. only from a gate that actually needs the reference
     trips — main() turns it into that gate's FAIL line, so the operator sees
-    WHICH gates were skipped and WHY, and the rest of the suite still runs."""
+    WHICH gates could not run and WHY, and the rest of the suite still runs."""
+
+
+class RefsRetired(RefsUnavailable):
+    """`$BUTTERFLY_REFS_DIR` is UNSET: there is no reference trip set to gate
+    against. The sets were the licensed provider's historic times and were
+    retired with that licence on 2026-09-28; the deploy tooling exports the
+    variable only when the lake holds every set, and nothing otherwise.
+    main() prints the gate as [SKIP] with REFS_RETIRED_REASON — by name,
+    never silently. A set path that is not a directory stays a FAIL
+    (RefsUnavailable): that is an operator error, not an absent input."""
+
+
+REFS_RETIRED_REASON = (
+    "no reference trip sets (BUTTERFLY_REFS_DIR unset): the licensed provider's "
+    "historic times were retired on 2026-09-28 — the level, bands and route-choice "
+    "gates need a clean reference set to run; export BUTTERFLY_REFS_DIR to the "
+    "directory holding one")
 
 
 def require_refs_dir(refs_dir=None):
@@ -128,10 +145,9 @@ def require_refs_dir(refs_dir=None):
     variable. Never a default path: nothing creates one."""
     refs_dir = REFS_DIR if refs_dir is None else refs_dir
     if not refs_dir:
-        raise RefsUnavailable(
-            "BUTTERFLY_REFS_DIR is not set — export it to the directory holding the reference "
-            f"trip sets ({REFS_PREFIX}_{{typical,best,worst}}.csv, {LEGACY_TRIPS_DISTANCE}, "
-            "optional windows.json).")
+        raise RefsRetired(
+            f"{REFS_RETIRED_REASON} ({REFS_PREFIX}_{{typical,best,worst}}.csv, "
+            f"{LEGACY_TRIPS_DISTANCE}, optional windows.json).")
     if not os.path.isdir(refs_dir):
         raise RefsUnavailable(f"BUTTERFLY_REFS_DIR={refs_dir!r} is not a directory.")
     return refs_dir
@@ -659,6 +675,26 @@ def flight_enabled():
     return CONFIG["flight"]
 
 
+_BANDS_SERVED = {}
+BANDS_SKIP_REASON = (
+    "/health reports bands:false — the loaded speeds table has no best/worst columns "
+    "(no table is staged since the licensed provider's data was retired, 2026-09-28); "
+    "every uncertainty=bands request answers 400")
+
+
+def bands_served(base):
+    """Whether the engine serves `uncertainty=bands`, read ONCE from /health
+    `bands` (2026-09-28). The best/worst weight sets exist only when the staged
+    speeds table carries those columns; without one the car is the clean base
+    and each bands request is a 400. The gate SKIPS the band probes on that
+    declared plan — the same rule as `transit: not_loaded` and the unmounted
+    `/height`. An engine that does not report the field is taken as serving
+    the bands, so an older engine's probes FAIL loudly instead of skipping."""
+    if base not in _BANDS_SERVED:
+        _BANDS_SERVED[base] = bool(http_json(f"{base}/health").get("bands", True))
+    return _BANDS_SERVED[base]
+
+
 def flight_uri(base):
     """Flight port convention: REST port + 1 (dev container maps 3011).
     Overridable with --flight-base for deploys that map it elsewhere."""
@@ -842,16 +878,20 @@ def ref_trips(path):
 def ref_trip_routes(base, path):
     """Route every reference trip ONCE with `uncertainty=bands` and memoise:
     gate_bands needs the three band durations, gate_ground_truth needs the
-    typical duration + distance — the same /route call (#550)."""
+    typical duration + distance — the same /route call (#550). When the engine
+    reports no bands (`bands_served`), the trips are routed plain: the typical
+    duration and distance are what ground truth and route choice judge, and
+    gate_bands has already skipped on the same signal."""
     key = (base, path)
     if key in _REF_ROUTES:
         return _REF_ROUTES[key]
     rows = ref_trips(path)
+    extra = {"uncertainty": "bands"} if bands_served(base) else {}
 
     def one(t):
         try:
             d = route_json(base, t["long_1"], t["lat_1"], t["long_2"], t["lat_2"], mode="car", timeout=60,
-                uncertainty="bands")
+                **extra)
         except Exception:
             return None
         return {
@@ -2099,6 +2139,9 @@ def gate_bands(base, refs_prefix):
           Brussels-internal / coast pairs.
     """
     print("== best / typical / worst bands: every API, ordering, level (2026-09-03) ==")
+    if not bands_served(base):
+        print(f"  [SKIP] {BANDS_SKIP_REASON}")
+        return True
     passed = True
     t = THRESHOLDS
 
@@ -2855,7 +2898,10 @@ def gate_flight_completeness(base):
     # passes and may only claim complete when all three finished.
     iso = {"lon": ISO_POINTS[0][1], "lat": ISO_POINTS[0][2], "intervals": [600]}
     passed &= probe("isochrone", "isochrone", iso)
-    passed &= probe("isochrone bands", "isochrone", {**iso, "uncertainty": "bands"})
+    if bands_served(base):
+        passed &= probe("isochrone bands", "isochrone", {**iso, "uncertainty": "bands"})
+    else:
+        print(f"  [SKIP] isochrone bands: {BANDS_SKIP_REASON}")
     # edges_flow (do_exchange): the summary carries complete:true and is
     # sent only after every chunk streamed.
     tbl = pa.table({"src_lon": pa.array([p[0] for p in pairs]), "src_lat": pa.array([p[1] for p in pairs]),
@@ -3646,6 +3692,12 @@ def main():
         started = time.time()
         try:
             ok &= bool(fn())
+        except RefsRetired as e:
+            # 2026-09-28: there is no reference set to gate against — SKIP it
+            # by name, with the reason, and keep going. The thunk raised
+            # before the gate printed its own header.
+            print(f"== {name} ==")
+            print(f"  [SKIP] {e}")
         except RefsUnavailable as e:
             # #589: a refs-dependent gate cannot run — FAIL it by name (never a
             # silent skip, never a process-wide SystemExit) and keep going.

@@ -10,6 +10,27 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-09-28 — Deploying without a speeds table: `/health.bands`, the gate skips by name what it has no input for
+
+The fleet's per-edge speeds table and the reference trip sets were derived
+from a licensed provider's data; that licence ended on 2026-09-28 and the
+artefacts were retired with it. The engine already booted without
+`edge_speeds.parquet` (clean base car, `uncertainty=bands` → 400); the gate
+did not: its refs-dependent gates FAILED by name and every band probe
+FAILED on the 400.
+
+- `GET /health` gains `bands: bool` — `true` only when the staged speeds
+  table carries best/worst columns. The plan is declared, not guessed.
+- `bench/postdeploy_gate.py`: `bands`, `ground_truth_duration`,
+  `ground_truth_distance` and `route_choice` print `[SKIP]` with the reason
+  when `BUTTERFLY_REFS_DIR` is unset (`RefsRetired`); a set path that is not
+  a directory is still a FAIL (`RefsUnavailable`, #589). Band probes (the
+  bands gate, the Flight completeness band pass, the reference-trip routing)
+  follow `/health.bands` — read once — and skip when it is `false`. An engine
+  that does not report the field is taken as serving the bands, so an older
+  engine's probes fail loudly rather than skip.
+- Nothing else is loosened: every other gate runs and must PASS.
+
 ### 2026-09-17 — A batch is Flight, a single query is REST: the `isochrone` action takes a batch; REST `/transit/bulk` is gone (#624, #625)
 
 The rule was implicit and violated twice: the Flight `isochrone` action took

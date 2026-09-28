@@ -187,6 +187,26 @@ class RefsResolution(unittest.TestCase):
             g.refs_path(g.DEFAULT_TRIPS)
         self.assertIn("BUTTERFLY_REFS_DIR", str(ctx.exception))
 
+    def test_unset_is_the_retired_skip_not_the_operator_error(self):
+        """2026-09-28: no set staged → RefsRetired (main prints [SKIP] by
+        name); a set path that is not a directory → plain RefsUnavailable
+        (FAIL). The two must stay distinguishable."""
+        g.REFS_DIR = None
+        with self.assertRaises(g.RefsRetired) as ctx:
+            g.refs_path(g.DEFAULT_TRIPS)
+        self.assertIn("retired", str(ctx.exception))
+        self.assertTrue(issubclass(g.RefsRetired, g.RefsUnavailable))
+        g.REFS_DIR = "/nonexistent/reference-trips-for-test"
+        with self.assertRaises(g.RefsUnavailable) as ctx:
+            g.refs_path(g.DEFAULT_TRIPS)
+        self.assertNotIsInstance(ctx.exception, g.RefsRetired)
+
+    def test_empty_string_counts_as_unset(self):
+        """deploy.sh passes BUTTERFLY_REFS_DIR="" when nothing was staged."""
+        g.REFS_DIR = ""
+        with self.assertRaises(g.RefsRetired):
+            g.refs_path(g.DEFAULT_TRIPS)
+
     def test_refs_unavailable_is_catchable_not_systemexit(self):
         """main() turns it into ONE gate's FAIL line; SystemExit would kill the run."""
         self.assertTrue(issubclass(g.RefsUnavailable, Exception))
@@ -235,6 +255,41 @@ class Geometry(unittest.TestCase):
         self.assertEqual(n, 2)
         self.assertAlmostEqual(frac, 0.5)
         self.assertEqual(g.outlier_frac([]), (0, 0.0))
+
+
+class BandsServed(unittest.TestCase):
+    """2026-09-28: band probes follow the plan /health declares, read once."""
+
+    def setUp(self):
+        self.saved = g.http_json
+        g._BANDS_SERVED.clear()
+
+    def tearDown(self):
+        g.http_json = self.saved
+        g._BANDS_SERVED.clear()
+
+    def _health(self, payload):
+        calls = []
+
+        def fake(url, timeout=30, data=None, headers=None):
+            calls.append(url)
+            return dict(payload)
+        g.http_json = fake
+        return calls
+
+    def test_false_skips_and_is_read_once(self):
+        calls = self._health({"status": "ok", "bands": False})
+        self.assertFalse(g.bands_served("http://x:1"))
+        self.assertFalse(g.bands_served("http://x:1"))
+        self.assertEqual(calls, ["http://x:1/health"])
+
+    def test_true_serves(self):
+        self._health({"status": "ok", "bands": True})
+        self.assertTrue(g.bands_served("http://x:2"))
+
+    def test_missing_field_means_served_so_an_old_engine_fails_loudly(self):
+        self._health({"status": "ok"})
+        self.assertTrue(g.bands_served("http://x:3"))
 
 
 class Registry(unittest.TestCase):
