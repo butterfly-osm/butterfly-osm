@@ -304,6 +304,35 @@ class BandsGateWithoutRefs(unittest.TestCase):
         self.assertIn("[SKIP] band levels vs reference", src)
 
 
+class TransitFeeds(unittest.TestCase):
+    """#628: the feed-set gate follows /health's declared transit plan."""
+
+    def setUp(self):
+        self.saved = g.http_json
+
+    def tearDown(self):
+        g.http_json = self.saved
+
+    def _health(self, payload):
+        g.http_json = lambda url, timeout=30, data=None, headers=None: dict(payload)
+
+    def test_not_loaded_skips(self):
+        self._health({"transit": "not_loaded", "transit_feeds": None})
+        self.assertTrue(g.gate_transit_feeds("http://x"))
+
+    def test_all_loaded_passes(self):
+        self._health({"transit": "loaded", "transit_feeds": {"loaded": list(g.BELGIUM_TRANSIT_FEEDS), "missing": [], "excluded": []}})
+        self.assertTrue(g.gate_transit_feeds("http://x"))
+
+    def test_missing_feed_fails(self):
+        self._health({"transit": "loaded", "transit_feeds": {"loaded": ["sncb", "delijn", "tec"], "missing": ["stib"], "excluded": []}})
+        self.assertFalse(g.gate_transit_feeds("http://x"))
+
+    def test_declared_exclusion_is_not_missing(self):
+        self._health({"transit": "loaded", "transit_feeds": {"loaded": ["sncb", "delijn", "tec"], "missing": [], "excluded": [{"id": "stib", "reason": "publisher down"}]}})
+        self.assertTrue(g.gate_transit_feeds("http://x"))
+
+
 class BandsServed(unittest.TestCase):
     """2026-09-28: band probes follow the plan /health declares, read once."""
 

@@ -148,6 +148,8 @@ metrics = "0.24"
 # source-compatible drop-in and drops the `derivative` proc-macro,
 # removing this crate's edge to syn 1.0.
 gtfs-structures = "0.49"
+# #628: the STIB NeTEx-EPIP publication is a zip of one file per line; read in place.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # Transit: GTFS-RT protobuf ingestion (one-shot snapshots applied at
 # startup — no polling loop). The message types are our own committed
 # prost bindings, `src/transit/gtfs_realtime.rs`, generated from the

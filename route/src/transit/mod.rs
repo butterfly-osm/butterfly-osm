@@ -236,6 +236,21 @@ pub fn load_from_disk(
             config.transit_dir().display()
         );
     }
+    // #628: a configured feed that is neither on disk nor knowingly
+    // excluded (#603) used to be a WARN and a timetable one operator
+    // short, invisible from outside. It is a failure now; an operator
+    // who has read the log and decided sets BUTTERFLY_TRANSIT_ALLOW_MISSING=1.
+    if !inventory.missing.is_empty()
+        && std::env::var_os("BUTTERFLY_TRANSIT_ALLOW_MISSING").is_none()
+    {
+        anyhow::bail!(
+            "transit feed(s) {:?} are configured but not on disk under {} — the timetable would \
+             silently lack them; fetch them, declare them in [[excluded_feeds]], or set \
+             BUTTERFLY_TRANSIT_ALLOW_MISSING=1",
+            inventory.missing,
+            config.transit_dir().display()
+        );
+    }
 
     // When exactly one GTFS feed is present AND no NeTEx-EPIP feeds
     // are loaded, drop the namespace prefix so existing single-feed
