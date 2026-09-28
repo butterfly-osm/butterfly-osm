@@ -1045,6 +1045,7 @@ fn test_route_annotations_serialization() {
         distance: Some(vec![100.0, 200.0, 300.0]),
         speed: None,
         nodes: None,
+        classes: None,
     };
     let json = serde_json::to_value(&ann).unwrap();
     assert!(json["duration"].is_array());
@@ -1077,13 +1078,13 @@ fn test_route_annotations_speed_zero_duration() {
 
 #[test]
 fn test_annotations_validation_tokens() {
-    let valid_tokens = ["duration", "distance", "speed", "nodes"];
+    let valid_tokens = ["duration", "distance", "speed", "nodes", "classes"];
     for t in &valid_tokens {
-        assert!(["duration", "distance", "speed", "nodes"].contains(t));
+        assert!(["duration", "distance", "speed", "nodes", "classes"].contains(t));
     }
     let invalid_tokens = ["weight", "cost", "time", "edge_id", ""];
     for t in &invalid_tokens {
-        assert!(!["duration", "distance", "speed", "nodes"].contains(t));
+        assert!(!["duration", "distance", "speed", "nodes", "classes"].contains(t));
     }
 }
 
@@ -1112,6 +1113,7 @@ fn test_route_response_with_annotations() {
             distance: Some(vec![250.0, 250.0]),
             speed: Some(vec![30.0, 30.0]),
             nodes: Some(vec![100, 200]),
+            classes: None,
         }),
         alternatives: None,
         debug: None,

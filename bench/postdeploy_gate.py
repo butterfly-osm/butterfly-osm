@@ -117,10 +117,27 @@ REFS_PREFIX = "od"  # <prefix>_{typical,best,worst}.csv under $BUTTERFLY_REFS_DI
 
 
 class RefsUnavailable(RuntimeError):
-    """#589: `$BUTTERFLY_REFS_DIR` is unset or not a directory. Raised by
+    """#589: `$BUTTERFLY_REFS_DIR` is set but not a directory. Raised by
     `refs_path()`, i.e. only from a gate that actually needs the reference
     trips — main() turns it into that gate's FAIL line, so the operator sees
-    WHICH gates were skipped and WHY, and the rest of the suite still runs."""
+    WHICH gates could not run and WHY, and the rest of the suite still runs."""
+
+
+class RefsRetired(RefsUnavailable):
+    """`$BUTTERFLY_REFS_DIR` is UNSET: there is no reference trip set to gate
+    against. The sets were the licensed provider's historic times and were
+    retired with that licence on 2026-09-28; the deploy tooling exports the
+    variable only when the lake holds every set, and nothing otherwise.
+    main() prints the gate as [SKIP] with REFS_RETIRED_REASON — by name,
+    never silently. A set path that is not a directory stays a FAIL
+    (RefsUnavailable): that is an operator error, not an absent input."""
+
+
+REFS_RETIRED_REASON = (
+    "no reference trip sets (BUTTERFLY_REFS_DIR unset): the licensed provider's "
+    "historic times were retired on 2026-09-28 — the level, bands and route-choice "
+    "gates need a clean reference set to run; export BUTTERFLY_REFS_DIR to the "
+    "directory holding one")
 
 
 def require_refs_dir(refs_dir=None):
@@ -128,10 +145,9 @@ def require_refs_dir(refs_dir=None):
     variable. Never a default path: nothing creates one."""
     refs_dir = REFS_DIR if refs_dir is None else refs_dir
     if not refs_dir:
-        raise RefsUnavailable(
-            "BUTTERFLY_REFS_DIR is not set — export it to the directory holding the reference "
-            f"trip sets ({REFS_PREFIX}_{{typical,best,worst}}.csv, {LEGACY_TRIPS_DISTANCE}, "
-            "optional windows.json).")
+        raise RefsRetired(
+            f"{REFS_RETIRED_REASON} ({REFS_PREFIX}_{{typical,best,worst}}.csv, "
+            f"{LEGACY_TRIPS_DISTANCE}, optional windows.json).")
     if not os.path.isdir(refs_dir):
         raise RefsUnavailable(f"BUTTERFLY_REFS_DIR={refs_dir!r} is not a directory.")
     return refs_dir
@@ -234,17 +250,15 @@ THRESHOLDS = {
     "foot_speed_kmh": (2.0, 8.0),  # #522: foot routes reported up to 19 km/h
     "bike_speed_kmh": (5.0, 32.0),
     "motorway_floor_kmh": 50.0,
-    # #606 `exclude=motorway`. `fast_share_floor_kmh` is the speed above which
-    # the engine's own per-edge annotation means "unobstructed high-speed
-    # link"; `exclude_fast_share_ratio` bounds how much of THAT share may
-    # survive the exclusion, as a fraction of the SAME route's unrestricted
-    # share — a ratio, so it encodes no level and moves with the profile.
-    # Belgium keeps a real floor of non-motorway expressway (`trunk` at
-    # 120 km/h, e.g. the N4), so the honest bound is small-but-nonzero:
-    # measured 0.9-10.7 % after the fix against ~92 % before it, and the
-    # bound sits between with >2x headroom on both sides.
-    "fast_share_floor_kmh": 100.0,
-    "exclude_fast_share_ratio": 0.25,
+    # #606 `exclude=motorway`. The excluded route must carry ZERO edges of the
+    # excluded class — exact, read from `annotations=classes` (the flags the
+    # mask is built from), no constant. This one is structural: the fixture
+    # corridors must BE motorway-dominated for that zero to mean anything
+    # (share of the unrestricted route's length on motorway-class edges).
+    # Until 2026-09-28 the check inferred "motorway" from speed >= 100 km/h,
+    # which held only on the calibrated car: the clean base car annotates the
+    # N4 (`trunk`, 120 km/h) above 100 km/h too and the ratio failed.
+    "exclude_corridor_class_share_min": 0.25,
     "car_foot_detour_max": 3.0,
     "car_foot_holes_max": 2,
     "matrix_cell_tol": 0.02,  # streamed / 2-channel cell vs /route
@@ -659,6 +673,26 @@ def flight_enabled():
     return CONFIG["flight"]
 
 
+_BANDS_SERVED = {}
+BANDS_SKIP_REASON = (
+    "/health reports bands:false — the loaded speeds table has no best/worst columns "
+    "(no table is staged since the licensed provider's data was retired, 2026-09-28); "
+    "every uncertainty=bands request answers 400")
+
+
+def bands_served(base):
+    """Whether the engine serves `uncertainty=bands`, read ONCE from /health
+    `bands` (2026-09-28). The best/worst weight sets exist only when the staged
+    speeds table carries those columns; without one the car is the clean base
+    and each bands request is a 400. The gate SKIPS the band probes on that
+    declared plan — the same rule as `transit: not_loaded` and the unmounted
+    `/height`. An engine that does not report the field is taken as serving
+    the bands, so an older engine's probes FAIL loudly instead of skipping."""
+    if base not in _BANDS_SERVED:
+        _BANDS_SERVED[base] = bool(http_json(f"{base}/health").get("bands", True))
+    return _BANDS_SERVED[base]
+
+
 def flight_uri(base):
     """Flight port convention: REST port + 1 (dev container maps 3011).
     Overridable with --flight-base for deploys that map it elsewhere."""
@@ -842,16 +876,20 @@ def ref_trips(path):
 def ref_trip_routes(base, path):
     """Route every reference trip ONCE with `uncertainty=bands` and memoise:
     gate_bands needs the three band durations, gate_ground_truth needs the
-    typical duration + distance — the same /route call (#550)."""
+    typical duration + distance — the same /route call (#550). When the engine
+    reports no bands (`bands_served`), the trips are routed plain: the typical
+    duration and distance are what ground truth and route choice judge, and
+    gate_bands has already skipped on the same signal."""
     key = (base, path)
     if key in _REF_ROUTES:
         return _REF_ROUTES[key]
     rows = ref_trips(path)
+    extra = {"uncertainty": "bands"} if bands_served(base) else {}
 
     def one(t):
         try:
             d = route_json(base, t["long_1"], t["lat_1"], t["long_2"], t["lat_2"], mode="car", timeout=60,
-                uncertainty="bands")
+                **extra)
         except Exception:
             return None
         return {
@@ -1190,6 +1228,22 @@ def gate_motorway_speed_floor(base):
     return passed
 
 
+def class_share(d, cls):
+    """Share of a /route's LENGTH on edges whose `classes` annotation carries
+    `cls` (2026-09-28). `classes` is per edge, comma-joined in the engine's
+    canonical order; `distance` is per edge too and clipped at the phantom
+    ends like the totals. None when either annotation is missing (an engine
+    without the annotation answers 400 before this is reached)."""
+    ann = d.get("annotations") or {}
+    dist, classes = ann.get("distance"), ann.get("classes")
+    if dist is None or classes is None or len(dist) != len(classes):
+        return None
+    total = sum(dist)
+    if total <= 0:
+        return None
+    return sum(x for x, c in zip(dist, classes) if cls in c.split(",")) / total
+
+
 def gate_exclude_motorway(base):
     """#606: `exclude=motorway` was close to a no-op — it moved an inter-city
     duration by under 4 % and left an 18.6 km "motorway-free" route 80 % on
@@ -1212,15 +1266,17 @@ def gate_exclude_motorway(base):
          mask. Two independent engines (bidirectional CCH, bucket M2M) read
          the same recustomized weights, so a half-applied mask shows up as a
          disagreement.
-      4. The corridor is actually abandoned. The unrestricted route runs
-         mostly on links the engine itself annotates at motorway speed; the
-         restricted one must not. The bound is RELATIVE — a fraction of the
-         SAME route's unrestricted share — so it encodes no level and moves
-         with the profile. Belgium leaves a real floor of non-motorway
-         expressway (the N4 to Arlon is `trunk` at 120 km/h and is correctly
-         NOT excluded), which is why the check is a ratio and not "zero":
-         measured 0.9-10.7 % of the unrestricted share after the fix, ~92 %
-         before it.
+      4. EXACT, no constant — the corridor is actually abandoned. Every route
+         edge reports the exclusion classes it carries (`annotations=classes`,
+         the very flags the mask is built from, 2026-09-28): the unrestricted
+         route runs mostly on `motorway` edges (structural: the fixture is a
+         motorway corridor), the restricted one carries NONE, and under
+         `motorway,toll,ferry` none of the three. Until 2026-09-28 this
+         inferred "motorway" from the speed annotation (>= 100 km/h, bounded
+         as a ratio of the unrestricted share), which held only on the
+         calibrated car: on the clean base car the N4 (`trunk`, 120 km/h,
+         correctly NOT excluded) annotates above 100 km/h too and the ratio
+         failed while the exclusion was exact.
     """
     print("== exclude=motorway is strict (#606) ==")
     corridors = [("Bxl→Antwerp (A1/E19)", 4.3517, 50.8503, 4.4025, 51.2194),
@@ -1230,23 +1286,13 @@ def gate_exclude_motorway(base):
         # high-level shortcuts almost exclusively, a short one uses more base
         # edges, so the two ends of the hierarchy are both covered.
         ("Mechelen→Antwerp (E19)", 4.4800, 51.0259, 4.4025, 51.2194)]
-    floor_kmh = THRESHOLDS["fast_share_floor_kmh"]
-    max_ratio = THRESHOLDS["exclude_fast_share_ratio"]
+    share_min = THRESHOLDS["exclude_corridor_class_share_min"]
     cell_tol = THRESHOLDS["matrix_cell_tol"]
     passed = True
 
-    def fast_share(d):
-        """Share of route LENGTH the engine annotates at >= floor_kmh."""
-        ann = d.get("annotations") or {}
-        dist, spd = ann.get("distance") or [], ann.get("speed") or []
-        total = sum(dist)
-        if total <= 0:
-            return None
-        return sum(x for x, s in zip(dist, spd) if s >= floor_kmh) / total
-
     for name, olon, olat, dlon, dlat in corridors:
         try:
-            ann = "distance,duration,speed"
+            ann = "distance,duration,classes"
             plain = route_json(base, olon, olat, dlon, dlat, annotations=ann, timeout=600)
             excl = route_json(base, olon, olat, dlon, dlat, annotations=ann,
                 exclude="motorway", timeout=600)
@@ -1267,18 +1313,20 @@ def gate_exclude_motorway(base):
         passed &= check(f"{name}: /table agrees under the same mask",
             ok_cell, f"/route {d1:.0f}s vs /table {cell if cell is None else f'{cell:.0f}'}s")
 
-        s0, s1 = fast_share(plain), fast_share(excl)
-        if s0 is None or s1 is None:
-            passed &= check(f"{name}: fast-link share", False, "no annotations returned")
+        s0 = class_share(plain, "motorway")
+        s1 = class_share(excl, "motorway")
+        s2 = max(class_share(more, c) for c in ("motorway", "toll", "ferry"))
+        if None in (s0, s1, s2):
+            passed &= check(f"{name}: class annotations", False, "no classes/distance annotations returned")
             continue
-        # The corridor must be motorway-dominated for the check to mean
+        # The corridor must be motorway-dominated for the zero to mean
         # anything — gate_motorway_speed_floor asserts the same thing by speed.
         passed &= check(f"{name}: the corridor IS motorway",
-            s0 >= 0.25, f"{100 * s0:.0f}% of its length at >= {floor_kmh:.0f} km/h")
-        passed &= check(f"{name}: the excluded route leaves it",
-            s1 <= s0 * max_ratio,
-            f"{100 * s1:.1f}% at >= {floor_kmh:.0f} km/h "
-            f"(<= {100 * s0 * max_ratio:.1f}% = {max_ratio:g} x the unrestricted {100 * s0:.0f}%)")
+            s0 >= share_min, f"{100 * s0:.0f}% of its length on motorway-class edges (>= {100 * share_min:.0f}%)")
+        passed &= check(f"{name}: the excluded route carries NO motorway edge",
+            s1 == 0.0, f"{100 * s1:.2f}% of its length on motorway-class edges (unrestricted: {100 * s0:.0f}%)")
+        passed &= check(f"{name}: under motorway,toll,ferry no edge of any excluded class",
+            s2 == 0.0, f"max class share {100 * s2:.2f}%")
     return passed
 
 
@@ -2099,6 +2147,9 @@ def gate_bands(base, refs_prefix):
           Brussels-internal / coast pairs.
     """
     print("== best / typical / worst bands: every API, ordering, level (2026-09-03) ==")
+    if not bands_served(base):
+        print(f"  [SKIP] {BANDS_SKIP_REASON}")
+        return True
     passed = True
     t = THRESHOLDS
 
@@ -2855,7 +2906,10 @@ def gate_flight_completeness(base):
     # passes and may only claim complete when all three finished.
     iso = {"lon": ISO_POINTS[0][1], "lat": ISO_POINTS[0][2], "intervals": [600]}
     passed &= probe("isochrone", "isochrone", iso)
-    passed &= probe("isochrone bands", "isochrone", {**iso, "uncertainty": "bands"})
+    if bands_served(base):
+        passed &= probe("isochrone bands", "isochrone", {**iso, "uncertainty": "bands"})
+    else:
+        print(f"  [SKIP] isochrone bands: {BANDS_SKIP_REASON}")
     # edges_flow (do_exchange): the summary carries complete:true and is
     # sent only after every chunk streamed.
     tbl = pa.table({"src_lon": pa.array([p[0] for p in pairs]), "src_lat": pa.array([p[1] for p in pairs]),
@@ -3646,6 +3700,12 @@ def main():
         started = time.time()
         try:
             ok &= bool(fn())
+        except RefsRetired as e:
+            # 2026-09-28: there is no reference set to gate against — SKIP it
+            # by name, with the reason, and keep going. The thunk raised
+            # before the gate printed its own header.
+            print(f"== {name} ==")
+            print(f"  [SKIP] {e}")
         except RefsUnavailable as e:
             # #589: a refs-dependent gate cannot run — FAIL it by name (never a
             # silent skip, never a process-wide SystemExit) and keep going.

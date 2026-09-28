@@ -89,7 +89,9 @@ Server-wide layers (defined in `route/src/server/api.rs`):
   metres are spent on a slightly different route — the three polygons come
   out nearly the same size and are NOT nested, where the three polygons of a
   time isochrone are. A distance budget does not shrink because the traffic
-  got worse.
+  got worse. Whether bands are served at all is declared by `/health`
+  (`bands: true|false`); since 2026-09-28 no fleet environment stages a
+  speeds table, so the bands answer 400 there until a clean source exists.
 
 ## REST endpoints
 
@@ -108,7 +110,7 @@ Point-to-point routing with geometry, optional turn-by-turn steps with road name
 | `geometries` | string | `polyline6` | `polyline6` / `geojson` / `points` |
 | `alternatives` | u32 | `0` | Up to 5 alternative routes (penalty-based) |
 | `steps` | bool | `false` | Include turn-by-turn instructions with road names |
-| `annotations` | string | none | Comma list of `duration`, `distance`, `speed` (one entry per route edge) and `nodes` (OSM node ids along the route, one per geometry node) |
+| `annotations` | string | none | Comma list of `duration`, `distance`, `speed`, `classes` (one entry per route edge; `classes` = the exclusion classes the edge carries among `toll`, `ferry`, `motorway`, comma-joined, empty when none) and `nodes` (OSM node ids along the route, one per geometry node) |
 | `bearings` | string | none | `angle,range;angle,range` (source;destination), angle 0-360, range 0-180 |
 | `exclude` | string | none | Comma list of `toll`, `ferry`, `motorway`. Strict: the served route uses none of the excluded class (#606) |
 | `avoid_polygons` | string | none | JSON `[[lon,lat],...]` or `[[[lon,lat],...],...]` |
@@ -127,7 +129,7 @@ Content negotiation:
 | `distance_m` | f64 |
 | `geometry` | RouteGeometry (polyline6 string, or GeoJSON LineString, or array of `{lon, lat}`) |
 | `steps` | array of `RouteStep` (if `steps=true`) |
-| `annotations` | object with optional `duration` / `distance` / `speed` (per route edge) and `nodes` (OSM node ids along the route, geometry-shaped — see the note below) arrays |
+| `annotations` | object with optional `duration` / `distance` / `speed` / `classes` (per route edge) and `nodes` (OSM node ids along the route, geometry-shaped — see the note below) arrays |
 | `alternatives` | array of `RouteAlternative` (if `alternatives>0`) |
 | `debug` | `{ src_snapped, dst_snapped }` (if `debug=true`) |
 
@@ -153,6 +155,13 @@ Content negotiation:
   trims `duration_s` / `distance_m` / the geometry has no node to clip to.
   Containers older than #460 (no OSM id chains) report each edge's two junction
   ids without its shape points.
+- `annotations=classes` (2026-09-28) reports, per route edge, the exclusion
+  classes it carries — the very flags `exclude=` masks from (`"motorway,toll"`,
+  `"ferry"`, `""`). A client can therefore verify an exclusion exactly: a route
+  served under `exclude=motorway` has no edge whose classes contain
+  `motorway`. The post-deploy gate asserts precisely that; it used to infer
+  "motorway" from the speed annotation, which only holds on a calibrated car
+  (the base car annotates a `trunk` at 120 km/h above 100 km/h too).
 - `exclude=` recustomizes the CCH weights with the flagged arcs blocked, then
   routes on them, so the answer is the shortest path in the graph without that
   class — not a penalty and not a post-filter. Cold recustomization is
@@ -589,6 +598,7 @@ Health snapshot. Source: `route/src/server/health_handler.rs`.
   "nodes_count": ..., "edges_count": ..., "named_roads_count": ...,
   "regions_count": ..., "regions": ["belgium"],
   "total_nodes_count": ..., "total_edges_count": ...,
+  "bands": bool,
   "verify_status": "ok" | "verified" | "pending" | "degraded",
   "verify": { "n_sections": ..., "n_verified": ..., "n_unverified": ...,
               "n_verifying": ..., "n_failed": ..., "failed": [...] },
@@ -598,6 +608,8 @@ Health snapshot. Source: `route/src/server/health_handler.rs`.
 ```
 
 Status field is always `"ok"` while the server can answer requests. `verify_status` and `avoid_cache` are the operational signals; tune `BUTTERFLY_AVOID_CACHE_CAP` based on the hit rate.
+
+`bands` (2026-09-28) says whether `uncertainty=bands` is served: `true` only when the speeds table staged at boot carries best/worst columns. Without one the car is the clean base and every bands request answers 400 — the post-deploy gate reads this field and skips its band probes by name, the same way it treats `transit: "not_loaded"`.
 
 ---
 
