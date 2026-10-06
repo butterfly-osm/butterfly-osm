@@ -27,6 +27,13 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use rayon::prelude::*;
+
+/// #631: heavy exchanges (`edges_flow`) run one at a time per process — a
+/// national assignment is minutes of every core and tens of GB; two of them
+/// at once is how a node starts swapping and the liveness probe kills the
+/// server. One permit, acquired before the compute, released after it.
+static HEAVY_EXCHANGE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 // Rename arrow_flight::Result to avoid conflict with std::result::Result
 use arrow_flight::Result as FlightResult;
 use bytes::Bytes;
@@ -4116,7 +4123,10 @@ async fn do_exchange_edges_flow(
     Response<Pin<Box<dyn futures::Stream<Item = std::result::Result<FlightData, Status>> + Send>>>,
     Status,
 > {
-    const MAX_FLOW_PAIRS: usize = 2_000_000;
+    // #631: 2 000 000 used to be allowed; one such exchange holds ~7 M output
+    // rows plus the per-pair work, and a run of 87 of them took a 78 GB node
+    // down. The bound is a memory bound: chunk the input, same total work.
+    const MAX_FLOW_PAIRS: usize = 500_000;
 
     let mut pairs: Vec<[f64; 4]> = Vec::new();
     let mut weights: Vec<f64> = Vec::new();
@@ -4191,7 +4201,8 @@ async fn do_exchange_edges_flow(
         }
         if pairs.len() > MAX_FLOW_PAIRS {
             return Err(Status::invalid_argument(format!(
-                "max {MAX_FLOW_PAIRS} pairs per edges_flow request"
+                "max {MAX_FLOW_PAIRS} pairs per edges_flow request — chunk the input into \
+                 several exchanges (same total work, bounded server memory; #631)"
             )));
         }
     }
@@ -4204,7 +4215,28 @@ async fn do_exchange_edges_flow(
     let (sum_tx, sum_rx) = tokio::sync::oneshot::channel::<String>();
 
     let schema_clone = schema.clone();
+    // #631: ONE heavy exchange at a time per process. A second concurrent
+    // national run would double the resident memory; it waits here instead
+    // (the permit is released when the compute ends, before the stream
+    // drains). Waiting is logged so an operator sees the queue.
+    let permit = {
+        let t0 = std::time::Instant::now();
+        let permit = HEAVY_EXCHANGE
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Status::internal("heavy-exchange semaphore closed"))?;
+        if t0.elapsed().as_millis() > 100 {
+            tracing::info!(
+                waited_s = t0.elapsed().as_secs_f64(),
+                n_pairs = pairs.len(),
+                "edges_flow waited for another heavy exchange to finish (#631)"
+            );
+        }
+        permit
+    };
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let start = std::time::Instant::now();
         let n_pairs = pairs.len();
         let mode_data = state.get_mode(mode);

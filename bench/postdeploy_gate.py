@@ -3427,6 +3427,90 @@ REST_PROBE_SKIPS = {
 
 BELGIUM_TRANSIT_FEEDS = ("sncb", "delijn", "tec", "stib")
 
+EDGES_FLOW_MAX_PAIRS = 500_000  # the engine's bound (#631): the gate asserts the refusal is the contract
+
+
+def gate_edges_flow_storm(base):
+    """#631 (2026-10-06): a national `edges_flow` run killed staging — the
+    server stopped answering /health for five minutes under 2 M-pair
+    exchanges and the liveness probe restarted it. Three contracts:
+      1. /health stays fast WHILE an edges_flow exchange runs: polled every
+         second during a 60 000-pair exchange, every answer under 1 s;
+      2. the pairs bound is enforced with a message that says to chunk;
+      3. the exchange itself completes (rows > 0, the completeness summary).
+    Pairs are drawn inside the Brussels–Leuven–Antwerp triangle so every
+    point snaps on BE and BE+LU alike."""
+    print("== edges_flow storm: /health stays fast under a heavy exchange, bound enforced (#631) ==")
+    import random, threading
+    import pyarrow as pa
+    import pyarrow.flight as fl
+    random.seed(631)
+
+    def pt():
+        return (random.uniform(4.30, 4.70), random.uniform(50.80, 51.20))
+
+    def table(n):
+        src = [pt() for _ in range(n)]
+        dst = [pt() for _ in range(n)]
+        return pa.table({"src_lon": [p[0] for p in src], "src_lat": [p[1] for p in src],
+                         "dst_lon": [p[0] for p in dst], "dst_lat": [p[1] for p in dst],
+                         "weight": [1.0] * n})
+
+    def exchange(n):
+        client = flight_client(base)
+        w, r = client.do_exchange(fl.FlightDescriptor.for_command(b"edges_flow:car"))
+        t = table(n)
+        w.begin(t.schema)
+        for b in t.to_batches(max_chunksize=100_000):
+            w.write_batch(b)
+        w.done_writing()
+        rows = 0
+        while True:
+            try:
+                ch = r.read_chunk()
+            except StopIteration:
+                break
+            rows += ch.data.num_rows if ch.data is not None else 0
+        w.close()
+        return rows
+
+    passed = True
+    # 2. the bound, before the storm (cheap: the server refuses on the row count)
+    try:
+        exchange(EDGES_FLOW_MAX_PAIRS + 1)
+        passed &= check(f"edges_flow refuses {EDGES_FLOW_MAX_PAIRS + 1} pairs", False, "accepted")
+    except Exception as ex:
+        msg = str(ex)
+        passed &= check(f"edges_flow refuses {EDGES_FLOW_MAX_PAIRS + 1} pairs and says to chunk",
+                        "chunk" in msg and str(EDGES_FLOW_MAX_PAIRS) in msg, msg[:140])
+    # 1.+3. the storm with /health polled from a thread
+    lat, stop, result, err = [], threading.Event(), [], []
+
+    def poll():
+        while not stop.is_set():
+            t0 = time.time()
+            try:
+                http_json(f"{base}/health", timeout=10)
+                lat.append(time.time() - t0)
+            except Exception:
+                lat.append(99.0)
+            stop.wait(1.0)
+
+    def run():
+        try:
+            result.append(exchange(60_000))
+        except Exception as ex:
+            err.append(str(ex)[:160])
+    th = threading.Thread(target=poll, daemon=True); th.start()
+    t0 = time.time()
+    run(); stop.set(); th.join(timeout=5)
+    passed &= check("edges_flow 60 000 pairs completes", bool(result) and result[0] > 0,
+                    f"{result[0] if result else 0} rows in {time.time() - t0:.1f}s" + (f" ({err[0]})" if err else ""))
+    worst = max(lat) if lat else 99.0
+    passed &= check("/health answered under 1 s at every poll during the exchange",
+                    bool(lat) and worst < 1.0, f"{len(lat)} polls, worst {worst:.3f}s")
+    return passed
+
 
 def gate_transit_feeds(base):
     """#628: when the transit subsystem is loaded, the timetable must hold
@@ -3666,6 +3750,7 @@ def build_gates(args):
         ("catchment_containment", True, lambda: gate_catchment_containment(b)),
         ("all_endpoints_smoke", False, lambda: gate_all_endpoints_smoke(b)),
         ("transit_feeds", False, lambda: gate_transit_feeds(b)),
+        ("edges_flow_storm", True, lambda: gate_edges_flow_storm(b)),
     ]
     if not args.quick:
         gates.append(("ground_truth_duration", False,

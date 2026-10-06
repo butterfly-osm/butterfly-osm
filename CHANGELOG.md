@@ -10,6 +10,24 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### 2026-10-06 — A national `edges_flow` run can no longer take the server down (#631)
+
+On 2026-10-06 staging served 87 `edges_flow` exchanges of 2 000 000 pairs
+(a traffic-flow assignment); the exchanges drifted from 51 s to 492 s as the
+78 GB node ran out of memory, `/health` was not served for five minutes and
+the liveness probe killed the engine (16 min of cold boot).
+
+- `edges_flow` deposits each per-pair fallback path as it is routed (a rayon
+  fold) instead of collecting every unpacked path first: peak memory is
+  O(threads), not O(pairs).
+- The pairs bound is **500 000 per exchange** (was 2 000 000); the refusal
+  says to chunk. One heavy exchange runs at a time per process; a second one
+  waits (logged).
+- The rayon pool leaves two cores to the async runtime unless
+  `RAYON_NUM_THREADS` is set, so an all-core job cannot starve `/health`.
+- Gate `edges_flow_storm`: `/health` polled every second during a
+  60 000-pair exchange must answer under 1 s; the bound is asserted.
+
 ### 2026-09-28 — STIB NeTEx-EPIP: the relocated multi-file publication is read in place; a missing feed fails the build (#628)
 
 The national access point moved the STIB timetable from one 689 MB XML
