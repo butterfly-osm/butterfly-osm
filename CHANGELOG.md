@@ -13,7 +13,7 @@ For detailed tool-specific changes, see individual tool changelogs:
 ### 2026-10-06 — A national `edges_flow` run can no longer take the server down (#631)
 
 On 2026-10-06 staging served 87 `edges_flow` exchanges of 2 000 000 pairs
-(a traffic-flow assignment); the exchanges drifted from 51 s to 492 s as the
+(a national traffic assignment); the exchanges drifted from 51 s to 492 s as the
 78 GB node ran out of memory, `/health` was not served for five minutes and
 the liveness probe killed the engine (16 min of cold boot).
 
