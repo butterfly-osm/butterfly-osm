@@ -3483,17 +3483,23 @@ def gate_edges_flow_storm(base):
         msg = str(ex)
         passed &= check(f"edges_flow refuses {EDGES_FLOW_MAX_PAIRS + 1} pairs and says to chunk",
                         "chunk" in msg and str(EDGES_FLOW_MAX_PAIRS) in msg, msg[:140])
-    # 1.+3. the storm with /health polled from a thread
-    lat, stop, result, err = [], threading.Event(), [], []
+    # 1.+3. the storm with /health AND a small interactive query polled from
+    # threads. /health is O(1) and never touches the compute pool; the
+    # isochrone (5 min, Brussels) is the class a colleague runs while a
+    # national assignment is in flight — it goes through PHAST and the rayon
+    # contour, i.e. the SAME pool the exchange saturates. Measured 2026-10-06
+    # on dev during 4 × 500 000-pair exchanges: 112 isochrones, worst 117 ms;
+    # the one 17.5 s outlier seen that day was under node memory reclaim.
+    lat, iso, stop, result, err = [], [], threading.Event(), [], []
 
-    def poll():
+    def poll(path, store, timeout):
         while not stop.is_set():
             t0 = time.time()
             try:
-                http_json(f"{base}/health", timeout=10)
-                lat.append(time.time() - t0)
+                http_json(f"{base}{path}", timeout=timeout)
+                store.append(time.time() - t0)
             except Exception:
-                lat.append(99.0)
+                store.append(99.0)
             stop.wait(1.0)
 
     def run():
@@ -3501,14 +3507,23 @@ def gate_edges_flow_storm(base):
             result.append(exchange(60_000))
         except Exception as ex:
             err.append(str(ex)[:160])
-    th = threading.Thread(target=poll, daemon=True); th.start()
+    ths = [threading.Thread(target=poll, args=("/health", lat, 10), daemon=True),
+           threading.Thread(target=poll, args=("/isochrone?lon=4.3517&lat=50.8503&time_s=300&mode=car", iso, 10),
+                            daemon=True)]
+    for th in ths:
+        th.start()
     t0 = time.time()
-    run(); stop.set(); th.join(timeout=5)
+    run(); stop.set()
+    for th in ths:
+        th.join(timeout=5)
     passed &= check("edges_flow 60 000 pairs completes", bool(result) and result[0] > 0,
                     f"{result[0] if result else 0} rows in {time.time() - t0:.1f}s" + (f" ({err[0]})" if err else ""))
     worst = max(lat) if lat else 99.0
     passed &= check("/health answered under 1 s at every poll during the exchange",
                     bool(lat) and worst < 1.0, f"{len(lat)} polls, worst {worst:.3f}s")
+    worst_iso = max(iso) if iso else 99.0
+    passed &= check("a 5-min isochrone answered under 2 s at every poll during the exchange",
+                    bool(iso) and worst_iso < 2.0, f"{len(iso)} polls, worst {worst_iso:.3f}s")
     return passed
 
 
