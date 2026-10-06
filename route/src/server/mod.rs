@@ -391,6 +391,29 @@ pub async fn serve(
     overlay_path: Option<&Path>,
     lazy_regions: bool,
 ) -> Result<()> {
+    // #631: the compute pool leaves two cores to the async runtime, so an
+    // all-core rayon job (edges_flow, matrices, isochrone storms) can never
+    // starve the HTTP/gRPC workers that answer /health and small queries.
+    // Honoured unless the operator sized the pool (RAYON_NUM_THREADS).
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let compute = cores.saturating_sub(2).max(2);
+        match rayon::ThreadPoolBuilder::new()
+            .num_threads(compute)
+            .build_global()
+        {
+            Ok(()) => tracing::info!(
+                cores,
+                compute,
+                "rayon pool sized to leave the runtime its cores (#631)"
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "rayon pool already built — compute threads not capped")
+            }
+        }
+    }
     tracing::info!("Step 9: Starting query server...");
 
     // ---- Load every region as its own ServerState ------------------

@@ -371,64 +371,66 @@ pub fn compute_edges_flow(
     // pair uniformly (#460: NBG-granularity leakage through the fallback
     // would re-create phantom rows). query_idx order keeps the merge
     // deterministic.
-    let pair_ranks: Vec<(u32, Option<Vec<u32>>)> = if parallel {
-        per_pair_work
-            .par_iter()
-            .map(|w: &PerPairWork| {
-                let query = super::query::CchQuery::new(mode_data);
-                let ranks = super::flight::route_per_pair_work(state, mode_data, mode, &query, w)
-                    .map(|(s, d, r)| {
-                        super::unpack::unpack_path(
-                            &mode_data.cch_topo,
-                            &mode_data.cch_weights,
-                            &r.forward_parent,
-                            &r.backward_parent,
-                            s,
-                            d,
-                            r.meeting_node,
-                        )
-                    });
-                (w.query_idx, ranks)
-            })
-            .collect()
-    } else {
-        let query = super::query::CchQuery::new(mode_data);
-        per_pair_work
-            .iter()
-            .map(|w| {
-                let ranks = super::flight::route_per_pair_work(state, mode_data, mode, &query, w)
-                    .map(|(s, d, r)| {
-                        super::unpack::unpack_path(
-                            &mode_data.cch_topo,
-                            &mode_data.cch_weights,
-                            &r.forward_parent,
-                            &r.backward_parent,
-                            s,
-                            d,
-                            r.meeting_node,
-                        )
-                    });
-                (w.query_idx, ranks)
-            })
-            .collect()
-    };
-    for (query_idx, ranks) in &pair_ranks {
-        let g = groups[*query_idx as usize];
-        let w = weights[*query_idx as usize];
+    // Per-pair fallback routes are DEPOSITED as they are produced (#631).
+    // They used to be collected first — `Vec<(query_idx, Option<Vec<rank>>)>`
+    // over every fallback pair — then walked: on a national run that is
+    // millions of unpacked paths resident at once (the 2026-10-06 staging
+    // incident: 2 M-pair exchanges drifted from 51 s to 492 s as the node
+    // ran out of memory, and the liveness probe killed the server). Now each
+    // rayon worker folds its paths into its own accumulator and the
+    // accumulators merge; peak memory is O(threads), not O(pairs).
+    let deposit = |acc: &mut BatchAcc, query_idx: u32, ranks: Option<Vec<u32>>| {
+        let g = groups[query_idx as usize];
+        let w = weights[query_idx as usize];
         match ranks {
             Some(rank_path) => {
                 if w != 0.0 {
-                    for &rank in rank_path {
-                        *total.rank_flow.entry((g, rank)).or_default() += w;
+                    for rank in rank_path {
+                        *acc.rank_flow.entry((g, rank)).or_default() += w;
                     }
                 }
-                total.assigned += w;
+                acc.assigned += w;
             }
-            None => total.n_unreachable += 1,
+            None => acc.n_unreachable += 1,
+        }
+    };
+    let route_one = |query: &super::query::CchQuery, w: &PerPairWork| -> Option<Vec<u32>> {
+        super::flight::route_per_pair_work(state, mode_data, mode, query, w).map(|(s, d, r)| {
+            super::unpack::unpack_path(
+                &mode_data.cch_topo,
+                &mode_data.cch_weights,
+                &r.forward_parent,
+                &r.backward_parent,
+                s,
+                d,
+                r.meeting_node,
+            )
+        })
+    };
+    if parallel {
+        let folded = per_pair_work
+            .par_iter()
+            .fold(
+                || (super::query::CchQuery::new(mode_data), BatchAcc::default()),
+                |(query, mut acc), w: &PerPairWork| {
+                    let ranks = route_one(&query, w);
+                    deposit(&mut acc, w.query_idx, ranks);
+                    (query, acc)
+                },
+            )
+            .map(|(_, acc)| acc)
+            .reduce(BatchAcc::default, |mut a, b| {
+                b.merge_into(&mut a);
+                a
+            });
+        folded.merge_into(&mut total);
+    } else {
+        let query = super::query::CchQuery::new(mode_data);
+        for w in &per_pair_work {
+            let ranks = route_one(&query, w);
+            deposit(&mut total, w.query_idx, ranks);
         }
     }
-
-    // Cascade CCH-arc flow to EBG ranks.
     let arc_flow = std::mem::take(&mut total.arc_flow);
     cascade_arc_flow(mode_data, arc_flow, &mut total.rank_flow, parallel);
 
