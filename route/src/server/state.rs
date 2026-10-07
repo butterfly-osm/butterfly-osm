@@ -832,7 +832,6 @@ impl ServerState {
                 .map_err(|e| anyhow::anyhow!(
                     "--lock-container: mlock of the container failed ({e}); raise RLIMIT_MEMLOCK (or grant CAP_IPC_LOCK) to at least the container size, or drop the flag"
                 ))?;
-            metrics::gauge!("butterfly_route_container_locked_bytes").set(locked as f64);
             tracing::info!(
                 locked_bytes = locked,
                 container_bytes = mmap.len(),
