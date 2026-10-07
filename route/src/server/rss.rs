@@ -119,6 +119,57 @@ pub fn read_smaps_rollup() -> std::io::Result<RssSnapshot> {
     })
 }
 
+/// Page-fault counters of this process since it started (`/proc/self/stat`
+/// fields 10 and 12). A MAJOR fault is a page read from disk — on the
+/// mmapped container that is a served section the kernel evicted (#636).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaultCounts {
+    pub minor: u64,
+    pub major: u64,
+}
+
+/// Parse the body of `/proc/self/stat`. The `comm` field may hold spaces
+/// and parentheses, so the fields are counted from the LAST `)`: after it
+/// come state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt,
+/// majflt, … (proc(5)).
+pub fn parse_proc_stat_faults(stat: &str) -> Option<FaultCounts> {
+    let tail = &stat[stat.rfind(')')? + 1..];
+    let fields: Vec<&str> = tail.split_ascii_whitespace().collect();
+    Some(FaultCounts {
+        minor: fields.get(7)?.parse().ok()?,
+        major: fields.get(9)?.parse().ok()?,
+    })
+}
+
+/// Read this process's fault counters.
+pub fn read_proc_self_faults() -> std::io::Result<FaultCounts> {
+    let s = std::fs::read_to_string("/proc/self/stat")?;
+    parse_proc_stat_faults(&s).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unparseable /proc/self/stat",
+        )
+    })
+}
+
+/// #636: publish the process's residency on `/metrics` so a deployment can
+/// see the container being evicted instead of guessing from latency:
+/// `butterfly_route_process_rss_bytes` (+ `_anon_bytes`, `_file_bytes` —
+/// the file-backed part IS the mmapped container's resident pages) and the
+/// cumulative `butterfly_route_process_major_faults` / `_minor_faults`.
+/// Called on every `/metrics` scrape; two cheap `/proc` reads.
+pub fn export_process_gauges() {
+    if let Ok(snap) = read_smaps_rollup() {
+        metrics::gauge!("butterfly_route_process_rss_bytes").set((snap.rss_kb * 1024) as f64);
+        metrics::gauge!("butterfly_route_process_rss_anon_bytes").set((snap.anon_kb * 1024) as f64);
+        metrics::gauge!("butterfly_route_process_rss_file_bytes").set((snap.file_kb * 1024) as f64);
+    }
+    if let Ok(f) = read_proc_self_faults() {
+        metrics::gauge!("butterfly_route_process_major_faults").set(f.major as f64);
+        metrics::gauge!("butterfly_route_process_minor_faults").set(f.minor as f64);
+    }
+}
+
 /// Parse a `/proc` field tail like `"   1234 kB"` or `" 1234 kB"`
 /// to `1234`. Tolerates leading whitespace and trailing unit token.
 fn parse_kb_field(tail: &str) -> u64 {
@@ -139,6 +190,29 @@ mod tests {
         assert_eq!(parse_kb_field("        1234 kB"), 1234);
         assert_eq!(parse_kb_field("0 kB"), 0);
         assert_eq!(parse_kb_field("   42 kB"), 42);
+    }
+
+    #[test]
+    fn proc_stat_faults_count_from_the_last_paren() {
+        // comm with spaces and a parenthesis, as proc(5) allows
+        let line = "4242 (butterfly (x) y) S 1 4242 4242 0 -1 4194560 123456 0 789 0 10 20 0 0 20 0 64 0 100 1 2 3
+";
+        assert_eq!(
+            parse_proc_stat_faults(line),
+            Some(FaultCounts {
+                minor: 123_456,
+                major: 789
+            })
+        );
+        assert_eq!(parse_proc_stat_faults("garbage"), None);
+    }
+
+    #[test]
+    fn read_proc_self_faults_works_on_linux() {
+        if std::path::Path::new("/proc/self/stat").exists() {
+            let f = read_proc_self_faults().expect("/proc/self/stat");
+            assert!(f.minor > 0, "a running process has minor faults: {f:?}");
+        }
     }
 
     #[test]

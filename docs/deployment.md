@@ -267,6 +267,21 @@ Prometheus exposition format, served by `axum_prometheus::PrometheusMetricLayer`
 | `butterfly_route_query_total` | counter | `region`, `endpoint` | `region_metrics` (per-request) |
 | `butterfly_route_query_duration_seconds` | histogram | `region`, `endpoint` | same |
 | `butterfly_route_query_cross_region_total` | counter | `src`, `dst` | cross-region P2P dispatch |
+| `butterfly_route_process_rss_bytes` | gauge | none | `rss::export_process_gauges` on each `/metrics` scrape (#636) |
+| `butterfly_route_process_rss_anon_bytes` | gauge | none | same — heap + dirty pages |
+| `butterfly_route_process_rss_file_bytes` | gauge | none | same — the mmapped container's resident pages |
+| `butterfly_route_process_major_faults` | gauge (cumulative) | none | same — `/proc/self/stat`; rising under load = the node is evicting served sections |
+| `butterfly_route_process_minor_faults` | gauge (cumulative) | none | same |
+| `butterfly_route_container_locked_bytes` | gauge | none | set at boot by `serve --lock-container` (#636) |
+
+**Eviction (#636).** On a node under memory pressure the kernel evicts the
+mmapped container's file pages and re-faults them from disk on the next
+query: `butterfly_route_process_rss_file_bytes` drops while
+`butterfly_route_process_major_faults` climbs. `serve --lock-container`
+pins every page the boot kept (`mlock`; released sections such as the #149
+weights stay released) — the resident set becomes a floor and the boot
+fails if `RLIMIT_MEMLOCK` is too low. In Kubernetes give the container
+`securityContext.capabilities.add: [IPC_LOCK]` (the default limit is 8 MiB).
 
 `avoid_cache_*` gauges are refreshed on every `/health` scrape (the handler mirrors the live atomic counters into the Prometheus registry). Scrape `/metrics` and `/health` together to keep them coherent.
 

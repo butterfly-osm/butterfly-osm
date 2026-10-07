@@ -267,7 +267,10 @@ pub async fn transit_handler(
             return Err((status, Json(body)));
         }
     };
-    let result = compute_transit_journey(ctx.state.as_ref(), &req).map(Json);
+    // #635: access CCH 1-to-N + RAPTOR + egress is 35 ms p50 of synchronous
+    // compute — off the tokio worker (#539), like `/table` and `/catchment`.
+    let result =
+        super::avoid::off_runtime(|| compute_transit_journey(ctx.state.as_ref(), &req)).map(Json);
     if result.is_ok() {
         ctx.record("transit");
     }

@@ -72,37 +72,50 @@ pub fn map_readonly(path: &Path) -> Result<Arc<Mmap>> {
 /// stays portable; the optimisation is Linux-specific because the
 /// `MADV_DONTNEED` semantics we rely on (drop page-cache reference,
 /// re-page on fault) match Linux's behaviour, not BSD/macOS's.
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
-    if range.is_empty() {
-        return Ok(());
-    }
+/// Page-aligned ranges (absolute addresses) that [`madvise_dontneed`]
+/// released since boot. [`lock_resident_except_reclaimed`] (#636) pins the
+/// complement, so a locked container never re-pages the sections the boot
+/// deliberately gave back (#149 weights, ways.raw, attrs, …).
+static RECLAIMED: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
 
-    // `madvise(2)` on Linux requires the start address to be page-aligned
-    // and the length to be a whole number of pages. We round the start
-    // *up* to the next page boundary and the end *down*, advising only
-    // the inner whole-page span. The trimmed unaligned head and tail
-    // (≤ 1 page each) stay resident; for multi-GB weight sections this
-    // is rounding error.
+/// The whole-page span strictly inside `range` as `(start_addr, len)`, or
+/// `None` when `range` holds no whole page. `madvise(2)`/`mlock(2)` want a
+/// page-aligned start; rounding the start up and the end down keeps the
+/// call inside the caller's slice (the unaligned head and tail, ≤ 1 page
+/// each, stay as they are).
+#[cfg(target_os = "linux")]
+fn aligned_inner(range: &[u8]) -> Option<(usize, usize)> {
+    if range.is_empty() {
+        return None;
+    }
     let page_size = page_size();
     let start_addr = range.as_ptr() as usize;
     let end_addr = start_addr.saturating_add(range.len());
     let aligned_start = start_addr.div_ceil(page_size) * page_size;
     let aligned_end = (end_addr / page_size) * page_size;
-    if aligned_end <= aligned_start {
-        // Range smaller than one page after alignment; nothing to advise.
+    (aligned_end > aligned_start).then_some((aligned_start, aligned_end - aligned_start))
+}
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
+    let Some((aligned_start, aligned_len)) = aligned_inner(range) else {
+        // Empty, or smaller than one page after alignment; nothing to advise.
         return Ok(());
-    }
-    let aligned_len = aligned_end - aligned_start;
+    };
 
     // SAFETY: `range` is guaranteed by the caller to be a sub-slice of a
     // live mmap mapping (see doc comment). The aligned subrange
     // `[aligned_start, aligned_start + aligned_len)` lies entirely
     // within `range` because we rounded inward on both ends.
     // MADV_DONTNEED is a hint to the kernel; on Linux it drops the
-    // page-cache reference for file-backed ranges.
+    // page-cache reference for file-backed ranges. A range pinned by
+    // `lock_resident_except_reclaimed` (#636) is unlocked first:
+    // MADV_DONTNEED on locked pages fails with EINVAL, and a release
+    // asked for after the lock must still win (the caller is giving the
+    // memory back on purpose). `munlock` on an unlocked range is a no-op.
     let rc = unsafe {
+        let _ = libc::munlock(aligned_start as *const libc::c_void, aligned_len);
         libc::madvise(
             aligned_start as *mut libc::c_void,
             aligned_len,
@@ -110,10 +123,86 @@ pub fn madvise_dontneed(range: &[u8]) -> std::io::Result<()> {
         )
     };
     if rc == 0 {
+        if let Ok(mut r) = RECLAIMED.lock() {
+            r.push((aligned_start, aligned_len));
+        }
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+/// `[0, len)` minus `holes` (`(offset, len)` pairs, any order, may overlap),
+/// as sorted, disjoint `(offset, len)` pieces. Pure; the unit tests pin it.
+pub fn complement(len: usize, holes: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut holes: Vec<(usize, usize)> = holes
+        .iter()
+        .filter_map(|&(off, l)| {
+            let end = off.saturating_add(l).min(len);
+            (end > off && off < len).then_some((off, end))
+        })
+        .collect();
+    holes.sort_unstable();
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    for (off, end) in holes {
+        if off > cursor {
+            out.push((cursor, off - cursor));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < len {
+        out.push((cursor, len - cursor));
+    }
+    out
+}
+
+/// #636: pin every page of `mmap` that boot did not give back through
+/// [`madvise_dontneed`], so node memory pressure can no longer evict the
+/// container's served sections (snap index, geometry, EBG, names, …) and
+/// re-fault them from disk under load. Returns the number of bytes locked.
+///
+/// The cost is the point: the resident set becomes a FLOOR of roughly the
+/// container minus the reclaimed sections, and the kernel refuses when the
+/// process's `RLIMIT_MEMLOCK` is below that (or without `CAP_IPC_LOCK`) —
+/// the caller surfaces that error rather than running unpinned.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub fn lock_resident_except_reclaimed(mmap: &Mmap) -> std::io::Result<u64> {
+    let base = mmap.as_ptr() as usize;
+    let len = mmap.len();
+    let holes: Vec<(usize, usize)> = RECLAIMED
+        .lock()
+        .map(|r| {
+            r.iter()
+                .copied()
+                .filter(|&(s, l)| s >= base && s.saturating_add(l) <= base.saturating_add(len))
+                .map(|(s, l)| (s - base, l))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut locked = 0u64;
+    for (off, l) in complement(len, &holes) {
+        // SAFETY: `[base + off, base + off + l)` lies inside the live
+        // mapping `mmap` (complement of in-bounds holes over `[0, len)`);
+        // `mlock` only changes the pages' residency policy, never their
+        // contents. The mapping's start is page-aligned by construction
+        // and every hole is page-aligned (recorded from `aligned_inner`),
+        // so each piece starts on a page boundary; the kernel rounds a
+        // non-aligned end up to the page.
+        let rc = unsafe { libc::mlock((base + off) as *const libc::c_void, l) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        locked += l as u64;
+    }
+    Ok(locked)
+}
+
+/// Stub for non-Linux targets: nothing is locked, `Ok(0)`.
+#[cfg(not(target_os = "linux"))]
+pub fn lock_resident_except_reclaimed(_mmap: &Mmap) -> std::io::Result<u64> {
+    Ok(0)
 }
 
 /// Stub for non-Linux targets. Returns `Ok(())` without advising.
@@ -433,6 +522,44 @@ mod tests {
         let mmap = map_readonly(tmp.path())?;
         // u32 needs 4-byte alignment; offset 1 is misaligned.
         assert!(ArcCow::<u32>::from_mmap(Arc::clone(&mmap), 1, 4).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn complement_merges_sorts_and_clips_holes() {
+        assert_eq!(complement(100, &[]), vec![(0, 100)]);
+        assert_eq!(complement(100, &[(0, 100)]), vec![]);
+        // unsorted + overlapping + past-the-end holes
+        assert_eq!(
+            complement(100, &[(50, 10), (10, 20), (20, 25), (90, 50)]),
+            vec![(0, 10), (45, 5), (60, 30)]
+        );
+        assert_eq!(complement(0, &[(0, 10)]), vec![]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lock_pins_the_mapping_minus_reclaimed_ranges() -> Result<()> {
+        // Three pages: release the middle one, lock the rest. The lock
+        // must skip exactly the released page; a release AFTER the lock
+        // must still succeed (munlock-then-madvise).
+        let page = page_size();
+        let mut tmp = NamedTempFile::new()?;
+        tmp.write_all(&vec![7u8; 3 * page])?;
+        tmp.flush()?;
+        let mmap = map_readonly(tmp.path())?;
+        madvise_dontneed(&mmap[page..2 * page])?;
+        match lock_resident_except_reclaimed(&mmap) {
+            Ok(locked) => assert_eq!(locked as usize, 2 * page),
+            // A CI sandbox may cap RLIMIT_MEMLOCK below two pages; the
+            // complement arithmetic is pinned above regardless.
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ENOMEM | libc::EPERM)) => {
+                eprintln!("mlock not permitted here ({e}); skipping the lock assertion");
+            }
+            Err(e) => return Err(e.into()),
+        }
+        madvise_dontneed(&mmap[..page])?;
+        assert_eq!(mmap[2 * page], 7);
         Ok(())
     }
 

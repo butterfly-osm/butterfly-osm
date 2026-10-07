@@ -842,6 +842,16 @@ pub enum Commands {
         #[arg(long, default_value = "false")]
         warmup_on_boot: bool,
 
+        /// #636: pin the container's served sections in RAM (`mlock`) once
+        /// boot has released what it does not serve. On a node under memory
+        /// pressure the kernel otherwise evicts the mmapped snap index,
+        /// geometry and EBG and re-faults them from disk under load. The
+        /// resident set becomes a floor (≈ container minus released
+        /// sections); the boot fails if `RLIMIT_MEMLOCK` is too low.
+        /// Watch `butterfly_route_process_major_faults` on `/metrics`.
+        #[arg(long, default_value = "false")]
+        lock_container: bool,
+
         /// #91 Phase 2: cross-region overlay container. When supplied,
         /// cross-region P2P queries are served via the overlay matrix
         /// instead of returning 501. Build the overlay with
@@ -2004,6 +2014,7 @@ impl Cli {
                         let load_options = crate::server::state::LoadOptions {
                             eager_verify: false,
                             warmup_on_boot: false,
+                            lock_container: false,
                         };
                         let state =
                             crate::server::state::ServerState::load_from_container_with_options(
@@ -2106,6 +2117,7 @@ impl Cli {
                 rss_checkpoints,
                 eager_verify,
                 warmup_on_boot,
+                lock_container,
                 overlay,
             } => {
                 // Initialize structured logging for the serve command
@@ -2188,6 +2200,7 @@ impl Cli {
                 let load_options = crate::server::state::LoadOptions {
                     eager_verify,
                     warmup_on_boot,
+                    lock_container,
                 };
 
                 // Create tokio runtime

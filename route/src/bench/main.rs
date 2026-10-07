@@ -4546,6 +4546,7 @@ fn run_p2p_bench(
         &LoadOptions {
             eager_verify: false,
             warmup_on_boot: false,
+            lock_container: false,
         },
     )?;
     println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
@@ -4725,6 +4726,7 @@ fn run_edges_batch_bench(
         &LoadOptions {
             eager_verify: false,
             warmup_on_boot: false,
+            lock_container: false,
         },
     )?;
     println!("  loaded container in {:.1}s", t.elapsed().as_secs_f64());
