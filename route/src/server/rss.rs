@@ -168,6 +168,8 @@ pub fn export_process_gauges() {
         metrics::gauge!("butterfly_route_process_major_faults").set(f.major as f64);
         metrics::gauge!("butterfly_route_process_minor_faults").set(f.minor as f64);
     }
+    metrics::gauge!("butterfly_route_container_locked_bytes")
+        .set(crate::formats::mmap::locked_bytes() as f64);
 }
 
 /// Parse a `/proc` field tail like `"   1234 kB"` or `" 1234 kB"`

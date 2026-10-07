@@ -78,6 +78,17 @@ pub fn map_readonly(path: &Path) -> Result<Arc<Mmap>> {
 /// deliberately gave back (#149 weights, ways.raw, attrs, …).
 static RECLAIMED: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
 
+/// Bytes pinned by [`lock_resident_except_reclaimed`] (0 = not asked or not
+/// yet). Read by the `/metrics` scrape (`butterfly_route_container_locked_bytes`):
+/// the boot sets it before the Prometheus recorder exists, so the gauge is
+/// published on scrape, not at boot.
+static LOCKED_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bytes currently pinned by `--lock-container`.
+pub fn locked_bytes() -> u64 {
+    LOCKED_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The whole-page span strictly inside `range` as `(start_addr, len)`, or
 /// `None` when `range` holds no whole page. `madvise(2)`/`mlock(2)` want a
 /// page-aligned start; rounding the start up and the end down keeps the
@@ -196,6 +207,7 @@ pub fn lock_resident_except_reclaimed(mmap: &Mmap) -> std::io::Result<u64> {
         }
         locked += l as u64;
     }
+    LOCKED_BYTES.store(locked, std::sync::atomic::Ordering::Relaxed);
     Ok(locked)
 }
 
