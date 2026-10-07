@@ -138,14 +138,18 @@ pub async fn nearest_handler(
     let mode_data = state.get_mode(mode);
     let role_filter = req.role.role_filter(&mode_data);
 
-    let results = state.snap_index.snap_k_with_info_filtered_role(
-        req.lon,
-        req.lat,
-        mode.0,
-        k,
-        None,
-        role_filter,
-    );
+    // #635: the k-best snap is a synchronous walk of the spatial index
+    // (18 ms on urban foot after #525) — off the tokio worker (#539).
+    let results = super::avoid::off_runtime(|| {
+        state.snap_index.snap_k_with_info_filtered_role(
+            req.lon,
+            req.lat,
+            mode.0,
+            k,
+            None,
+            role_filter,
+        )
+    });
 
     if results.is_empty() {
         // #554: a well-formed query over the sea is "nothing here" (404), as

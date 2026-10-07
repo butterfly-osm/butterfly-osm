@@ -531,124 +531,132 @@ pub async fn isochrone_handler(
         requested.values.clone()
     };
 
-    // THE pipeline (#549): snap -> phantom seeds -> seeded PHAST ->
-    // rank->original -> per-threshold frontier -> topology, shared with
-    // bands, /isochrone/bulk, Flight `isochrone` and the catchment hull.
-    let field = match isochrone_polygons(
-        &state,
-        &mode_data,
-        mode,
-        &IsochroneQuery {
-            metric: requested.metric,
-            lon: req.lon,
-            lat: req.lat,
-            thresholds: &thresholds,
-            reverse,
-            mode_name: &req.mode,
-            snap_mask: Some(snap_mask),
-            flats,
-            include_network: include_network && !wants_wkb,
-        },
-    ) {
-        Ok(f) => f,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(isochrone_error_message(e))),
-            )
-                .into_response();
-        }
-    };
-
-    // WKB path (content negotiation). One contour, no bands: guaranteed by
-    // `wkb_request_rejection` above, before any PHAST work (#559).
-    if wants_wkb {
-        use crate::range::contour::ContourResult;
-        use crate::range::wkb_stream::encode_polygon_wkb;
-
-        let contour =
-            ContourResult::from_topology(field.topologies.into_iter().next().unwrap_or_default());
-        ctx.record("isochrone");
-        return match encode_polygon_wkb(&contour) {
-            Some(wkb) => (
-                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                wkb,
-            )
-                .into_response(),
-            None => (StatusCode::NO_CONTENT, Vec::<u8>::new()).into_response(),
-        };
-    }
-
-    // JSON path -- always returns contours array
-    let mut contour_features: Vec<ContourFeature> = thresholds
-        .iter()
-        .zip(field.topologies.iter())
-        .map(|(&threshold, topology)| {
-            let (time_s, distance_m) = requested.label(threshold);
-            let polygon = primary_outer_ring(topology);
-            let reachable = field
-                .settled
-                .iter()
-                .filter(|&&(_, d)| d <= threshold)
-                .count();
-            let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
-            ContourFeature {
-                time_s,
-                distance_m,
-                polygon: poly_enc,
-                polygon_geojson: poly_geo,
-                polygon_points: poly_pts,
-                geometry: matches!(geom_format, GeometryFormat::GeoJson)
-                    .then(|| topology_geojson(topology)),
-                reachable_edges: reachable,
-                band: None,
+    // #635: the PHAST field, the rayon contour and the band passes are
+    // synchronous compute — 25 ms idle, but under a saturated compute pool
+    // (an edges_flow exchange, a bulk matrix) a rayon call waits for pool
+    // capacity, and that wait must not hold a tokio worker (#539 rule).
+    // `block_in_place` hands the worker's other tasks to a sibling.
+    super::avoid::off_runtime(|| {
+        // THE pipeline (#549): snap -> phantom seeds -> seeded PHAST ->
+        // rank->original -> per-threshold frontier -> topology, shared with
+        // bands, /isochrone/bulk, Flight `isochrone` and the catchment hull.
+        let field = match isochrone_polygons(
+            &state,
+            &mode_data,
+            mode,
+            &IsochroneQuery {
+                metric: requested.metric,
+                lon: req.lon,
+                lat: req.lat,
+                thresholds: &thresholds,
+                reverse,
+                mode_name: &req.mode,
+                snap_mask: Some(snap_mask),
+                flats,
+                include_network: include_network && !wants_wkb,
+            },
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(isochrone_error_message(e))),
+                )
+                    .into_response();
             }
-        })
-        .collect();
+        };
 
-    // #521 uncertainty bands: two extra seeded PHAST passes on the hidden
-    // band weight sets — best (night speeds) reaches farther, worst (weekday
-    // peak speeds) less far. Same thresholds.
-    if bands_requested {
-        let Some((pess, opt)) = state.band_modes() else {
-            return (
+        // WKB path (content negotiation). One contour, no bands: guaranteed by
+        // `wkb_request_rejection` above, before any PHAST work (#559).
+        if wants_wkb {
+            use crate::range::contour::ContourResult;
+            use crate::range::wkb_stream::encode_polygon_wkb;
+
+            let contour = ContourResult::from_topology(
+                field.topologies.into_iter().next().unwrap_or_default(),
+            );
+            ctx.record("isochrone");
+            return match encode_polygon_wkb(&contour) {
+                Some(wkb) => (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    wkb,
+                )
+                    .into_response(),
+                None => (StatusCode::NO_CONTENT, Vec::<u8>::new()).into_response(),
+            };
+        }
+
+        // JSON path -- always returns contours array
+        let mut contour_features: Vec<ContourFeature> = thresholds
+            .iter()
+            .zip(field.topologies.iter())
+            .map(|(&threshold, topology)| {
+                let (time_s, distance_m) = requested.label(threshold);
+                let polygon = primary_outer_ring(topology);
+                let reachable = field
+                    .settled
+                    .iter()
+                    .filter(|&&(_, d)| d <= threshold)
+                    .count();
+                let (poly_enc, poly_geo, poly_pts) = encode_contour(&polygon, geom_format);
+                ContourFeature {
+                    time_s,
+                    distance_m,
+                    polygon: poly_enc,
+                    polygon_geojson: poly_geo,
+                    polygon_points: poly_pts,
+                    geometry: matches!(geom_format, GeometryFormat::GeoJson)
+                        .then(|| topology_geojson(topology)),
+                    reachable_edges: reachable,
+                    band: None,
+                }
+            })
+            .collect();
+
+        // #521 uncertainty bands: two extra seeded PHAST passes on the hidden
+        // band weight sets — best (night speeds) reaches farther, worst (weekday
+        // peak speeds) less far. Same thresholds.
+        if bands_requested {
+            let Some((pess, opt)) = state.band_modes() else {
+                return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse::new("uncertainty bands not available: the loaded edge_speeds table has no best/worst columns".to_string())),
             )
                 .into_response();
-        };
-        for (band_mode, tag) in [(opt, "best"), (pess, "worst")] {
-            match band_isochrone_features(
-                &state,
-                band_mode,
-                &req,
-                reverse,
-                &requested,
-                geom_format,
-                tag,
-            ) {
-                Some(mut feats) => contour_features.append(&mut feats),
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse::new(format!(
-                            "band '{tag}': could not snap/compute isochrone"
-                        ))),
-                    )
-                        .into_response();
+            };
+            for (band_mode, tag) in [(opt, "best"), (pess, "worst")] {
+                match band_isochrone_features(
+                    &state,
+                    band_mode,
+                    &req,
+                    reverse,
+                    &requested,
+                    geom_format,
+                    tag,
+                ) {
+                    Some(mut feats) => contour_features.append(&mut feats),
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(format!(
+                                "band '{tag}': could not snap/compute isochrone"
+                            ))),
+                        )
+                            .into_response();
+                    }
                 }
             }
         }
-    }
 
-    ctx.record("isochrone");
-    Json(IsochroneResponse {
-        contours: contour_features,
-        // `include=network` shares the max-threshold frontier with the
-        // contour at that threshold (#549: it used to be recomputed).
-        network: field.network,
+        ctx.record("isochrone");
+        Json(IsochroneResponse {
+            contours: contour_features,
+            // `include=network` shares the max-threshold frontier with the
+            // contour at that threshold (#549: it used to be recomputed).
+            network: field.network,
+        })
+        .into_response()
     })
-    .into_response()
 }
 
 /// #521: contour features for ONE hidden band weight set — the SAME core

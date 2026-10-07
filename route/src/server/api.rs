@@ -158,7 +158,14 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .merge(api_routes)
-        .route("/metrics", get(|| async move { metric_handle.render() }))
+        .route(
+            "/metrics",
+            get(|| async move {
+                // #636: residency + page faults are sampled on scrape.
+                super::rss::export_process_gauges();
+                metric_handle.render()
+            }),
+        )
         .layer(CatchPanicLayer::new())
         .layer(prometheus_layer)
         .layer(TraceLayer::new_for_http())

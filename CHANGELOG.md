@@ -10,6 +10,28 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### Fixed
+- **REST compute off the runtime (#635)**: `/isochrone` (PHAST field, rayon
+  contour, band passes), `/nearest` (k-best snap) and `/transit` (access
+  CCH + RAPTOR + egress) now run their synchronous compute through
+  `block_in_place`, like `/table` and `/catchment` already did. Under a
+  saturated compute pool a rayon call waits for capacity; that wait no
+  longer holds a tokio worker (the #539 rule).
+
+### Added
+- **Residency on `/metrics` (#636)**: `butterfly_route_process_rss_bytes`
+  (+ `_anon_bytes`, `_file_bytes` — the file-backed part is the mmapped
+  container's resident pages) and the cumulative
+  `butterfly_route_process_major_faults` / `_minor_faults`, sampled on
+  scrape. A rising major-fault count under load means the node is evicting
+  served sections of the container.
+- **`serve --lock-container` (#636)**: after boot, `mlock` every page of
+  the container that the load did not release, so memory pressure on a
+  shared node cannot evict the snap index, geometry or EBG and re-fault
+  them from disk. The resident set becomes a floor;
+  `butterfly_route_container_locked_bytes` says how much. The boot fails
+  loudly when `RLIMIT_MEMLOCK` (or `CAP_IPC_LOCK`) does not allow it.
+
 ### 2026-10-06 — A national `edges_flow` run can no longer take the server down (#631)
 
 On 2026-10-06 staging served 87 `edges_flow` exchanges of 2 000 000 pairs

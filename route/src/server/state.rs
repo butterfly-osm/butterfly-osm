@@ -441,6 +441,14 @@ pub struct LoadOptions {
     /// total-coverage at the cost of a transient per-section page fault
     /// burst, but does not block the listener.
     pub warmup_on_boot: bool,
+
+    /// #636: after boot, `mlock` every page of the container that the
+    /// load did not give back (`madvise_dontneed`), so node memory pressure
+    /// cannot evict a served section and re-fault it from disk under load.
+    /// The resident set becomes a floor; the boot FAILS if the kernel
+    /// refuses (`RLIMIT_MEMLOCK` / `CAP_IPC_LOCK`) — an operator who asked
+    /// for the pin does not get a silently unpinned server.
+    pub lock_container: bool,
 }
 
 impl ServerState {
@@ -814,6 +822,23 @@ impl ServerState {
             nbg_node_to_osm,
             has_flat_edge_geom: _,
         } = graph;
+
+        // #636: pin what is still mapped. Runs LAST — after every boot-time
+        // `madvise_dontneed` (#149 weights, ways.raw, attrs, distance
+        // sections) — so the released ranges stay released.
+        if opts.lock_container {
+            let mmap = lazy_arc.mmap_arc();
+            let locked = crate::formats::mmap::lock_resident_except_reclaimed(mmap)
+                .map_err(|e| anyhow::anyhow!(
+                    "--lock-container: mlock of the container failed ({e}); raise RLIMIT_MEMLOCK (or grant CAP_IPC_LOCK) to at least the container size, or drop the flag"
+                ))?;
+            metrics::gauge!("butterfly_route_container_locked_bytes").set(locked as f64);
+            tracing::info!(
+                locked_bytes = locked,
+                container_bytes = mmap.len(),
+                "container pinned resident (#636): served sections can no longer be evicted"
+            );
+        }
         Ok(Self {
             ebg_nodes,
             ebg_csr,

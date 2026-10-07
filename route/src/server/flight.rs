@@ -5419,6 +5419,7 @@ mod edges_batch_grouping_tests {
             &LoadOptions {
                 eager_verify: false,
                 warmup_on_boot: false,
+                lock_container: false,
             },
         )
         .expect("load container");

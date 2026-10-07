@@ -796,7 +796,7 @@ pub fn parse_avoid_option(avoid: &Option<String>) -> Result<Option<String>, Stri
 /// thread for the duration, so `/health` and every other request stay
 /// responsive; outside a multi-thread runtime (unit tests, rayon threads)
 /// it would panic, so there we just run the closure.
-fn off_runtime<T>(f: impl FnOnce() -> T) -> T {
+pub(crate) fn off_runtime<T>(f: impl FnOnce() -> T) -> T {
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current() {
         Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
