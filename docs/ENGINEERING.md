@@ -199,7 +199,7 @@ fastest way to tell whether a regression is in the graph or in the speed table.
 cargo test --workspace                     # ~860 tests (unit + integration + doc), no data
 cargo test --workspace --all-features      # + the `feature = "bench"` tests (#556)
 bash scripts/check-upstream-clean.sh       # public-repo leak guard
-BUTTERFLY_REFS_DIR=/data/reference-trips python3 bench/postdeploy_gate.py --base http://localhost:3001 [--quick] [--no-flight] [--list-gates]
+BUTTERFLY_REFS_DIR=/data/reference-trips butterfly-gate --base http://localhost:3001 [--quick] [--no-flight]   # cargo build --release --features gate --bin butterfly-gate [--list-gates]
 ```
 
 Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` — print it with
@@ -208,7 +208,7 @@ Local pre-push and CI run ONE step list, `scripts/ci-steps.sh` — print it with
 `cargo test --workspace`, `cargo test --workspace --all-features` (#556), a count
 guard proving the all-features test list is a strict superset of the default one,
 the gate's `py_compile` + `--list-gates` smoke, and the gate's own offline unit
-tests (`bench/test_postdeploy_gate.py`). There is no separate
+tests (`cargo test --features gate --bin butterfly-gate`, `route/src/gate/tests.rs`). There is no separate
 `cargo build` step: `cargo test --workspace` already links `butterfly-route` and
 `butterfly-dl`, and `butterfly-bench` is a `--all-features` bin (#591).
 `scripts/hooks/install.sh` installs the hook. Skip it with
@@ -290,5 +290,5 @@ route/src/range/sparse_contour.rs   isochrone topology (one simple polygon)
 route/src/server/api.rs             REST router; handlers sit beside it
 route/src/server/{state,flight}.rs  server state + boot recustomization; Flight actions
 route/src/transit/                  timetable, loaders, RAPTOR, ULTRA transfers
-bench/postdeploy_gate.py            the invariant gate
+route/src/gate/ (butterfly-gate)    the invariant gate (#646; was bench/postdeploy_gate.py)
 ```
