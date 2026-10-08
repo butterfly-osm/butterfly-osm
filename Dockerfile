@@ -49,8 +49,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     cargo build --release -p butterfly-dl -p butterfly-route \
+    && cargo build --release -p butterfly-route --features gate --bin butterfly-gate \
     && mkdir -p /out \
-    && cp target/release/butterfly-dl target/release/butterfly-route /out/
+    && cp target/release/butterfly-dl target/release/butterfly-route target/release/butterfly-gate /out/
 
 # ---------------------------------------------------------------------------
 # Stage 2 — tools image: fetch a PBF (+ optional transit feeds) with
@@ -71,6 +72,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /out/butterfly-dl    /usr/local/bin/butterfly-dl
 COPY --from=builder /out/butterfly-route /usr/local/bin/butterfly-route
+# #646: the post-deploy gate, so a deployment runs it from this image (or a
+# Job in the cluster) without an interpreter on the workstation.
+COPY --from=builder /out/butterfly-gate  /usr/local/bin/butterfly-gate
 
 # Profile models — small (< 100 KB total) so we bake them in rather
 # than mount via ConfigMap.
