@@ -61,6 +61,13 @@ STEPS=(
   # FAIL). They existed but no runner executed them, so a break in the gate's
   # own logic reached a deploy before anyone looked.
   "post-deploy gate unit tests|python3 bench/test_postdeploy_gate.py"
+  # #646: the gate as a Rust binary (`butterfly-gate`, feature `gate`). Its
+  # registry must enumerate the SAME gates as the Python one while both
+  # exist — the parity phase — and its unit tests pin the CPython RNG
+  # reimplementation the sampling checks rely on.
+  "butterfly-gate builds|cargo build --release --features gate --bin butterfly-gate"
+  "butterfly-gate registry == python registry|diff <(python3 bench/postdeploy_gate.py --list-gates) <(./target/release/butterfly-gate --list-gates)"
+  "butterfly-gate unit tests|cargo test --release --features gate --bin butterfly-gate"
   # #573: `Dockerfile.tools` is DERIVED from `Dockerfile` (the runtime stage
   # cut off), so the deprecated shim cannot drift from the real manifest.
   # Costs milliseconds and needs no toolchain.

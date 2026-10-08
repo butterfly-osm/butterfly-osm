@@ -11,6 +11,18 @@ For detailed tool-specific changes, see individual tool changelogs:
 ## [Unreleased]
 
 ### Added
+- **`butterfly-gate` (#646)**: the post-deploy correctness gate as one static
+  Rust binary (feature `gate`), replacing the Python gate step by step. Same
+  CLI, same 36 checks, same output contract (`[PASS]/[FAIL]/[SKIP]` lines,
+  `GATE: PASS|FAIL (s)`, exit code); the sampling checks draw the same
+  points as the Python gate through a bit-exact port of CPython's
+  `random.Random` (MT19937, `uniform`, `shuffle`, `sample`). Parity on a
+  live server: 307 identical verdict lines, in a third of the wall time.
+  CI builds it, diffs its registry against the Python one and runs its
+  offline unit tests; the Python file stays until the deploy tooling has
+  switched.
+
+### Added
 - **Boot steps with their own cost (#641)**: with `--rss-checkpoints`, the
   mode, shared and exclude-flag loads emit one `RSS_STEP` line per structure
   (`dt_s`, `d_anon_kb`, `d_file_kb`), and the end of boot logs what the

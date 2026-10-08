@@ -622,6 +622,7 @@ dependencies = [
  "quick-xml",
  "rand 0.10.1",
  "rayon",
+ "reqwest",
  "rstar",
  "rustc-hash",
  "serde",
