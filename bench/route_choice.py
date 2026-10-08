@@ -3,7 +3,7 @@
 
 The post-deploy gate judges LEVEL (engine duration vs the observed duration)
 and, since #545, the CHOICE statistic below as a pass/fail ceiling
-(`gate_route_choice` in `bench/postdeploy_gate.py`). This script is the
+(`gate_route_choice` in `butterfly-gate`, route/src/gate/). This script is the
 DIAGNOSTIC behind that check: it prints the same share of divergent pairs,
 and adds what a single-instance gate cannot have — the shape of the divergent
 set, an OSRM control, and above all `--compare`, the same pairs on the same

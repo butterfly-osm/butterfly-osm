@@ -18,9 +18,9 @@ For detailed tool-specific changes, see individual tool changelogs:
   points as the Python gate through a bit-exact port of CPython's
   `random.Random` (MT19937, `uniform`, `shuffle`, `sample`). Parity on a
   live server: 307 identical verdict lines, in a third of the wall time.
-  CI builds it, diffs its registry against the Python one and runs its
-  offline unit tests; the Python file stays until the deploy tooling has
-  switched.
+  CI builds it, checks its 36-gate registry and runs its offline unit
+  tests. The deploy tooling runs it from the tools image; `bench/
+  postdeploy_gate.py` and its unit tests are deleted.
 
 ### Added
 - **Boot steps with their own cost (#641)**: with `--rss-checkpoints`, the

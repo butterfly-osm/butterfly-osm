@@ -1,4 +1,4 @@
-//! Offline unit checks — the Rust twins of `bench/test_postdeploy_gate.py`:
+//! Offline unit checks (the Python gate's `test_postdeploy_gate.py`, ported):
 //! threshold derivation, refs resolution, matrix-plan parsing, geometry
 //! helpers, class share, outlier share, the transit-feeds verdict and the
 //! registry (no server, no reference set, no environment).

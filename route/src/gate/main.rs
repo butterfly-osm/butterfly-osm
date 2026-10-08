@@ -1,6 +1,6 @@
 //! `butterfly-gate` — the post-deploy correctness gate as one static binary
 //! (#646). Same CLI, same output contract and same 36 checks as the Python
-//! gate it replaces (`bench/postdeploy_gate.py`): `== name ==` banners,
+//! gate it replaced (`bench/postdeploy_gate.py`, deleted): `== name ==` banners,
 //! `[PASS] / [FAIL] / [SKIP]` lines, `GATE: PASS|FAIL (s)`, exit 0/1.
 //!
 //! Usage

@@ -3,7 +3,7 @@
 //!
 //! Until now "exactly ONE simple polygon", "the pin is inside it",
 //! "contours nest" and "route agrees with table" were asserted only by
-//! `bench/postdeploy_gate.py`, i.e. AFTER a deploy, against Belgium.
+//! `butterfly-gate`, i.e. AFTER a deploy, against Belgium.
 //! A merge could break any of them and CI would stay green.
 //!
 //! This suite builds a road network in memory — a lattice of streets
