@@ -10,6 +10,18 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### Added
+- **Boot steps with their own cost (#641)**: with `--rss-checkpoints`, the
+  mode, shared and exclude-flag loads emit one `RSS_STEP` line per structure
+  (`dt_s`, `d_anon_kb`, `d_file_kb`), and the end of boot logs what the
+  eager per-section CRC walks cost (`boot CRC verification cost`). First
+  step of the boot-under-5-s epic (#640).
+
+### Changed
+- **`rust-toolchain.toml` pins 1.95.0**, the toolchain CI runs; a
+  workstation's newer `stable` (1.99 deprecates `fetch_update`) no longer
+  fails the workspace's deny(warnings) locally while CI is green.
+
 ### Fixed
 - **REST compute off the runtime (#635)**: `/isochrone` (PHAST field, rayon
   contour, band passes), `/nearest` (k-best snap) and `/transit` (access

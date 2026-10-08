@@ -366,6 +366,7 @@ pub fn build_edge_exclude_flags_from_attrs(
         total_edges = edge_flags.len(),
         "built edge exclude flags"
     );
+    crate::server::rss::step("aux.edge_exclude_flags");
 
     Ok(edge_flags)
 }

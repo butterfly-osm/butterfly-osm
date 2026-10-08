@@ -43,6 +43,57 @@ pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// Last sample taken by [`checkpoint`] / [`step`], so a step can report what
+/// it cost on its own (#641: the boot timeline named phases but not the
+/// structures inside them; a 50 s mode load was one line).
+static LAST: std::sync::Mutex<Option<(Instant, RssSnapshot)>> = std::sync::Mutex::new(None);
+
+fn remember(now: Instant, rss: RssSnapshot) {
+    if let Ok(mut l) = LAST.lock() {
+        *l = Some((now, rss));
+    }
+}
+
+/// A boot STEP: like [`checkpoint`] but the line carries the deltas since the
+/// previous step or checkpoint — seconds, anonymous KiB, file-backed KiB —
+/// so each structure the boot builds is named with its own cost
+/// (`RSS_STEP phase=mode.car.flat.up.time dt_s=… d_anon_kb=… d_file_kb=…`).
+/// No-op when [`is_enabled`] returns false.
+pub fn step(phase: &str) {
+    if !is_enabled() {
+        return;
+    }
+    let now = Instant::now();
+    let Ok(rss) = read_smaps_rollup() else {
+        return;
+    };
+    let prev = LAST.lock().ok().and_then(|l| *l);
+    let (dt_s, d_anon, d_file) = match prev {
+        Some((t, r)) => (
+            now.duration_since(t).as_secs_f64(),
+            rss.anon_kb as i64 - r.anon_kb as i64,
+            rss.file_kb as i64 - r.file_kb as i64,
+        ),
+        None => (0.0, rss.anon_kb as i64, rss.file_kb as i64),
+    };
+    let elapsed_s = START
+        .get()
+        .map(|t| t.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
+    tracing::info!(
+        target: "rss_checkpoint",
+        phase = phase,
+        dt_s = format!("{dt_s:.3}"),
+        d_anon_kb = d_anon,
+        d_file_kb = d_file,
+        anon_kb = rss.anon_kb,
+        elapsed_s = format!("{elapsed_s:.3}"),
+        "RSS_STEP phase={phase} dt_s={dt_s:.3} d_anon_kb={d_anon} d_file_kb={d_file} anon_kb={a} elapsed_s={elapsed_s:.3}",
+        a = rss.anon_kb,
+    );
+    remember(now, rss);
+}
+
 /// Sample `/proc/self/smaps_rollup` and emit one
 /// `RSS_CHECKPOINT phase=<phase> total_kb=N anon_kb=M file_kb=K
 /// elapsed_s=Z` line at `tracing::info!` level.
@@ -58,6 +109,7 @@ pub fn checkpoint(phase: &str) {
         .unwrap_or(0.0);
     match read_smaps_rollup() {
         Ok(rss) => {
+            remember(Instant::now(), rss);
             tracing::info!(
                 target: "rss_checkpoint",
                 phase = phase,
