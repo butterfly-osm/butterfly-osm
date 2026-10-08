@@ -124,6 +124,7 @@ parquet = "58"
 csv = "1.4"
 futures = "0.3.32"
 futures-util = "0.3.32"
+reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls"] }
 bytes = "1.11.1"
 parking_lot = "0.12.5"
 tonic = { version = "0.14", features = ["transport"] }
@@ -189,8 +190,16 @@ wiremock = { workspace = true }
 # Historical algorithm variants and harnesses kept reproducible for the
 # bench binary (#553); the server builds without them.
 bench = []
+# The post-deploy gate as one static binary (#646): the HTTP client is the
+# only extra dependency; Flight comes from the engine's own crates.
+gate = ["dep:reqwest"]
 
 [[bin]]
 name = "butterfly-bench"
 path = "src/bench/main.rs"
 required-features = ["bench"]
+
+[[bin]]
+name = "butterfly-gate"
+path = "src/gate/main.rs"
+required-features = ["gate"]
