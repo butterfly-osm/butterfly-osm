@@ -770,6 +770,31 @@ pub async fn serve(
     // the steady-state baseline #153/#154/#155 will measure against,
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
+    // #641: what the eager per-section CRC walks cost this boot (every
+    // section the load touches is verified synchronously on the way in).
+    for region in state.regions.iter() {
+        let Some(lazy) = region.state_loaded().and_then(|st| st.lazy.clone()) else {
+            continue;
+        };
+        let mut per: Vec<(String, f64)> = lazy
+            .iter_runtimes()
+            .filter_map(|(n, rt)| rt.verify_duration_s().map(|d| (n.clone(), d)))
+            .collect();
+        per.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let total: f64 = per.iter().map(|p| p.1).sum();
+        let top: Vec<String> = per
+            .iter()
+            .take(8)
+            .map(|(n, d)| format!("{n}={d:.2}s"))
+            .collect();
+        tracing::info!(
+            region = %region.id,
+            sections_verified = per.len(),
+            verify_total_s = format!("{total:.1}"),
+            top = ?top,
+            "boot CRC verification cost (#641)"
+        );
+    }
 
     // #400/#409/#410 — lean-at-rest: spawn the idle compactor. Periodically
     // walks the process-global `evictable` registry (thread-agnostic, so it

@@ -1,0 +1,7 @@
+# The toolchain CI pins (`.github/workflows/ci.yml`, `rust-version = "1.95"`).
+# Without this, a workstation's `rustup update` moves `stable` ahead of CI and
+# the workspace's deny(warnings) fails on deprecations CI does not see
+# (2026-10-08: stable 1.99 deprecated `fetch_update`; CI on 1.95 is green).
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

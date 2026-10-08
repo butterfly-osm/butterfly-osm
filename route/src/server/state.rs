@@ -2070,6 +2070,7 @@ fn load_mode_data_from_bundle(
             )
         }
     };
+    crate::server::rss::step(&format!("mode.{mode_name}.mapping+role_masks"));
     let (topo_mmap, topo_off, topo_len) = fetch_arc("topo")?;
     // #151: cch.topo is now v4. Header is 80 bytes (u64-aligned) and
     // every variable-length u32 array is padded to a u64 boundary, so
@@ -2140,6 +2141,7 @@ fn load_mode_data_from_bundle(
         );
     }
 
+    crate::server::rss::step(&format!("mode.{mode_name}.topo+middles"));
     let weights_data = mod_weights::read_all_from_bytes(fetch_bytes("node_weights.time")?)?;
 
     let n_original = n_original_nodes as usize;
@@ -2156,6 +2158,7 @@ fn load_mode_data_from_bundle(
 
     // #147: zero-copy CCH weights — `up`/`down` u32 slices come straight
     // from the mmap. Saves ~6 GB of heap (4 modes × 2 metrics × ~750MB).
+    crate::server::rss::step(&format!("mode.{mode_name}.node_weights+mask"));
     let (wt_mmap, wt_off, wt_len) = fetch_arc("weights.time")?;
     let cch_weights = CchWeightsFile::read_from_mmap_unverified(wt_mmap, wt_off, wt_len)?;
 
@@ -2175,6 +2178,7 @@ fn load_mode_data_from_bundle(
     // #345: prefer the split FlatTopo + FlatWeights sections; fall
     // back to the legacy v4 monolithic flat; fall back to building
     // from cch_topo + cch_weights on the heap if neither is present.
+    crate::server::rss::step(&format!("mode.{mode_name}.weights.time"));
     let up_adj_flat =
         if let Some(f) = try_load_flat_split_up(container, mmap, lazy, mode_name, "time")? {
             f
@@ -2188,6 +2192,7 @@ fn load_mode_data_from_bundle(
                 || UpAdjFlat::build_with(&cch_topo, &cch_weights, true),
             )?
         };
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.up.time"));
     let down_rev_flat =
         if let Some(f) = try_load_flat_split_down_rev(container, mmap, lazy, mode_name, "time")? {
             f
@@ -2201,6 +2206,7 @@ fn load_mode_data_from_bundle(
                 || DownReverseAdjFlat::build_with(&cch_topo, &cch_weights, true),
             )?
         };
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.down_rev.time"));
     let down_adj_flat =
         if let Some(f) = try_load_flat_split_down(container, mmap, lazy, mode_name, "time")? {
             f
@@ -2215,9 +2221,11 @@ fn load_mode_data_from_bundle(
             )?
         };
 
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.down.time"));
     let (wd_mmap, wd_off, wd_len) = fetch_arc("weights.dist")?;
     let cch_weights_dist = CchWeightsFile::read_from_mmap_unverified(wd_mmap, wd_off, wd_len)?;
     let up_adj_flat_dist_section = format!("mode/{}/up_adj_flat.dist", mode_name);
+    crate::server::rss::step(&format!("mode.{mode_name}.weights.dist"));
     let up_adj_flat_dist =
         if let Some(f) = try_load_flat_split_up(container, mmap, lazy, mode_name, "dist")? {
             f
@@ -2233,6 +2241,7 @@ fn load_mode_data_from_bundle(
         };
     madvise_section_in_container(container, mmap, &up_adj_flat_dist_section);
     let down_rev_flat_dist_section = format!("mode/{}/down_reverse_adj_flat.dist", mode_name);
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.up.dist"));
     let down_rev_flat_dist =
         if let Some(f) = try_load_flat_split_down_rev(container, mmap, lazy, mode_name, "dist")? {
             f
@@ -2253,6 +2262,7 @@ fn load_mode_data_from_bundle(
     // None and matrix endpoints fall back to cch_weights_dist
     // (broken metric, see #371 / #372). Once everyone repacks, this
     // becomes a hard load like weights.dist above.
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.down_rev.dist"));
     let cch_weights_len_along_time = {
         let name = format!("mode/{}/weights.lat", mode_name);
         if let Some(entry) = container.get(&name) {
@@ -2276,9 +2286,11 @@ fn load_mode_data_from_bundle(
             None
         }
     };
+    crate::server::rss::step(&format!("mode.{mode_name}.weights.lat"));
     let (up_adj_flat_len_along_time, down_rev_flat_len_along_time) =
         build_len_along_time_flats(&cch_topo, &cch_weights_len_along_time);
 
+    crate::server::rss::step(&format!("mode.{mode_name}.flat.lat.build"));
     Ok(ModeData {
         mode,
         cch_topo,

@@ -162,6 +162,7 @@ pub(super) fn load_shared_tables(sec: &Sections<'_>) -> Result<SharedTables> {
     let ebg_nodes = EbgNodesFile::read_from_mmap_unverified(m, off, len)?;
     tracing::info!(nodes = ebg_nodes.n_nodes, "loaded EBG nodes");
 
+    crate::server::rss::step("shared.ebg_nodes");
     tracing::info!("Loading EBG CSR (zero-copy)...");
     let (m, off, len) = sec.arc("shared/ebg.csr")?;
     let ebg_csr_bytes = &sec.mmap[off..off + len];
@@ -194,6 +195,7 @@ pub(super) fn load_shared_tables(sec: &Sections<'_>) -> Result<SharedTables> {
     // disk. The new sections back the serve-path geometry hot
     // consumers; nothing downstream reads `nbg_geo.polylines` once
     // EdgeGeometry is wired below.
+    crate::server::rss::step("shared.ebg_csr");
     let nbg_geo_section = sec.bytes("shared/nbg.geo")?;
     let has_flat_edge_geom = sec.container.get("shared/edge_geom_offsets").is_some()
         && sec.container.get("shared/edge_geom_points").is_some();
@@ -228,6 +230,7 @@ pub(super) fn load_shared_tables(sec: &Sections<'_>) -> Result<SharedTables> {
         }
     }
 
+    crate::server::rss::step("shared.nbg_geo");
     tracing::info!("Loading NBG node-id map...");
     let nbg_node_map = NbgNodeMapFile::read_map_from_bytes(sec.bytes("shared/nbg.node_map")?)?;
     let max_compact = nbg_node_map
@@ -241,6 +244,7 @@ pub(super) fn load_shared_tables(sec: &Sections<'_>) -> Result<SharedTables> {
         nbg_node_to_osm[m.compact_id as usize] = m.osm_node_id;
     }
 
+    crate::server::rss::step("shared.nbg_node_map");
     Ok(SharedTables {
         ebg_nodes,
         ebg_csr,
