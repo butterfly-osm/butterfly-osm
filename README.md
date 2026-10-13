@@ -1,3 +1,9 @@
+> **Notice (2026-10-13): this crate is no longer published on crates.io.**
+> 2.0.1 only carries this notice. Development continues on GitHub —
+> <https://github.com/butterfly-osm/butterfly-osm> — where the toolkit is
+> distributed from tags, releases and container images; the current code is
+> far ahead of 2.0.x and is not a drop-in replacement for it.
+
 # Butterfly-dl 🦋
 
 A high-performance, memory-efficient OpenStreetMap data downloader with intelligent source routing, resilient networking, and beautiful progress display.
