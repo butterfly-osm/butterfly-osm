@@ -10,6 +10,13 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### Changed
+- **No more crates.io releases.** `butterfly-common` and `butterfly-dl` stay at
+  2.0.0 there (June 2025; a final 2.0.1 carries this notice in its README);
+  `butterfly-route` was never published. The toolkit is distributed from
+  GitHub (tags, releases) and as container images; every crate carries
+  `publish = false`.
+
 ### Added
 - **`butterfly-gate` (#646)**: the post-deploy correctness gate as one static
   Rust binary (feature `gate`), replacing the Python gate step by step. Same

@@ -92,6 +92,12 @@ Support directories: `bench/` (regression and competitor benches),
 `scripts/` (OSRM/Valhalla harnesses), `data/` (Belgium artifacts), `models/`
 (declarative `*.model.json` cost models, Q-Sprint).
 
+Distribution: from this repository (tags, releases) and as container images
+(`Dockerfile`, `Dockerfile.tools`). The crates are **not published on
+crates.io** any more — `butterfly-common` and `butterfly-dl` stopped at 2.0.x
+there (2026-10-13) and `butterfly-route` never was; every crate carries
+`publish = false`.
+
 ## Features
 
 ### Point-to-point routing
