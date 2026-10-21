@@ -1,4 +1,7 @@
 [package]
+# Not published on crates.io since 2.0.0 (2026-10-13): the toolkit is
+# distributed from GitHub and as container images; a stale crate misleads.
+publish = false
 name = "butterfly-common"
 version.workspace = true
 authors.workspace = true
