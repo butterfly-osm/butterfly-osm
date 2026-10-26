@@ -10,6 +10,20 @@ For detailed tool-specific changes, see individual tool changelogs:
 
 ## [Unreleased]
 
+### Fixed
+- **step1-ingest keeps one object per id, the newest version (#652).** The
+  `osmium merge` of two extracts taken on different days carries every border
+  object edited in between once per version; step1 sorted by id only, so both
+  copies reached `nodes.sa` / `ways.raw` / `relations.raw`, the step1 lock let
+  them through and step2 failed on `way_attrs not sorted: <id> follows <id>`
+  (a duplicated node id would have broken the `nodes.sa` binary search
+  silently). The three passes now sort by `(id, version, content)` and keep
+  the last copy of each id; the traffic-signal set follows the surviving node
+  version; the step1 lock refuses a non-strictly-increasing id in the three
+  files. A single extract is unchanged. Unit test on a hand-encoded two-date
+  PBF (a moved node that lost its signal, a way at v8 and v9, a restriction
+  that changed).
+
 ### Changed
 - **No more crates.io releases.** `butterfly-common` and `butterfly-dl` stay at
   2.0.0 there (June 2025; a final 2.0.1 carries this notice in its README);

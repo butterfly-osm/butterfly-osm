@@ -9,10 +9,57 @@ use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile}
 use crate::formats::{NodeSignals, NodeSignalsFile};
 use crate::formats::{nodes_sa, nodes_si};
 
-/// (nodes, signal_node_ids) accumulated from one PBF blob during the parallel
-/// node pass (#421). Aliased to keep the rayon closure return type within
-/// clippy's type-complexity budget.
-type NodeBlob = (Vec<(i64, f64, f64)>, Vec<i64>);
+#[cfg(test)]
+mod tests;
+
+/// One node as decoded from the PBF, before the newest-version dedupe (#652).
+/// 32 bytes; the version and the signal flag travel with the node so that a
+/// duplicated id keeps the coordinates AND the tags of its newest version.
+#[derive(Clone, Copy, Debug)]
+struct RawNode {
+    id: i64,
+    version: i32,
+    signal: bool,
+    lat: f64,
+    lon: f64,
+}
+
+/// A way or relation with the version it was read with (#652).
+struct Versioned<T> {
+    version: i32,
+    item: T,
+}
+
+/// Keep one object per id: the highest version, as `osmium merge` would have
+/// kept it if the two extracts had been taken on the same day (#652).
+///
+/// Invariant (the step1 lock enforces it): `items` sorted by `key(item)` with
+/// the ties ordered so that the last one of each id group is the survivor,
+/// i.e. by `(id, version, deterministic content order)`. A merged extract
+/// carries an object once per version it was seen in (same id and version →
+/// one copy, different versions → both); an extract without metadata has
+/// every version at 0 and never duplicates. Returns the number of copies
+/// dropped.
+fn keep_newest<T>(items: &mut Vec<T>, id: impl Fn(&T) -> i64) -> usize {
+    let n = items.len();
+    let mut w = 0usize;
+    for r in 0..n {
+        let last_of_group = r + 1 == n || id(&items[r + 1]) != id(&items[r]);
+        if last_of_group {
+            if w != r {
+                items.swap(w, r);
+            }
+            w += 1;
+        }
+    }
+    items.truncate(w);
+    n - w
+}
+
+/// Compare two members for the deterministic tie order of `keep_newest`.
+fn member_key(m: &Member) -> (&str, u8, i64) {
+    (m.role.as_str(), m.kind as u8, m.ref_id)
+}
 
 pub struct IngestConfig {
     pub input: PathBuf,
@@ -50,6 +97,12 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
     println!("Pass 1/3: Processing nodes...");
     let node_result = extract_nodes(&config.input)?;
     println!("  ✓ Found {} nodes", node_result.nodes.len());
+    if node_result.dropped > 0 {
+        println!(
+            "  ✓ Dropped {} older copies of nodes seen in several versions (#652)",
+            node_result.dropped
+        );
+    }
     println!(
         "  ✓ Found {} traffic signal nodes",
         node_result.signal_node_ids.len()
@@ -71,8 +124,14 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
 
     // Pass 2: Extract ways
     println!("Pass 2/3: Processing ways...");
-    let ways = extract_ways(&config.input)?;
+    let (ways, dropped_ways) = extract_ways(&config.input)?;
     println!("  ✓ Found {} ways", ways.len());
+    if dropped_ways > 0 {
+        println!(
+            "  ✓ Dropped {} older copies of ways seen in several versions (#652)",
+            dropped_ways
+        );
+    }
 
     let ways_file = config.outdir.join("ways.raw");
     WaysFile::write(&ways_file, &ways)?;
@@ -80,8 +139,14 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
 
     // Pass 3: Extract relations (filtered for restrictions)
     println!("Pass 3/3: Processing relations...");
-    let relations = extract_relations(&config.input)?;
+    let (relations, dropped_relations) = extract_relations(&config.input)?;
     println!("  ✓ Found {} relations (restrictions)", relations.len());
+    if dropped_relations > 0 {
+        println!(
+            "  ✓ Dropped {} older copies of relations seen in several versions (#652)",
+            dropped_relations
+        );
+    }
 
     let relations_file = config.outdir.join("relations.raw");
     RelationsFile::write(&relations_file, &relations)?;
@@ -131,6 +196,8 @@ fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<[u8; 32]> {
 struct NodeExtractionResult {
     nodes: Vec<(i64, f64, f64)>,
     signal_node_ids: Vec<i64>,
+    /// Older copies dropped by the newest-version dedupe (#652).
+    dropped: usize,
 }
 
 /// Extract all nodes from PBF, also collecting traffic signal node IDs.
@@ -139,88 +206,92 @@ struct NodeExtractionResult {
 /// accumulates into LOCAL Vecs — no per-element allocation, no lock contention —
 /// then per-blob results are merged append-smaller-into-larger to bound copying.
 /// par_bridge yields blobs in arbitrary order, so the result is sorted to a
-/// deterministic total order afterwards (node ids are unique in OSM, so the
-/// lat/lon tiebreak never triggers and the output matches the serial id-sorted
-/// baseline byte-for-byte). Peak RSS stays below the (ways-pass) build peak.
+/// deterministic total order afterwards. Peak RSS stays below the (ways-pass)
+/// build peak.
+///
+/// #652: a merged extract (two regions, two dates) carries a border node once
+/// per version it was edited in. The sort key is `(id, version, lat, lon,
+/// signal)` and `keep_newest` keeps the last of each id group, so the newest
+/// version wins and its own `highway=traffic_signals` tag decides whether the
+/// node is a signal. A single extract has unique ids and is unchanged.
 fn extract_nodes<P: AsRef<Path>>(path: P) -> Result<NodeExtractionResult> {
     use osmpbf::{BlobDecode, BlobReader};
     use rayon::prelude::*;
 
     let reader = BlobReader::from_path(path)?;
 
-    let (mut nodes, mut signal_node_ids) = reader
+    let mut raw: Vec<RawNode> = reader
         .par_bridge()
-        .map(|blob| -> Result<NodeBlob> {
+        .map(|blob| -> Result<Vec<RawNode>> {
             let mut nodes = Vec::new();
-            let mut signals = Vec::new();
             if let BlobDecode::OsmData(block) = blob?.decode()? {
                 for element in block.elements() {
                     match element {
-                        Element::Node(node) => {
-                            nodes.push((node.id(), node.lat(), node.lon()));
-                            for (key, value) in node.tags() {
-                                if key == "highway" && value == "traffic_signals" {
-                                    signals.push(node.id());
-                                    break;
-                                }
-                            }
-                        }
-                        Element::DenseNode(node) => {
-                            nodes.push((node.id(), node.lat(), node.lon()));
-                            for (key, value) in node.tags() {
-                                if key == "highway" && value == "traffic_signals" {
-                                    signals.push(node.id());
-                                    break;
-                                }
-                            }
-                        }
+                        Element::Node(node) => nodes.push(RawNode {
+                            id: node.id(),
+                            version: node.info().version().unwrap_or(0),
+                            signal: node
+                                .tags()
+                                .any(|(key, value)| key == "highway" && value == "traffic_signals"),
+                            lat: node.lat(),
+                            lon: node.lon(),
+                        }),
+                        Element::DenseNode(node) => nodes.push(RawNode {
+                            id: node.id(),
+                            version: node.info().map_or(0, |info| info.version()),
+                            signal: node
+                                .tags()
+                                .any(|(key, value)| key == "highway" && value == "traffic_signals"),
+                            lat: node.lat(),
+                            lon: node.lon(),
+                        }),
                         _ => {}
                     }
                 }
             }
-            Ok((nodes, signals))
+            Ok(nodes)
         })
         .reduce(
-            || Ok((Vec::new(), Vec::new())),
+            || Ok(Vec::new()),
             |a, b| {
-                let (mut an, mut asig) = a?;
-                let (mut bn, mut bsig) = b?;
+                let mut an = a?;
+                let mut bn = b?;
                 if bn.len() > an.len() {
                     std::mem::swap(&mut an, &mut bn);
                 }
                 an.extend(bn);
-                if bsig.len() > asig.len() {
-                    std::mem::swap(&mut asig, &mut bsig);
-                }
-                asig.extend(bsig);
-                Ok((an, asig))
+                Ok(an)
             },
         )
         .context("Failed to read nodes")?;
 
-    // Deterministic total order. id is unique in OSM so the lat/lon tiebreak is
-    // pure insurance; the sorted sequence is identical to the serial baseline.
-    nodes.sort_unstable_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.total_cmp(&b.1))
-            .then_with(|| a.2.total_cmp(&b.2))
+    // Deterministic total order; the last of each id group is the newest copy.
+    raw.sort_unstable_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.version.cmp(&b.version))
+            .then_with(|| a.lat.total_cmp(&b.lat))
+            .then_with(|| a.lon.total_cmp(&b.lon))
+            .then_with(|| a.signal.cmp(&b.signal))
     });
-    signal_node_ids.sort_unstable();
-    signal_node_ids.dedup();
+    let dropped = keep_newest(&mut raw, |n| n.id);
+
+    let signal_node_ids: Vec<i64> = raw.iter().filter(|n| n.signal).map(|n| n.id).collect();
+    let nodes: Vec<(i64, f64, f64)> = raw.iter().map(|n| (n.id, n.lat, n.lon)).collect();
 
     Ok(NodeExtractionResult {
         nodes,
         signal_node_ids,
+        dropped,
     })
 }
 
-/// Extract all ways from PBF
-fn extract_ways<P: AsRef<Path>>(path: P) -> Result<Vec<Way>> {
-    use std::sync::Mutex;
-
+/// Extract all ways from PBF. Returns the ways and the number of older copies
+/// dropped (#652: one object per id, the newest version wins).
+fn extract_ways<P: AsRef<Path>>(path: P) -> Result<(Vec<Way>, usize)> {
     let reader = ElementReader::from_path(path)?;
-    let ways = Mutex::new(Vec::new());
+    let mut ways: Vec<Versioned<Way>> = Vec::new();
 
+    // `for_each` walks the blobs in file order on this thread.
     reader
         .for_each(|element| {
             if let Element::Way(way) = element {
@@ -232,25 +303,35 @@ fn extract_ways<P: AsRef<Path>>(path: P) -> Result<Vec<Way>> {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
 
-                ways.lock().unwrap().push(Way {
-                    id,
-                    nodes: node_ids,
-                    tags,
+                ways.push(Versioned {
+                    version: way.info().version().unwrap_or(0),
+                    item: Way {
+                        id,
+                        nodes: node_ids,
+                        tags,
+                    },
                 });
             }
         })
         .context("Failed to read ways")?;
 
-    let mut ways = ways.into_inner().unwrap();
+    // Sort by (id, version, content) for determinism; keep the newest per id.
+    ways.sort_by(|a, b| {
+        a.item
+            .id
+            .cmp(&b.item.id)
+            .then_with(|| a.version.cmp(&b.version))
+            .then_with(|| a.item.nodes.cmp(&b.item.nodes))
+            .then_with(|| a.item.tags.cmp(&b.item.tags))
+    });
+    let dropped = keep_newest(&mut ways, |w| w.item.id);
 
-    // Sort by ID for determinism
-    ways.sort_by_key(|w| w.id);
-
-    Ok(ways)
+    Ok((ways.into_iter().map(|w| w.item).collect(), dropped))
 }
 
-/// Extract relations from PBF, filtering for turn restrictions
-fn extract_relations<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
+/// Extract relations from PBF, filtering for turn restrictions. Returns the
+/// relations and the number of older copies dropped (#652).
+fn extract_relations<P: AsRef<Path>>(path: P) -> Result<(Vec<Relation>, usize)> {
     use osmpbf::{BlobDecode, BlobReader};
     use rayon::prelude::*;
 
@@ -258,11 +339,11 @@ fn extract_relations<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
 
     // #421: parallel blob decode (relations are a tiny fraction of elements;
     // the cost is the full-file decode, which parallelises). Per-blob local
-    // Vecs, merged append-into-larger; sorted by unique id afterwards so the
-    // output is identical to the serial baseline.
-    let mut relations = reader
+    // Vecs, merged append-into-larger; sorted by (id, version, content)
+    // afterwards so the output is identical to the serial baseline.
+    let mut relations: Vec<Versioned<Relation>> = reader
         .par_bridge()
-        .map(|blob| -> Result<Vec<Relation>> {
+        .map(|blob| -> Result<Vec<Versioned<Relation>>> {
             let mut out = Vec::new();
             if let BlobDecode::OsmData(block) = blob?.decode()? {
                 for element in block.elements() {
@@ -298,10 +379,13 @@ fn extract_relations<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
                             })
                             .collect();
 
-                        out.push(Relation {
-                            id: relation.id(),
-                            members,
-                            tags,
+                        out.push(Versioned {
+                            version: relation.info().version().unwrap_or(0),
+                            item: Relation {
+                                id: relation.id(),
+                                members,
+                                tags,
+                            },
                         });
                     }
                 }
@@ -322,8 +406,22 @@ fn extract_relations<P: AsRef<Path>>(path: P) -> Result<Vec<Relation>> {
         )
         .context("Failed to read relations")?;
 
-    // Sort by unique ID for determinism.
-    relations.sort_by_key(|r| r.id);
+    // Sort by (id, version, content) for determinism; keep the newest per id.
+    relations.sort_by(|a, b| {
+        a.item
+            .id
+            .cmp(&b.item.id)
+            .then_with(|| a.version.cmp(&b.version))
+            .then_with(|| a.item.tags.cmp(&b.item.tags))
+            .then_with(|| {
+                a.item
+                    .members
+                    .iter()
+                    .map(member_key)
+                    .cmp(b.item.members.iter().map(member_key))
+            })
+    });
+    let dropped = keep_newest(&mut relations, |r| r.item.id);
 
-    Ok(relations)
+    Ok((relations.into_iter().map(|r| r.item).collect(), dropped))
 }
