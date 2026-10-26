@@ -169,9 +169,94 @@ pub fn verify_lock_conditions(
     WaysFile::verify(ways_path)?;
     RelationsFile::verify(relations_path)?;
 
+    // A.3 One object per id (#652): a merged extract can carry an object once
+    // per version; step1 keeps the newest, and every later step (binary search
+    // on nodes.sa, step2's strict way_attrs order) relies on unique ids.
+    println!();
+    println!("A.3 Unique ids:");
+    verify_nodes_sa_ids_strictly_increasing(nodes_sa_path)?;
+    verify_ways_ids_strictly_increasing(ways_path)?;
+    verify_relations_ids_strictly_increasing(relations_path)?;
+
     println!();
     println!("✅ All lock conditions passed!");
 
+    Ok(())
+}
+
+/// nodes.sa body: fixed 16-byte records (id i64, lat i32, lon i32) after a
+/// 128-byte header; ids must be strictly increasing (#652).
+fn verify_nodes_sa_ids_strictly_increasing(path: &Path) -> Result<()> {
+    use std::io::{BufReader, Seek, SeekFrom};
+
+    let mut file =
+        File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut header = [0u8; 128];
+    file.read_exact(&mut header)?;
+    let count = u64::from_le_bytes(header[8..16].try_into()?);
+    file.seek(SeekFrom::Start(128))?;
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+
+    let mut prev: Option<i64> = None;
+    let mut record = [0u8; 16];
+    for i in 0..count {
+        reader.read_exact(&mut record)?;
+        let id = i64::from_le_bytes(record[0..8].try_into()?);
+        if let Some(p) = prev
+            && id <= p
+        {
+            anyhow::bail!(
+                "{}: node ids not strictly increasing at record {}: {} follows {} (#652)",
+                path.display(),
+                i,
+                id,
+                p
+            );
+        }
+        prev = Some(id);
+    }
+    println!("  ✓ nodes.sa ids strictly increasing ({} nodes)", count);
+    Ok(())
+}
+
+fn verify_ways_ids_strictly_increasing(path: &Path) -> Result<()> {
+    let mut prev: Option<i64> = None;
+    let mut count = 0u64;
+    for way in WaysFile::stream_ways(path)? {
+        let (id, _, _, _) = way?;
+        if let Some(p) = prev
+            && id <= p
+        {
+            anyhow::bail!(
+                "{}: way ids not strictly increasing: {} follows {} (#652)",
+                path.display(),
+                id,
+                p
+            );
+        }
+        prev = Some(id);
+        count += 1;
+    }
+    println!("  ✓ ways.raw ids strictly increasing ({} ways)", count);
+    Ok(())
+}
+
+fn verify_relations_ids_strictly_increasing(path: &Path) -> Result<()> {
+    let relations = RelationsFile::read(path)?;
+    for pair in relations.windows(2) {
+        if pair[1].id <= pair[0].id {
+            anyhow::bail!(
+                "{}: relation ids not strictly increasing: {} follows {} (#652)",
+                path.display(),
+                pair[1].id,
+                pair[0].id
+            );
+        }
+    }
+    println!(
+        "  ✓ relations.raw ids strictly increasing ({} relations)",
+        relations.len()
+    );
     Ok(())
 }
 
