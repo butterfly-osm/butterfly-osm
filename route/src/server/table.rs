@@ -314,6 +314,22 @@ pub async fn table_post_handler(
     // #539: the whole matrix compute is sync CPU work — demote this worker
     // out of the async scheduler so concurrent /table storms cannot pin
     // every tokio worker and starve /health into liveness kills.
+    // #655: refuse what cannot fit instead of being OOM-killed.
+    let need = {
+        let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+        let lanes = super::mem::lanes(req.origins.len().max(req.destinations.len()));
+        super::mem::need_matrix(
+            req.origins.len(),
+            req.destinations.len(),
+            lanes,
+            n_nodes,
+            want_duration && want_distance,
+        )
+    };
+    let _permit = match super::mem::admit(need) {
+        Ok(p) => p,
+        Err(refused) => return refused.into_rest_response(),
+    };
     let resp = tokio::task::block_in_place(|| {
         compute_table_bucket_m2m(
             &state,

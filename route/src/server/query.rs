@@ -1948,3 +1948,31 @@ mod tests {
         assert!(!q.is_stalled_bwd(&state, 0, 100));
     }
 }
+
+#[cfg(test)]
+mod scratch_size_tests {
+    //! #655: the per-node constant in `server::mem` bounds the real state.
+    use super::*;
+    use crate::scratch::{Scratch, scratch_bytes};
+
+    #[test]
+    fn cch_query_formula_bounds_the_real_state() {
+        let n = 100_000usize;
+        let q = CchQueryState::new(n);
+        let real = ((q.dist_fwd.len()
+            + q.dist_bwd.len()
+            + q.dist_fwd_lat.len()
+            + q.dist_bwd_lat.len()
+            + q.gen_fwd.len()
+            + q.gen_bwd.len()
+            + q.handles_fwd.len()
+            + q.handles_bwd.len())
+            * 4
+            + (q.parent_fwd.len() + q.parent_bwd.len()) * 8) as u64;
+        let f = scratch_bytes(Scratch::CchQuery, n);
+        assert!(
+            real <= f && f <= real * 5 / 4,
+            "query state {real} B, formula {f} B"
+        );
+    }
+}

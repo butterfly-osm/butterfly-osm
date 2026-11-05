@@ -1656,3 +1656,25 @@ mod isodistance_bound_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod scratch_size_tests {
+    //! #655: the per-node constant in `server::mem` bounds the real state.
+    use super::*;
+    use crate::scratch::{Scratch, scratch_bytes};
+
+    #[test]
+    fn phast_lane_formula_bounds_the_real_state() {
+        let n = 100_000usize;
+        let mut p = PhastState::new(n);
+        p.ensure_len();
+        let real = ((p.dist.len() + p.version.len() + p.len.len() + p.block_active.len()) * 4
+            + p.pq.capacity() * std::mem::size_of::<std::cmp::Reverse<(u32, u32)>>())
+            as u64;
+        let f = scratch_bytes(Scratch::Phast, n);
+        assert!(
+            real <= f && f <= real * 5 / 4,
+            "phast lane {real} B, formula {f} B"
+        );
+    }
+}

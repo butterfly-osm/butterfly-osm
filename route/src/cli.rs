@@ -2203,8 +2203,9 @@ impl Cli {
                     lock_container,
                 };
 
-                // Create tokio runtime
-                let rt = tokio::runtime::Runtime::new()?;
+                // #655: bounded worker + blocking pools (REST compute runs on
+                // the workers and each keeps its own query scratch).
+                let rt = crate::server::mem::runtime()?;
                 rt.block_on(server::serve(
                     source,
                     port,

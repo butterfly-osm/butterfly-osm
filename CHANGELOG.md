@@ -11,6 +11,7 @@ For detailed tool-specific changes, see individual tool changelogs:
 ## [Unreleased]
 
 ### Fixed
+- serve: memory bounds derived from the cgroup limit, not the host (#655). The rayon pool is sized by a scratch budget (`min(cores − 2, budget / largest per-lane state)`, `BUTTERFLY_SCRATCH_BUDGET_GB`, default 30 % of the RSS budget), the RSS budget defaults to 80 % of the cgroup limit, idle query scratch is evicted when over budget, the runtime's worker and blocking pools are bounded (`BUTTERFLY_TOKIO_WORKERS`, `BUTTERFLY_BLOCKING_THREADS`), and a matrix / isochrone batch / route batch / edges batch / edges_flow that cannot fit is refused — REST 413, or 503 + `Retry-After` while other heavy work runs; Flight `RESOURCE_EXHAUSTED` / `UNAVAILABLE` — instead of OOM-killing the process (a 1054² foot matrix on a 96-thread host allocated 94 lanes of scratch and killed a 64 GiB pod).
 - **step1-ingest keeps one object per id, the newest version (#652).** The
   `osmium merge` of two extracts taken on different days carries every border
   object edited in between once per version; step1 sorted by id only, so both

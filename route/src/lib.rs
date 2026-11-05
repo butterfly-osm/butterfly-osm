@@ -32,6 +32,7 @@ pub mod ordering;
 pub mod ordering_lifted;
 pub mod pack;
 pub mod range;
+pub mod scratch;
 pub mod server;
 /// Test-support helpers shared by unit and integration tests (#587).
 #[doc(hidden)]

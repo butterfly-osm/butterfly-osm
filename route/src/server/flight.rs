@@ -4219,6 +4219,17 @@ async fn do_exchange_edges_flow(
     // national run would double the resident memory; it waits here instead
     // (the permit is released when the compute ends, before the stream
     // drains). Waiting is logged so an operator sees the queue.
+    // #655: the tree lanes this exchange will allocate must fit the RSS
+    // budget; refused cleanly (RESOURCE_EXHAUSTED / UNAVAILABLE) otherwise.
+    let mem_permit = {
+        let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+        crate::server::mem::admit(crate::server::mem::need_edges(
+            pairs.len(),
+            crate::server::mem::lanes(pairs.len()),
+            n_nodes,
+        ))
+        .map_err(|r| r.into_status())?
+    };
     let permit = {
         let t0 = std::time::Instant::now();
         let permit = HEAVY_EXCHANGE
@@ -4237,6 +4248,7 @@ async fn do_exchange_edges_flow(
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let _mem_permit = mem_permit;
         let start = std::time::Instant::now();
         let n_pairs = pairs.len();
         let mode_data = state.get_mode(mode);
@@ -4399,6 +4411,17 @@ async fn do_exchange_catchment(
         .collect();
     store_list.sort_by(|a, b| a.0.cmp(&b.0)); // deterministic order by store_id
     let n_stores = store_list.len();
+    // #655: one PHAST lane per worker the catchment reaches; refused
+    // cleanly when it cannot fit, the permit lives as long as the stream.
+    let mem_permit = {
+        let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+        crate::server::mem::admit(crate::server::mem::need_isochrone(
+            n_stores,
+            crate::server::mem::lanes(n_stores),
+            n_nodes,
+        ))
+        .map_err(|r| r.into_status())?
+    };
 
     let schema = Arc::new(catchment_schema());
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(32);
@@ -4625,6 +4648,13 @@ async fn do_exchange_catchment(
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
     // #533: completeness trailer or non-OK error on truncation.
     let flight_stream = completed_flight_stream("catchment", schema, batch_stream, done, "", None);
+    let flight_stream = {
+        use futures::StreamExt as _;
+        Box::pin(flight_stream.map(move |x| {
+            let _keep = &mem_permit;
+            x
+        }))
+    };
     Ok(Response::new(flight_stream))
 }
 
@@ -4693,6 +4723,21 @@ impl FlightService for ButterflyFlight {
                     .dispatch_for_pair(s_lon, s_lat, d_lon, d_lat, &parsed.profile)?
                     .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
+                // #655: refuse what cannot fit instead of being OOM-killed; the
+                // permit lives as long as the stream it admitted.
+                let permit = {
+                    let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+                    crate::server::mem::admit(crate::server::mem::need_matrix(
+                        params.origins.len(),
+                        params.destinations.len(),
+                        crate::server::mem::lanes(
+                            params.origins.len().max(params.destinations.len()),
+                        ),
+                        n_nodes,
+                        true,
+                    ))
+                    .map_err(|r| r.into_status())?
+                };
 
                 let sparse = params.sparse; // #532: labels the completeness trailer
                 // #533/#532: append a completeness trailer (or a non-OK error on
@@ -4733,6 +4778,13 @@ impl FlightService for ButterflyFlight {
                     extra,
                     Some(plan_cell),
                 );
+                let flight_stream = {
+                    use futures::StreamExt as _;
+                    Box::pin(flight_stream.map(move |x| {
+                        let _keep = &permit;
+                        x
+                    }))
+                };
                 Ok(Response::new(flight_stream))
             }
             "route_batch" => {
@@ -4773,6 +4825,17 @@ impl FlightService for ButterflyFlight {
                     .dispatch_for_pair(p0[0], p0[1], p0[2], p0[3], &parsed.profile)?
                     .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
+                // #655: refuse what cannot fit instead of being OOM-killed; the
+                // permit lives as long as the stream it admitted.
+                let permit = {
+                    let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+                    crate::server::mem::admit(crate::server::mem::need_route_batch(
+                        params.pairs.len(),
+                        route_batch_worker_threads(params.pairs.len()),
+                        n_nodes,
+                    ))
+                    .map_err(|r| r.into_status())?
+                };
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
                 let (schema, batch_stream, done) = if let Some(plan) = plan {
@@ -4793,6 +4856,13 @@ impl FlightService for ButterflyFlight {
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream =
                     completed_flight_stream("route_batch", schema, batch_stream, done, "", None);
+                let flight_stream = {
+                    use futures::StreamExt as _;
+                    Box::pin(flight_stream.map(move |x| {
+                        let _keep = &permit;
+                        x
+                    }))
+                };
                 Ok(Response::new(flight_stream))
             }
             "isochrone" => {
@@ -4823,6 +4893,17 @@ impl FlightService for ButterflyFlight {
                 .map_err(dispatch_to_status)?
                 .state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
+                // #655: refuse what cannot fit instead of being OOM-killed; the
+                // permit lives as long as the stream it admitted.
+                let permit = {
+                    let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+                    crate::server::mem::admit(crate::server::mem::need_isochrone(
+                        origins.len(),
+                        crate::server::mem::lanes(origins.len()),
+                        n_nodes,
+                    ))
+                    .map_err(|r| r.into_status())?
+                };
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
                 let (schema, batch_stream, done) = if let Some(plan) = plan {
@@ -4845,6 +4926,13 @@ impl FlightService for ButterflyFlight {
                 // comes from the shape-aware router (#594).
                 let flight_stream =
                     completed_flight_stream("isochrone", schema, batch_stream, done, "", None);
+                let flight_stream = {
+                    use futures::StreamExt as _;
+                    Box::pin(flight_stream.map(move |x| {
+                        let _keep = &permit;
+                        x
+                    }))
+                };
                 Ok(Response::new(flight_stream))
             }
             "transit_bulk" => {
@@ -4908,6 +4996,17 @@ impl FlightService for ButterflyFlight {
                 };
                 let state = ctx.state;
                 let mode = resolve_mode(&parsed.profile, &state)?;
+                // #655: refuse what cannot fit instead of being OOM-killed; the
+                // permit lives as long as the stream it admitted.
+                let permit = {
+                    let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
+                    crate::server::mem::admit(crate::server::mem::need_edges(
+                        params.pairs.len(),
+                        crate::server::mem::lanes(params.pairs.len()),
+                        n_nodes,
+                    ))
+                    .map_err(|r| r.into_status())?
+                };
 
                 let (batch_stream, done) =
                     off_runtime(move || do_edges_batch(&state, mode, params)).await?;
@@ -4915,6 +5014,13 @@ impl FlightService for ButterflyFlight {
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream =
                     completed_flight_stream("edges_batch", schema, batch_stream, done, "", None);
+                let flight_stream = {
+                    use futures::StreamExt as _;
+                    Box::pin(flight_stream.map(move |x| {
+                        let _keep = &permit;
+                        x
+                    }))
+                };
                 Ok(Response::new(flight_stream))
             }
             other => Err(Status::invalid_argument(format!(
