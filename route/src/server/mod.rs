@@ -53,6 +53,7 @@ pub mod idle_compactor;
 pub mod isochrone_handler;
 pub mod map_match;
 pub mod matching;
+pub mod mem;
 pub mod metrics;
 pub mod nearest;
 pub mod query;
@@ -221,7 +222,7 @@ pub fn set_rss_budget_override(gib: f64) {
 /// parseable, then 80% of the system's MemTotal (read from
 /// `/proc/meminfo` on Linux). The final number is clamped to at
 /// least 1 GiB and at most 1 TiB to catch operator typos.
-fn rss_budget_bytes() -> u64 {
+pub(crate) fn rss_budget_bytes() -> u64 {
     const MIN_GIB: f64 = 1.0;
     const MAX_GIB: f64 = 1024.0;
     let gib = if let Some(&v) = RSS_BUDGET_OVERRIDE_GIB.get() {
@@ -245,45 +246,18 @@ fn rss_budget_bytes() -> u64 {
 /// file can't be read (non-Linux dev env), fall back to 8 GiB so
 /// the eviction logic still has a reasonable threshold to enforce.
 fn default_rss_budget_gib() -> f64 {
-    const FALLBACK_GIB: f64 = 8.0;
-    let path = "/proc/meminfo";
-    let s = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return FALLBACK_GIB,
-    };
-    for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
-            // e.g. "MemTotal:       65789012 kB"
-            let kb: u64 = rest
-                .split_whitespace()
-                .next()
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0);
-            if kb > 0 {
-                let gib = (kb as f64) / (1024.0 * 1024.0);
-                return gib * 0.80;
-            }
-        }
-    }
-    FALLBACK_GIB
+    // #655: 80 % of the memory the process actually has — the cgroup limit
+    // when there is one. 80 % of the host's MemTotal was 200 GB inside a
+    // 64 GiB pod, i.e. no budget at all.
+    let limit = mem::memory_limit_bytes();
+    (limit as f64 / (1u64 << 30) as f64) * 0.80
 }
 
 /// Read this process's `VmRSS` in bytes from `/proc/self/status`.
 /// Returns `None` if the file can't be read or the line can't be
 /// parsed (the poller treats `None` as "skip this tick").
 fn read_proc_vm_rss_bytes() -> Option<u64> {
-    let path = "/proc/self/status";
-    let s = std::fs::read_to_string(path).ok()?;
-    for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest
-                .split_whitespace()
-                .next()
-                .and_then(|n| n.parse().ok())?;
-            return Some(kb * 1024);
-        }
-    }
-    None
+    mem::vm_rss_bytes()
 }
 
 fn directory_has_butterfly_container(dir: &Path) -> Result<bool> {
@@ -395,11 +369,25 @@ pub async fn serve(
     // all-core rayon job (edges_flow, matrices, isochrone storms) can never
     // starve the HTTP/gRPC workers that answer /health and small queries.
     // Honoured unless the operator sized the pool (RAYON_NUM_THREADS).
+    // #655: and never more workers than the scratch budget pays for — every
+    // worker keeps one lane of search scratch sized by the largest graph
+    // (32 B per node for a 2-channel matrix lane): on a 96-thread host the
+    // core count alone gave 94 lanes, 32 GB of scratch, and an OOM kill.
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
-        let compute = cores.saturating_sub(2).max(2);
+        let scratch_budget = mem::scratch_budget_bytes();
+        let n_nodes_max = mem::max_ebg_nodes(&source);
+        let compute = match n_nodes_max {
+            Some(n) => mem::rayon_workers(cores, n as usize, scratch_budget),
+            None => {
+                tracing::warn!(
+                    "cannot read the graph's node count before loading — rayon pool sized by cores only (#655)"
+                );
+                cores.saturating_sub(2).max(2)
+            }
+        };
         match rayon::ThreadPoolBuilder::new()
             .num_threads(compute)
             .build_global()
@@ -407,7 +395,11 @@ pub async fn serve(
             Ok(()) => tracing::info!(
                 cores,
                 compute,
-                "rayon pool sized to leave the runtime its cores (#631)"
+                n_nodes_max,
+                scratch_budget_gib = scratch_budget as f64 / (1u64 << 30) as f64,
+                memory_limit_gib = mem::memory_limit_bytes() as f64 / (1u64 << 30) as f64,
+                rss_budget_gib = rss_budget_bytes() as f64 / (1u64 << 30) as f64,
+                "rayon pool sized by the scratch budget and the runtime's cores (#631, #655)"
             ),
             Err(e) => {
                 tracing::warn!(error = %e, "rayon pool already built — compute threads not capped")
@@ -830,7 +822,7 @@ pub async fn serve(
         let state_for_evictor = Arc::clone(&state);
         let budget_bytes = rss_budget_bytes();
         tokio::spawn(async move {
-            const EVICT_POLL_SECS: u64 = 30;
+            const EVICT_POLL_SECS: u64 = 5;
             const KEEP_MIN: usize = 1;
             tracing::info!(
                 budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
@@ -846,10 +838,25 @@ pub async fn serve(
                 if cur <= budget_bytes {
                     continue;
                 }
+                // #655: idle query scratch first (every thread that ever
+                // computed keeps a lane of it); regions only if that is
+                // not enough.
+                let freed = crate::evictable::evict_idle(std::time::Duration::from_secs(1));
+                let after = read_proc_vm_rss_bytes().unwrap_or(cur);
                 tracing::info!(
                     rss_gib = cur as f64 / (1u64 << 30) as f64,
+                    after_scratch_eviction_gib = after as f64 / (1u64 << 30) as f64,
+                    scratch_cells_freed = freed,
                     budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
-                    "over RSS budget; evicting LRU regions"
+                    "over RSS budget; idle scratch evicted (#655)"
+                );
+                if after <= budget_bytes {
+                    continue;
+                }
+                tracing::info!(
+                    rss_gib = after as f64 / (1u64 << 30) as f64,
+                    budget_gib = budget_bytes as f64 / (1u64 << 30) as f64,
+                    "still over RSS budget; evicting LRU regions"
                 );
                 let evicted = state_for_evictor.evict_lru_until(
                     || {

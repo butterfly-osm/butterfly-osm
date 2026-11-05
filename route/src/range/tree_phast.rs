@@ -924,3 +924,28 @@ mod tests {
         assert_eq!(arc_owner(&offsets, 9), 3);
     }
 }
+
+#[cfg(test)]
+mod scratch_size_tests {
+    //! #655: the per-node constant in `server::mem` bounds the real state.
+    use super::*;
+    use crate::scratch::{Scratch, scratch_bytes};
+
+    #[test]
+    fn tree_lane_formula_bounds_the_real_state() {
+        let n = 100_000usize;
+        let t = TreeScratch::new(n);
+        let real = ((t.dist.len()
+            + t.parent.len()
+            + t.generation.len()
+            + t.sel_gen.len()
+            + t.sel_pos.len()
+            + t.handles.len())
+            * 4) as u64;
+        let f = scratch_bytes(Scratch::Tree, n);
+        assert!(
+            real <= f && f <= real * 5 / 4,
+            "tree lane {real} B, formula {f} B"
+        );
+    }
+}

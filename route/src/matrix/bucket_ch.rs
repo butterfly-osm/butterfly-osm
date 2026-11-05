@@ -8281,3 +8281,42 @@ pub fn table_bucket_parallel_seeded_len_along_time_bounded(
     }
     (time_out, lat_out, stats)
 }
+
+#[cfg(test)]
+mod scratch_size_tests {
+    //! #655: the per-node constants in `server::mem` bound the real states.
+    use super::*;
+    use crate::scratch::{Scratch, scratch_bytes};
+
+    fn vec_bytes<T>(v: &[T]) -> u64 {
+        std::mem::size_of_val(v) as u64
+    }
+
+    #[test]
+    fn bucket_lane_formulas_bound_the_real_states() {
+        let n = 100_000usize;
+        let heap_cap = (n / 400).clamp(500, 20000);
+        let s = SearchState::new(n, heap_cap);
+        let one = vec_bytes(&s.entries)
+            + vec_bytes(&s.handles)
+            + (s.heap.heap.capacity() * std::mem::size_of::<(u32, u32)>()) as u64;
+        let lane = 2 * one;
+        let f = scratch_bytes(Scratch::BucketM2M, n);
+        assert!(
+            lane <= f && f <= lane * 5 / 4,
+            "1ch lane {lane} B, formula {f} B"
+        );
+
+        let s2 = SearchState2::new(n, heap_cap);
+        let one2 = vec_bytes(&s2.entries)
+            + vec_bytes(&s2.lats)
+            + vec_bytes(&s2.handles)
+            + (s2.heap.heap.capacity() * std::mem::size_of::<(u32, u32)>()) as u64;
+        let lane2 = 2 * one2;
+        let f2 = scratch_bytes(Scratch::BucketM2M2ch, n);
+        assert!(
+            lane2 <= f2 && f2 <= lane2 * 5 / 4,
+            "2ch lane {lane2} B, formula {f2} B"
+        );
+    }
+}
