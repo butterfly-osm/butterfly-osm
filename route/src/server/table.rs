@@ -318,7 +318,7 @@ pub async fn table_post_handler(
     let need = {
         let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
         let lanes = super::mem::lanes(req.origins.len().max(req.destinations.len()));
-        super::mem::need_matrix(
+        super::mem::Need::matrix(
             req.origins.len(),
             req.destinations.len(),
             lanes,
@@ -326,23 +326,27 @@ pub async fn table_post_handler(
             want_duration && want_distance,
         )
     };
-    let _permit = match super::mem::admit(need) {
-        Ok(p) => p,
+    let admitted = match super::mem::admit(need) {
+        Ok(a) => a,
         Err(refused) => return refused.into_rest_response(),
     };
+    let _permit = admitted.permit;
+    let pool = admitted.pool;
     let resp = tokio::task::block_in_place(|| {
-        compute_table_bucket_m2m(
-            &state,
-            mode,
-            &req.origins,
-            &req.destinations,
-            want_duration,
-            want_distance,
-            custom_weights_ref,
-            snap_mask,
-            radius_param,
-            threshold_s,
-        )
+        super::mem::with_pool(&pool, || {
+            compute_table_bucket_m2m(
+                &state,
+                mode,
+                &req.origins,
+                &req.destinations,
+                want_duration,
+                want_distance,
+                custom_weights_ref,
+                snap_mask,
+                radius_param,
+                threshold_s,
+            )
+        })
     });
 
     // #521 uncertainty bands: two more full matrix passes on the hidden band

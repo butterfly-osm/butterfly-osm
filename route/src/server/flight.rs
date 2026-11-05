@@ -51,6 +51,7 @@ use crate::matrix::neighbors::{
 use crate::model::types::Mode;
 use crate::range::contour::ContourResult;
 use crate::range::wkb_stream::encode_polygon_wkb;
+use crate::server::mem::with_pool;
 
 use super::geometry::{
     IsochroneFlats, IsochroneQuery, IsochroneSnapError, Point, ThresholdMetric, isochrone_polygons,
@@ -901,6 +902,7 @@ fn do_matrix(
     mode: Mode,
     params: MatrixParams,
     plan_cell: &Arc<PlanCell>,
+    pool: Option<Arc<rayon::ThreadPool>>,
 ) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     // #533: the returned `done` flag is set true IFF the producer emitted the
     // complete result (every tile). The do_get wrapper turns a stream that
@@ -1292,198 +1294,203 @@ fn do_matrix(
 
         let src_tile_size = 1000usize.min(n_origin).max(1);
 
+        // #655: the tiles run on the request's lanes (its own pool when the
+        // memory granted fewer than the shared pool's workers).
+        let pool_bg = pool.clone();
         spawn_stream_producer("matrix", tx, done.clone(), move |tx| {
-            // #611: how the tile loop ended, when it did not run to the end.
-            let mut early: Option<ProducerEnd> = None;
-            let src_blocks: Vec<(usize, usize)> = (0..n_origin)
-                .step_by(src_tile_size)
-                .map(|s| (s, (s + src_tile_size).min(n_origin)))
-                .collect();
+            crate::server::mem::with_pool(&pool_bg, move || {
+                // #611: how the tile loop ended, when it did not run to the end.
+                let mut early: Option<ProducerEnd> = None;
+                let src_blocks: Vec<(usize, usize)> = (0..n_origin)
+                    .step_by(src_tile_size)
+                    .map(|s| (s, (s + src_tile_size).min(n_origin)))
+                    .collect();
 
-            // #534: iterate source blocks SEQUENTIALLY. The seeded engine
-            // (`table_bucket_parallel_seeded_bounded`) is already internally
-            // parallel over the whole rayon pool, so one large request still
-            // uses every worker; a sequential outer loop removes the NESTED
-            // rayon (outer par_iter over blocks + inner par_iter in the engine)
-            // whose completed tiles could block global workers on the bounded
-            // channel and whose nested scheduling was the hardest-to-reason
-            // surface under saturation. It also keeps each block's
-            // `PrefixSumBuckets` L3-resident one block at a time.
-            for &(src_start, src_end) in &src_blocks {
-                let mut block_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
-                let mut block_src_orig = Vec::new();
-                for (vi, &oi) in valid_origin.iter().enumerate() {
-                    if oi >= src_start && oi < src_end {
-                        block_seedsets.push(src_seedsets[vi].clone());
-                        block_src_orig.push(oi);
+                // #534: iterate source blocks SEQUENTIALLY. The seeded engine
+                // (`table_bucket_parallel_seeded_bounded`) is already internally
+                // parallel over the whole rayon pool, so one large request still
+                // uses every worker; a sequential outer loop removes the NESTED
+                // rayon (outer par_iter over blocks + inner par_iter in the engine)
+                // whose completed tiles could block global workers on the bounded
+                // channel and whose nested scheduling was the hardest-to-reason
+                // surface under saturation. It also keeps each block's
+                // `PrefixSumBuckets` L3-resident one block at a time.
+                for &(src_start, src_end) in &src_blocks {
+                    let mut block_seedsets: Vec<Vec<(u32, u32, u32, bool)>> = Vec::new();
+                    let mut block_src_orig = Vec::new();
+                    for (vi, &oi) in valid_origin.iter().enumerate() {
+                        if oi >= src_start && oi < src_end {
+                            block_seedsets.push(src_seedsets[vi].clone());
+                            block_src_orig.push(oi);
+                        }
                     }
-                }
 
-                if block_seedsets.is_empty() {
-                    continue;
-                }
+                    if block_seedsets.is_empty() {
+                        continue;
+                    }
 
-                let n_blk_src = block_src_orig.len();
-                let n_blk_dst = valid_dst.len();
+                    let n_blk_src = block_src_orig.len();
+                    let n_blk_dst = valid_dst.len();
 
-                // #509/#415: seeded engine per source tile, bounded at the time
-                // threshold (u32::MAX = unbounded).
-                //
-                // #534: a block with valid source AND target seeds over a
-                // connected road graph MUST produce at least one meet.
-                // `join_operations == 0` — a whole tile of u32::MAX with
-                // non-empty seeds — is the silent-corruption signature (OK
-                // status, complete grid, valid trailer, zero routable pairs),
-                // NEVER legitimate on the streamed path (>1M-cell tiles). It has
-                // been TRANSIENT in prod (the same tile routes standalone), so
-                // rather than dump the failure on the client we RE-RUN the tile
-                // in place first — this self-heals the transient case with no
-                // client cooperation. Only if it STILL yields zero joins after
-                // the retries do we fail closed with a retryable status.
-                const MAX_TILE_RETRIES: usize = 2;
-                let mut attempt = 0usize;
-                let (tile_matrix, tile_lat, st) = loop {
-                    // #534/#526: shape-aware 2-channel router when the
-                    // length-along-time flats are loaded — populates distance_m
-                    // AND picks PHAST vs bucket per tile (same as the small
-                    // branch), so large and small requests return the same
-                    // columns and lopsided large tiles get PHAST. Falls back to
-                    // duration-only bucket on containers without cch.lat
-                    // (distance_m stays u32::MAX, pre-#372).
-                    let (m, lat_opt, s) = match (up_lat.as_ref(), dn_lat.as_ref()) {
-                        (Some(ul), Some(dl)) => {
-                            let phast_ctx =
-                                down_len.as_ref().map(|dl_len| (&down_adj, dl_len, mode));
-                            let (t, l, s) =
-                                crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
-                                    n_nodes,
-                                    &up_adj,
-                                    &down_rev,
-                                    ul,
-                                    dl,
-                                    phast_ctx,
-                                    &block_seedsets,
-                                    &tgt_seedsets,
-                                    threshold,
-                                );
-                            (t, Some(l), s)
+                    // #509/#415: seeded engine per source tile, bounded at the time
+                    // threshold (u32::MAX = unbounded).
+                    //
+                    // #534: a block with valid source AND target seeds over a
+                    // connected road graph MUST produce at least one meet.
+                    // `join_operations == 0` — a whole tile of u32::MAX with
+                    // non-empty seeds — is the silent-corruption signature (OK
+                    // status, complete grid, valid trailer, zero routable pairs),
+                    // NEVER legitimate on the streamed path (>1M-cell tiles). It has
+                    // been TRANSIENT in prod (the same tile routes standalone), so
+                    // rather than dump the failure on the client we RE-RUN the tile
+                    // in place first — this self-heals the transient case with no
+                    // client cooperation. Only if it STILL yields zero joins after
+                    // the retries do we fail closed with a retryable status.
+                    const MAX_TILE_RETRIES: usize = 2;
+                    let mut attempt = 0usize;
+                    let (tile_matrix, tile_lat, st) = loop {
+                        // #534/#526: shape-aware 2-channel router when the
+                        // length-along-time flats are loaded — populates distance_m
+                        // AND picks PHAST vs bucket per tile (same as the small
+                        // branch), so large and small requests return the same
+                        // columns and lopsided large tiles get PHAST. Falls back to
+                        // duration-only bucket on containers without cch.lat
+                        // (distance_m stays u32::MAX, pre-#372).
+                        let (m, lat_opt, s) = match (up_lat.as_ref(), dn_lat.as_ref()) {
+                            (Some(ul), Some(dl)) => {
+                                let phast_ctx =
+                                    down_len.as_ref().map(|dl_len| (&down_adj, dl_len, mode));
+                                let (t, l, s) =
+                                    crate::matrix::bucket_ch::table_seeded_bounded_routed_2ch(
+                                        n_nodes,
+                                        &up_adj,
+                                        &down_rev,
+                                        ul,
+                                        dl,
+                                        phast_ctx,
+                                        &block_seedsets,
+                                        &tgt_seedsets,
+                                        threshold,
+                                    );
+                                (t, Some(l), s)
+                            }
+                            _ => {
+                                let (t, s) =
+                                    crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
+                                        n_nodes,
+                                        &up_adj,
+                                        &down_rev,
+                                        &block_seedsets,
+                                        &tgt_seedsets,
+                                        threshold,
+                                    );
+                                (t, None, s)
+                            }
+                        };
+                        // #534: algorithm-agnostic corruption signature — the WHOLE
+                        // tile came back u32::MAX (every source→target unreachable)
+                        // with non-empty seeds. `join_operations` is bucket-only (0
+                        // on the PHAST path), so we key on the durations themselves.
+                        let tile_all_max = m.iter().all(|&v| v == u32::MAX);
+                        if !tile_all_max || tgt_seedsets.is_empty() || attempt >= MAX_TILE_RETRIES {
+                            break (m, lat_opt, s);
                         }
-                        _ => {
-                            let (t, s) =
-                                crate::matrix::bucket_ch::table_bucket_parallel_seeded_bounded(
-                                    n_nodes,
-                                    &up_adj,
-                                    &down_rev,
-                                    &block_seedsets,
-                                    &tgt_seedsets,
-                                    threshold,
-                                );
-                            (t, None, s)
-                        }
+                        attempt += 1;
+                        // #534 monitoring: alert on the rate of this counter.
+                        metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "retry")
+                            .increment(1);
+                        tracing::warn!(
+                            attempt,
+                            n_block_sources = n_blk_src,
+                            n_targets = n_blk_dst,
+                            forward_visited = s.forward_visited,
+                            bucket_items = s.bucket_items,
+                            backward_visited = s.backward_visited,
+                            join_operations = s.join_operations,
+                            "matrix tile came back 100% unreachable with valid seeds — retrying in place (#534)"
+                        );
                     };
-                    // #534: algorithm-agnostic corruption signature — the WHOLE
-                    // tile came back u32::MAX (every source→target unreachable)
-                    // with non-empty seeds. `join_operations` is bucket-only (0
-                    // on the PHAST path), so we key on the durations themselves.
-                    let tile_all_max = m.iter().all(|&v| v == u32::MAX);
-                    if !tile_all_max || tgt_seedsets.is_empty() || attempt >= MAX_TILE_RETRIES {
-                        break (m, lat_opt, s);
-                    }
-                    attempt += 1;
-                    // #534 monitoring: alert on the rate of this counter.
-                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "retry")
+
+                    // #594: fold this tile's plan in. Tiles that disagree (the last
+                    // tile is shorter, so its shape can route differently) report
+                    // `mixed` — never whichever tile finished last.
+                    plan_cell_bg.record(st.plan);
+
+                    if !tgt_seedsets.is_empty() && tile_matrix.iter().all(|&v| v == u32::MAX) {
+                        // Persistent after retries — fail closed (retryable) rather
+                        // than emit a corrupt all-sentinel grid under a valid trailer.
+                        tracing::error!(
+                            retries = attempt,
+                            n_block_sources = n_blk_src,
+                            n_targets = n_blk_dst,
+                            forward_visited = st.forward_visited,
+                            bucket_items = st.bucket_items,
+                            backward_visited = st.backward_visited,
+                            join_operations = st.join_operations,
+                            threshold,
+                            "matrix tile STILL 100% unreachable after retries — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
+                        );
+                        metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "failed")
                         .increment(1);
-                    tracing::warn!(
-                        attempt,
-                        n_block_sources = n_blk_src,
-                        n_targets = n_blk_dst,
-                        forward_visited = s.forward_visited,
-                        bucket_items = s.bucket_items,
-                        backward_visited = s.backward_visited,
-                        join_operations = s.join_operations,
-                        "matrix tile came back 100% unreachable with valid seeds — retrying in place (#534)"
-                    );
-                };
-
-                // #594: fold this tile's plan in. Tiles that disagree (the last
-                // tile is shorter, so its shape can route differently) report
-                // `mixed` — never whichever tile finished last.
-                plan_cell_bg.record(st.plan);
-
-                if !tgt_seedsets.is_empty() && tile_matrix.iter().all(|&v| v == u32::MAX) {
-                    // Persistent after retries — fail closed (retryable) rather
-                    // than emit a corrupt all-sentinel grid under a valid trailer.
-                    tracing::error!(
-                        retries = attempt,
+                        let _ = tx.blocking_send(Err(Status::resource_exhausted(
+                        "matrix tile produced no routable pairs despite valid seeds — likely resource pressure; retry (#534)",
+                    )));
+                        early = Some(ProducerEnd::Failed("tile produced no routable pairs"));
+                        break;
+                    }
+                    if attempt > 0 {
+                        metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "self_healed")
+                        .increment(1);
+                        tracing::info!(
+                            attempt,
+                            join_operations = st.join_operations,
+                            "matrix tile self-healed on retry (#534)"
+                        );
+                    }
+                    tracing::debug!(
                         n_block_sources = n_blk_src,
                         n_targets = n_blk_dst,
                         forward_visited = st.forward_visited,
                         bucket_items = st.bucket_items,
                         backward_visited = st.backward_visited,
                         join_operations = st.join_operations,
-                        threshold,
-                        "matrix tile STILL 100% unreachable after retries — internal invariant violation (#534); failing the RPC instead of emitting a corrupt all-sentinel grid"
+                        "matrix tile #534 telemetry"
                     );
-                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "failed")
-                        .increment(1);
-                    let _ = tx.blocking_send(Err(Status::resource_exhausted(
-                        "matrix tile produced no routable pairs despite valid seeds — likely resource pressure; retry (#534)",
-                    )));
-                    early = Some(ProducerEnd::Failed("tile produced no routable pairs"));
-                    break;
-                }
-                if attempt > 0 {
-                    metrics::counter!("butterfly_matrix_zero_join_total", "outcome" => "self_healed")
-                        .increment(1);
-                    tracing::info!(
-                        attempt,
-                        join_operations = st.join_operations,
-                        "matrix tile self-healed on retry (#534)"
-                    );
-                }
-                tracing::debug!(
-                    n_block_sources = n_blk_src,
-                    n_targets = n_blk_dst,
-                    forward_visited = st.forward_visited,
-                    bucket_items = st.bucket_items,
-                    backward_visited = st.backward_visited,
-                    join_operations = st.join_operations,
-                    "matrix tile #534 telemetry"
-                );
 
-                let batch = match build_matrix_batch(
-                    &tile_matrix,
-                    tile_lat.as_deref(),
-                    &block_src_orig,
-                    &valid_dst,
-                    threshold,
-                    neighbor_mask_bg.as_deref().map(|v| v.as_slice()),
-                    schema.clone(),
-                    sparse,
-                ) {
-                    // #532: a sparse tile with no surviving cell emits zero rows
-                    // — don't stream an empty batch. Dense always yields Some.
-                    Ok(None) => continue,
-                    Ok(Some(b)) => b,
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        early = Some(ProducerEnd::Failed("arrow batch build"));
+                    let batch = match build_matrix_batch(
+                        &tile_matrix,
+                        tile_lat.as_deref(),
+                        &block_src_orig,
+                        &valid_dst,
+                        threshold,
+                        neighbor_mask_bg.as_deref().map(|v| v.as_slice()),
+                        schema.clone(),
+                        sparse,
+                    ) {
+                        // #532: a sparse tile with no surviving cell emits zero rows
+                        // — don't stream an empty batch. Dense always yields Some.
+                        Ok(None) => continue,
+                        Ok(Some(b)) => b,
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(e));
+                            early = Some(ProducerEnd::Failed("arrow batch build"));
+                            break;
+                        }
+                    };
+
+                    if tx.blocking_send(Ok(batch)).is_err() {
+                        early = Some(ProducerEnd::ClientGone);
                         break;
                     }
-                };
-
-                if tx.blocking_send(Ok(batch)).is_err() {
-                    early = Some(ProducerEnd::ClientGone);
-                    break;
                 }
-            }
 
-            // #533: complete ONLY if every tile was emitted without a client
-            // disconnect, a tile error, or the #534 fail-closed guard tripping.
-            // A panic is caught by the helper, which logs it and leaves the
-            // flag unset, so the consumer turns the clean channel-close into a
-            // non-OK error instead of a silent OK-with-missing-tiles.
-            early.unwrap_or(ProducerEnd::Complete)
+                // #533: complete ONLY if every tile was emitted without a client
+                // disconnect, a tile error, or the #534 fail-closed guard tripping.
+                // A panic is caught by the helper, which logs it and leaves the
+                // flag unset, so the consumer turns the clean channel-close into a
+                // non-OK error instead of a silent OK-with-missing-tiles.
+                early.unwrap_or(ProducerEnd::Complete)
+            })
         });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -3546,6 +3553,7 @@ pub fn do_edges_batch(
     state: &Arc<ServerState>,
     mode: Mode,
     params: EdgesBatchParams,
+    pool: Option<Arc<rayon::ThreadPool>>,
 ) -> std::result::Result<(BatchStream, Arc<AtomicBool>), Status> {
     if params.pairs.is_empty() {
         let schema = Arc::new(edges_batch_schema());
@@ -3570,181 +3578,185 @@ pub fn do_edges_batch(
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(8);
     let done = Arc::new(AtomicBool::new(false)); // #533: all-chunks-emitted flag
 
+    // #655: the pairs run on the request's lanes.
+    let pool_bg = pool.clone();
     spawn_stream_producer("edges_batch", tx, done.clone(), move |tx| {
-        let mode_data = state.get_mode(mode);
-        let schema = Arc::new(edges_batch_schema());
-        const MIN_PARALLEL_PAIRS: usize = 256;
-        let parallel = params.pairs.len() >= MIN_PARALLEL_PAIRS;
+        crate::server::mem::with_pool(&pool_bg, move || {
+            let mode_data = state.get_mode(mode);
+            let schema = Arc::new(edges_batch_schema());
+            const MIN_PARALLEL_PAIRS: usize = 256;
+            let parallel = params.pairs.len() >= MIN_PARALLEL_PAIRS;
 
-        // #438: partition into multi-target source GROUPS (shared forward) +
-        // per-pair pairs (singletons + K=1-src misses), then process + STREAM in
-        // work-chunks of ~CHUNK_PAIRS. Chunked streaming keeps resident memory
-        // bounded to one chunk even at the 500k-pair cap — the #438-review
-        // BLOCKER fix: we no longer materialise EVERY pair's edge rows before
-        // emitting (which was unbounded by the pair cap for long routes).
-        // #506: the #438 group/tree machinery keys on single K=1 ranks and
-        // would emit the pre-phantom detour paths. Route ALL pairs through
-        // the phantom-seeded per-pair path until a seeded meet-group lands
-        // (correctness > the shared-forward win; tracked on #506).
-        let group_vec: Vec<(u32, Vec<GroupedTarget>)> = Vec::new();
-        let per_pair_work: Vec<PerPairWork> = params
-            .pairs
-            .iter()
-            .enumerate()
-            .map(|(i, &pair)| PerPairWork {
-                query_idx: i as u32,
-                pair,
-                src_rank: None,
-                dst_rank: None,
-            })
-            .collect();
-        let _ = group_pairs;
-        // Work-chunk size in PAIRS. Bounds peak ≈ CHUNK_PAIRS × path_len × 32B
-        // (~2 MB typical, ~200 MB worst-case long routes) vs unbounded before.
-        const CHUNK_PAIRS: usize = 2048;
-        const ROWS_PER_BATCH: usize = 20_000;
+            // #438: partition into multi-target source GROUPS (shared forward) +
+            // per-pair pairs (singletons + K=1-src misses), then process + STREAM in
+            // work-chunks of ~CHUNK_PAIRS. Chunked streaming keeps resident memory
+            // bounded to one chunk even at the 500k-pair cap — the #438-review
+            // BLOCKER fix: we no longer materialise EVERY pair's edge rows before
+            // emitting (which was unbounded by the pair cap for long routes).
+            // #506: the #438 group/tree machinery keys on single K=1 ranks and
+            // would emit the pre-phantom detour paths. Route ALL pairs through
+            // the phantom-seeded per-pair path until a seeded meet-group lands
+            // (correctness > the shared-forward win; tracked on #506).
+            let group_vec: Vec<(u32, Vec<GroupedTarget>)> = Vec::new();
+            let per_pair_work: Vec<PerPairWork> = params
+                .pairs
+                .iter()
+                .enumerate()
+                .map(|(i, &pair)| PerPairWork {
+                    query_idx: i as u32,
+                    pair,
+                    src_rank: None,
+                    dst_rank: None,
+                })
+                .collect();
+            let _ = group_pairs;
+            // Work-chunk size in PAIRS. Bounds peak ≈ CHUNK_PAIRS × path_len × 32B
+            // (~2 MB typical, ~200 MB worst-case long routes) vs unbounded before.
+            const CHUNK_PAIRS: usize = 2048;
+            const ROWS_PER_BATCH: usize = 20_000;
 
-        // Build + stream row-bounded RecordBatches from one work-chunk's results
-        // (sorted by query_idx). Returns the reason to stop (client disconnect
-        // / Arrow error), `None` to carry on. `per_pair` is dropped after emit,
-        // freeing the chunk's rows before the next chunk is computed.
-        let emit = |mut per_pair: Vec<PairEdges>| -> Option<ProducerEnd> {
-            per_pair.sort_unstable_by_key(|p| p.query_idx);
-            let mut idx = 0usize;
-            while idx < per_pair.len() {
-                let mut end = idx;
-                let mut rows_in_batch = 0usize;
-                while end < per_pair.len() && rows_in_batch < ROWS_PER_BATCH {
-                    rows_in_batch += per_pair[end].rows.len().max(1);
-                    end += 1;
-                }
-                let mut query_idx_b = UInt32Builder::with_capacity(rows_in_batch);
-                let mut target_idx_b = UInt32Builder::with_capacity(rows_in_batch);
-                let mut edge_seq_b = UInt32Builder::with_capacity(rows_in_batch);
-                let mut osm_from_b = Int64Builder::with_capacity(rows_in_batch);
-                let mut osm_to_b = Int64Builder::with_capacity(rows_in_batch);
-                let mut dur_ms_b = UInt32Builder::with_capacity(rows_in_batch);
-                let mut dist_m_b = UInt32Builder::with_capacity(rows_in_batch);
+            // Build + stream row-bounded RecordBatches from one work-chunk's results
+            // (sorted by query_idx). Returns the reason to stop (client disconnect
+            // / Arrow error), `None` to carry on. `per_pair` is dropped after emit,
+            // freeing the chunk's rows before the next chunk is computed.
+            let emit = |mut per_pair: Vec<PairEdges>| -> Option<ProducerEnd> {
+                per_pair.sort_unstable_by_key(|p| p.query_idx);
+                let mut idx = 0usize;
+                while idx < per_pair.len() {
+                    let mut end = idx;
+                    let mut rows_in_batch = 0usize;
+                    while end < per_pair.len() && rows_in_batch < ROWS_PER_BATCH {
+                        rows_in_batch += per_pair[end].rows.len().max(1);
+                        end += 1;
+                    }
+                    let mut query_idx_b = UInt32Builder::with_capacity(rows_in_batch);
+                    let mut target_idx_b = UInt32Builder::with_capacity(rows_in_batch);
+                    let mut edge_seq_b = UInt32Builder::with_capacity(rows_in_batch);
+                    let mut osm_from_b = Int64Builder::with_capacity(rows_in_batch);
+                    let mut osm_to_b = Int64Builder::with_capacity(rows_in_batch);
+                    let mut dur_ms_b = UInt32Builder::with_capacity(rows_in_batch);
+                    let mut dist_m_b = UInt32Builder::with_capacity(rows_in_batch);
 
-                for pe in &per_pair[idx..end] {
-                    if pe.rows.is_empty() {
-                        query_idx_b.append_value(pe.query_idx);
-                        target_idx_b.append_value(0);
-                        edge_seq_b.append_null();
-                        osm_from_b.append_null();
-                        osm_to_b.append_null();
-                        dur_ms_b.append_null();
-                        dist_m_b.append_null();
-                    } else {
-                        for row in &pe.rows {
+                    for pe in &per_pair[idx..end] {
+                        if pe.rows.is_empty() {
                             query_idx_b.append_value(pe.query_idx);
                             target_idx_b.append_value(0);
-                            edge_seq_b.append_value(row.edge_seq);
-                            osm_from_b.append_value(row.osm_from);
-                            osm_to_b.append_value(row.osm_to);
-                            dur_ms_b.append_value(row.dur_ms);
-                            dist_m_b.append_value(row.dist_m);
+                            edge_seq_b.append_null();
+                            osm_from_b.append_null();
+                            osm_to_b.append_null();
+                            dur_ms_b.append_null();
+                            dist_m_b.append_null();
+                        } else {
+                            for row in &pe.rows {
+                                query_idx_b.append_value(pe.query_idx);
+                                target_idx_b.append_value(0);
+                                edge_seq_b.append_value(row.edge_seq);
+                                osm_from_b.append_value(row.osm_from);
+                                osm_to_b.append_value(row.osm_to);
+                                dur_ms_b.append_value(row.dur_ms);
+                                dist_m_b.append_value(row.dist_m);
+                            }
                         }
                     }
-                }
-                idx = end;
+                    idx = end;
 
-                let batch = match RecordBatch::try_new(
-                    schema.clone(),
-                    vec![
-                        Arc::new(query_idx_b.finish()) as ArrayRef,
-                        Arc::new(target_idx_b.finish()),
-                        Arc::new(edge_seq_b.finish()),
-                        Arc::new(osm_from_b.finish()),
-                        Arc::new(osm_to_b.finish()),
-                        Arc::new(dur_ms_b.finish()),
-                        Arc::new(dist_m_b.finish()),
-                    ],
-                ) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(Status::internal(format!(
-                            "edges_batch Arrow build: {e}"
-                        ))));
-                        return Some(ProducerEnd::Failed("arrow batch build"));
+                    let batch = match RecordBatch::try_new(
+                        schema.clone(),
+                        vec![
+                            Arc::new(query_idx_b.finish()) as ArrayRef,
+                            Arc::new(target_idx_b.finish()),
+                            Arc::new(edge_seq_b.finish()),
+                            Arc::new(osm_from_b.finish()),
+                            Arc::new(osm_to_b.finish()),
+                            Arc::new(dur_ms_b.finish()),
+                            Arc::new(dist_m_b.finish()),
+                        ],
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(Status::internal(format!(
+                                "edges_batch Arrow build: {e}"
+                            ))));
+                            return Some(ProducerEnd::Failed("arrow batch build"));
+                        }
+                    };
+                    if tx.blocking_send(Ok(batch)).is_err() {
+                        return Some(ProducerEnd::ClientGone);
                     }
+                }
+                None
+            };
+
+            // Phase A: multi-target groups, chunked by accumulated target count so
+            // each chunk holds ~CHUNK_PAIRS pairs. flat_map keeps each group's
+            // each group's settle (K-lane tree — the adaptive dispatch is retired) +
+            // its targets on one rayon thread (thread-local state stays valid).
+            let mut gi = 0usize;
+            while gi < group_vec.len() {
+                let mut pairs_in_chunk = 0usize;
+                let mut gj = gi;
+                while gj < group_vec.len() && pairs_in_chunk < CHUNK_PAIRS {
+                    pairs_in_chunk += group_vec[gj].1.len();
+                    gj += 1;
+                }
+                let chunk = &group_vec[gi..gj];
+                gi = gj;
+                // #438: every group rides the K-lane tree — post-interleave/
+                // snapshot/locality the tree beats the grouped path on BOTH
+                // workload shapes (B 2.55×, C 1.40× vs grouped, oracle green),
+                // so the old 15 km adaptive dispatch is retired. Rank-sort for
+                // locality (ND ranks are spatially coherent → tight unions).
+                let mut group_refs: Vec<&(u32, Vec<GroupedTarget>)> = chunk.iter().collect();
+                group_refs.sort_unstable_by_key(|(src, _)| *src);
+                let batches: Vec<Vec<&(u32, Vec<GroupedTarget>)>> = group_refs
+                    .chunks(crate::range::tree_phast::TREE_LANES)
+                    .map(|c| c.to_vec())
+                    .collect();
+                let per_pair: Vec<PairEdges> = if parallel {
+                    batches
+                        .par_iter()
+                        .flat_map_iter(|b| process_tree_batch(&state, &mode_data, mode, b))
+                        .collect()
+                } else {
+                    batches
+                        .iter()
+                        .flat_map(|b| process_tree_batch(&state, &mode_data, mode, b))
+                        .collect()
                 };
-                if tx.blocking_send(Ok(batch)).is_err() {
-                    return Some(ProducerEnd::ClientGone);
+                if let Some(end) = emit(per_pair) {
+                    return end;
                 }
             }
-            None
-        };
 
-        // Phase A: multi-target groups, chunked by accumulated target count so
-        // each chunk holds ~CHUNK_PAIRS pairs. flat_map keeps each group's
-        // each group's settle (K-lane tree — the adaptive dispatch is retired) +
-        // its targets on one rayon thread (thread-local state stays valid).
-        let mut gi = 0usize;
-        while gi < group_vec.len() {
-            let mut pairs_in_chunk = 0usize;
-            let mut gj = gi;
-            while gj < group_vec.len() && pairs_in_chunk < CHUNK_PAIRS {
-                pairs_in_chunk += group_vec[gj].1.len();
-                gj += 1;
+            // Phase B: per-pair work (singletons with cached ranks + K=1-src
+            // misses), chunked.
+            for chunk in per_pair_work.chunks(CHUNK_PAIRS) {
+                let per_pair: Vec<PairEdges> = if parallel {
+                    chunk
+                        .par_iter()
+                        .map(|w| {
+                            let query = super::query::CchQuery::new(&mode_data);
+                            process_per_pair_work(&state, &mode_data, mode, &query, w)
+                        })
+                        .collect()
+                } else {
+                    let query = super::query::CchQuery::new(&mode_data);
+                    chunk
+                        .iter()
+                        .map(|w| process_per_pair_work(&state, &mode_data, mode, &query, w))
+                        .collect()
+                };
+                if let Some(end) = emit(per_pair) {
+                    return end;
+                }
             }
-            let chunk = &group_vec[gi..gj];
-            gi = gj;
-            // #438: every group rides the K-lane tree — post-interleave/
-            // snapshot/locality the tree beats the grouped path on BOTH
-            // workload shapes (B 2.55×, C 1.40× vs grouped, oracle green),
-            // so the old 15 km adaptive dispatch is retired. Rank-sort for
-            // locality (ND ranks are spatially coherent → tight unions).
-            let mut group_refs: Vec<&(u32, Vec<GroupedTarget>)> = chunk.iter().collect();
-            group_refs.sort_unstable_by_key(|(src, _)| *src);
-            let batches: Vec<Vec<&(u32, Vec<GroupedTarget>)>> = group_refs
-                .chunks(crate::range::tree_phast::TREE_LANES)
-                .map(|c| c.to_vec())
-                .collect();
-            let per_pair: Vec<PairEdges> = if parallel {
-                batches
-                    .par_iter()
-                    .flat_map_iter(|b| process_tree_batch(&state, &mode_data, mode, b))
-                    .collect()
-            } else {
-                batches
-                    .iter()
-                    .flat_map(|b| process_tree_batch(&state, &mode_data, mode, b))
-                    .collect()
-            };
-            if let Some(end) = emit(per_pair) {
-                return end;
-            }
-        }
 
-        // Phase B: per-pair work (singletons with cached ranks + K=1-src
-        // misses), chunked.
-        for chunk in per_pair_work.chunks(CHUNK_PAIRS) {
-            let per_pair: Vec<PairEdges> = if parallel {
-                chunk
-                    .par_iter()
-                    .map(|w| {
-                        let query = super::query::CchQuery::new(&mode_data);
-                        process_per_pair_work(&state, &mode_data, mode, &query, w)
-                    })
-                    .collect()
-            } else {
-                let query = super::query::CchQuery::new(&mode_data);
-                chunk
-                    .iter()
-                    .map(|w| process_per_pair_work(&state, &mode_data, mode, &query, w))
-                    .collect()
-            };
-            if let Some(end) = emit(per_pair) {
-                return end;
-            }
-        }
-
-        // #533: both phases emitted without a client disconnect or Arrow error.
-        // A panic in the rayon region is caught by the helper, which logs it
-        // and leaves `done` false so the consumer turns the clean channel-close
-        // into a non-OK error.
-        ProducerEnd::Complete
+            // #533: both phases emitted without a client disconnect or Arrow error.
+            // A panic in the rayon region is caught by the helper, which logs it
+            // and leaves `done` false so the consumer turns the clean channel-close
+            // into a non-OK error.
+            ProducerEnd::Complete
+        })
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -4221,15 +4233,17 @@ async fn do_exchange_edges_flow(
     // drains). Waiting is logged so an operator sees the queue.
     // #655: the tree lanes this exchange will allocate must fit the RSS
     // budget; refused cleanly (RESOURCE_EXHAUSTED / UNAVAILABLE) otherwise.
-    let mem_permit = {
+    let mem_admitted = {
         let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-        crate::server::mem::admit(crate::server::mem::need_edges(
+        crate::server::mem::admit(crate::server::mem::Need::edges(
             pairs.len(),
             crate::server::mem::lanes(pairs.len()),
             n_nodes,
         ))
         .map_err(|r| r.into_status())?
     };
+    let mem_permit = mem_admitted.permit;
+    let mem_pool = mem_admitted.pool;
     let permit = {
         let t0 = std::time::Instant::now();
         let permit = HEAVY_EXCHANGE
@@ -4252,9 +4266,11 @@ async fn do_exchange_edges_flow(
         let start = std::time::Instant::now();
         let n_pairs = pairs.len();
         let mode_data = state.get_mode(mode);
-        let (rows, summary) = super::flow::compute_edges_flow(
-            &state, &mode_data, mode, &pairs, &weights, &groups, true,
-        );
+        let (rows, summary) = crate::server::mem::with_pool(&mem_pool, || {
+            super::flow::compute_edges_flow(
+                &state, &mode_data, mode, &pairs, &weights, &groups, true,
+            )
+        });
         tracing::info!(
             n_pairs,
             n_rows = rows.len(),
@@ -4413,15 +4429,17 @@ async fn do_exchange_catchment(
     let n_stores = store_list.len();
     // #655: one PHAST lane per worker the catchment reaches; refused
     // cleanly when it cannot fit, the permit lives as long as the stream.
-    let mem_permit = {
+    let mem_admitted = {
         let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-        crate::server::mem::admit(crate::server::mem::need_isochrone(
+        crate::server::mem::admit(crate::server::mem::Need::isochrone(
             n_stores,
             crate::server::mem::lanes(n_stores),
             n_nodes,
         ))
         .map_err(|r| r.into_status())?
     };
+    let mem_permit = mem_admitted.permit;
+    let mem_pool = mem_admitted.pool;
 
     let schema = Arc::new(catchment_schema());
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<RecordBatch, Status>>(32);
@@ -4434,96 +4452,37 @@ async fn do_exchange_catchment(
 
     let schema_clone = schema.clone();
     spawn_stream_producer("catchment", tx, done.clone(), move |tx| {
-        let start = std::time::Instant::now();
-        tracing::info!(
-            n_stores = n_stores,
-            total_links = total_links,
-            "do_exchange catchment"
-        );
-
-        let mode_data = state.get_mode(mode);
-        let n_nodes = mode_data.cch_topo.n_nodes as usize;
-
-        // Process stores sequentially (each does a Bucket M2M + catchment)
-        let mut store_idx_b = UInt32Builder::new();
-        let mut store_id_b = StringBuilder::new();
-        let mut pct_b = Float32Builder::new();
-        let mut thresh_b = Float32Builder::new();
-        let mut covered_b = UInt32Builder::new();
-        let mut total_b = UInt32Builder::new();
-        let mut wkb_b = BinaryBuilder::new();
-
-        for (si, (sid, slon, slat, client_coords)) in store_list.iter().enumerate() {
-            if client_coords.is_empty() {
-                continue;
-            }
-            let store_coord = (*slon, *slat);
-
-            // Lazy snap (#368 pattern): K=1 primary upfront for store
-            // and all clients; K=64 escalation lives in the INF-cell
-            // fallback below.
-            use super::snap_kbest::SNAP_K;
-            let store_rank = match super::snap_kbest::snap_primary_role(
-                &state,
-                &mode_data,
-                mode,
-                *slon,
-                *slat,
-                super::types::SnapRole::Src,
-                None,
-            ) {
-                Some((_, r)) => r,
-                None => continue,
-            };
-
-            // #596: the same Euclidean pre-filter REST has always applied.
-            // Clients beyond the radius are excluded from this store's matrix
-            // and catchment entirely — including from `clients_total`.
-            // `Auto` is p95 over THIS store's own client list — the Flight
-            // input table carries one list per store.
-            let radius_m =
-                super::catchment::effective_radius_m(store_coord, client_coords, &radius_param);
-
-            let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
-            let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
-            for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
-                if !super::catchment::within_radius(store_coord, (clon, clat), radius_m) {
-                    continue;
-                }
-                if let Some((_, r)) = super::snap_kbest::snap_primary_role(
-                    &state,
-                    &mode_data,
-                    mode,
-                    clon,
-                    clat,
-                    super::types::SnapRole::Dst,
-                    None,
-                ) {
-                    client_ranks.push(r);
-                    client_valid.push(ci);
-                }
-            }
-
-            if client_ranks.is_empty() {
-                continue;
-            }
-
-            // 1-to-N matrix
-            let (mut matrix, _stats) = table_bucket_full_flat(
-                n_nodes,
-                &mode_data.up_adj_flat,
-                &mode_data.down_rev_flat,
-                &[store_rank],
-                &client_ranks,
+        crate::server::mem::with_pool(&mem_pool, move || {
+            let start = std::time::Instant::now();
+            tracing::info!(
+                n_stores = n_stores,
+                total_links = total_links,
+                "do_exchange catchment"
             );
 
-            // Per-cell K-best fallback for INF cells (mirrors /table POST).
-            // K=64 escalation runs only for client indices whose 1-to-N
-            // cell came back u32::MAX.
-            if matrix.contains(&u32::MAX) {
-                use rayon::prelude::*;
-                let query = super::query::CchQuery::new(&mode_data);
-                let store_kbest = super::snap_kbest::snap_k_pair_role(
+            let mode_data = state.get_mode(mode);
+            let n_nodes = mode_data.cch_topo.n_nodes as usize;
+
+            // Process stores sequentially (each does a Bucket M2M + catchment)
+            let mut store_idx_b = UInt32Builder::new();
+            let mut store_id_b = StringBuilder::new();
+            let mut pct_b = Float32Builder::new();
+            let mut thresh_b = Float32Builder::new();
+            let mut covered_b = UInt32Builder::new();
+            let mut total_b = UInt32Builder::new();
+            let mut wkb_b = BinaryBuilder::new();
+
+            for (si, (sid, slon, slat, client_coords)) in store_list.iter().enumerate() {
+                if client_coords.is_empty() {
+                    continue;
+                }
+                let store_coord = (*slon, *slat);
+
+                // Lazy snap (#368 pattern): K=1 primary upfront for store
+                // and all clients; K=64 escalation lives in the INF-cell
+                // fallback below.
+                use super::snap_kbest::SNAP_K;
+                let store_rank = match super::snap_kbest::snap_primary_role(
                     &state,
                     &mode_data,
                     mode,
@@ -4531,118 +4490,179 @@ async fn do_exchange_catchment(
                     *slat,
                     super::types::SnapRole::Src,
                     None,
-                    SNAP_K,
+                ) {
+                    Some((_, r)) => r,
+                    None => continue,
+                };
+
+                // #596: the same Euclidean pre-filter REST has always applied.
+                // Clients beyond the radius are excluded from this store's matrix
+                // and catchment entirely — including from `clients_total`.
+                // `Auto` is p95 over THIS store's own client list — the Flight
+                // input table carries one list per store.
+                let radius_m =
+                    super::catchment::effective_radius_m(store_coord, client_coords, &radius_param);
+
+                let mut client_ranks: Vec<u32> = Vec::with_capacity(client_coords.len());
+                let mut client_valid: Vec<usize> = Vec::with_capacity(client_coords.len());
+                for (ci, &(clon, clat)) in client_coords.iter().enumerate() {
+                    if !super::catchment::within_radius(store_coord, (clon, clat), radius_m) {
+                        continue;
+                    }
+                    if let Some((_, r)) = super::snap_kbest::snap_primary_role(
+                        &state,
+                        &mode_data,
+                        mode,
+                        clon,
+                        clat,
+                        super::types::SnapRole::Dst,
+                        None,
+                    ) {
+                        client_ranks.push(r);
+                        client_valid.push(ci);
+                    }
+                }
+
+                if client_ranks.is_empty() {
+                    continue;
+                }
+
+                // 1-to-N matrix
+                let (mut matrix, _stats) = table_bucket_full_flat(
+                    n_nodes,
+                    &mode_data.up_adj_flat,
+                    &mode_data.down_rev_flat,
+                    &[store_rank],
+                    &client_ranks,
                 );
-                let failing: Vec<usize> = (0..client_valid.len())
-                    .filter(|&ti| matrix[ti] == u32::MAX)
-                    .collect();
-                let client_kbest: Vec<(usize, Vec<u32>)> = failing
-                    .par_iter()
-                    .map(|&ti| {
-                        let ci = client_valid[ti];
-                        let (clon, clat) = client_coords[ci];
-                        let snap = super::snap_kbest::snap_k_pair_role(
-                            &state,
-                            &mode_data,
-                            mode,
-                            clon,
-                            clat,
-                            super::types::SnapRole::Dst,
-                            None,
-                            SNAP_K,
-                        );
-                        (ti, snap.ranks)
-                    })
-                    .collect();
-                let patches: Vec<(usize, u32)> = client_kbest
-                    .par_iter()
-                    .filter_map(|(ti, dst_ranks)| {
-                        super::snap_kbest::p2p_with_kbest_fallback(
-                            &query,
-                            &store_kbest.ranks,
-                            dst_ranks,
-                            super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
-                        )
-                        .map(|(_, _, r)| (*ti, r.distance))
-                    })
-                    .collect();
-                for (ti, dist) in patches {
-                    matrix[ti] = dist;
+
+                // Per-cell K-best fallback for INF cells (mirrors /table POST).
+                // K=64 escalation runs only for client indices whose 1-to-N
+                // cell came back u32::MAX.
+                if matrix.contains(&u32::MAX) {
+                    use rayon::prelude::*;
+                    let query = super::query::CchQuery::new(&mode_data);
+                    let store_kbest = super::snap_kbest::snap_k_pair_role(
+                        &state,
+                        &mode_data,
+                        mode,
+                        *slon,
+                        *slat,
+                        super::types::SnapRole::Src,
+                        None,
+                        SNAP_K,
+                    );
+                    let failing: Vec<usize> = (0..client_valid.len())
+                        .filter(|&ti| matrix[ti] == u32::MAX)
+                        .collect();
+                    let client_kbest: Vec<(usize, Vec<u32>)> = failing
+                        .par_iter()
+                        .map(|&ti| {
+                            let ci = client_valid[ti];
+                            let (clon, clat) = client_coords[ci];
+                            let snap = super::snap_kbest::snap_k_pair_role(
+                                &state,
+                                &mode_data,
+                                mode,
+                                clon,
+                                clat,
+                                super::types::SnapRole::Dst,
+                                None,
+                                SNAP_K,
+                            );
+                            (ti, snap.ranks)
+                        })
+                        .collect();
+                    let patches: Vec<(usize, u32)> = client_kbest
+                        .par_iter()
+                        .filter_map(|(ti, dst_ranks)| {
+                            super::snap_kbest::p2p_with_kbest_fallback(
+                                &query,
+                                &store_kbest.ranks,
+                                dst_ranks,
+                                super::snap_kbest::DEFAULT_MAX_FALLBACK_COMBOS,
+                            )
+                            .map(|(_, _, r)| (*ti, r.distance))
+                        })
+                        .collect();
+                    for (ti, dist) in patches {
+                        matrix[ti] = dist;
+                    }
+                }
+
+                let mut clients_with_dt: Vec<super::catchment::Client> = Vec::new();
+                for (ti, &ci) in client_valid.iter().enumerate() {
+                    let d = matrix[ti];
+                    if d != u32::MAX {
+                        // d is already seconds (post-#297).
+                        let duration_s = d as f32;
+                        clients_with_dt.push(super::catchment::Client {
+                            lon: client_coords[ci].0,
+                            lat: client_coords[ci].1,
+                            duration_s,
+                        });
+                    }
+                }
+
+                let mut catch_results = super::catchment::compute_catchment(
+                    &state,
+                    mode,
+                    store_coord,
+                    &clients_with_dt,
+                    &hull_params,
+                );
+
+                for r in &mut catch_results {
+                    r.store_idx = si as u32;
+                }
+
+                for r in &catch_results {
+                    store_idx_b.append_value(r.store_idx);
+                    store_id_b.append_value(sid);
+                    pct_b.append_value(r.percentile);
+                    thresh_b.append_value(r.threshold_s);
+                    covered_b.append_value(r.clients_covered);
+                    total_b.append_value(r.clients_total);
+                    wkb_b.append_value(&r.polygon_wkb);
                 }
             }
 
-            let mut clients_with_dt: Vec<super::catchment::Client> = Vec::new();
-            for (ti, &ci) in client_valid.iter().enumerate() {
-                let d = matrix[ti];
-                if d != u32::MAX {
-                    // d is already seconds (post-#297).
-                    let duration_s = d as f32;
-                    clients_with_dt.push(super::catchment::Client {
-                        lon: client_coords[ci].0,
-                        lat: client_coords[ci].1,
-                        duration_s,
-                    });
+            if store_idx_b.len() > 0 {
+                match RecordBatch::try_new(
+                    schema_clone,
+                    vec![
+                        Arc::new(store_idx_b.finish()),
+                        Arc::new(store_id_b.finish()),
+                        Arc::new(pct_b.finish()),
+                        Arc::new(thresh_b.finish()),
+                        Arc::new(covered_b.finish()),
+                        Arc::new(total_b.finish()),
+                        Arc::new(wkb_b.finish()),
+                    ],
+                ) {
+                    Ok(batch) => {
+                        let _ = tx.blocking_send(Ok(batch));
+                    }
+                    Err(e) => {
+                        // #533: don't silently drop the result on an Arrow build
+                        // failure — send the error and leave `done` false.
+                        let _ = tx.blocking_send(Err(Status::internal(format!(
+                            "catchment Arrow build: {e}"
+                        ))));
+                        return ProducerEnd::Failed("arrow batch build");
+                    }
                 }
             }
 
-            let mut catch_results = super::catchment::compute_catchment(
-                &state,
-                mode,
-                store_coord,
-                &clients_with_dt,
-                &hull_params,
+            tracing::info!(
+                elapsed_s = start.elapsed().as_secs_f64(),
+                "do_exchange catchment done"
             );
-
-            for r in &mut catch_results {
-                r.store_idx = si as u32;
-            }
-
-            for r in &catch_results {
-                store_idx_b.append_value(r.store_idx);
-                store_id_b.append_value(sid);
-                pct_b.append_value(r.percentile);
-                thresh_b.append_value(r.threshold_s);
-                covered_b.append_value(r.clients_covered);
-                total_b.append_value(r.clients_total);
-                wkb_b.append_value(&r.polygon_wkb);
-            }
-        }
-
-        if store_idx_b.len() > 0 {
-            match RecordBatch::try_new(
-                schema_clone,
-                vec![
-                    Arc::new(store_idx_b.finish()),
-                    Arc::new(store_id_b.finish()),
-                    Arc::new(pct_b.finish()),
-                    Arc::new(thresh_b.finish()),
-                    Arc::new(covered_b.finish()),
-                    Arc::new(total_b.finish()),
-                    Arc::new(wkb_b.finish()),
-                ],
-            ) {
-                Ok(batch) => {
-                    let _ = tx.blocking_send(Ok(batch));
-                }
-                Err(e) => {
-                    // #533: don't silently drop the result on an Arrow build
-                    // failure — send the error and leave `done` false.
-                    let _ = tx.blocking_send(Err(Status::internal(format!(
-                        "catchment Arrow build: {e}"
-                    ))));
-                    return ProducerEnd::Failed("arrow batch build");
-                }
-            }
-        }
-
-        tracing::info!(
-            elapsed_s = start.elapsed().as_secs_f64(),
-            "do_exchange catchment done"
-        );
-        // #533: all results emitted. A panic during computation is caught by
-        // the helper, which logs it and leaves `done` false → the consumer
-        // emits a non-OK error.
-        ProducerEnd::Complete
+            // #533: all results emitted. A panic during computation is caught by
+            // the helper, which logs it and leaves `done` false → the consumer
+            // emits a non-OK error.
+            ProducerEnd::Complete
+        })
     });
 
     let batch_stream: BatchStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
@@ -4725,9 +4745,9 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
                 // #655: refuse what cannot fit instead of being OOM-killed; the
                 // permit lives as long as the stream it admitted.
-                let permit = {
+                let admitted = {
                     let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-                    crate::server::mem::admit(crate::server::mem::need_matrix(
+                    crate::server::mem::admit(crate::server::mem::Need::matrix(
                         params.origins.len(),
                         params.destinations.len(),
                         crate::server::mem::lanes(
@@ -4738,6 +4758,8 @@ impl FlightService for ButterflyFlight {
                     ))
                     .map_err(|r| r.into_status())?
                 };
+                let permit = admitted.permit;
+                let pool = admitted.pool;
 
                 let sparse = params.sparse; // #532: labels the completeness trailer
                 // #533/#532: append a completeness trailer (or a non-OK error on
@@ -4757,8 +4779,11 @@ impl FlightService for ButterflyFlight {
                     let done_all = Arc::new(AtomicBool::new(false));
                     let st = state.clone();
                     let pc = plan_cell.clone();
-                    let run: Arc<BandRun> =
-                        Arc::new(move |m| do_matrix(&st, m, params.clone(), &pc));
+                    let run: Arc<BandRun> = Arc::new(move |m| {
+                        crate::server::mem::with_pool(&pool, || {
+                            do_matrix(&st, m, params.clone(), &pc, pool.clone())
+                        })
+                    });
                     (
                         Arc::new(banded_schema(matrix_schema())),
                         chain_bands(bands, run, done_all.clone()),
@@ -4766,8 +4791,12 @@ impl FlightService for ButterflyFlight {
                     )
                 } else {
                     let pc = plan_cell.clone();
-                    let (bs, done) =
-                        off_runtime(move || do_matrix(&state, mode, params, &pc)).await?;
+                    let (bs, done) = off_runtime(move || {
+                        crate::server::mem::with_pool(&pool, || {
+                            do_matrix(&state, mode, params, &pc, pool.clone())
+                        })
+                    })
+                    .await?;
                     (Arc::new(matrix_schema()), bs, done)
                 };
                 let flight_stream = completed_flight_stream(
@@ -4829,12 +4858,13 @@ impl FlightService for ButterflyFlight {
                 // permit lives as long as the stream it admitted.
                 let permit = {
                     let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-                    crate::server::mem::admit(crate::server::mem::need_route_batch(
+                    crate::server::mem::admit(crate::server::mem::Need::route_batch(
                         params.pairs.len(),
                         route_batch_worker_threads(params.pairs.len()),
                         n_nodes,
                     ))
                     .map_err(|r| r.into_status())?
+                    .permit
                 };
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
@@ -4895,29 +4925,36 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
                 // #655: refuse what cannot fit instead of being OOM-killed; the
                 // permit lives as long as the stream it admitted.
-                let permit = {
+                let admitted = {
                     let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-                    crate::server::mem::admit(crate::server::mem::need_isochrone(
+                    crate::server::mem::admit(crate::server::mem::Need::isochrone(
                         origins.len(),
                         crate::server::mem::lanes(origins.len()),
                         n_nodes,
                     ))
                     .map_err(|r| r.into_status())?
                 };
+                let permit = admitted.permit;
+                let pool = admitted.pool;
 
                 let plan = band_plan(&state, &parsed.profile, mode, params.uncertainty.as_deref())?;
                 let (schema, batch_stream, done) = if let Some(plan) = plan {
                     let done_all = Arc::new(AtomicBool::new(false));
                     let st = state.clone();
-                    let run: Arc<BandRun> = Arc::new(move |m| do_isochrone(&st, m, params.clone()));
+                    // One line: `the_action_is_only_ever_called_off_the_runtime`
+                    // reads the call's own line.
+                    #[rustfmt::skip]
+                    let run: Arc<BandRun> = Arc::new(move |m| with_pool(&pool, || do_isochrone(&st, m, params.clone())));
                     (
                         Arc::new(banded_schema(isochrone_schema())),
                         chain_bands(plan, run, done_all.clone()),
                         done_all,
                     )
                 } else {
-                    let (bs, done) =
-                        off_runtime(move || do_isochrone(&state, mode, params)).await?;
+                    let (bs, done) = off_runtime(move || {
+                        crate::server::mem::with_pool(&pool, || do_isochrone(&state, mode, params))
+                    })
+                    .await?;
                     (Arc::new(isochrone_schema()), bs, done)
                 };
                 // #533/#560: completeness trailer or non-OK error on truncation —
@@ -4998,18 +5035,24 @@ impl FlightService for ButterflyFlight {
                 let mode = resolve_mode(&parsed.profile, &state)?;
                 // #655: refuse what cannot fit instead of being OOM-killed; the
                 // permit lives as long as the stream it admitted.
-                let permit = {
+                let admitted = {
                     let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
-                    crate::server::mem::admit(crate::server::mem::need_edges(
+                    crate::server::mem::admit(crate::server::mem::Need::edges(
                         params.pairs.len(),
                         crate::server::mem::lanes(params.pairs.len()),
                         n_nodes,
                     ))
                     .map_err(|r| r.into_status())?
                 };
+                let permit = admitted.permit;
+                let pool = admitted.pool;
 
-                let (batch_stream, done) =
-                    off_runtime(move || do_edges_batch(&state, mode, params)).await?;
+                let (batch_stream, done) = off_runtime(move || {
+                    crate::server::mem::with_pool(&pool, || {
+                        do_edges_batch(&state, mode, params, pool.clone())
+                    })
+                })
+                .await?;
                 let schema = Arc::new(edges_batch_schema());
                 // #533: completeness trailer or non-OK error on truncation.
                 let flight_stream =
@@ -6907,7 +6950,10 @@ mod isochrone_options_tests {
                 c.contains("off_runtime(move ||")
                     // the banded path: the BandRun closure, which chain_bands
                     // starts with spawn_blocking for every pass
-                    || c.contains("Arc<BandRun> = Arc::new(move |m|"),
+                    || c.contains("Arc<BandRun> = Arc::new(move |m|")
+                    // #655: the request-scoped pool wrapper, entered only
+                    // from those two closures (the lines above it).
+                    || c.contains("with_pool(&pool, ||"),
                 "an isochrone call site left the blocking pool (#539): {c:?}"
             );
         }

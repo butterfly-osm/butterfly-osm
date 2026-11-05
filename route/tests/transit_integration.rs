@@ -1504,7 +1504,7 @@ fn belgium_flight_edges_batch_continuity_and_nulls() {
         .build()
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
-        let (mut s, _done) = do_edges_batch(&state, mode, EdgesBatchParams { pairs })
+        let (mut s, _done) = do_edges_batch(&state, mode, EdgesBatchParams { pairs }, None)
             .expect("do_edges_batch should succeed");
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
@@ -1740,7 +1740,7 @@ fn belgium_flight_edges_batch_totals_match_matrix() {
         .unwrap();
     let batches: Vec<arrow::record_batch::RecordBatch> = rt.block_on(async {
         let (mut s, _done) =
-            do_edges_batch(&state, mode, EdgesBatchParams { pairs: vec![pair] }).unwrap();
+            do_edges_batch(&state, mode, EdgesBatchParams { pairs: vec![pair] }, None).unwrap();
         let mut acc = Vec::new();
         while let Some(item) = s.next().await {
             acc.push(item.expect("batch must succeed"));
