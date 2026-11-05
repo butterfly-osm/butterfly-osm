@@ -479,12 +479,23 @@ pub struct Admitted {
 
 /// Run `f` on the request's pool when it has one (every `par_iter` inside
 /// then uses that pool), on the shared pool otherwise.
+///
+/// `install` runs `f` on one of the pool's own threads, which has no Tokio
+/// context: the streamed producers `f` starts (`spawn_blocking`) would
+/// panic with "there is no reactor running". The caller's runtime handle,
+/// when there is one, is entered on that thread for the duration of `f`.
 pub fn with_pool<R: Send>(
     pool: &Option<Arc<rayon::ThreadPool>>,
     f: impl FnOnce() -> R + Send,
 ) -> R {
     match pool {
-        Some(p) => p.install(f),
+        Some(p) => {
+            let handle = tokio::runtime::Handle::try_current().ok();
+            p.install(move || {
+                let _runtime = handle.as_ref().map(|h| h.enter());
+                f()
+            })
+        }
         None => f(),
     }
 }
@@ -676,6 +687,28 @@ mod tests {
         }
         assert_eq!(heavy_in_flight(), before);
         assert_eq!(reserved_bytes(), reserved_before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_pool_keeps_the_runtime_context_for_spawned_producers() {
+        // The streamed producers call `spawn_blocking` from inside the
+        // pool: without the entered handle this panicked ("there is no
+        // reactor running") on the first tiled matrix.
+        let pool = request_pool(1);
+        if pool.is_none() {
+            return; // a 1-thread shared pool: nothing to scope
+        }
+        let joined = tokio::task::spawn_blocking(move || {
+            with_pool(&pool, || {
+                let h = tokio::task::spawn_blocking(|| 41 + 1);
+                tokio::runtime::Handle::current()
+                    .block_on(h)
+                    .expect("joined")
+            })
+        })
+        .await
+        .expect("outer");
+        assert_eq!(joined, 42);
     }
 
     #[test]
