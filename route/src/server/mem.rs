@@ -24,20 +24,24 @@
 //!    state)`, where the scratch budget is `BUTTERFLY_SCRATCH_BUDGET_GB` or
 //!    30 % of the RSS budget. One parallel request can then never allocate
 //!    more scratch than the budget, whatever the host's core count.
-//! 3. **Admission** (`admit`): a heavy request states how many bytes it
-//!    will need (`need_*`: output cells plus one scratch state per lane it
-//!    will occupy); if the current RSS plus that need exceeds the RSS
-//!    budget, idle scratch is evicted first, and if it still does not fit
-//!    the request is refused — `413 Payload Too Large` /
-//!    `RESOURCE_EXHAUSTED` when nothing else is running (it can never fit:
-//!    split it), `503 Service Unavailable` + `Retry-After` / `UNAVAILABLE`
-//!    while other heavy work holds the memory. Never a crash.
+//! 3. **Admission** (`admit`): a heavy request states what it will need
+//!    (`Need`: its output plus one lane of scratch per worker it would
+//!    like). It is granted as many of those lanes as the RSS budget leaves
+//!    room for — idle scratch evicted first — and runs on a request-scoped
+//!    pool of that size when that is fewer than the shared pool's workers
+//!    (its scratch goes away with the request); the shared pool is never
+//!    shrunk for it. When not even one lane fits it is refused — `413
+//!    Payload Too Large` / `RESOURCE_EXHAUSTED` when nothing else is
+//!    running (it can never fit: split it), `503 Service Unavailable` +
+//!    `Retry-After` / `UNAVAILABLE` while other heavy work holds the
+//!    memory. Never a crash.
 //!
 //! The per-node constants are pinned by tests next to each state struct
 //! (`heap_bytes()` ≤ the formula, and the formula is within 25 % of it), so
 //! a field added to a scratch struct fails a test instead of silently
 //! shrinking the bound.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -233,47 +237,84 @@ pub fn max_ebg_nodes(source: &super::DataSource<'_>) -> Option<u32> {
 // Need estimates
 // ---------------------------------------------------------------------------
 
-/// Lanes a parallel request over `n_items` items will occupy: at most one
+/// Lanes a parallel request over `n_items` items would like: at most one
 /// per rayon worker, at least one.
 pub fn lanes(n_items: usize) -> usize {
     n_items.min(rayon::current_num_threads()).max(1)
 }
 
-/// Bytes a many-to-many matrix will need: the dense cell buffers (two
-/// u32 channels + a mask byte per cell, however sparse the output) plus one
-/// bucket lane per worker it reaches.
-pub fn need_matrix(
-    n_sources: usize,
-    n_targets: usize,
-    lanes: usize,
-    n_nodes: usize,
-    two_channel: bool,
-) -> u64 {
-    let cells = (n_sources as u64) * (n_targets as u64);
-    let kind = if two_channel {
-        Scratch::BucketM2M2ch
-    } else {
-        Scratch::BucketM2M
-    };
-    cells * 9 + lanes as u64 * scratch_bytes(kind, n_nodes)
+/// What a heavy request will allocate: a fixed part (its output) plus one
+/// lane of scratch per worker it reaches. Admission grants as many of the
+/// `lanes` wanted as the memory allows (at least one) and the request runs
+/// on that many — the pool everybody shares is never shrunk for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Need {
+    /// Bytes independent of the parallelism (cells, rows, polygons).
+    pub fixed: u64,
+    /// Bytes of one lane of scratch.
+    pub lane: u64,
+    /// Lanes the request would like.
+    pub lanes: usize,
 }
 
-/// Bytes an isochrone batch will need: one PHAST lane per worker plus the
-/// stamped tiles and rings (~2 MB per origin, measured on Belgium).
-pub fn need_isochrone(n_origins: usize, lanes: usize, n_nodes: usize) -> u64 {
-    lanes as u64 * scratch_bytes(Scratch::Phast, n_nodes) + n_origins as u64 * (2 << 20)
-}
+impl Need {
+    /// A many-to-many matrix: two u32 channels + a mask byte per cell
+    /// (however sparse the output) plus one bucket lane per worker.
+    pub fn matrix(
+        n_sources: usize,
+        n_targets: usize,
+        lanes: usize,
+        n_nodes: usize,
+        two_channel: bool,
+    ) -> Need {
+        let cells = (n_sources as u64) * (n_targets as u64);
+        let kind = if two_channel {
+            Scratch::BucketM2M2ch
+        } else {
+            Scratch::BucketM2M
+        };
+        Need {
+            fixed: cells * 9,
+            lane: scratch_bytes(kind, n_nodes),
+            lanes,
+        }
+    }
 
-/// Bytes a route batch will need: one P2P query state per worker plus the
-/// polylines (~16 KB per pair).
-pub fn need_route_batch(n_pairs: usize, workers: usize, n_nodes: usize) -> u64 {
-    workers as u64 * scratch_bytes(Scratch::CchQuery, n_nodes) + n_pairs as u64 * (16 << 10)
-}
+    /// An isochrone batch: one PHAST lane per worker plus the stamped tiles
+    /// and rings (~2 MB per origin, measured).
+    pub fn isochrone(n_origins: usize, lanes: usize, n_nodes: usize) -> Need {
+        Need {
+            fixed: n_origins as u64 * (2 << 20),
+            lane: scratch_bytes(Scratch::Phast, n_nodes),
+            lanes,
+        }
+    }
 
-/// Bytes an edges batch / flow exchange will need: one tree lane per worker
-/// plus the per-edge rows (~24 B × ~400 edges per pair).
-pub fn need_edges(n_pairs: usize, lanes: usize, n_nodes: usize) -> u64 {
-    lanes as u64 * scratch_bytes(Scratch::Tree, n_nodes) + n_pairs as u64 * 24 * 400
+    /// A route batch: one P2P query state per worker thread plus the
+    /// polylines (~16 KB per pair). Its workers are its own (not rayon).
+    pub fn route_batch(n_pairs: usize, workers: usize, n_nodes: usize) -> Need {
+        Need {
+            fixed: n_pairs as u64 * (16 << 10),
+            lane: scratch_bytes(Scratch::CchQuery, n_nodes),
+            lanes: workers.max(1),
+        }
+    }
+
+    /// An edges batch / flow exchange: one tree lane per worker plus the
+    /// per-edge rows (~24 B × ~400 edges per pair).
+    pub fn edges(n_pairs: usize, lanes: usize, n_nodes: usize) -> Need {
+        Need {
+            fixed: n_pairs as u64 * 24 * 400,
+            lane: scratch_bytes(Scratch::Tree, n_nodes),
+            lanes,
+        }
+    }
+
+    /// Bytes at `lanes` lanes.
+    pub fn bytes(&self, lanes: usize) -> u64 {
+        self.fixed
+            .saturating_add(self.lane.saturating_mul(lanes as u64))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,13 +333,13 @@ static RESERVED_BYTES: AtomicU64 = AtomicU64::new(0);
 /// and the request's declared bytes stay reserved.
 #[derive(Debug)]
 pub struct HeavyPermit {
-    need: u64,
+    reserved: u64,
 }
 
 impl Drop for HeavyPermit {
     fn drop(&mut self) {
         HEAVY_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-        RESERVED_BYTES.fetch_sub(self.need, Ordering::AcqRel);
+        RESERVED_BYTES.fetch_sub(self.reserved, Ordering::AcqRel);
     }
 }
 
@@ -315,8 +356,8 @@ pub fn reserved_bytes() -> u64 {
 /// Why a request was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
-    /// Nothing else is running and it still does not fit: it never will on
-    /// this server — split the request.
+    /// Nothing else is running and even one lane does not fit: it never
+    /// will on this server — split the request.
     TooLarge { need: u64, headroom: u64 },
     /// It would fit once the heavy work in flight is done.
     Busy {
@@ -378,55 +419,124 @@ impl Refused {
     }
 }
 
-/// The decision, with every input injected (tests): `rss` is re-read after
-/// `evict` freed idle scratch, `in_flight` / `reserved` are the heavy
-/// count and the bytes the in-flight requests declared at the time.
-pub fn admit_with(
-    need: u64,
+/// The lanes `need` can have under `budget`, with every input injected
+/// (tests): `rss` is re-read after `evict` freed idle scratch (asked only
+/// when the wanted lanes do not all fit), `in_flight` / `reserved` are the
+/// heavy count and the bytes the in-flight requests declared.
+pub fn admit_lanes_with(
+    need: &Need,
     budget: u64,
     mut rss: impl FnMut() -> u64,
     evict: impl FnOnce() -> usize,
     in_flight: usize,
     reserved: u64,
-) -> Result<(), Refused> {
-    let fits = |rss: u64| rss.saturating_add(reserved).saturating_add(need) <= budget;
+) -> Result<usize, Refused> {
+    let affordable = |rss: u64| -> usize {
+        let free = budget.saturating_sub(rss).saturating_sub(reserved);
+        if free < need.fixed {
+            return 0;
+        }
+        let lanes = (free - need.fixed) / need.lane.max(1);
+        (lanes.min(need.lanes as u64)) as usize
+    };
     let mut cur = rss();
-    if !fits(cur) {
-        // Idle scratch of earlier requests is resident but reusable or
-        // free-able: drop it before deciding.
+    let mut lanes = affordable(cur);
+    if lanes < need.lanes.max(1) {
+        // Idle scratch of earlier requests is resident but free-able: drop
+        // it before settling for fewer lanes or refusing.
         let _ = evict();
         cur = rss();
+        lanes = affordable(cur);
     }
-    if fits(cur) {
-        return Ok(());
+    if lanes >= 1 {
+        return Ok(lanes);
     }
     let headroom = budget.saturating_sub(cur).saturating_sub(reserved);
+    let one = need.bytes(1);
     if in_flight > 0 {
         Err(Refused::Busy {
-            need,
+            need: one,
             headroom,
             in_flight,
         })
     } else {
-        Err(Refused::TooLarge { need, headroom })
+        Err(Refused::TooLarge {
+            need: one,
+            headroom,
+        })
     }
 }
 
-/// Admit a heavy request needing `need` bytes against the RSS budget, or
-/// refuse it. The permit must be held until the request's last byte is out.
-pub fn admit(need: u64) -> Result<HeavyPermit, Refused> {
+/// An admitted heavy request: its permit, the lanes it may use, and the
+/// pool to run on when that is fewer than the shared pool's workers (a
+/// request-scoped pool: its threads, and the scratch they keep, go away
+/// with the request).
+pub struct Admitted {
+    pub permit: HeavyPermit,
+    pub lanes: usize,
+    pub pool: Option<Arc<rayon::ThreadPool>>,
+}
+
+/// Run `f` on the request's pool when it has one (every `par_iter` inside
+/// then uses that pool), on the shared pool otherwise.
+pub fn with_pool<R: Send>(
+    pool: &Option<Arc<rayon::ThreadPool>>,
+    f: impl FnOnce() -> R + Send,
+) -> R {
+    match pool {
+        Some(p) => p.install(f),
+        None => f(),
+    }
+}
+
+/// A request-scoped pool of `lanes` workers when that is fewer than the
+/// shared pool offers; `None` to use the shared pool.
+pub fn request_pool(lanes: usize) -> Option<Arc<rayon::ThreadPool>> {
+    if lanes >= rayon::current_num_threads() {
+        return None;
+    }
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(lanes.max(1))
+        .thread_name(|i| format!("bf-lane-{i}"))
+        .build()
+    {
+        Ok(p) => Some(Arc::new(p)),
+        Err(e) => {
+            tracing::warn!(error = %e, lanes, "request pool not built; running on the shared pool (#655)");
+            None
+        }
+    }
+}
+
+/// Admit a heavy request against the RSS budget with as many of its wanted
+/// lanes as fit (at least one), or refuse it. The permit must be held until
+/// the request's last byte is out.
+pub fn admit(need: Need) -> Result<Admitted, Refused> {
     let budget = super::rss_budget_bytes();
     let in_flight = heavy_in_flight();
     let rss = || vm_rss_bytes().unwrap_or(0);
     let evict = || crate::evictable::evict_idle(Duration::from_secs(1));
-    match admit_with(need, budget, rss, evict, in_flight, reserved_bytes()) {
-        Ok(()) => {
+    match admit_lanes_with(&need, budget, rss, evict, in_flight, reserved_bytes()) {
+        Ok(lanes) => {
+            let reserved = need.bytes(lanes);
             HEAVY_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-            RESERVED_BYTES.fetch_add(need, Ordering::AcqRel);
-            Ok(HeavyPermit { need })
+            RESERVED_BYTES.fetch_add(reserved, Ordering::AcqRel);
+            if lanes < need.lanes {
+                tracing::info!(
+                    wanted = need.lanes,
+                    granted = lanes,
+                    reserved_gib = gib(reserved),
+                    "heavy request admitted on fewer lanes than wanted (#655)"
+                );
+            }
+            Ok(Admitted {
+                permit: HeavyPermit { reserved },
+                lanes,
+                pool: request_pool(lanes),
+            })
         }
         Err(r) => {
-            tracing::warn!(need_gib = gib(need), reason = %r.message(), "heavy request refused (#655)");
+            tracing::warn!(need_gib = gib(need.bytes(1)), reason = %r.message(), "heavy request refused (#655)");
             Err(r)
         }
     }
@@ -479,23 +589,29 @@ mod tests {
     #[test]
     fn need_counts_cells_and_lanes() {
         let n = 1_000_000;
-        // 1054² two-channel over 94 lanes: 10 MB of cells + 94 × 32 MB.
-        let need = need_matrix(1054, 1054, 94, n, true);
-        assert_eq!(need, 1054 * 1054 * 9 + 94 * 33 * 1_000_000);
-        assert!(need_matrix(10, 10, 1, n, false) < need_matrix(10, 10, 1, n, true));
-        assert!(need_isochrone(100, 8, n) > need_isochrone(1, 8, n));
+        // 1054² two-channel over 94 lanes: 10 MB of cells + 94 × 33 MB.
+        let need = Need::matrix(1054, 1054, 94, n, true);
+        assert_eq!(need.bytes(94), 1054 * 1054 * 9 + 94 * 33 * 1_000_000);
+        assert!(
+            Need::matrix(10, 10, 1, n, false).bytes(1) < Need::matrix(10, 10, 1, n, true).bytes(1)
+        );
+        assert!(Need::isochrone(100, 8, n).bytes(8) > Need::isochrone(1, 8, n).bytes(8));
     }
 
     #[test]
-    fn admission_fits_fits_after_eviction_or_refuses() {
-        let budget = 100;
-        // Fits outright: no eviction asked.
+    fn admission_grants_the_lanes_that_fit() {
+        let need = Need {
+            fixed: 10,
+            lane: 10,
+            lanes: 8,
+        };
+        // 100 budget, 0 resident: 8 lanes (90 / 10 = 9 affordable, 8 wanted).
         let mut evicted = 0;
         assert_eq!(
-            admit_with(
-                30,
-                budget,
-                || 60,
+            admit_lanes_with(
+                &need,
+                100,
+                || 0,
                 || {
                     evicted += 1;
                     0
@@ -503,40 +619,42 @@ mod tests {
                 0,
                 0
             ),
-            Ok(())
+            Ok(8)
         );
-        assert_eq!(evicted, 0);
-        // Fits once idle scratch is evicted.
-        let rss = std::cell::Cell::new(90u64);
+        assert_eq!(evicted, 0, "no eviction when everything fits");
+        // 60 resident: 3 lanes after an eviction that freed nothing.
+        assert_eq!(admit_lanes_with(&need, 100, || 60, || 0, 0, 0), Ok(3));
+        // Eviction frees room: 8 lanes again.
+        let rss = std::cell::Cell::new(60u64);
         assert_eq!(
-            admit_with(
-                30,
-                budget,
+            admit_lanes_with(
+                &need,
+                100,
                 || rss.get(),
                 || {
-                    rss.set(60);
+                    rss.set(0);
                     3
                 },
                 0,
                 0
             ),
-            Ok(())
+            Ok(8)
         );
-        // Still too big, nothing else running: TooLarge with the headroom.
+        // Reserved bytes of requests in flight count: 100 − 60 − 30 = 10 → fixed only, 0 lanes → Busy.
         assert_eq!(
-            admit_with(50, budget, || 80, || 0, 0, 0),
-            Err(Refused::TooLarge {
-                need: 50,
-                headroom: 20
+            admit_lanes_with(&need, 100, || 60, || 0, 1, 30),
+            Err(Refused::Busy {
+                need: 20,
+                headroom: 10,
+                in_flight: 1
             })
         );
-        // Still too big while heavy work runs: Busy.
+        // Nothing in flight and not even one lane: TooLarge with the one-lane need.
         assert_eq!(
-            admit_with(50, budget, || 80, || 0, 2, 0),
-            Err(Refused::Busy {
-                need: 50,
-                headroom: 20,
-                in_flight: 2
+            admit_lanes_with(&need, 100, || 95, || 0, 0, 0),
+            Err(Refused::TooLarge {
+                need: 20,
+                headroom: 5
             })
         );
     }
@@ -546,26 +664,35 @@ mod tests {
         let before = heavy_in_flight();
         let reserved_before = reserved_bytes();
         {
-            let _p = admit(0).expect("zero bytes always fit");
+            let adm = admit(Need {
+                fixed: 0,
+                lane: 0,
+                lanes: 1,
+            })
+            .expect("zero bytes always fit");
             assert_eq!(heavy_in_flight(), before + 1);
+            assert_eq!(adm.lanes, 1);
+            drop(adm);
         }
         assert_eq!(heavy_in_flight(), before);
         assert_eq!(reserved_bytes(), reserved_before);
     }
 
     #[test]
-    fn reserved_bytes_of_requests_in_flight_count_against_the_budget() {
-        // 60 resident + 30 reserved by an admitted request + 30 asked: no.
-        assert_eq!(
-            admit_with(30, 100, || 60, || 0, 1, 30),
-            Err(Refused::Busy {
-                need: 30,
-                headroom: 10,
-                in_flight: 1
-            })
-        );
-        // Without the reservation it would have fit.
-        assert_eq!(admit_with(30, 100, || 60, || 0, 1, 0), Ok(()));
+    fn a_request_pool_has_the_granted_lanes_and_the_shared_pool_is_untouched() {
+        let shared = rayon::current_num_threads();
+        let pool = request_pool(2);
+        if shared > 2 {
+            let p = pool
+                .as_ref()
+                .expect("fewer lanes than the shared pool → a pool");
+            assert_eq!(with_pool(&pool, rayon::current_num_threads), 2);
+            assert_eq!(p.current_num_threads(), 2);
+        } else {
+            assert!(pool.is_none());
+        }
+        assert_eq!(rayon::current_num_threads(), shared);
+        assert!(request_pool(shared + 10).is_none());
     }
 
     #[test]
