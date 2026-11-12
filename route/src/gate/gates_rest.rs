@@ -1113,6 +1113,34 @@ fn pystr_list(v: &[String]) -> String {
     )
 }
 
+/// The per-edge speeds table must be stamped for the loaded graph: a table
+/// keyed to another graph loads silently and calibrates a fraction of the
+/// edges. Fails on every refusal (`mismatched`, `unstamped`, `ungated`,
+/// `error`, `failed`) and on a table applied without proof (`unverified`,
+/// `unchecked`); `none` (no table staged) and `disabled` pass.
+pub fn gate_speeds_stamp(ctx: &Ctx) -> GateResult {
+    println!("== speeds stamp: the per-edge speeds table is stamped for the loaded graph ==");
+    let h = ctx.http.json(&ctx.url("/health"), 30)?;
+    let Some(word) = h.get("speeds").and_then(Value::as_str) else {
+        skip("/health has no `speeds` field (engine predates the stamp check)");
+        return Ok(true);
+    };
+    let detail = h
+        .get("speeds_detail")
+        .and_then(Value::as_str)
+        .unwrap_or("-");
+    let fraction = h
+        .get("speeds_matched_fraction")
+        .and_then(Value::as_f64)
+        .map(|f| format!("{:.1} %", f * 100.0))
+        .unwrap_or_else(|| "-".into());
+    Ok(check(
+        "speeds verdict is ok, none or disabled",
+        matches!(word, "ok" | "none" | "disabled"),
+        &format!("speeds={word} matched={fraction} ({detail})"),
+    ))
+}
+
 pub fn gate_transit_feeds(ctx: &Ctx) -> GateResult {
     println!("== transit feeds: every declared operator is in the loaded timetable (#628) ==");
     let h = ctx.http.json(&ctx.url("/health"), 30)?;

@@ -253,6 +253,11 @@ fn build_gates<'a>(cli: &'a Cli, names: &'a [&'a str]) -> Vec<(&'static str, boo
             Box::new(gates_rest::gate_transit_feeds),
         ),
         (
+            "speeds_stamp",
+            false,
+            Box::new(gates_rest::gate_speeds_stamp),
+        ),
+        (
             "edges_flow_storm",
             true,
             Box::new(gates_rest::gate_edges_flow_storm),

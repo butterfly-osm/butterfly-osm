@@ -193,6 +193,19 @@ and observed travel time at a known hour — staged under `$BUTTERFLY_REFS_DIR` 
 `BUTTERFLY_BOOT_RECUSTOMIZE=off` serves the uncalibrated free-flow car — the
 fastest way to tell whether a regression is in the graph or in the speed table.
 
+**Graph stamp.** The table is keyed by OSM node pairs, so it would "load" onto
+any graph and calibrate only the edges that survive. The producer stamps the
+graph it was built on into the KV metadata (`graph_<key>`, e.g. `graph_pbf_sha`,
+plus `gate=passed`); the operator names the loaded graph's identity in a
+`key=value` text file (`BUTTERFLY_GRAPH_IDENTITY_FILE`). Every compared key
+(`BUTTERFLY_SPEEDS_STAMP_KEYS`, default `pbf_sha,lu_pbf_sha`) the graph carries
+must match, or the table is refused (clean base car, an error naming both
+identities). `/health` reports `speeds` (`ok`, `mismatched`, `unstamped`,
+`ungated`, `error`, `failed`, `unverified`, `unchecked`, `disabled`, `none`),
+`speeds_detail` and `speeds_matched_fraction`; the `speeds_stamp` gate fails on
+anything but `ok`, `none` and `disabled`. `BUTTERFLY_SPEEDS_STAMP_CHECK=off`
+skips the check (tables whose producer has no notion of the graph).
+
 ## 5. Testing and the post-deploy gate
 
 ```bash

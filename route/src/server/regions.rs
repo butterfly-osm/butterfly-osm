@@ -355,6 +355,10 @@ pub struct RegionsState {
     /// per-`ServerState` `started_at` is per-region-load, not server
     /// start.)
     pub server_started_at: std::time::Instant,
+    /// Serve-boot verdict on each region's per-edge speeds table (graph
+    /// stamp check + recustomization outcome), read by `/health`. Empty
+    /// until the boot speeds pass runs; regions without a table add none.
+    pub speeds: Vec<crate::speeds_stamp::SpeedsReport>,
 }
 
 impl RegionsState {
@@ -403,6 +407,7 @@ impl RegionsState {
             by_id,
             overlay: None,
             server_started_at: std::time::Instant::now(),
+            speeds: Vec::new(),
         }
     }
 
@@ -461,6 +466,7 @@ impl RegionsState {
             by_id,
             overlay: None,
             server_started_at: std::time::Instant::now(),
+            speeds: Vec::new(),
         })
     }
 
@@ -671,6 +677,7 @@ impl RegionsState {
             by_id,
             overlay: None,
             server_started_at: std::time::Instant::now(),
+            speeds: Vec::new(),
         })
     }
 
