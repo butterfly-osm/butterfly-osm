@@ -52,12 +52,12 @@ STEPS=(
   "test count (all-features > default)|a=\$(cargo test --workspace --all-features -- --list 2>/dev/null | grep -c ': test\$'); d=\$(cargo test --workspace -- --list 2>/dev/null | grep -c ': test\$'); echo \"tests: all-features=\$a default=\$d\"; [ \"\$a\" -gt \"\$d\" ]"
   # #646: the post-deploy gate is the Rust binary `butterfly-gate` (feature
   # `gate`); the Python gate it replaced is gone. It must build, enumerate
-  # its 36 gates (a registry break fails here, with no server), and pass its
+  # its 37 gates (a registry break fails here, with no server), and pass its
   # offline unit tests — threshold derivation, refs resolution, matrix-plan
   # parsing, geometry, class share, and the CPython RNG port the sampling
   # checks rely on for reproducible points.
   "butterfly-gate builds|cargo build --release --features gate --bin butterfly-gate"
-  "butterfly-gate registry (36 gates)|test \"\$(./target/release/butterfly-gate --list-gates | wc -l)\" -eq 36"
+  "butterfly-gate registry (37 gates)|test \"\$(./target/release/butterfly-gate --list-gates | wc -l)\" -eq 37"
   "butterfly-gate unit tests|cargo test --release --features gate --bin butterfly-gate"
   # #573: `Dockerfile.tools` is DERIVED from `Dockerfile` (the runtime stage
   # cut off), so the deprecated shim cannot drift from the real manifest.
