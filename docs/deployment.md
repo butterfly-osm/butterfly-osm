@@ -156,6 +156,12 @@ A `transit/` subdirectory (next to the step tree or container files) triggers tr
   ids, ratio in `[0.05, 1.0]`. At boot the server recustomizes `?mode=car`
   from it (a bad/absent table is non-fatal: it logs and serves the baked
   weights).
+- Graph stamp: the table's KV metadata must name the graph it was built on
+  (`graph_pbf_sha`, optional `graph_lu_pbf_sha`, and `gate=passed`) and match
+  the identity file named by `BUTTERFLY_GRAPH_IDENTITY_FILE` (whitespace-
+  separated `key=value` tokens, e.g. `pbf_sha=… lu_pbf_sha=…`). A mismatched,
+  unstamped or ungated table is refused and `/health` `speeds` says why
+  (see ENGINEERING.md §4).
 - Optional parquet KV metadata `time_scale` (sanity `[0.5, 2.0]`, absent →
   1.0): a global end-to-end factor applied to BOTH link weights and turn
   penalties before customization (#524). Producers set it to land a measured
