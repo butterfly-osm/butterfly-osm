@@ -640,17 +640,120 @@ pub async fn serve(
         let Some(edge_path) = edge_speeds else {
             continue;
         };
+        let region_id = regions_state.regions[idx].id.clone();
+        let report = |status: &'static str, detail: String, matched_fraction: Option<f64>| {
+            crate::speeds_stamp::SpeedsReport {
+                region: region_id.clone(),
+                status,
+                detail,
+                matched_fraction,
+            }
+        };
         if !recustomize_enabled {
+            regions_state.speeds.push(report(
+                "disabled",
+                format!(
+                    "{} staged, BUTTERFLY_BOOT_RECUSTOMIZE=off",
+                    edge_path.display()
+                ),
+                None,
+            ));
             continue;
         }
 
-        let region_id = regions_state.regions[idx].id.clone();
+        // The table is keyed by OSM node pairs, so it "loads" onto any graph
+        // and silently calibrates only the edges that survive. Refuse one not
+        // stamped for THIS graph (see crate::speeds_stamp): the clean base car
+        // serves and /health says why, so the post-deploy gate fails on it.
+        let mut ok_identities = String::new();
+        let stamp_ok = if crate::speeds_stamp::check_enabled_from_env() {
+            let keys = crate::speeds_stamp::stamp_keys_from_env();
+            match crate::speeds_stamp::check_table(&edge_path, &keys) {
+                Ok(c) if c.verdict == crate::speeds_stamp::StampVerdict::Ok => {
+                    tracing::info!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        identities = %c.detail,
+                        "edge speeds stamped for this graph"
+                    );
+                    ok_identities = c.detail;
+                    true
+                }
+                Ok(c) if c.verdict.applies() => {
+                    tracing::warn!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        identities = %c.detail,
+                        "edge speeds stamped and gated, but the loaded graph's identity is unknown \
+                         (set {}) — applied UNVERIFIED",
+                        crate::speeds_stamp::ENV_IDENTITY_FILE
+                    );
+                    regions_state
+                        .speeds
+                        .push(report(c.verdict.as_str(), c.detail, None));
+                    true
+                }
+                Ok(c) => {
+                    tracing::error!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        verdict = c.verdict.as_str(),
+                        identities = %c.detail,
+                        "edge speeds REFUSED: the table is not stamped for the loaded graph — \
+                         car serves the clean base weights"
+                    );
+                    regions_state
+                        .speeds
+                        .push(report(c.verdict.as_str(), c.detail, None));
+                    false
+                }
+                Err(e) => {
+                    tracing::error!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        error = %format!("{e:#}"),
+                        "edge speeds REFUSED: cannot read the table stamp or the graph identity — \
+                         car serves the clean base weights"
+                    );
+                    regions_state
+                        .speeds
+                        .push(report("error", format!("{e:#}"), None));
+                    false
+                }
+            }
+        } else {
+            tracing::warn!(
+                region = %region_id,
+                path = %edge_path.display(),
+                "{}=off — edge speeds applied WITHOUT the graph stamp check",
+                crate::speeds_stamp::ENV_CHECK
+            );
+            regions_state.speeds.push(report(
+                "unchecked",
+                format!("{}=off", crate::speeds_stamp::ENV_CHECK),
+                None,
+            ));
+            true
+        };
+        if !stamp_ok {
+            continue;
+        }
+        // The stamp verdict (`ok`) is pushed once the recustomization outcome
+        // is known; `unverified` / `unchecked` already have their report and
+        // only gain the matched fraction.
+        let pre_reported = regions_state
+            .speeds
+            .last()
+            .is_some_and(|r| r.region == region_id);
+        let mut outcome: Option<(Result<f64, String>, String)> = None;
+
         regions_state.regions[idx].with_loaded_state_mut(|state_owned| {
             if !state_owned.mode_lookup.contains_key("car") {
                 tracing::warn!(
                     region = %region_id,
                     "edge speeds present but car mode not loaded; skipping recustomization"
                 );
+                outcome = Some((Err("car mode not loaded".into()), String::new()));
                 return;
             }
             // #552: the typical pass and the two band passes share ONE
@@ -661,12 +764,29 @@ pub async fn serve(
             let mut prep = crate::server::state::EdgeRecustomizePrep::new(&edge_path);
             match state_owned.recustomize_car_from_edge_speeds(&mut prep) {
                 Ok(matched) => {
+                    // Matched ÷ routable car edges (weight 0 = inaccessible
+                    // sentinel, never matched) — the coverage a wrong-graph
+                    // table visibly lacks.
+                    let car = state_owned
+                        .get_mode(crate::model::types::Mode(state_owned.mode_lookup["car"]));
+                    let routable = car.node_weights.iter().filter(|&&w| w != 0).count();
+                    let fraction = if routable > 0 {
+                        matched as f64 / routable as f64
+                    } else {
+                        0.0
+                    };
                     tracing::info!(
                         region = %region_id,
                         path = %edge_path.display(),
                         matched,
+                        routable,
+                        matched_fraction = fraction,
                         "car recustomized from DIRECTED per-edge speeds (#454)"
                     );
+                    outcome = Some((
+                        Ok(fraction),
+                        format!("matched {matched} of {routable} routable car edges"),
+                    ));
                     // #521: ONE public car profile = the demand-weighted
                     // survey median. Distributional friction is the opt-in
                     // uncertainty bands (uncertainty=bands) — hidden weight
@@ -681,14 +801,39 @@ pub async fn serve(
                         );
                     }
                 }
-                Err(e) => tracing::warn!(
-                    region = %region_id,
-                    path = %edge_path.display(),
-                    error = %e,
-                    "car recustomization failed; serving clean base car"
-                ),
+                Err(e) => {
+                    tracing::warn!(
+                        region = %region_id,
+                        path = %edge_path.display(),
+                        error = %e,
+                        "car recustomization failed; serving clean base car"
+                    );
+                    outcome = Some((Err(format!("{e:#}")), String::new()));
+                }
             }
         })?;
+        match outcome {
+            Some((Ok(fraction), matched_detail)) => {
+                if pre_reported {
+                    if let Some(r) = regions_state.speeds.last_mut() {
+                        r.matched_fraction = Some(fraction);
+                    }
+                } else {
+                    regions_state.speeds.push(report(
+                        "ok",
+                        format!("{ok_identities}; {matched_detail}"),
+                        Some(fraction),
+                    ));
+                }
+            }
+            Some((Err(e), _)) => {
+                if pre_reported {
+                    regions_state.speeds.pop();
+                }
+                regions_state.speeds.push(report("failed", e, None));
+            }
+            None => {}
+        }
         // Dynamic mode registrations (e.g. car_freeflow) happen AFTER the
         // RegionEntry cached its registration-time mode list — refresh it so
         // the regions dispatch (has_mode / available_modes / the "Invalid

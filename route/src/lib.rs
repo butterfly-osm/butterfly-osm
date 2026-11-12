@@ -34,6 +34,7 @@ pub mod pack;
 pub mod range;
 pub mod scratch;
 pub mod server;
+pub mod speeds_stamp;
 /// Test-support helpers shared by unit and integration tests (#587).
 #[doc(hidden)]
 pub mod testutil;

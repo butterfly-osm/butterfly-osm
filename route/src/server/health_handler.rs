@@ -18,7 +18,12 @@ use super::regions::RegionsState;
                    ones knowingly excluded with their reason, and any undeclared gap \
                    (#603); null when nothing is loaded. `transit` says why: \
                    `loaded`, `not_loaded` (no transit/ directory) or `disabled` \
-                   (`--transit off`) — the last two used to be indistinguishable (#614).",
+                   (`--transit off`) — the last two used to be indistinguishable (#614). \
+                   `speeds` is the boot verdict on the per-edge speeds table's graph \
+                   stamp: `ok`, `mismatched`, `unstamped`, `ungated`, `error`, \
+                   `failed` (refused or not applied), `unverified`, `unchecked` \
+                   (applied without proof), `disabled` or `none`; \
+                   `speeds_matched_fraction` = matched / routable car edges.",
     responses(
         (status = 200, description = "Server is healthy"),
     )
@@ -58,6 +63,13 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         .and_then(|p| p.transit.as_ref())
         .map(|t| t.snapshot.feeds.clone());
 
+    // Serve-boot verdict on the per-edge speeds table: `ok` (stamped for
+    // the loaded graph and applied), a refusal (`mismatched`, `unstamped`,
+    // `ungated`, `error`, `failed`), `unverified` / `unchecked` (applied
+    // without proof), `disabled`, or `none` (no table staged). Fixed at boot.
+    let (speeds, speeds_detail, speeds_matched_fraction) =
+        crate::speeds_stamp::health_summary(&regions.speeds);
+
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
@@ -82,6 +94,9 @@ pub async fn health_handler(State(regions): State<Arc<RegionsState>>) -> impl In
         // bands request answers 400 — a documented-optional surface, like
         // `transit` and `/height`, that the gate skips rather than fails.
         "bands": primary_loaded.as_ref().is_some_and(|p| p.band_modes().is_some()),
+        "speeds": speeds,
+        "speeds_detail": speeds_detail,
+        "speeds_matched_fraction": speeds_matched_fraction,
         "total_nodes_count": total_nodes,
         "total_edges_count": total_edges,
         // #614: "disabled by flag" and "nothing to load" both left
