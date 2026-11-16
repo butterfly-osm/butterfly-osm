@@ -118,6 +118,36 @@ pub fn vm_rss_bytes() -> Option<u64> {
     None
 }
 
+/// The memory this process holds that the kernel cannot reclaim, from a
+/// `/proc/<pid>/status` body: `RssAnon` (heap, stacks, query scratch) plus
+/// `VmLck` (pages pinned with `mlock`, i.e. `--lock-container`), in bytes.
+///
+/// `VmRSS` also counts `RssFile`: the clean, file-backed pages of the
+/// mmapped graph container, which the kernel drops under pressure instead
+/// of OOM-killing. Budgeting against `VmRSS` charged ~13 GB of reclaimable
+/// page cache to the requests (refusals with plenty of real headroom) while
+/// it said nothing about anon growth.
+pub fn parse_status_unreclaimable(status: &str) -> Option<u64> {
+    let mut anon: Option<u64> = None;
+    let mut locked: u64 = 0;
+    for line in status.lines() {
+        let kb = |rest: &str| -> Option<u64> { rest.split_whitespace().next()?.parse().ok() };
+        if let Some(rest) = line.strip_prefix("RssAnon:") {
+            anon = kb(rest);
+        } else if let Some(rest) = line.strip_prefix("VmLck:") {
+            locked = kb(rest).unwrap_or(0);
+        }
+    }
+    anon.map(|a| (a + locked) * 1024)
+}
+
+/// Unreclaimable bytes of this process (`RssAnon + VmLck`); falls back to
+/// `VmRSS` where `RssAnon` is not reported (pre-4.5 kernels).
+pub fn unreclaimable_bytes() -> Option<u64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_status_unreclaimable(&s).or_else(|| vm_rss_bytes())
+}
+
 // ---------------------------------------------------------------------------
 // Scratch sizes
 // ---------------------------------------------------------------------------
@@ -257,6 +287,14 @@ pub struct Need {
     pub lanes: usize,
 }
 
+/// Bytes per cell of the REST `/table` JSON body on top of the matrix
+/// itself (#661): the duration and distance grids as `Option<f64>` rows
+/// (2 × 16 B) plus the serialized text (~2 × 12 B), with margin.
+pub const REST_TABLE_BYTES_PER_CELL: u64 = 64;
+
+/// Peak unreclaimable bytes per CCH edge of one recustomization (#661).
+pub const RECUSTOMIZE_BYTES_PER_EDGE: u64 = 64;
+
 impl Need {
     /// A many-to-many matrix: two u32 channels + a mask byte per cell
     /// (however sparse the output) plus one bucket lane per worker.
@@ -278,6 +316,31 @@ impl Need {
             lane: scratch_bytes(kind, n_nodes),
             lanes,
         }
+    }
+
+    /// A REST `/table` (#661): the matrix above plus what the REST path
+    /// adds per request — the JSON body (two `Option<f64>` grids built and
+    /// serialized: [`REST_TABLE_BYTES_PER_CELL`]), the prefix-sum buckets
+    /// and stamps sized by the graph (12 B per node, 16 counted), and the
+    /// snapped endpoints with their seed sets. A grid of at most 100 cells
+    /// runs on the calling thread's sequential engine: one lane, not one
+    /// per worker.
+    pub fn table_rest(
+        n_sources: usize,
+        n_targets: usize,
+        lanes: usize,
+        n_nodes: usize,
+        two_channel: bool,
+    ) -> Need {
+        let cells = (n_sources as u64) * (n_targets as u64);
+        let lanes = if cells <= 100 { 1 } else { lanes };
+        let mut need = Need::matrix(n_sources, n_targets, lanes, n_nodes, two_channel);
+        need.fixed = need
+            .fixed
+            .saturating_add(cells * REST_TABLE_BYTES_PER_CELL)
+            .saturating_add(n_nodes as u64 * 16)
+            .saturating_add((n_sources + n_targets) as u64 * (64 << 10));
+        need
     }
 
     /// An isochrone batch: one PHAST lane per worker plus the stamped tiles
@@ -310,6 +373,18 @@ impl Need {
         }
     }
 
+    /// An avoid/exclude recustomization over `n_cch_edges` CCH edges (up +
+    /// down): the stored weight set (time and distance, triangle-relaxed
+    /// arrays plus their flat copies) and the transient arrays of the
+    /// customization. Bytes per edge measured (#661), with margin.
+    pub fn recustomize(n_cch_edges: usize) -> Need {
+        Need {
+            fixed: n_cch_edges as u64 * RECUSTOMIZE_BYTES_PER_EDGE,
+            lane: 0,
+            lanes: 1,
+        }
+    }
+
     /// Bytes at `lanes` lanes.
     pub fn bytes(&self, lanes: usize) -> u64 {
         self.fixed
@@ -323,10 +398,79 @@ impl Need {
 
 static HEAVY_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 /// Bytes the admitted requests declared and may not have allocated yet:
-/// two requests admitted back to back against the same low RSS would
+/// two requests admitted back to back against the same low reading would
 /// otherwise both allocate their lanes. Counted until each permit drops
-/// (conservative while a request's allocation is already in the RSS).
+/// (conservative while a request's allocation is already resident).
 static RESERVED_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Requests queued in [`admit_wait`].
+static WAITING: AtomicUsize = AtomicUsize::new(0);
+/// Unreclaimable bytes once the serve is ready (graph loaded, nothing in
+/// flight): what no request can ever free. A request that does not fit in
+/// `budget − baseline` never will (413); one that fits there is only busy.
+static BASELINE_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Check-then-reserve is one step: without it two admissions read the same
+/// memory and both take the same headroom.
+static ADMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+/// Last idle-scratch eviction asked by admission (ms since process start):
+/// a queue of waiters must not walk the scratch registry hundreds of times
+/// a second.
+static LAST_EVICT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn released() -> &'static tokio::sync::Notify {
+    static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    N.get_or_init(tokio::sync::Notify::new)
+}
+
+fn now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
+}
+
+/// Hard cap on heavy requests running at once, whatever the estimates say:
+/// `BUTTERFLY_MAX_HEAVY`, default 8. An estimate can be wrong; a count
+/// cannot. Each matrix already fans out over the whole rayon pool, so more
+/// concurrent requests add memory, not throughput.
+pub fn max_heavy() -> usize {
+    env_usize("BUTTERFLY_MAX_HEAVY", 8)
+}
+
+/// How long a request waits in the admission queue before a 503:
+/// `BUTTERFLY_ADMISSION_WAIT_MS`, default 15 s (under the 120 s request
+/// timeout, above a typical matrix).
+pub fn admission_wait() -> Duration {
+    Duration::from_millis(env_usize("BUTTERFLY_ADMISSION_WAIT_MS", 15_000) as u64)
+}
+
+/// Requests that may queue at once: `BUTTERFLY_ADMISSION_QUEUE`, default
+/// 128. Beyond, an immediate 503.
+pub fn max_waiting() -> usize {
+    env_usize("BUTTERFLY_ADMISSION_QUEUE", 128)
+}
+
+/// Record the unreclaimable floor once the serve is ready (see
+/// [`BASELINE_BYTES`]).
+pub fn set_baseline_now() {
+    if let Some(b) = unreclaimable_bytes() {
+        BASELINE_BYTES.store(b, Ordering::Release);
+        tracing::info!(
+            baseline_gib = gib(b),
+            budget_gib = gib(super::rss_budget_bytes()),
+            max_heavy = max_heavy(),
+            "admission baseline (unreclaimable memory at ready) (#661)"
+        );
+    }
+}
 
 /// Held by an admitted heavy request for its whole life (streams included):
 /// while any permit exists, a refusal is `Busy` (retry), not `TooLarge`,
@@ -340,6 +484,7 @@ impl Drop for HeavyPermit {
     fn drop(&mut self) {
         HEAVY_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
         RESERVED_BYTES.fetch_sub(self.reserved, Ordering::AcqRel);
+        released().notify_waiters();
     }
 }
 
@@ -353,11 +498,15 @@ pub fn reserved_bytes() -> u64 {
     RESERVED_BYTES.load(Ordering::Acquire)
 }
 
+/// Requests waiting in the admission queue.
+pub fn waiting() -> usize {
+    WAITING.load(Ordering::Acquire)
+}
+
 /// Why a request was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
-    /// Nothing else is running and even one lane does not fit: it never
-    /// will on this server — split the request.
+    /// Even with nothing else running it would not fit: split it.
     TooLarge { need: u64, headroom: u64 },
     /// It would fit once the heavy work in flight is done.
     Busy {
@@ -378,7 +527,7 @@ impl Refused {
     pub fn message(&self) -> String {
         match self {
             Refused::TooLarge { need, headroom } => format!(
-                "request needs about {:.1} GiB of memory, this server has {:.1} GiB free: split it (fewer origins × destinations per call) (#655)",
+                "request needs about {:.1} GiB of memory and this server can give one request at most {:.1} GiB: split it (fewer origins × destinations per call), bound it (radius_km, max_minutes), or use the Arrow Flight matrix action for bulk matrices (#655, #661)",
                 gib(*need),
                 gib(*headroom)
             ),
@@ -387,7 +536,7 @@ impl Refused {
                 headroom,
                 in_flight,
             } => format!(
-                "request needs about {:.1} GiB of memory, {:.1} GiB are free while {} heavy request(s) run: retry in {} s (#655)",
+                "server busy: request needs about {:.1} GiB of memory, {:.1} GiB are free while {} heavy request(s) run: retry in {} s (#655)",
                 gib(*need),
                 gib(*headroom),
                 in_flight,
@@ -419,52 +568,83 @@ impl Refused {
     }
 }
 
-/// The lanes `need` can have under `budget`, with every input injected
-/// (tests): `rss` is re-read after `evict` freed idle scratch (asked only
-/// when the wanted lanes do not all fit), `in_flight` / `reserved` are the
-/// heavy count and the bytes the in-flight requests declared.
+/// What admission knows about the process when it decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ledger {
+    /// Unreclaimable bytes budget (80 % of the cgroup limit by default).
+    pub budget: u64,
+    /// Heavy requests running.
+    pub in_flight: usize,
+    /// Bytes the running requests declared.
+    pub reserved: u64,
+    /// Hard cap on running heavy requests.
+    pub max_heavy: usize,
+    /// Unreclaimable bytes at ready (0 = unknown).
+    pub baseline: u64,
+}
+
+/// Admit `need` with ALL the lanes it wants, or refuse it, with every input
+/// injected (tests): `used` is the unreclaimable memory, re-read after
+/// `evict` freed idle scratch (asked only when it does not fit).
+///
+/// #661: no partial grant any more. A partial grant ran the request on a
+/// request-scoped pool of fresh threads, each allocating its own scratch
+/// (and churning allocator arenas as the pool died): under a burst every
+/// admitted request added its own lanes on top of the shared pool's, the
+/// multiplier behind the measured ~10× underestimate. A request now runs
+/// on the shared pool, whose per-thread scratch is reused, and reserves
+/// the cold-thread upper bound for its lanes until it ends.
 pub fn admit_lanes_with(
     need: &Need,
-    budget: u64,
-    mut rss: impl FnMut() -> u64,
+    ledger: Ledger,
+    mut used: impl FnMut() -> u64,
     evict: impl FnOnce() -> usize,
-    in_flight: usize,
-    reserved: u64,
 ) -> Result<usize, Refused> {
-    let affordable = |rss: u64| -> usize {
-        let free = budget.saturating_sub(rss).saturating_sub(reserved);
-        if free < need.fixed {
-            return 0;
-        }
-        let lanes = (free - need.fixed) / need.lane.max(1);
-        (lanes.min(need.lanes as u64)) as usize
-    };
-    let mut cur = rss();
-    let mut lanes = affordable(cur);
-    if lanes < need.lanes.max(1) {
-        // Idle scratch of earlier requests is resident but free-able: drop
-        // it before settling for fewer lanes or refusing.
-        let _ = evict();
-        cur = rss();
-        lanes = affordable(cur);
+    let lanes = need.lanes.max(1);
+    let want = need.bytes(lanes);
+    // Never fits, whatever runs: the budget left above the boot floor.
+    let ceiling = ledger.budget.saturating_sub(ledger.baseline);
+    if ledger.baseline > 0 && want > ceiling {
+        return Err(Refused::TooLarge {
+            need: want,
+            headroom: ceiling,
+        });
     }
-    if lanes >= 1 {
+    let free = |used: u64| -> u64 {
+        ledger
+            .budget
+            .saturating_sub(used)
+            .saturating_sub(ledger.reserved)
+    };
+    let mut cur = used();
+    if ledger.in_flight >= ledger.max_heavy {
+        return Err(Refused::Busy {
+            need: want,
+            headroom: free(cur),
+            in_flight: ledger.in_flight,
+        });
+    }
+    if free(cur) < want {
+        // Idle scratch of earlier requests is resident but free-able: drop
+        // it before refusing.
+        let _ = evict();
+        cur = used();
+    }
+    if free(cur) >= want {
         return Ok(lanes);
     }
-    let headroom = budget.saturating_sub(cur).saturating_sub(reserved);
-    let one = need.bytes(1);
-    if in_flight > 0 {
-        Err(Refused::Busy {
-            need: one,
-            headroom,
-            in_flight,
-        })
-    } else {
-        Err(Refused::TooLarge {
-            need: one,
-            headroom,
-        })
+    if ledger.in_flight == 0 && ledger.baseline == 0 {
+        // No floor known yet: nothing runs and it does not fit.
+        return Err(Refused::TooLarge {
+            need: want,
+            headroom: free(cur),
+        });
     }
+    Err(Refused::Busy {
+        need: want,
+        headroom: free(cur),
+        in_flight: ledger.in_flight,
+    })
 }
 
 /// An admitted heavy request: its permit, the lanes it may use, and the
@@ -519,37 +699,173 @@ pub fn request_pool(lanes: usize) -> Option<Arc<rayon::ThreadPool>> {
     }
 }
 
-/// Admit a heavy request against the RSS budget with as many of its wanted
-/// lanes as fit (at least one), or refuse it. The permit must be held until
-/// the request's last byte is out.
+/// One admission attempt, no logging of refusals (the caller decides).
+fn try_admit(need: Need) -> Result<Admitted, Refused> {
+    let _g = ADMIT_LOCK.lock();
+    let ledger = Ledger {
+        budget: super::rss_budget_bytes(),
+        in_flight: heavy_in_flight(),
+        reserved: reserved_bytes(),
+        max_heavy: max_heavy(),
+        baseline: BASELINE_BYTES.load(Ordering::Acquire),
+    };
+    let used = || unreclaimable_bytes().unwrap_or(0);
+    let evict = || {
+        let now = now_ms();
+        let last = LAST_EVICT_MS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 200 {
+            return 0;
+        }
+        LAST_EVICT_MS.store(now, Ordering::Relaxed);
+        crate::evictable::evict_idle(Duration::from_secs(1))
+    };
+    let lanes = admit_lanes_with(&need, ledger, used, evict)?;
+    let reserved = need.bytes(lanes);
+    HEAVY_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    RESERVED_BYTES.fetch_add(reserved, Ordering::AcqRel);
+    drop(_g);
+    // #661: the shared pool, always (see `admit_lanes_with`).
+    Ok(Admitted {
+        permit: HeavyPermit { reserved },
+        lanes,
+        pool: None,
+    })
+}
+
+fn count_refusal(r: &Refused) {
+    let kind = match r {
+        Refused::TooLarge { .. } => "too_large",
+        Refused::Busy { .. } => "busy",
+    };
+    metrics::counter!("butterfly_admission_refused_total", "reason" => kind).increment(1);
+    tracing::warn!(need_gib = gib(match r { Refused::TooLarge { need, .. } | Refused::Busy { need, .. } => *need }), reason = %r.message(), "heavy request refused (#655, #661)");
+}
+
+/// Admit a heavy request now with as many of its wanted lanes as fit (at
+/// least one), or refuse it. The permit must be held until the request's
+/// last byte is out. Synchronous callers (Flight producers) use this; the
+/// REST handlers queue with [`admit_wait`].
 pub fn admit(need: Need) -> Result<Admitted, Refused> {
-    let budget = super::rss_budget_bytes();
-    let in_flight = heavy_in_flight();
-    let rss = || vm_rss_bytes().unwrap_or(0);
-    let evict = || crate::evictable::evict_idle(Duration::from_secs(1));
-    match admit_lanes_with(&need, budget, rss, evict, in_flight, reserved_bytes()) {
-        Ok(lanes) => {
-            let reserved = need.bytes(lanes);
-            HEAVY_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-            RESERVED_BYTES.fetch_add(reserved, Ordering::AcqRel);
-            if lanes < need.lanes {
-                tracing::info!(
-                    wanted = need.lanes,
-                    granted = lanes,
-                    reserved_gib = gib(reserved),
-                    "heavy request admitted on fewer lanes than wanted (#655)"
-                );
+    try_admit(need).inspect_err(count_refusal)
+}
+
+/// Decrements [`WAITING`] however the wait ends (admitted, refused, the
+/// client gone and the future dropped).
+struct WaitGuard;
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        WAITING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Admit a heavy request, queueing for at most [`admission_wait`] while the
+/// memory or the heavy slots are taken (woken as soon as a permit drops,
+/// re-checked every 250 ms for memory freed otherwise). A request that can
+/// never fit is refused at once (`TooLarge` → 413); a full queue or the
+/// deadline gives `Busy` (503 + `Retry-After`). Back-pressure, never an
+/// OOM kill.
+pub async fn admit_wait(need: Need) -> Result<Admitted, Refused> {
+    match try_admit(need) {
+        Ok(a) => return Ok(a),
+        Err(r @ Refused::TooLarge { .. }) => {
+            count_refusal(&r);
+            return Err(r);
+        }
+        Err(Refused::Busy { .. }) => {}
+    }
+    if WAITING.fetch_add(1, Ordering::AcqRel) >= max_waiting() {
+        WAITING.fetch_sub(1, Ordering::AcqRel);
+        let r = Refused::Busy {
+            need: need.bytes(1),
+            headroom: 0,
+            in_flight: heavy_in_flight(),
+        };
+        count_refusal(&r);
+        return Err(r);
+    }
+    let _guard = WaitGuard;
+    let t0 = std::time::Instant::now();
+    let deadline = t0 + admission_wait();
+    loop {
+        let notified = released().notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        match try_admit(need) {
+            Ok(a) => {
+                metrics::histogram!("butterfly_admission_wait_seconds")
+                    .record(t0.elapsed().as_secs_f64());
+                return Ok(a);
             }
-            Ok(Admitted {
-                permit: HeavyPermit { reserved },
-                lanes,
-                pool: request_pool(lanes),
-            })
+            Err(r @ Refused::TooLarge { .. }) => {
+                count_refusal(&r);
+                return Err(r);
+            }
+            Err(r) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    count_refusal(&r);
+                    return Err(r);
+                }
+                let slice = (deadline - now).min(Duration::from_millis(250));
+                let _ = tokio::time::timeout(slice, notified).await;
+            }
         }
-        Err(r) => {
-            tracing::warn!(need_gib = gib(need.bytes(1)), reason = %r.message(), "heavy request refused (#655)");
-            Err(r)
+    }
+}
+
+/// The prefix of a weights-resolution error that is a busy refusal, not a
+/// bad request (see [`weights_error_response`]).
+pub const BUSY_PREFIX: &str = "server busy:";
+
+/// Admit from synchronous code already off the async scheduler
+/// (`block_in_place`): the same queue semantics as [`admit_wait`], polled
+/// every 100 ms. Used where the allocation happens deep inside a sync
+/// path (an avoid-polygon recustomization).
+pub fn admit_blocking(need: Need) -> Result<Admitted, Refused> {
+    let deadline = std::time::Instant::now() + admission_wait();
+    loop {
+        match try_admit(need) {
+            Ok(a) => return Ok(a),
+            Err(r @ Refused::TooLarge { .. }) => {
+                count_refusal(&r);
+                return Err(r);
+            }
+            Err(r) => {
+                if std::time::Instant::now() >= deadline {
+                    count_refusal(&r);
+                    return Err(r);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
+    }
+}
+
+/// A weights-resolution error as a REST response: a busy refusal is
+/// `503` + `Retry-After`, anything else stays `400`.
+pub fn weights_error_response(e: String) -> Response {
+    if e.starts_with(BUSY_PREFIX) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, RETRY_AFTER_SECS.to_string())],
+            Json(ErrorResponse::new(e)),
+        )
+            .into_response()
+    } else {
+        (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response()
+    }
+}
+
+/// Admission gauges, sampled on `/metrics` scrape.
+pub fn export_gauges() {
+    metrics::gauge!("butterfly_admission_in_flight").set(heavy_in_flight() as f64);
+    metrics::gauge!("butterfly_admission_waiting").set(waiting() as f64);
+    metrics::gauge!("butterfly_admission_reserved_bytes").set(reserved_bytes() as f64);
+    metrics::gauge!("butterfly_admission_budget_bytes").set(super::rss_budget_bytes() as f64);
+    metrics::gauge!("butterfly_admission_baseline_bytes")
+        .set(BASELINE_BYTES.load(Ordering::Acquire) as f64);
+    if let Some(u) = unreclaimable_bytes() {
+        metrics::gauge!("butterfly_process_unreclaimable_bytes").set(u as f64);
     }
 }
 
@@ -609,69 +925,177 @@ mod tests {
         assert!(Need::isochrone(100, 8, n).bytes(8) > Need::isochrone(1, 8, n).bytes(8));
     }
 
+    /// The tests that take real permits share the process-wide ledger:
+    /// they run one at a time (one fills every heavy slot on purpose).
+    static LEDGER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn ledger(budget: u64, in_flight: usize, reserved: u64) -> Ledger {
+        Ledger {
+            budget,
+            in_flight,
+            reserved,
+            max_heavy: 8,
+            baseline: 0,
+        }
+    }
+
     #[test]
-    fn admission_grants_the_lanes_that_fit() {
+    fn admission_is_all_lanes_or_nothing() {
         let need = Need {
             fixed: 10,
             lane: 10,
             lanes: 8,
         };
-        // 100 budget, 0 resident: 8 lanes (90 / 10 = 9 affordable, 8 wanted).
+        // 100 budget, 0 used: 90 needed, fits → all 8 lanes, no eviction.
         let mut evicted = 0;
         assert_eq!(
             admit_lanes_with(
                 &need,
-                100,
+                ledger(100, 0, 0),
                 || 0,
                 || {
                     evicted += 1;
                     0
-                },
-                0,
-                0
+                }
             ),
             Ok(8)
         );
-        assert_eq!(evicted, 0, "no eviction when everything fits");
-        // 60 resident: 3 lanes after an eviction that freed nothing.
-        assert_eq!(admit_lanes_with(&need, 100, || 60, || 0, 0, 0), Ok(3));
-        // Eviction frees room: 8 lanes again.
-        let rss = std::cell::Cell::new(60u64);
+        assert_eq!(evicted, 0, "no eviction when it fits");
+        // 60 used, one request in flight: 40 free < 90 → Busy, never a partial grant.
         assert_eq!(
-            admit_lanes_with(
-                &need,
-                100,
-                || rss.get(),
-                || {
-                    rss.set(0);
-                    3
-                },
-                0,
-                0
-            ),
-            Ok(8)
-        );
-        // Reserved bytes of requests in flight count: 100 − 60 − 30 = 10 → fixed only, 0 lanes → Busy.
-        assert_eq!(
-            admit_lanes_with(&need, 100, || 60, || 0, 1, 30),
+            admit_lanes_with(&need, ledger(100, 1, 0), || 60, || 0),
             Err(Refused::Busy {
-                need: 20,
-                headroom: 10,
+                need: 90,
+                headroom: 40,
                 in_flight: 1
             })
         );
-        // Nothing in flight and not even one lane: TooLarge with the one-lane need.
+        // Eviction frees room: admitted with all lanes.
+        let used = std::cell::Cell::new(60u64);
         assert_eq!(
-            admit_lanes_with(&need, 100, || 95, || 0, 0, 0),
+            admit_lanes_with(
+                &need,
+                ledger(100, 1, 0),
+                || used.get(),
+                || {
+                    used.set(0);
+                    3
+                }
+            ),
+            Ok(8)
+        );
+        // Reserved bytes of requests in flight count.
+        assert!(matches!(
+            admit_lanes_with(&need, ledger(100, 1, 20), || 0, || 0),
+            Err(Refused::Busy { headroom: 80, .. })
+        ));
+        // No floor known, nothing in flight, does not fit: TooLarge.
+        assert_eq!(
+            admit_lanes_with(&need, ledger(100, 0, 0), || 95, || 0),
             Err(Refused::TooLarge {
-                need: 20,
+                need: 90,
                 headroom: 5
             })
         );
     }
 
     #[test]
+    fn rest_table_counts_the_json_and_runs_small_grids_on_one_lane() {
+        let n = 5_730_722;
+        // 3 × 30 = 90 cells: sequential engine, one lane.
+        assert_eq!(Need::table_rest(3, 30, 88, n, true).lanes, 1);
+        // 1500 × 3: every worker may take a target → 88 lanes.
+        let t = Need::table_rest(1500, 3, 88, n, true);
+        assert_eq!(t.lanes, 88);
+        // 1000 × 1000 adds ≥ 64 MB of JSON over the bare matrix.
+        let bare = Need::matrix(1000, 1000, 88, n, true).fixed;
+        assert!(Need::table_rest(1000, 1000, 88, n, true).fixed >= bare + 64_000_000);
+    }
+
+    #[test]
+    fn the_hard_cap_holds_whatever_the_estimate() {
+        // A zero-byte estimate (the 10× underestimate of #661 taken to the
+        // limit) still cannot put more than max_heavy requests in flight.
+        let need = Need {
+            fixed: 0,
+            lane: 0,
+            lanes: 1,
+        };
+        let mut l = ledger(1 << 40, 8, 0);
+        assert!(matches!(
+            admit_lanes_with(&need, l, || 0, || 0),
+            Err(Refused::Busy { in_flight: 8, .. })
+        ));
+        l.in_flight = 7;
+        assert_eq!(admit_lanes_with(&need, l, || 0, || 0), Ok(1));
+    }
+
+    #[test]
+    fn too_large_only_when_it_never_fits_above_the_floor() {
+        let need = Need {
+            fixed: 30,
+            lane: 10,
+            lanes: 4,
+        };
+        // 70 B wanted. Budget 100, floor 20: it fits above the floor, so with
+        // 80 used it is only busy, even with nothing in flight (memory held by
+        // caches or not yet returned is not the request's fault).
+        let mut l = ledger(100, 0, 0);
+        l.baseline = 20;
+        assert!(matches!(
+            admit_lanes_with(&need, l, || 80, || 0),
+            Err(Refused::Busy { .. })
+        ));
+        // Floor 40: 70 > 60 → TooLarge at once, before reading the memory.
+        l.baseline = 40;
+        assert_eq!(
+            admit_lanes_with(&need, l, || panic!("not read"), || 0),
+            Err(Refused::TooLarge {
+                need: 70,
+                headroom: 60
+            })
+        );
+    }
+
+    #[test]
+    fn unreclaimable_is_anon_plus_locked_never_file() {
+        // A measured boot-complete reading: 32.1 GB VmRSS = 19.0 anon + 13.1 file.
+        let status = "VmRSS:\t32100000 kB\nRssAnon:\t19000000 kB\nRssFile:\t13100000 kB\nRssShmem:\t0 kB\nVmLck:\t0 kB\n";
+        assert_eq!(parse_status_unreclaimable(status), Some(19_000_000 * 1024));
+        // --lock-container pins file pages: they cannot be reclaimed either.
+        let locked = "RssAnon:\t19000000 kB\nRssFile:\t13100000 kB\nVmLck:\t10000000 kB\n";
+        assert_eq!(parse_status_unreclaimable(locked), Some(29_000_000 * 1024));
+        assert_eq!(parse_status_unreclaimable("VmRSS: 1 kB\n"), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_waiter_is_admitted_when_a_permit_drops() {
+        let _serial = LEDGER_TESTS.lock().await;
+        // Fill the heavy slots with zero-byte permits, queue one more, free one.
+        let zero = Need {
+            fixed: 0,
+            lane: 0,
+            lanes: 1,
+        };
+        let held: Vec<_> = (0..max_heavy()).filter_map(|_| admit(zero).ok()).collect();
+        if heavy_in_flight() < max_heavy() {
+            return; // a non-ledger test holds a slot right now: nothing to assert
+        }
+        let waiter = tokio::spawn(admit_wait(zero));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Queued (or, if another test released a slot meanwhile, admitted):
+        // never refused while the deadline is 15 s away.
+        drop(held);
+        let got = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("woken by the permit drop")
+            .expect("joined");
+        assert!(got.is_ok());
+    }
+
+    #[test]
     fn permits_count_heavy_work_in_flight_and_its_bytes() {
+        let _serial = LEDGER_TESTS.blocking_lock();
         let before = heavy_in_flight();
         let reserved_before = reserved_bytes();
         {

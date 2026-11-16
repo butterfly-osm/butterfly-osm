@@ -256,8 +256,12 @@ fn default_rss_budget_gib() -> f64 {
 /// Read this process's `VmRSS` in bytes from `/proc/self/status`.
 /// Returns `None` if the file can't be read or the line can't be
 /// parsed (the poller treats `None` as "skip this tick").
+///
+/// #661: the poller budgets UNRECLAIMABLE memory (`RssAnon + VmLck`), like
+/// admission: `VmRSS` counts the clean file pages of the mmapped container,
+/// which the kernel reclaims under pressure.
 fn read_proc_vm_rss_bytes() -> Option<u64> {
-    mem::vm_rss_bytes()
+    mem::unreclaimable_bytes()
 }
 
 fn directory_has_butterfly_container(dir: &Path) -> Result<bool> {
@@ -907,6 +911,9 @@ pub async fn serve(
     // the steady-state baseline #153/#154/#155 will measure against,
     // captured prior to observable readiness on `/health`.
     crate::server::rss::checkpoint("boot.complete");
+    // #661: the unreclaimable floor no request can free — a request larger
+    // than the budget above it is refused 413 at once, never queued.
+    mem::set_baseline_now();
     // #641: what the eager per-section CRC walks cost this boot (every
     // section the load touches is verified synchronously on the way in).
     for region in state.regions.iter() {

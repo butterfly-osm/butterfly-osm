@@ -482,7 +482,7 @@ pub async fn isochrone_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
+            return super::mem::weights_error_response(e);
         }
     };
 

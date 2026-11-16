@@ -281,7 +281,7 @@ pub async fn table_post_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
+            return super::mem::weights_error_response(e);
         }
     };
     let snap_mask: &[u64] = &weight_plan.snap_mask;
@@ -318,7 +318,7 @@ pub async fn table_post_handler(
     let need = {
         let n_nodes = state.get_mode(mode).cch_topo.n_nodes as usize;
         let lanes = super::mem::lanes(req.origins.len().max(req.destinations.len()));
-        super::mem::Need::matrix(
+        super::mem::Need::table_rest(
             req.origins.len(),
             req.destinations.len(),
             lanes,
@@ -326,7 +326,7 @@ pub async fn table_post_handler(
             want_duration && want_distance,
         )
     };
-    let admitted = match super::mem::admit(need) {
+    let admitted = match super::mem::admit_wait(need).await {
         Ok(a) => a,
         Err(refused) => return refused.into_rest_response(),
     };

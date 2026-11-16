@@ -708,6 +708,16 @@ fn get_or_compute_avoid_entry(
         slot: Arc::clone(&slot),
     };
 
+    // #661: a cache miss recustomizes a full weight set (time + distance
+    // over every CCH edge, plus the transient arrays of the customization);
+    // distinct polygons used to run all at once with nothing counting them.
+    // Admitted like any heavy request: queued, then refused busy (503).
+    let _admitted = off_runtime(|| {
+        super::mem::admit_blocking(super::mem::Need::recustomize(
+            mode_data.cch_topo.up_targets.len() + mode_data.cch_topo.down_targets.len(),
+        ))
+    })
+    .map_err(|r| format!("{} {}", super::mem::BUSY_PREFIX, r.message()))?;
     let start = std::time::Instant::now();
     let (avoid_flags, poly_count, avoided_count) =
         prepare_avoid_flags(state, avoid_json, exclude_mask)?;

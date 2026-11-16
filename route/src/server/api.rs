@@ -135,7 +135,6 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
         .route("/match", post(super::matching::match_trace_handler))
         .route("/catchment", post(super::catchment::catchment_handler))
         .route("/transit", get(super::transit_handler::transit_handler))
-        .route("/health", get(super::health_handler::health_handler))
         .route("/version", get(version_handler))
         .route("/regions", get(super::regions_handler::regions_handler));
     if elevation_loaded {
@@ -158,11 +157,16 @@ pub fn build_router(state: Arc<RegionsState>) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .merge(api_routes)
+        // #661: /health is outside the API concurrency limit and timeout: a
+        // queue of heavy requests must never starve the probes into a kill.
+        .route("/health", get(super::health_handler::health_handler))
         .route(
             "/metrics",
             get(|| async move {
                 // #636: residency + page faults are sampled on scrape.
                 super::rss::export_process_gauges();
+                // #661: admission ledger (in flight, waiting, reserved, floor).
+                super::mem::export_gauges();
                 metric_handle.render()
             }),
         )

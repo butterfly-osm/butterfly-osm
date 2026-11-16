@@ -518,7 +518,7 @@ pub async fn route_handler(
     ) {
         Ok(p) => p,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(e))).into_response();
+            return super::mem::weights_error_response(e);
         }
     };
     let snap_mask: &[u64] = &weight_plan.snap_mask;
