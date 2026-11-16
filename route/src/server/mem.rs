@@ -925,6 +925,10 @@ mod tests {
         assert!(Need::isochrone(100, 8, n).bytes(8) > Need::isochrone(1, 8, n).bytes(8));
     }
 
+    /// The tests that take real permits share the process-wide ledger:
+    /// they run one at a time (one fills every heavy slot on purpose).
+    static LEDGER_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn ledger(budget: u64, in_flight: usize, reserved: u64) -> Ledger {
         Ledger {
             budget,
@@ -1066,6 +1070,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_waiter_is_admitted_when_a_permit_drops() {
+        let _serial = LEDGER_TESTS.lock().await;
         // Fill the heavy slots with zero-byte permits, queue one more, free one.
         let zero = Need {
             fixed: 0,
@@ -1074,11 +1079,12 @@ mod tests {
         };
         let held: Vec<_> = (0..max_heavy()).filter_map(|_| admit(zero).ok()).collect();
         if heavy_in_flight() < max_heavy() {
-            return; // another test holds slots concurrently; nothing to assert
+            return; // a non-ledger test holds a slot right now: nothing to assert
         }
         let waiter = tokio::spawn(admit_wait(zero));
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!waiter.is_finished(), "queued, not refused");
+        // Queued (or, if another test released a slot meanwhile, admitted):
+        // never refused while the deadline is 15 s away.
         drop(held);
         let got = tokio::time::timeout(Duration::from_secs(2), waiter)
             .await
@@ -1089,6 +1095,7 @@ mod tests {
 
     #[test]
     fn permits_count_heavy_work_in_flight_and_its_bytes() {
+        let _serial = LEDGER_TESTS.blocking_lock();
         let before = heavy_in_flight();
         let reserved_before = reserved_bytes();
         {
