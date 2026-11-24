@@ -19,31 +19,7 @@
 //! customization reaches. See `recustomize_weights_incremental` for the
 //! algorithm and the dependency walk in `enqueue_dependents`.
 
-/// Pack (weight, middle_rank) into a single u64 so the (weight, middle)
-/// pair compares lexicographically as a unit: high 32 bits hold the
-/// weight, low 32 bits hold the middle. `recompute_edge_weight` picks
-/// the lex-smallest packed value over all candidate triangles, which
-/// gives a deterministic (weight, middle) tuple even when several
-/// middles produce the same weight.
-///
-/// Build-time customization (`customization.rs::triangle_relax_parallel`)
-/// uses the same packing inside `AtomicU64::fetch_min`; serve-time
-/// recustomization is single-threaded per call so no atomics here.
-#[inline]
-fn pack_wm(weight: u32, middle: u32) -> u64 {
-    ((weight as u64) << 32) | (middle as u64)
-}
-
-#[inline]
-fn unpack_weight(packed: u64) -> u32 {
-    (packed >> 32) as u32
-}
-
-#[inline]
-fn unpack_middle(packed: u64) -> u32 {
-    packed as u32
-}
-
+use crate::customization::{find_edge_index, pack_wm, unpack_middle, unpack_weight};
 use crate::formats::way_attrs;
 use crate::formats::{CchTopo, CchWeights, EbgNodes};
 use crate::matrix::bucket_ch::{DownAdjFlat, DownReverseAdjFlat, UpAdjFlat};
@@ -381,7 +357,7 @@ pub fn build_exclude_mask(
     base_mask
         .iter()
         .enumerate()
-        .map(|(word_idx, &word)| {
+        .map(|(word_, &word)| {
             let mut filtered = word;
             for bit in 0..64 {
                 let edge_id = word_idx * 64 + bit;
@@ -463,19 +439,6 @@ pub fn compute_exclude_weights(
 }
 
 // --- Internal helpers ---
-
-#[inline]
-fn find_edge_index(u: usize, v: usize, offsets: &[u64], targets: &[u32]) -> Option<usize> {
-    let start = offsets[u] as usize;
-    let end = offsets[u + 1] as usize;
-    if start >= end {
-        return None;
-    }
-    targets[start..end]
-        .binary_search(&(v as u32))
-        .ok()
-        .map(|idx| start + idx)
-}
 
 /// Reverse DOWN adjacency: for each node m, the set of nodes x with a
 /// DOWN edge x → m. Built once per recustomization and reused by the

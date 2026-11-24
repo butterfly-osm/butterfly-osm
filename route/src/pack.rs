@@ -35,10 +35,11 @@ use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_i
 /// ignore it (it has the synthetic `Unknown` kind on disk).
 const MANIFEST_NAME: &str = "shared/manifest.json";
 
-/// Resolve a step subdirectory the same way the server does:
+/// Resolve a step subdirectory (`step3` or `step3-<suffix>`); the server's
+/// directory-tree boot resolves through this same function:
 /// exact match first, then any directory whose name starts with
 /// `step{N}` (alphabetically lowest).
-fn find_step_dir(data_dir: &Path, step: &str) -> Result<PathBuf> {
+pub(crate) fn find_step_dir(data_dir: &Path, step: &str) -> Result<PathBuf> {
     let exact = data_dir.join(step);
     if exact.exists() {
         return Ok(exact);

@@ -833,20 +833,23 @@ pub(crate) fn bottom_up_customize(
     (up_weights, down_weights)
 }
 
-/// Pack (weight, middle_rank) into a single u64 for atomic fetch_min.
-/// Weight in high 32 bits so fetch_min minimizes by weight first.
+/// Pack (weight, middle_rank) into a single u64 so the pair compares
+/// lexicographically as a unit: weight in the high 32 bits, middle in the
+/// low 32. Step 8 minimises it with `AtomicU64::fetch_min`; serve-time
+/// recustomization (`server::exclude`) takes the lex-smallest over the
+/// candidate triangles. One packing for both, so they cannot drift.
 #[inline]
-fn pack_wm(weight: u32, middle: u32) -> u64 {
+pub(crate) fn pack_wm(weight: u32, middle: u32) -> u64 {
     ((weight as u64) << 32) | (middle as u64)
 }
 
 #[inline]
-fn unpack_weight(packed: u64) -> u32 {
+pub(crate) fn unpack_weight(packed: u64) -> u32 {
     (packed >> 32) as u32
 }
 
 #[inline]
-fn unpack_middle(packed: u64) -> u32 {
+pub(crate) fn unpack_middle(packed: u64) -> u32 {
     packed as u32
 }
 
@@ -1290,7 +1293,12 @@ fn find_edge_weight(u: usize, v: usize, offsets: &[u64], targets: &[u32], weight
 }
 
 #[inline]
-fn find_edge_index(u: usize, v: usize, offsets: &[u64], targets: &[u32]) -> Option<usize> {
+pub(crate) fn find_edge_index(
+    u: usize,
+    v: usize,
+    offsets: &[u64],
+    targets: &[u32],
+) -> Option<usize> {
     let start = offsets[u] as usize;
     let end = offsets[u + 1] as usize;
     if start >= end {

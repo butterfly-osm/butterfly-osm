@@ -455,6 +455,7 @@ impl ServerState {
     /// Load all data from directory. If `mode_filter` is Some, only load those modes.
     pub fn load(data_dir: &Path, mode_filter: Option<&[String]>) -> Result<Self> {
         // Determine subdirectories
+        use crate::pack::find_step_dir;
         let step1_dir = find_step_dir(data_dir, "step1")?;
         let step2_dir = find_step_dir(data_dir, "step2")?;
         let step3_dir = find_step_dir(data_dir, "step3")?;
@@ -1114,36 +1115,6 @@ impl ServerState {
             None => Vec::new(),
         }
     }
-}
-
-/// Find step directory (handles both "step3" and "step3-belgium" naming)
-fn find_step_dir(data_dir: &Path, step: &str) -> Result<std::path::PathBuf> {
-    // Try exact match first
-    let exact = data_dir.join(step);
-    if exact.exists() {
-        return Ok(exact);
-    }
-
-    // Try with suffix pattern -- collect all matches and sort for determinism
-    let mut matches: Vec<std::path::PathBuf> = Vec::new();
-    for entry in std::fs::read_dir(data_dir).context("Failed to read data directory")? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with(step) && entry.file_type()?.is_dir() {
-            matches.push(entry.path());
-        }
-    }
-    matches.sort();
-    if let Some(first) = matches.into_iter().next() {
-        return Ok(first);
-    }
-
-    anyhow::bail!(
-        "Could not find {} directory in {}",
-        step,
-        data_dir.display()
-    );
 }
 
 /// Discover available modes by scanning for `w.*.u32` files in the step5 directory.
