@@ -85,17 +85,36 @@ pub fn decompress_if_zstd(bytes: &[u8]) -> Result<Cow<'_, [u8]>> {
     if bytes.len() < ZSTD_MAGIC.len() || bytes[..ZSTD_MAGIC.len()] != ZSTD_MAGIC {
         return Ok(Cow::Borrowed(bytes));
     }
-    // Pass a generous upper-bound; bulk::decompress shrinks the output
-    // to the actual size and frees the slack. The cap defends against
-    // malformed inputs claiming planet-scale sizes.
-    let decoded = zstd::bulk::decompress(bytes, MAX_DECOMPRESSED)
+    // Stream-decode into a buffer sized from the frame header when it
+    // declares its content size. `zstd::bulk::decompress(bytes, cap)`
+    // reserves `cap` bytes up front whenever the header carries no size
+    // (a truncated or foreign frame): a 16 GiB allocation that aborts the
+    // process on a host that refuses the overcommit, instead of the clean
+    // "malformed section" error this function promises.
+    use std::io::Read;
+    let declared = zstd::zstd_safe::get_frame_content_size(bytes)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    anyhow::ensure!(
+        declared <= MAX_DECOMPRESSED as u64,
+        "zstd section declares {declared} bytes, over the {MAX_DECOMPRESSED} cap"
+    );
+    let mut decoded = Vec::with_capacity(declared as usize);
+    zstd::stream::read::Decoder::with_buffer(bytes)
+        .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?
+        .take(MAX_DECOMPRESSED as u64 + 1)
+        .read_to_end(&mut decoded)
         .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?;
+    anyhow::ensure!(
+        decoded.len() <= MAX_DECOMPRESSED,
+        "zstd section decodes past the {MAX_DECOMPRESSED}-byte cap"
+    );
     Ok(Cow::Owned(decoded))
 }
 
-/// Upper-bound buffer size for the decompressor. zstd's `bulk::compress`
-/// does not always pledge the source size in the frame header, so we
-/// can't always rely on the in-band hint. Instead we cap at 16 GiB —
+/// Cap on a decoded section. The decoder never reserves it: the buffer is
+/// sized from the frame header (when present) and grows as it decodes. 16 GiB —
 /// large enough for every section we'd pack (largest Belgium raw
 /// section is ~1.3 GB) and tight enough to defend against malicious
 /// inputs claiming planet-scale sizes.
