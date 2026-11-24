@@ -7,8 +7,7 @@
 use anyhow::Result;
 use priority_queue::PriorityQueue;
 use rand::rngs::StdRng;
-#[allow(unused_imports)]
-use rand::{Rng, RngExt, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rayon::prelude::*;
 use std::cmp::Reverse;
 use std::path::Path;
