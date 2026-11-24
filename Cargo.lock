@@ -607,7 +607,6 @@ name = "butterfly-dl"
 version = "2.0.0"
 dependencies = [
  "anyhow",
- "bytes",
  "clap",
  "ctor",
  "env_logger",
@@ -621,7 +620,6 @@ dependencies = [
  "sha2 0.11.0",
  "strsim",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml",
