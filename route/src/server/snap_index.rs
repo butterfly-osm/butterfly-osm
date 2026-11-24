@@ -336,7 +336,7 @@ fn floor_to_cell(v: i32, cell_log2: u8) -> i32 {
 }
 
 /// Compute bearing in degrees (0=North, clockwise) from point 1 to point 2.
-/// Mirrors `SpatialIndex::compute_bearing` exactly.
+/// Same formula as the removed legacy `SpatialIndex` (kept bit-identical).
 fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> u16 {
     let dlat_m = (lat2 - lat1) * METERS_PER_DEG_LAT;
     let dlon_m = (lon2 - lon1) * METERS_PER_DEG_LON_AT_50;
@@ -845,8 +845,9 @@ fn sample_distance2(lon: f64, lat: f64, p: &PackedPoint) -> (f64, f64, f64) {
     (dlat * dlat + dlon * dlon, plon, plat)
 }
 
-/// Bearing-match check (mirrors `SpatialIndex::bearing_matches`).
-fn bearing_matches(candidate: u16, requested: u16, range: u16) -> bool {
+/// Bearing-match check: is `candidate` within `range` degrees of `requested`
+/// along the shortest arc.
+pub(crate) fn bearing_matches(candidate: u16, requested: u16, range: u16) -> bool {
     let diff = (candidate as i32 - requested as i32).unsigned_abs() as u16;
     let diff = diff.min(360 - diff);
     diff <= range

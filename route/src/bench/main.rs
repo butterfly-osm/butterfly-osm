@@ -3898,7 +3898,9 @@ fn run_e2e_isochrone_bench(
 /// Pathological origins benchmark - tests worst-case scenarios
 fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result<()> {
     use butterfly_route::formats::{EbgNodesFile, FilteredEbgFile, NbgGeoFile};
-    use butterfly_route::server::spatial::SpatialIndex;
+    use butterfly_route::server::snap_index::{
+        DEFAULT_CELL_LOG2, PackedSnapIndex, SnapBuilderMode, build_snap_index,
+    };
 
     println!("═══════════════════════════════════════════════════════════════");
     println!("  PATHOLOGICAL ORIGINS BENCHMARK");
@@ -3976,7 +3978,6 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
     // Load spatial index components
     let ebg_nodes = EbgNodesFile::read(&ebg_nodes_path)?;
     let nbg_geo = NbgGeoFile::read(&nbg_geo_path)?;
-    let spatial_index = SpatialIndex::build(&ebg_nodes, &nbg_geo);
 
     // Load filtered EBG for original->filtered ID mapping
     let filtered_ebg = FilteredEbgFile::read(&filtered_path)?;
@@ -3987,6 +3988,24 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
         .chunks_exact(8)
         .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
         .collect();
+
+    // The server's snap index (one mode slot, this mode's mask), so the
+    // bench snaps exactly as the served endpoints do.
+    let built = build_snap_index(
+        &ebg_nodes,
+        &nbg_geo,
+        &[SnapBuilderMode {
+            mode_byte: 0,
+            mask: &mask,
+            inputs_sha: [0; 16],
+        }],
+        DEFAULT_CELL_LOG2,
+    );
+    let snap_index = PackedSnapIndex {
+        points: built.points,
+        grid: built.grid,
+        masks: built.masks,
+    };
 
     let engine = AdaptiveIsochroneEngine::load(
         &topo_path,
@@ -4025,9 +4044,9 @@ fn run_pathological_origins_bench(data_dir: &Path, mode: &str) -> anyhow::Result
     let mut snapped_origins: Vec<(&str, u32)> = Vec::new();
     for (name, lon, lat, _desc) in &test_locations {
         // Try up to 100 nearest candidates to find one in the filtered graph
-        let candidates = spatial_index.snap_k(*lon, *lat, &mask, 100);
+        let candidates = snap_index.snap_k_with_info(*lon, *lat, 0, 100);
         let mut found = false;
-        for orig_id in candidates {
+        for (orig_id, ..) in candidates {
             let filtered_id = filtered_ebg.original_to_filtered[orig_id as usize];
             if filtered_id != u32::MAX {
                 snapped_origins.push((name, filtered_id));
