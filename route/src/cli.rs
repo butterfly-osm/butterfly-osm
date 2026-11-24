@@ -14,8 +14,8 @@ use crate::nbg::{NbgConfig, build_nbg};
 use crate::ordering;
 use crate::server;
 use crate::validate::{
-    Counts, LockFile, validate_step4, validate_step5, validate_step6,
-    validate_step7, verify_lock_conditions,
+    Counts, LockFile, validate_step4, validate_step5, validate_step6, validate_step7,
+    verify_lock_conditions,
 };
 use crate::weights;
 

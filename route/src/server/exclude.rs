@@ -396,41 +396,6 @@ pub fn build_exclude_mask(
         .collect()
 }
 
-/// Compute time-only exclude weights (for P2P route queries).
-///
-/// Skips distance recustomization and flat adjacency builds. Uses the
-/// incremental BFS recustomization (#240) — work is bounded by
-/// polygon size rather than graph size. On Belgium, a 1 km rural
-/// polygon takes ~780 ms instead of ~37 s.
-pub fn compute_exclude_weights_time_only(
-    topo: &CchTopo,
-    base_time: &CchWeights,
-    edge_exclude_flags: &[u8],
-    exclude_mask: u8,
-    filtered_to_original: &[u32],
-) -> CchWeights {
-    let start = std::time::Instant::now();
-
-    // #606: `recustomize_weights` picks the cheaper shape for this mask —
-    // the incremental walk when the mask reaches little, the pipeline's
-    // bottom-up + parallel relax when it reaches a whole road class.
-    let time_weights = recustomize_weights(
-        topo,
-        base_time,
-        edge_exclude_flags,
-        exclude_mask,
-        filtered_to_original,
-    );
-
-    tracing::info!(
-        exclude_mask,
-        elapsed_ms = start.elapsed().as_millis(),
-        "computed exclude weights (time-only)"
-    );
-
-    time_weights
-}
-
 /// Compute full exclude weight set (time + distance) with flat adjacencies.
 pub fn compute_exclude_weights(
     topo: &CchTopo,

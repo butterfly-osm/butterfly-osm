@@ -14,12 +14,9 @@ edition.workspace = true
 clap = { workspace = true }
 
 # Error handling
-# `anyhow` is a deliberate choice for the application boundary (CLI, HTTP server).
-# Typed errors (`thiserror`) are used in library-level code (formats/, profiles/).
-# Migrating all of butterfly-route to thiserror would touch hundreds of functions
-# with zero practical benefit — anyhow's context chains are more useful for debugging.
+# `anyhow` throughout: its context chains are what the CLI and the server
+# report. No route source uses `thiserror`.
 anyhow = "1.0.102"
-thiserror = { workspace = true }
 
 # PBF parsing
 osmpbf = "0.3.8"
@@ -93,7 +90,6 @@ rustc-hash = "2.1.2"
 axum = "0.8.8"
 tokio = { workspace = true }
 tokio-stream = "0.1.18"
-tokio-util = "0.7.18"
 utoipa = { version = "5.4", features = ["axum_extras"] }
 # `vendored` embeds the Swagger UI assets at compile time via the
 # `utoipa-swagger-ui-vendored` crate. Without it, the build script tries
@@ -113,20 +109,20 @@ priority-queue = "2.7.0"
 # Random number generation for validation
 rand = "0.10"
 
-# Benchmarking
-hdrhistogram = "7.5.4"
+# Latency histograms: the bench binary only
+hdrhistogram = { version = "7.5.4", optional = true }
 
 # Arrow streaming for bulk matrix output
 arrow = { version = "60", default-features = false, features = ["ipc"] }
 arrow-flight = "60"
 
 # #388 offline traffic calibration: read observed-speed tables. Parquet is the
-# lake-native format (DuckDB `COPY ... TO`); CSV is the zero-friction path.
-# Pinned to arrow's 58 line so the RecordBatch types unify with `arrow` above.
+# lake-native format (DuckDB `COPY ... TO`). Same major as `arrow` above so
+# the RecordBatch types unify.
 parquet = "60"
-csv = "1.4"
+# Reference-trip tables read by the post-deploy gate only.
+csv = { version = "1.4", optional = true }
 futures = "0.3.32"
-futures-util = "0.3.32"
 reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls"] }
 bytes = "1.11.1"
 parking_lot = "0.12.5"
@@ -192,10 +188,10 @@ wiremock = { workspace = true }
 [features]
 # Historical algorithm variants and harnesses kept reproducible for the
 # bench binary (#553); the server builds without them.
-bench = []
+bench = ["dep:hdrhistogram"]
 # The post-deploy gate as one static binary (#646): the HTTP client is the
 # only extra dependency; Flight comes from the engine's own crates.
-gate = ["dep:reqwest"]
+gate = ["dep:reqwest", "dep:csv"]
 
 [[bin]]
 name = "butterfly-bench"

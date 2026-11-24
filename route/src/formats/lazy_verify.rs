@@ -278,15 +278,6 @@ impl LazyContainer {
         self.sections.len()
     }
 
-    /// Snapshot states by name, sorted. Convenient for tests and
-    /// `/health` / metrics computation.
-    pub fn state_snapshot(&self) -> Vec<(String, SectionVerifyState)> {
-        self.sections
-            .iter()
-            .map(|(name, rt)| (name.clone(), rt.state()))
-            .collect()
-    }
-
     /// Borrow the bytes of a section, blocking until the section is
     /// `Verified`. If the section is `Failed`, returns an error
     /// carrying the recorded failure reason.

@@ -1399,22 +1399,6 @@ impl GroupMeet<'_, '_> {
     }
 }
 
-#[cfg(feature = "bench")]
-/// One-to-many query for distance matrix
-pub fn query_one_to_many(
-    state: &ServerState,
-    mode: Mode,
-    source: u32,
-    targets: &[u32],
-) -> Vec<Option<u32>> {
-    let mode_data = state.get_mode(mode);
-    let query = CchQuery::new(&mode_data);
-    targets
-        .iter()
-        .map(|&t| query.query(source, t).map(|r| r.distance))
-        .collect()
-}
-
 impl CchQuery<'_> {
     /// Distance-only bidirectional query.
     ///

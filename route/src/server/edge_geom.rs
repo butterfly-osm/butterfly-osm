@@ -131,21 +131,6 @@ impl EdgeGeometry {
             pts_lon_lat_e7: pts,
         }
     }
-
-    /// Borrow the polyline for an `edge_id` already known to be a
-    /// `usize`. Avoids the u32→usize widen at the call site.
-    #[inline]
-    pub fn polyline_at(&self, edge_id: usize) -> EdgePolyline<'_> {
-        if edge_id + 1 >= self.offsets.len() {
-            return EdgePolyline::EMPTY;
-        }
-        let start = self.offsets[edge_id] as usize;
-        let end = self.offsets[edge_id + 1] as usize;
-        let pts = &self.points[start * 2..end * 2];
-        EdgePolyline {
-            pts_lon_lat_e7: pts,
-        }
-    }
 }
 
 /// Borrowed view over a single edge's polyline. Cheap to copy — it's just

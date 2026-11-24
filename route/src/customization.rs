@@ -39,8 +39,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::cost::CostModel;
 use crate::formats::{
-    ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile,
-    WeightArray, mod_turns, mod_weights,
+    ArcCow, CchTopo, CchTopoFile, CchWeights, EbgNodes, EbgNodesFile, FilteredEbgFile, WeightArray,
+    mod_turns, mod_weights,
 };
 use crate::model::types::Mode;
 

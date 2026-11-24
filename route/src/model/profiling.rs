@@ -56,14 +56,6 @@ impl ProfileResult {
             .map(|m| (m.mode_name.clone(), m.way_attrs_path.clone()))
             .collect()
     }
-
-    /// Build a HashMap<String, PathBuf> of turn_rules files keyed by mode name
-    pub fn turn_rules_by_name(&self) -> HashMap<String, PathBuf> {
-        self.modes
-            .iter()
-            .map(|m| (m.mode_name.clone(), m.turn_rules_path.clone()))
-            .collect()
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -164,23 +164,6 @@ impl FilteredEbg {
             original_to_filtered: ArcCow::from_vec(original_to_filtered),
         }
     }
-
-    /// Get original node ID from filtered node ID
-    #[inline]
-    pub fn to_original(&self, filtered_id: u32) -> u32 {
-        self.filtered_to_original[filtered_id as usize]
-    }
-
-    /// Get filtered node ID from original node ID (returns None if not accessible)
-    #[inline]
-    pub fn to_filtered(&self, original_id: u32) -> Option<u32> {
-        let filtered = self.original_to_filtered[original_id as usize];
-        if filtered == u32::MAX {
-            None
-        } else {
-            Some(filtered)
-        }
-    }
 }
 
 // `largest_scc_filter` was removed when SCC filtering was disabled

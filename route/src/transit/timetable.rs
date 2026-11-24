@@ -213,11 +213,6 @@ impl Timetable {
         self.n_stops[r as usize] as usize
     }
 
-    /// Number of trips on route `r`.
-    pub fn n_trips_on_route(&self, r: RouteIdx) -> usize {
-        self.n_trips[r as usize] as usize
-    }
-
     /// Flat index into the `arrivals` / `departures` grids for a
     /// given (route, trip-in-route, stop-in-route). The inline
     /// primitive that every hot-path accessor below shares.

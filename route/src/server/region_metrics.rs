@@ -110,12 +110,6 @@ impl RegionMetrics {
         }
     }
 
-    /// Set the per-region size gauges. Call once at boot.
-    pub fn set_size(&self, nodes: u64, edges: u64) {
-        self.nodes.set(nodes as f64);
-        self.edges.set(edges as f64);
-    }
-
     /// Record a query against a known endpoint. Returns silently if
     /// the endpoint isn't in [`ENDPOINTS`] (caller bug — wire the new
     /// endpoint into the constant). Hot path uses these handles
