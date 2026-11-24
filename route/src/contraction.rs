@@ -746,7 +746,8 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
     println!("  ✓ Rank-aligned transformation complete");
 
     // Compute inputs SHA using streaming (avoid loading whole files into memory)
-    let inputs_sha = compute_inputs_sha_streaming(&config.filtered_ebg_path, &config.order_path)?;
+    let inputs_sha =
+        crate::validate::sha256_files(&[&config.filtered_ebg_path, &config.order_path])?;
 
     // Write output - use mode-specific filename
     let topo_path = config.outdir.join(format!("cch.{}.topo", mode_name));
@@ -783,37 +784,6 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
         n_down_edges,
         build_time_ms,
     })
-}
-
-/// Compute SHA256 of input files using streaming (memory efficient)
-fn compute_inputs_sha_streaming(
-    filtered_ebg_path: &std::path::Path,
-    order_path: &std::path::Path,
-) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
-    fn feed(hasher: &mut Sha256, path: &std::path::Path) -> Result<()> {
-        let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        Ok(())
-    }
-
-    let mut hasher = Sha256::new();
-    feed(&mut hasher, filtered_ebg_path)?;
-    feed(&mut hasher, order_path)?;
-
-    let result = hasher.finalize();
-    let mut sha = [0u8; 32];
-    sha.copy_from_slice(&result);
-    Ok(sha)
 }
 
 /// Remap CSR graph from filtered-space indexing to rank-space indexing.

@@ -226,11 +226,11 @@ pub fn generate_ordering(config: Step6Config) -> Result<Step6Result> {
     println!("  ✓ Generated ordering (max depth: {})", max_depth);
 
     // Compute inputs SHA
-    let inputs_sha = compute_inputs_sha(
+    let inputs_sha = crate::validate::sha256_files(&[
         &config.filtered_ebg_path,
         &config.ebg_nodes_path,
         &config.nbg_geo_path,
-    )?;
+    ])?;
 
     // Write output - use mode-specific filename
     std::fs::create_dir_all(&config.outdir)?;
@@ -728,22 +728,4 @@ fn histogram_partition(projections: &[(f64, u32)]) -> (Vec<u32>, Vec<u32>) {
     }
 
     (part_a, part_b)
-}
-
-fn compute_inputs_sha(
-    ebg_csr_path: &Path,
-    ebg_nodes_path: &Path,
-    nbg_geo_path: &Path,
-) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(&std::fs::read(ebg_csr_path)?);
-    hasher.update(&std::fs::read(ebg_nodes_path)?);
-    hasher.update(&std::fs::read(nbg_geo_path)?);
-
-    let result = hasher.finalize();
-    let mut sha = [0u8; 32];
-    sha.copy_from_slice(&result);
-    Ok(sha)
 }

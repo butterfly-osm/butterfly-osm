@@ -48,9 +48,9 @@ impl Step3LockFile {
         use chrono::Utc;
 
         // Compute input hash (combination of all inputs)
-        let csr_sha = compute_file_sha256(csr_path)?;
-        let geo_sha = compute_file_sha256(geo_path)?;
-        let node_map_sha = compute_file_sha256(node_map_path)?;
+        let csr_sha = super::compute_sha256(csr_path)?;
+        let geo_sha = super::compute_sha256(geo_path)?;
+        let node_map_sha = super::compute_sha256(node_map_path)?;
 
         // Simple combined hash for inputs_sha256
         let inputs_sha256 = format!("{}{}{}", csr_sha, geo_sha, node_map_sha);
@@ -73,24 +73,6 @@ impl Step3LockFile {
         serde_json::to_writer_pretty(file, self)?;
         Ok(())
     }
-}
-
-fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
-    use sha2::{Digest, Sha256};
-
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Verify all Step 3 lock conditions

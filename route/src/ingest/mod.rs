@@ -90,7 +90,7 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
 
     // Calculate input file SHA-256
     println!("Computing input file SHA-256...");
-    let input_sha256 = compute_file_sha256(&config.input)?;
+    let input_sha256 = crate::validate::sha256_file(&config.input)?;
     println!("  ✓ SHA-256: {}", hex::encode(input_sha256));
 
     // Pass 1: Extract nodes (including traffic signals)
@@ -166,30 +166,6 @@ pub fn run_ingest(config: IngestConfig) -> Result<IngestResult> {
         ways_file,
         relations_file,
     })
-}
-
-/// Compute SHA-256 hash of a file
-fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<[u8; 32]> {
-    use std::io::Read;
-
-    let mut file = std::fs::File::open(path.as_ref())
-        .with_context(|| format!("Failed to open {} for hashing", path.as_ref().display()))?;
-
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    let result = hasher.finalize();
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&result);
-    Ok(hash)
 }
 
 /// Result of node extraction including traffic signals

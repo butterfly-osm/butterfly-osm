@@ -63,7 +63,7 @@ pub fn validate_step7(
 
     // Compute SHA-256
     let inputs_sha256 = hex::encode(topo.inputs_sha);
-    let topo_sha256 = compute_file_sha256(&result.topo_path)?;
+    let topo_sha256 = super::compute_sha256(&result.topo_path)?;
 
     let shortcut_ratio = result.n_shortcuts as f64 / result.n_original_arcs as f64;
 
@@ -276,13 +276,6 @@ fn verify_original_edges(topo: &crate::formats::CchTopo, filtered_ebg: &Filtered
     }
 
     Ok(())
-}
-
-fn compute_file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let data = std::fs::read(path)?;
-    let hash = Sha256::digest(&data);
-    Ok(hex::encode(hash))
 }
 
 /// Verify CCH query correctness by comparing against BFS on original graph

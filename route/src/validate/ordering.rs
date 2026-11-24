@@ -39,7 +39,7 @@ pub fn validate_step6(result: &Step6Result, filtered_ebg_path: &Path) -> Result<
 
     // Compute SHA-256
     let inputs_sha256 = hex::encode(order.inputs_sha);
-    let order_sha256 = compute_file_sha256(&result.order_path)?;
+    let order_sha256 = super::compute_sha256(&result.order_path)?;
 
     println!("\n✅ Step 6 validation passed for {} mode!", mode_name);
 
@@ -112,11 +112,4 @@ fn verify_node_count(
         filtered_ebg.n_filtered_nodes
     );
     Ok(())
-}
-
-fn compute_file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let data = std::fs::read(path)?;
-    let hash = Sha256::digest(&data);
-    Ok(hex::encode(hash))
 }

@@ -213,7 +213,11 @@ pub fn build_ebg(config: EbgConfig) -> Result<EbgResult> {
     let created_unix: u64 = 0;
 
     // Compute inputs SHA
-    let inputs_sha = compute_inputs_sha(&config)?;
+    let inputs_sha = crate::validate::sha256_files(&[
+        &config.nbg_csr_path,
+        &config.nbg_geo_path,
+        &config.nbg_node_map_path,
+    ])?;
 
     let ebg_nodes_data = EbgNodes {
         n_nodes: ebg_nodes.len() as u32,
@@ -635,21 +639,4 @@ fn load_way_attrs(path: &Path) -> Result<HashMap<i64, WayAttr>> {
         map.insert(attr.way_id, attr);
     }
     Ok(map)
-}
-
-/// Compute combined SHA-256 of all inputs
-fn compute_inputs_sha(config: &EbgConfig) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-
-    // Hash all input file paths (deterministic)
-    hasher.update(std::fs::read(&config.nbg_csr_path)?);
-    hasher.update(std::fs::read(&config.nbg_geo_path)?);
-    hasher.update(std::fs::read(&config.nbg_node_map_path)?);
-
-    let result = hasher.finalize();
-    let mut sha = [0u8; 32];
-    sha.copy_from_slice(&result);
-    Ok(sha)
 }
