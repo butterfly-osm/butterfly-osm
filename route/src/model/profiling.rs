@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{CompiledModel, compile_model, evaluate_turn_full, evaluate_way};
 use crate::density::{DensityClassifier, WayTagsView};
@@ -54,14 +54,6 @@ impl ProfileResult {
         self.modes
             .iter()
             .map(|m| (m.mode_name.clone(), m.way_attrs_path.clone()))
-            .collect()
-    }
-
-    /// Build a HashMap<String, PathBuf> of turn_rules files keyed by mode name
-    pub fn turn_rules_by_name(&self) -> HashMap<String, PathBuf> {
-        self.modes
-            .iter()
-            .map(|m| (m.mode_name.clone(), m.turn_rules_path.clone()))
             .collect()
     }
 }
@@ -142,26 +134,6 @@ pub fn build_class_bits() -> HashMap<String, u32> {
     bits.insert("service".to_string(), 14);
     bits.insert("construction".to_string(), 15);
     bits
-}
-
-fn compute_file_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Run Step 2 profiling pipeline using auto-discovered JSON model files
@@ -463,8 +435,8 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     println!("Generating profile_meta.json...");
     let profile_meta_path = config.outdir.join("profile_meta.json");
 
-    let ways_sha256 = compute_file_sha256(&config.ways_path)?;
-    let relations_sha256 = compute_file_sha256(&config.relations_path)?;
+    let ways_sha256 = crate::validate::compute_sha256(&config.ways_path)?;
+    let relations_sha256 = crate::validate::compute_sha256(&config.relations_path)?;
 
     let mut way_attrs_sha256 = BTreeMap::new();
     let mut turn_rules_sha256 = BTreeMap::new();
@@ -473,11 +445,11 @@ pub fn run_profiling(config: ProfileConfig) -> Result<ProfileResult> {
     for out in &mode_outputs {
         way_attrs_sha256.insert(
             out.mode_name.clone(),
-            compute_file_sha256(&out.way_attrs_path)?,
+            crate::validate::compute_sha256(&out.way_attrs_path)?,
         );
         turn_rules_sha256.insert(
             out.mode_name.clone(),
-            compute_file_sha256(&out.turn_rules_path)?,
+            crate::validate::compute_sha256(&out.turn_rules_path)?,
         );
         let model_path = super::model_file_path(&config.models_dir, &out.mode_name);
         let schema = super::load_model_schema(&model_path)?;

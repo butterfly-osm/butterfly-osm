@@ -19,7 +19,7 @@ pub mod weights;
 pub use weights::{Step5LockFile, validate_step5};
 
 pub mod ordering;
-pub use ordering::{Step6LiftedLockFile, Step6LockFile, validate_step6, validate_step6_lifted};
+pub use ordering::{Step6LockFile, validate_step6};
 
 pub mod contraction;
 pub use contraction::{Step7LockFile, validate_step7};
@@ -129,25 +129,38 @@ impl LockFile {
     }
 }
 
-/// Compute SHA-256 hash of a file
-pub(crate) fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
+/// SHA-256 of the concatenation of `paths`, in order, streamed through a
+/// 1 MiB buffer. The one file-hashing primitive of the pipeline: every
+/// lock file and `inputs_sha` goes through it, so no step ever holds a
+/// whole (multi-GB) input in memory just to hash it.
+pub(crate) fn sha256_files<P: AsRef<Path>>(paths: &[P]) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha256};
 
-    let mut file = File::open(path.as_ref())
-        .with_context(|| format!("Failed to open {}", path.as_ref().display()))?;
-
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    for path in paths {
+        let path = path.as_ref();
+        let mut file =
+            File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        loop {
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
         }
-        hasher.update(&buffer[..n]);
     }
+    Ok(hasher.finalize().into())
+}
 
-    Ok(hex::encode(hasher.finalize()))
+/// SHA-256 of one file (see [`sha256_files`]).
+pub(crate) fn sha256_file<P: AsRef<Path>>(path: P) -> Result<[u8; 32]> {
+    sha256_files(&[path])
+}
+
+/// Hex SHA-256 of one file, the form lock files record.
+pub(crate) fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
+    Ok(hex::encode(sha256_file(path)?))
 }
 
 /// Verify all lock conditions
@@ -903,4 +916,32 @@ fn verify_enumeration_stability() -> Result<()> {
 
     println!("  ✓ Enumeration stability verified");
     Ok(())
+}
+
+#[cfg(test)]
+mod sha_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// The streamed digest of several files is the digest of their
+    /// concatenation: lock files and `inputs_sha` stamps written before
+    /// the streaming helper stay valid. Sizes straddle the 1 MiB buffer.
+    #[test]
+    fn sha256_files_equals_digest_of_concatenation() {
+        let dir = tempfile::tempdir().unwrap();
+        let a: Vec<u8> = (0..(1024 * 1024 + 17)).map(|i| (i % 251) as u8).collect();
+        let b: Vec<u8> = (0..4099).map(|i| (i % 7) as u8).collect();
+        let (pa, pb) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&pa, &a).unwrap();
+        std::fs::write(&pb, &b).unwrap();
+
+        let mut whole = a.clone();
+        whole.extend_from_slice(&b);
+        let expected: [u8; 32] = Sha256::digest(&whole).into();
+        assert_eq!(sha256_files(&[&pa, &pb]).unwrap(), expected);
+
+        let only_a: [u8; 32] = Sha256::digest(&a).into();
+        assert_eq!(sha256_file(&pa).unwrap(), only_a);
+        assert_eq!(compute_sha256(&pa).unwrap(), hex::encode(only_a));
+    }
 }

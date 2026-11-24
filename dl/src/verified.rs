@@ -204,11 +204,6 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// True if this outcome represents an on-disk change.
-    pub fn wrote_file(&self) -> bool {
-        matches!(self, Outcome::Downloaded { .. } | Outcome::Updated { .. })
-    }
-
     /// SHA-256 of the verified body when one was computed. `None` for
     /// [`Outcome::Unchanged`] (the caller already has the hash in the
     /// sidecar).

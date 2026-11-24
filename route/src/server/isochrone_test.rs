@@ -6,8 +6,7 @@
 
 use geo::{Contains, Coord, Point, Polygon};
 use rand::rngs::StdRng;
-#[allow(unused_imports)]
-use rand::{Rng, RngExt, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 use crate::model::types::Mode;
 

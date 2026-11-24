@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::GateFail;
 use super::ctx::{
-    Ctx, REFS_PREFIX, RefRoute, check, check_errors, f0, mean, median, num, outlier_frac, pct,
+    Ctx, REFS_PREFIX, RefRoute, check, check_errors, f0, mean, median, outlier_frac, pct,
     refs_path, skip, tup,
 };
 use super::flight::{col_bytes, col_f64, col_str, col_u64, rows};
@@ -628,9 +628,4 @@ pub fn gate_bands(ctx: &Ctx, refs_prefix_override: Option<&str>) -> GateResult {
         }
     }
     Ok(passed)
-}
-
-#[allow(dead_code)]
-fn _unused(v: &Value) -> Option<f64> {
-    num(v, "x").ok()
 }

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::ctx::{Ctx, FIXTURES, ISO_POINTS, MAX_U32, check, check_errors, f0, pct};
 use super::flight::{col_bytes, col_f64, col_u64, column_names, f64_table, rows};
-use super::gates_rest::{GateResult, flight_matrix_cells, trunc};
+use super::gates_rest::{GateResult, flight_matrix_cells};
 use super::geom::{round_to, wkb_linestring_len_m};
 use super::http::{GResult, is_no_route};
 use super::pyrandom::PyRandom;
@@ -739,9 +739,4 @@ pub fn gate_route_batch_max_meters(ctx: &Ctx) -> GateResult {
         &format!("{over} over-bound leaked"),
     );
     Ok(passed)
-}
-
-#[allow(dead_code)]
-fn _unused(s: &str) -> String {
-    trunc(s, 1)
 }

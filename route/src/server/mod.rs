@@ -65,7 +65,6 @@ pub mod route;
 pub mod rss;
 pub mod snap_index;
 pub mod snap_kbest;
-pub mod spatial;
 pub mod state;
 pub mod table;
 pub mod transit_handler;

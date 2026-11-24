@@ -229,15 +229,6 @@ impl RegionReport {
     pub fn all_ok(&self) -> bool {
         self.entries.iter().all(|e| e.result.is_ok())
     }
-
-    /// True when the PBF entry (the only fatal-for-routing one)
-    /// succeeded or was filtered out.
-    pub fn pbf_ok(&self) -> bool {
-        self.entries
-            .iter()
-            .filter(|e| e.entry.section == "pbf")
-            .all(|e| e.result.is_ok())
-    }
 }
 
 /// Load the shipped index for `region_name`, enumerate entries

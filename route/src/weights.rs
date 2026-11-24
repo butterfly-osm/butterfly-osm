@@ -167,12 +167,9 @@ pub fn generate_weights(
     let arc_mode_masks: Vec<u8> = turn_table.entries.iter().map(|e| e.mode_mask).collect();
 
     // Compute inputs SHA for filtered EBG (includes all inputs)
-    let way_attrs_paths: Vec<&Path> = mode_inputs
-        .iter()
-        .map(|m| m.way_attrs_path.as_path())
-        .collect();
-    let filtered_inputs_sha =
-        compute_filtered_inputs_sha(ebg_nodes_path, ebg_csr_path, &way_attrs_paths)?;
+    let mut hashed: Vec<&Path> = vec![ebg_nodes_path, ebg_csr_path];
+    hashed.extend(mode_inputs.iter().map(|m| m.way_attrs_path.as_path()));
+    let filtered_inputs_sha = crate::validate::sha256_files(&hashed)?;
 
     let mut mode_outputs = Vec::with_capacity(mode_inputs.len());
 
@@ -457,25 +454,4 @@ fn generate_mode_data(
     };
 
     Ok((weights_data, turns_data, mask))
-}
-
-/// Compute SHA256 hash of inputs for filtered EBG
-fn compute_filtered_inputs_sha(
-    ebg_nodes_path: &Path,
-    ebg_csr_path: &Path,
-    way_attrs_paths: &[&Path],
-) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(&std::fs::read(ebg_nodes_path)?);
-    hasher.update(&std::fs::read(ebg_csr_path)?);
-    for path in way_attrs_paths {
-        hasher.update(&std::fs::read(path)?);
-    }
-
-    let result = hasher.finalize();
-    let mut sha = [0u8; 32];
-    sha.copy_from_slice(&result);
-    Ok(sha)
 }

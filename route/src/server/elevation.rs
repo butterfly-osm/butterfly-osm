@@ -16,6 +16,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::nbg::haversine_distance;
+
 /// Void/no-data sentinel in SRTM tiles.
 const SRTM_VOID: i16 = -32768;
 
@@ -586,24 +588,6 @@ pub fn handle_height_request(
         .collect();
 
     Ok(HeightResponse { heights })
-}
-
-// ============ Utility Functions ============
-
-/// Haversine distance between two points in meters.
-fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const EARTH_RADIUS_M: f64 = 6_371_000.0;
-
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let lat1_rad = lat1.to_radians();
-    let lat2_rad = lat2.to_radians();
-
-    let a =
-        (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
-    let c = 2.0 * a.sqrt().asin();
-
-    EARTH_RADIUS_M * c
 }
 
 // ============ Tests ============

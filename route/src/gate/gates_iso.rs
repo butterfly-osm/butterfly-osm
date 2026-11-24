@@ -5,16 +5,14 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 use super::ctx::{
-    Ctx, FIXTURES, ISO_POINTS, IsoBundle, PEDESTRIAN_CENTRES, check, check_errors, f0, num,
-    rings_of,
+    Ctx, ISO_POINTS, IsoBundle, PEDESTRIAN_CENTRES, check, check_errors, f0, num, rings_of,
 };
 use super::flight::{col_bytes, col_u64, f64_table, rows};
 use super::gates_rest::{GateResult, trunc};
 use super::geom::{
-    Pt, decode_polyline6, dist_to_ring_m, haversine_m, point_in_ring, ring_area, ring_area2,
-    wkb_polygons, wkb_type,
+    Pt, dist_to_ring_m, haversine_m, point_in_ring, ring_area, ring_area2, wkb_polygons, wkb_type,
 };
-use super::http::{GResult, GateErr, is_no_route, pyf, urlencode};
+use super::http::{GResult, GateErr, pyf, urlencode};
 use super::pyrandom::PyRandom;
 
 /// Python's `f"{x:.2e}"`: two-digit, signed exponent.
@@ -1270,11 +1268,4 @@ pub fn gate_catchment_containment(ctx: &Ctx) -> GateResult {
         );
     }
     Ok(ok)
-}
-
-#[allow(dead_code)]
-fn _unused() {
-    let _ = decode_polyline6;
-    let _ = is_no_route;
-    let _ = FIXTURES;
 }

@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::ctx::{
-    Ctx, FIXTURES, ISO_POINTS, MAX_U32, SUBLINEAR_PLANS, check, check_errors, check_plan, f0, num,
-    par_map, parse_matrix_plan, pct, skip,
+    Ctx, FIXTURES, ISO_POINTS, SUBLINEAR_PLANS, check, check_errors, check_plan, f0, num, par_map,
+    parse_matrix_plan, skip,
 };
-use super::flight::{col_f64, col_u64, f64_table, rows};
+use super::flight::{col_u64, f64_table, rows};
 use super::geom::{decode_polyline6, haversine_m, polyline_len_m, round_to, within_km};
 use super::http::{GResult, is_no_route, pyf};
 use super::pyrandom::PyRandom;
@@ -1889,11 +1889,4 @@ pub fn flight_matrix_cells(ctx: &Ctx, mode: &str, params: &Value) -> GResult<(Ma
     }
     let n = dec.num_rows();
     Ok((cells, n))
-}
-
-#[allow(dead_code)]
-fn _unused(v: &[f64]) -> f64 {
-    let _ = col_f64;
-    let _ = MAX_U32;
-    pct(v, 0.5)
 }

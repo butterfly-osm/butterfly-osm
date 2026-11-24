@@ -1313,17 +1313,6 @@ pub async fn route_handler(
 
 // ============ Cross-region handler (#91 Phase 2) ============
 
-/// Backwards-compatible alias for [`route_handler`]. Cross-region
-/// dispatch is now handled inline by `route_handler`; callers that
-/// previously imported this name continue to work.
-pub async fn cross_region_route_handler(
-    state: State<Arc<RegionsState>>,
-    query: ValidatedQuery<RouteRequest>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    route_handler(state, query, headers).await.into_response()
-}
-
 fn cross_region_route_inner(
     src_state: Arc<ServerState>,
     src_region: String,

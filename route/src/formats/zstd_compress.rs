@@ -85,17 +85,41 @@ pub fn decompress_if_zstd(bytes: &[u8]) -> Result<Cow<'_, [u8]>> {
     if bytes.len() < ZSTD_MAGIC.len() || bytes[..ZSTD_MAGIC.len()] != ZSTD_MAGIC {
         return Ok(Cow::Borrowed(bytes));
     }
-    // Pass a generous upper-bound; bulk::decompress shrinks the output
-    // to the actual size and frees the slack. The cap defends against
-    // malformed inputs claiming planet-scale sizes.
-    let decoded = zstd::bulk::decompress(bytes, MAX_DECOMPRESSED)
+    // Stream-decode into a buffer sized from the frame header when it
+    // declares its content size. `zstd::bulk::decompress(bytes, cap)`
+    // reserves `cap` bytes up front whenever the header carries no size
+    // (a truncated or foreign frame): a 16 GiB allocation that aborts the
+    // process on a host that refuses the overcommit, instead of the clean
+    // "malformed section" error this function promises.
+    use std::io::Read;
+    let declared = zstd::zstd_safe::get_frame_content_size(bytes)
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    anyhow::ensure!(
+        declared <= MAX_DECOMPRESSED as u64,
+        "zstd section declares {declared} bytes, over the {MAX_DECOMPRESSED} cap"
+    );
+    // The header is untrusted until the frame decodes: reserve at most
+    // 64 MiB from it and let the Vec grow past that as real bytes arrive.
+    let mut decoded = Vec::with_capacity(declared.min(INITIAL_RESERVE) as usize);
+    zstd::stream::read::Decoder::with_buffer(bytes)
+        .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?
+        .take(MAX_DECOMPRESSED as u64 + 1)
+        .read_to_end(&mut decoded)
         .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?;
+    anyhow::ensure!(
+        decoded.len() <= MAX_DECOMPRESSED,
+        "zstd section decodes past the {MAX_DECOMPRESSED}-byte cap"
+    );
     Ok(Cow::Owned(decoded))
 }
 
-/// Upper-bound buffer size for the decompressor. zstd's `bulk::compress`
-/// does not always pledge the source size in the frame header, so we
-/// can't always rely on the in-band hint. Instead we cap at 16 GiB —
+/// First reservation taken from a frame header's declared size.
+const INITIAL_RESERVE: u64 = 64 * 1024 * 1024;
+
+/// Cap on a decoded section, checked against the header and the decoded
+/// length; never reserved up front (see `INITIAL_RESERVE`). 16 GiB —
 /// large enough for every section we'd pack (largest Belgium raw
 /// section is ~1.3 GB) and tight enough to defend against malicious
 /// inputs claiming planet-scale sizes.
@@ -148,6 +172,34 @@ mod tests {
         let got = decompress_if_zstd(raw)?;
         assert_eq!(&got[..], &raw[..]);
         Ok(())
+    }
+
+    #[test]
+    fn decodes_a_frame_without_declared_content_size() -> Result<()> {
+        // The streaming encoder does not pledge a size: the header carries
+        // none, the case that used to reserve the whole 16 GiB cap.
+        let raw: Vec<u8> = (0..200_000u32).map(|i| (i % 13) as u8).collect();
+        let frame = zstd::stream::encode_all(&raw[..], 3)?;
+        assert_eq!(
+            zstd::zstd_safe::get_frame_content_size(&frame)
+                .ok()
+                .flatten(),
+            None,
+            "fixture must be a frame without content size"
+        );
+        assert_eq!(&decompress_if_zstd(&frame)?[..], &raw[..]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_header_declaring_more_than_the_cap() {
+        // Magic, then a single-segment descriptor with an 8-byte content
+        // size (0xE0) declaring 32 GiB, then nothing.
+        let mut frame = ZSTD_MAGIC.to_vec();
+        frame.push(0xE0);
+        frame.extend_from_slice(&(32u64 << 30).to_le_bytes());
+        let err = decompress_if_zstd(&frame).expect_err("must refuse");
+        assert!(format!("{err:#}").contains("over the"), "got: {err:#}");
     }
 
     #[test]

@@ -35,10 +35,11 @@ use crate::server::snap_index::{DEFAULT_CELL_LOG2, SnapBuilderMode, build_snap_i
 /// ignore it (it has the synthetic `Unknown` kind on disk).
 const MANIFEST_NAME: &str = "shared/manifest.json";
 
-/// Resolve a step subdirectory the same way the server does:
+/// Resolve a step subdirectory (`step3` or `step3-<suffix>`); the server's
+/// directory-tree boot resolves through this same function:
 /// exact match first, then any directory whose name starts with
 /// `step{N}` (alphabetically lowest).
-fn find_step_dir(data_dir: &Path, step: &str) -> Result<PathBuf> {
+pub(crate) fn find_step_dir(data_dir: &Path, step: &str) -> Result<PathBuf> {
     let exact = data_dir.join(step);
     if exact.exists() {
         return Ok(exact);
@@ -297,8 +298,7 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
 /// no serve-path reader ever asks for.
 ///
 /// Every one of them is consumed from the `step{N}/` tree on the
-/// filesystem (pipeline steps, validators, the experimental `nbg_ch`
-/// prototype), never from a container:
+/// filesystem (pipeline steps and validators), never from a container:
 ///
 /// | section | who reads it | from where |
 /// |---|---|---|
@@ -306,7 +306,7 @@ fn glob_per_mode(dir: &Path, prefix: &str, suffix: &str) -> Result<Vec<(String, 
 /// | `shared/step1.nodes.si` | `validate` | `step1/nodes.si` |
 /// | `shared/step1.relations.raw` | step 2 (`model::profiling`), `validate` | `step1/relations.raw` |
 /// | `shared/step1.node_signals.bin` | step 4 (`ebg::build`) | `step1/node_signals.bin` |
-/// | `shared/nbg.csr` | step 4, `validate/step4`, `nbg_ch` | `step3/nbg.csr` |
+/// | `shared/nbg.csr` | step 4, `validate/step4` | `step3/nbg.csr` |
 /// | `shared/ebg.turn_table` | step 5 (`weights`), `validate` | `step4/ebg.turn_table` |
 ///
 /// The two step-1 sections the serve path DOES read stay packed:
@@ -483,10 +483,9 @@ pub fn pack_with_options(
 
     // NBG sections (#346, #579):
     //
-    // - `nbg.csr` is never read by the serve path. Validators and the
-    //   experimental `nbg_ch` pipeline read step3/ directly from the
-    //   filesystem (not from the container), so it is dropped under
-    //   `opts.lean` (default).
+    // - `nbg.csr` is never read by the serve path. Validators read step3/
+    //   directly from the filesystem (not from the container), so it is
+    //   dropped under `opts.lean` (default).
     // - `nbg.geo`'s edge metadata (bearing, flags, first_osm_way_id) IS
     //   consumed by the route handler, but its polyline body is not
     //   once the flat `edge_geom_*` sections are present: `state.rs`

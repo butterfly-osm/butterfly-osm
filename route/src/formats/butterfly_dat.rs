@@ -789,20 +789,6 @@ impl Container {
         }
     }
 
-    /// Like [`Container::read_region_id`] but reads from a memory-mapped
-    /// view. Verifies the manifest CRC against the mapped bytes; cheaper
-    /// than [`Container::read_region_id`] when the file is already
-    /// mmapped because no extra read syscall is needed.
-    pub fn region_id_from_mmap(&self, mmap: &memmap2::Mmap) -> Result<String> {
-        match self.get("shared/manifest.json") {
-            Some(entry) => {
-                let bytes = self.section_bytes_verified(mmap, entry)?;
-                Ok(crate::pack::manifest_region_id(bytes))
-            }
-            None => Ok(crate::pack::DEFAULT_REGION_ID.to_string()),
-        }
-    }
-
     /// List every mode bundle present in this container. A mode bundle is
     /// any subtree under `mode/<name>/...`. Returns the bundle names sorted
     /// for determinism.

@@ -1129,21 +1129,21 @@ fn test_route_response_with_annotations() {
 
 #[test]
 fn test_bearing_matching() {
-    use super::spatial::SpatialIndex;
-    assert!(SpatialIndex::bearing_matches_pub(0, 0, 45));
-    assert!(SpatialIndex::bearing_matches_pub(30, 0, 45));
-    assert!(SpatialIndex::bearing_matches_pub(330, 0, 45));
-    assert!(!SpatialIndex::bearing_matches_pub(90, 0, 45));
+    use super::snap_index::bearing_matches;
+    assert!(bearing_matches(0, 0, 45));
+    assert!(bearing_matches(30, 0, 45));
+    assert!(bearing_matches(330, 0, 45));
+    assert!(!bearing_matches(90, 0, 45));
 
-    assert!(SpatialIndex::bearing_matches_pub(90, 90, 30));
-    assert!(SpatialIndex::bearing_matches_pub(110, 90, 30));
-    assert!(SpatialIndex::bearing_matches_pub(70, 90, 30));
-    assert!(!SpatialIndex::bearing_matches_pub(130, 90, 30));
+    assert!(bearing_matches(90, 90, 30));
+    assert!(bearing_matches(110, 90, 30));
+    assert!(bearing_matches(70, 90, 30));
+    assert!(!bearing_matches(130, 90, 30));
 
-    assert!(SpatialIndex::bearing_matches_pub(350, 0, 30));
-    assert!(SpatialIndex::bearing_matches_pub(10, 0, 30));
+    assert!(bearing_matches(350, 0, 30));
+    assert!(bearing_matches(10, 0, 30));
 
-    assert!(SpatialIndex::bearing_matches_pub(180, 180, 10));
+    assert!(bearing_matches(180, 180, 10));
 }
 
 #[test]

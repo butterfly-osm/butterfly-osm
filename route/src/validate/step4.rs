@@ -151,9 +151,9 @@ pub fn validate_step4(
     println!();
 
     // Compute SHA-256 hashes
-    let ebg_nodes_sha = compute_file_sha256(ebg_nodes_path)?;
-    let ebg_csr_sha = compute_file_sha256(ebg_csr_path)?;
-    let ebg_turn_table_sha = compute_file_sha256(ebg_turn_table_path)?;
+    let ebg_nodes_sha = super::sha256_file(ebg_nodes_path)?;
+    let ebg_csr_sha = super::sha256_file(ebg_csr_path)?;
+    let ebg_turn_table_sha = super::sha256_file(ebg_turn_table_path)?;
 
     Ok(Step4LockFile {
         inputs_sha256: hex::encode(ebg_nodes_data.inputs_sha),
@@ -803,14 +803,4 @@ fn nbg_node_to_osm(nbg_node_id: u32, node_map: &NbgNodeMap) -> i64 {
         .get(nbg_node_id as usize)
         .map(|m| m.osm_node_id)
         .unwrap_or(0)
-}
-
-/// Compute SHA-256 of a file
-fn compute_file_sha256(path: &Path) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(path)?;
-    let hash = Sha256::digest(&bytes);
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&hash);
-    Ok(result)
 }

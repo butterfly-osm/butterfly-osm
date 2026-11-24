@@ -17,7 +17,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::{FlightData, FlightDescriptor, Ticket};
-use futures_util::StreamExt;
+use futures::StreamExt;
 use serde_json::Value;
 use tonic::transport::Channel;
 
@@ -138,7 +138,7 @@ impl Flights {
             let input = FlightDataEncoderBuilder::new()
                 .with_schema(schema)
                 .with_flight_descriptor(Some(FlightDescriptor::new_cmd(cmd)))
-                .build(futures_util::stream::iter(vec![Ok(table)]))
+                .build(futures::stream::iter(vec![Ok(table)]))
                 .map(|r| r.expect("encoding an in-memory batch cannot fail"));
             let resp = client
                 .do_exchange(input)
@@ -177,7 +177,7 @@ async fn drain(mut stream: tonic::Streaming<FlightData>) -> GResult<Decoded> {
             with_body.push(Ok(fd));
         }
     }
-    let mut dec = FlightDataDecoder::new(futures_util::stream::iter(with_body));
+    let mut dec = FlightDataDecoder::new(futures::stream::iter(with_body));
     while let Some(item) = dec.next().await {
         let d = item.map_err(flight_err)?;
         if let DecodedPayload::RecordBatch(b) = d.payload {

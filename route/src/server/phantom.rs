@@ -534,30 +534,6 @@ fn seed_valid(
     true
 }
 
-/// Build a phantom endpoint: snap, then seed both directions of the snapped
-/// physical edge with exact partial-edge costs. `role` decides the cost form
-/// (source remainder vs target shifted suffix).
-pub fn build_phantom_end(
-    state: &ServerState,
-    mode_data: &ModeData,
-    mode: Mode,
-    lon: f64,
-    lat: f64,
-    role: SnapRole,
-    edge_filter: Option<&[u64]>,
-) -> Option<PhantomEnd> {
-    let role_filter = role.role_filter(mode_data);
-    let primary_tuple = state.snap_index.snap_with_info_filtered_role(
-        lon,
-        lat,
-        mode.0,
-        edge_filter,
-        role_filter,
-        None,
-    )?;
-    phantom_from_primary(state, mode_data, primary_tuple, lon, lat, role, edge_filter)
-}
-
 /// Build a phantom endpoint from an ALREADY-RESOLVED primary snap tuple
 /// `(ebg_id, snapped_lon, snapped_lat, snap_distance_m)` — used by handlers
 /// that have their own snap flow (K-best escalation, bearing filters).

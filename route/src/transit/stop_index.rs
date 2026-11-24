@@ -28,6 +28,7 @@ use std::collections::BinaryHeap;
 
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 
+use super::gtfs::haversine_m;
 use super::timetable::{StopIdx, Timetable};
 
 /// Approximate meters per degree at Belgian latitudes (~50°N).
@@ -204,17 +205,6 @@ impl Ord for HeapEntry {
             .partial_cmp(&other.dist_m)
             .unwrap_or(Ordering::Equal)
     }
-}
-
-/// Great-circle distance in meters between two `(lon, lat)` points.
-fn haversine_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
-    const R: f64 = 6_371_000.0;
-    let phi1 = lat1.to_radians();
-    let phi2 = lat2.to_radians();
-    let dphi = (lat2 - lat1).to_radians();
-    let dlambda = (lon2 - lon1).to_radians();
-    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
-    2.0 * R * a.sqrt().asin()
 }
 
 #[cfg(test)]

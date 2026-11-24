@@ -147,17 +147,10 @@ pub fn build_nbg(config: NbgConfig) -> Result<NbgResult> {
     // Hash every input file the CSR was derived from so downstream
     // steps can detect when an upstream artefact has changed.
     csr.inputs_sha = {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(std::fs::read(&config.nodes_sa_path)?);
-        hasher.update(std::fs::read(&config.ways_path)?);
-        for (_name, path) in &config.way_attrs_paths {
-            hasher.update(std::fs::read(path)?);
-        }
-        let result = hasher.finalize();
-        let mut sha = [0u8; 32];
-        sha.copy_from_slice(&result);
-        sha
+        let mut hashed: Vec<&std::path::Path> =
+            vec![config.nodes_sa_path.as_path(), config.ways_path.as_path()];
+        hashed.extend(config.way_attrs_paths.iter().map(|(_, p)| p.as_path()));
+        crate::validate::sha256_files(&hashed)?
     };
     println!("  ✓ CSR assembled");
 
