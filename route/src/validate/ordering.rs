@@ -6,7 +6,6 @@ use std::path::Path;
 
 use crate::formats::{FilteredEbgFile, OrderEbgFile};
 use crate::ordering::Step6Result;
-use crate::ordering_lifted::Step6LiftedResult;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Step6LockFile {
@@ -120,63 +119,4 @@ fn compute_file_sha256(path: &Path) -> Result<String> {
     let data = std::fs::read(path)?;
     let hash = Sha256::digest(&data);
     Ok(hex::encode(hash))
-}
-
-/// Lock file for Step 6 Lifted ordering
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Step6LiftedLockFile {
-    pub mode: String,
-    pub order_sha256: String,
-    pub n_nbg_nodes: u32,
-    pub n_ebg_states: u32,
-    pub n_filtered_states: u32,
-    pub nbg_ordering_time_ms: u64,
-    pub lift_time_ms: u64,
-    pub total_time_ms: u64,
-    pub created_at_utc: String,
-}
-
-/// Validate Step 6 Lifted outputs and generate lock file
-pub fn validate_step6_lifted(
-    result: &Step6LiftedResult,
-    filtered_ebg_path: &Path,
-) -> Result<Step6LiftedLockFile> {
-    let mode_name = &result.mode_name;
-    println!(
-        "\n🔐 Running Step 6 (Lifted) validation for {} mode...\n",
-        mode_name
-    );
-
-    // Load data
-    let order = OrderEbgFile::read(&result.order_path)?;
-    let filtered_ebg = FilteredEbgFile::read(filtered_ebg_path)?;
-
-    // Lock Condition A: Structural integrity
-    println!("A. Structural integrity checks...");
-    verify_permutation(&order)?;
-    println!("  ✓ perm is a valid permutation");
-    verify_inverse(&order)?;
-    println!("  ✓ inv_perm is correct inverse");
-    verify_node_count(&order, &filtered_ebg)?;
-    println!("  ✓ node count matches filtered EBG");
-
-    // Compute SHA-256
-    let order_sha256 = compute_file_sha256(&result.order_path)?;
-
-    println!(
-        "\n✅ Step 6 (Lifted) validation passed for {} mode!",
-        mode_name
-    );
-
-    Ok(Step6LiftedLockFile {
-        mode: mode_name.to_string(),
-        order_sha256,
-        n_nbg_nodes: result.n_nbg_nodes,
-        n_ebg_states: result.n_ebg_states,
-        n_filtered_states: result.n_filtered_states,
-        nbg_ordering_time_ms: result.nbg_ordering_time_ms,
-        lift_time_ms: result.lift_time_ms,
-        total_time_ms: result.total_time_ms,
-        created_at_utc: chrono::Utc::now().to_rfc3339(),
-    })
 }

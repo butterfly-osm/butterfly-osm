@@ -69,7 +69,7 @@ region.pbf
   step3-nbg       node-based graph — BUILD-TIME INTERMEDIATE ONLY
   step4-ebg       ebg.nodes ebg.csr ebg.turn_table              <- the routing graph
   step5-weights   w.<mode>.u32  t.<mode>.u32  mask.<mode>.bitset
-  step6-lifted    CCH order (nested dissection on NBG, lifted to EBG)
+  step6-order     CCH order (nested dissection on the per-mode filtered EBG)
   step7-contract  cch.<mode>.topo
   step8-customize cch.w.<mode>.u32  cch.d.<mode>.u32
   pack            <region>.butterfly  (one mmap'd container, CRC per section)
@@ -292,7 +292,7 @@ reword generically or move the content — do not add an exemption.
 ```
 route/src/cli.rs                    every subcommand and its flags
 route/src/ebg/                      edge-based graph construction (the routing graph)
-route/src/ordering_lifted.rs        step 6 nested dissection, lifted NBG -> EBG
+route/src/ordering.rs               step 6 nested dissection on the filtered EBG
 route/src/{contraction,customization}.rs   steps 7 and 8
 route/src/calibrate.rs              speed-table reading, time_scale, calibration math
 route/src/pack.rs                   .butterfly container + export-edges

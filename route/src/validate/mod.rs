@@ -19,7 +19,7 @@ pub mod weights;
 pub use weights::{Step5LockFile, validate_step5};
 
 pub mod ordering;
-pub use ordering::{Step6LiftedLockFile, Step6LockFile, validate_step6, validate_step6_lifted};
+pub use ordering::{Step6LockFile, validate_step6};
 
 pub mod contraction;
 pub use contraction::{Step7LockFile, validate_step7};
