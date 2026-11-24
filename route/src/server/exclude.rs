@@ -357,7 +357,7 @@ pub fn build_exclude_mask(
     base_mask
         .iter()
         .enumerate()
-        .map(|(word_, &word)| {
+        .map(|(word_idx, &word)| {
             let mut filtered = word;
             for bit in 0..64 {
                 let edge_id = word_idx * 64 + bit;

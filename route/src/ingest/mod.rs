@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
-use sha2::{Digest as Sha2Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::formats::{Member, MemberKind, Relation, RelationsFile, Way, WaysFile};

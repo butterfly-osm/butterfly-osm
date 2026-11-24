@@ -7,8 +7,6 @@
 use crate::formats::CchTopo;
 use crate::matrix::bucket_ch::{DAryHeap, DownReverseAdjFlat, INVALID_HANDLE, UpAdjFlat};
 use crate::matrix::lex_better;
-#[cfg(feature = "bench")]
-use crate::model::types::Mode;
 
 /// Local alias for the shared `bucket_ch::INVALID_HANDLE` sentinel
 /// (both `u32::MAX`). The alias is `pub(crate)` so the matrix-side
@@ -20,8 +18,6 @@ use crate::model::types::Mode;
 pub(crate) const HANDLE_NONE: u32 = INVALID_HANDLE;
 
 use super::state::CchWeights;
-#[cfg(feature = "bench")]
-use super::state::ServerState;
 
 /// Query result
 #[derive(Debug, Clone)]

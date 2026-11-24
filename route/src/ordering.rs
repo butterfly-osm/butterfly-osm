@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::formats::{
     EbgNodesFile, FilteredEbg, FilteredEbgFile, NbgGeoFile, OrderEbg, OrderEbgFile,
