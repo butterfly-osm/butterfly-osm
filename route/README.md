@@ -124,7 +124,6 @@ The 10k×10k win came from L3-aware source tiling (`matrix/tile_geometry.rs`); t
 
 ## Workspace dependencies
 
-- [`butterfly-common`](../butterfly-common) — shared error types.
 - [`butterfly-dl`](../dl) — used for region pack downloads and GTFS feed fetch (`transit-fetch`).
 
 ## License

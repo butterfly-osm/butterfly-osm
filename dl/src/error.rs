@@ -70,7 +70,6 @@ impl From<std::io::Error> for Error {
     }
 }
 
-#[cfg(feature = "http")]
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         if err.is_connect() || err.is_timeout() {

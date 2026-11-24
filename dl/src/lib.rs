@@ -56,10 +56,12 @@ use tokio::io::AsyncRead;
 
 // Re-export core types that users might need
 pub use crate::core::stream::{DownloadOptions, OverwriteBehavior};
-pub use butterfly_common::{Error, Result};
+pub use error::{Error, Result};
 
 // Internal modules
 mod core;
+pub mod error;
+pub mod fuzzy;
 
 /// Wrap a user-supplied progress callback so the library guarantees the
 /// contract documented on `get_with_options`: monotonic, clamped to

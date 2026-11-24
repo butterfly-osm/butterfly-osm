@@ -2,7 +2,7 @@
 //!
 //! Handles HTTP source routing for OpenStreetMap data downloads.
 
-use butterfly_common::Result;
+use crate::Result;
 
 /// Represents different download sources
 #[derive(Debug, Clone, PartialEq)]

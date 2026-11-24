@@ -56,7 +56,6 @@ first matrix call and then frozen for the life of the process — set it before
 ## 2. Workspace map and data flow
 
 ```
-butterfly-common/  shared errors and small utilities
 dl/                butterfly-dl — streaming OSM downloader (<1 GB RAM, any size)
 route/             butterfly-route — the pipeline, the router, the transit engine
 bench/             post-deploy gate + competitor harnesses
