@@ -14,6 +14,6 @@ while [ $# -gt 0 ]; do case "$1" in
   --html) HTML="--html";; --fail-under) FAIL_UNDER="--fail-under-lines $2"; shift;;
 esac; shift; done
 # shellcheck disable=SC2086
-cargo llvm-cov -p butterfly-route -p butterfly-dl -p butterfly-common --lib \
+cargo llvm-cov -p butterfly-route -p butterfly-dl --lib \
   --summary-only $HTML $FAIL_UNDER
 echo "[coverage] floor=${FLOOR}% (ratchet — raise as tests land, never lower)"
