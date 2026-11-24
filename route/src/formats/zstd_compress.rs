@@ -100,7 +100,9 @@ pub fn decompress_if_zstd(bytes: &[u8]) -> Result<Cow<'_, [u8]>> {
         declared <= MAX_DECOMPRESSED as u64,
         "zstd section declares {declared} bytes, over the {MAX_DECOMPRESSED} cap"
     );
-    let mut decoded = Vec::with_capacity(declared as usize);
+    // The header is untrusted until the frame decodes: reserve at most
+    // 64 MiB from it and let the Vec grow past that as real bytes arrive.
+    let mut decoded = Vec::with_capacity(declared.min(INITIAL_RESERVE) as usize);
     zstd::stream::read::Decoder::with_buffer(bytes)
         .map_err(|e| anyhow::anyhow!("zstd decompress failed: {e}"))?
         .take(MAX_DECOMPRESSED as u64 + 1)
@@ -113,8 +115,11 @@ pub fn decompress_if_zstd(bytes: &[u8]) -> Result<Cow<'_, [u8]>> {
     Ok(Cow::Owned(decoded))
 }
 
-/// Cap on a decoded section. The decoder never reserves it: the buffer is
-/// sized from the frame header (when present) and grows as it decodes. 16 GiB —
+/// First reservation taken from a frame header's declared size.
+const INITIAL_RESERVE: u64 = 64 * 1024 * 1024;
+
+/// Cap on a decoded section, checked against the header and the decoded
+/// length; never reserved up front (see `INITIAL_RESERVE`). 16 GiB —
 /// large enough for every section we'd pack (largest Belgium raw
 /// section is ~1.3 GB) and tight enough to defend against malicious
 /// inputs claiming planet-scale sizes.
@@ -167,6 +172,34 @@ mod tests {
         let got = decompress_if_zstd(raw)?;
         assert_eq!(&got[..], &raw[..]);
         Ok(())
+    }
+
+    #[test]
+    fn decodes_a_frame_without_declared_content_size() -> Result<()> {
+        // The streaming encoder does not pledge a size: the header carries
+        // none, the case that used to reserve the whole 16 GiB cap.
+        let raw: Vec<u8> = (0..200_000u32).map(|i| (i % 13) as u8).collect();
+        let frame = zstd::stream::encode_all(&raw[..], 3)?;
+        assert_eq!(
+            zstd::zstd_safe::get_frame_content_size(&frame)
+                .ok()
+                .flatten(),
+            None,
+            "fixture must be a frame without content size"
+        );
+        assert_eq!(&decompress_if_zstd(&frame)?[..], &raw[..]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_header_declaring_more_than_the_cap() {
+        // Magic, then a single-segment descriptor with an 8-byte content
+        // size (0xE0) declaring 32 GiB, then nothing.
+        let mut frame = ZSTD_MAGIC.to_vec();
+        frame.push(0xE0);
+        frame.extend_from_slice(&(32u64 << 30).to_le_bytes());
+        let err = decompress_if_zstd(&frame).expect_err("must refuse");
+        assert!(format!("{err:#}").contains("over the"), "got: {err:#}");
     }
 
     #[test]
