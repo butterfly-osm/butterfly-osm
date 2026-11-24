@@ -396,9 +396,8 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
 
     println!("  ✓ Contraction complete: {} shortcuts", n_shortcuts);
 
-    // Sanity check: shortcut ratio should be < 50x for a good ordering.
-    // The lifted ordering (step6-lifted) produces pathological results for modes
-    // with many filtered edges (e.g., truck: 281x ratio vs 7.4x with regular ordering).
+    // Sanity check: shortcut ratio should be < 50x for a good ordering
+    // (step6-order gives ~7x on truck; a poor order gave 281x).
     let n_arcs = filtered_ebg.n_filtered_arcs;
     let shortcut_ratio = if n_arcs > 0 {
         n_shortcuts as f64 / n_arcs as f64
@@ -410,8 +409,7 @@ pub fn build_cch_topology(config: Step7Config) -> Result<Step7Result> {
             "\n⚠️  WARNING: Shortcut ratio {:.1}x is extremely high (expected < 20x).",
             shortcut_ratio
         );
-        eprintln!("    This usually means the ordering is poor. Did you use step6-lifted?");
-        eprintln!("    Use regular step6-order instead for production builds.");
+        eprintln!("    This usually means the ordering is poor: check the step6-order input.");
         eprintln!("    Continuing anyway, but expect very slow customization and queries.\n");
     }
 
