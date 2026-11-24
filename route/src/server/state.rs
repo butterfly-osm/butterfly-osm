@@ -1117,30 +1117,15 @@ impl ServerState {
     }
 }
 
-/// Discover available modes by scanning for `w.*.u32` files in the step5 directory.
-/// Returns mode names sorted alphabetically for deterministic indexing.
+/// Modes of a directory-tree boot: the step-5 `w.<mode>.u32` files, named
+/// and ordered by the same `Mode::discover_from_dir` the pipeline steps use,
+/// so a mode gets the same index at build time and at serve time.
 fn discover_modes(step5_dir: &Path) -> Result<Vec<String>> {
-    let mut mode_names: Vec<String> = Vec::new();
-
-    for entry in std::fs::read_dir(step5_dir).context("Failed to read step5 directory")? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        // Pattern: w.{mode_name}.u32
-        if let Some(rest) = name_str.strip_prefix("w.")
-            && let Some(mode_name) = rest.strip_suffix(".u32")
-            && !mode_name.is_empty()
-        {
-            mode_names.push(mode_name.to_string());
-        }
-    }
-
-    // Sort alphabetically for deterministic indexing
-    mode_names.sort();
-    mode_names.dedup();
-
-    Ok(mode_names)
+    std::fs::read_dir(step5_dir).context("Failed to read step5 directory")?;
+    Ok(Mode::discover_from_dir(step5_dir)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
 }
 
 /// Load per-mode data (CCH topo, ordering, weights, filtered EBG)
