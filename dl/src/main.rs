@@ -30,7 +30,7 @@ File Overwrite Behavior:
   --force                          # Overwrite without asking
   --no-clobber                     # Never overwrite, fail if file exists"
 )]
-#[command(version = env!("BUTTERFLY_VERSION"))]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     /// Source to download: a shipped region name (e.g. "belgium"),
     /// or a Geofabrik preset ("planet", "europe", "europe/belgium", …).
@@ -126,7 +126,7 @@ async fn run() -> Result<()> {
         .init();
 
     if cli.verbose {
-        eprintln!("🦋 Butterfly-dl v{} starting...", env!("BUTTERFLY_VERSION"));
+        eprintln!("🦋 Butterfly-dl v{} starting...", env!("CARGO_PKG_VERSION"));
     }
 
     // Region-indexed path: a bare region name (e.g. "belgium",

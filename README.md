@@ -83,7 +83,6 @@ upstream `butterfly-dl` + step1–step8 pipeline.
 
 ```
 butterfly-osm/
-├── butterfly-common/   # shared error types + utilities
 ├── dl/                 # butterfly-dl — OSM downloader (<1GB RAM for any file size)
 └── route/              # butterfly-route — routing engine + transit
 ```
@@ -94,7 +93,7 @@ Support directories: `bench/` (regression and competitor benches),
 
 Distribution: from this repository (tags, releases) and as container images
 (`Dockerfile`, `Dockerfile.tools`). The crates are **not published on
-crates.io** any more — `butterfly-common` and `butterfly-dl` stopped at 2.0.x
+crates.io** any more — `butterfly-dl` (and the former `butterfly-common`) stopped at 2.0.x
 there (2026-10-13) and `butterfly-route` never was; every crate carries
 `publish = false`.
 
@@ -273,7 +272,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 ## License
 
 AGPL-3.0-or-later — applies to every crate in the workspace
-(`butterfly-common`, `butterfly-dl`, `butterfly-route`). Network-deployed
+(`butterfly-dl`, `butterfly-route`). Network-deployed
 forks must publish source per AGPL §13. See [LICENSE](LICENSE) for the
 canonical FSF text.
 

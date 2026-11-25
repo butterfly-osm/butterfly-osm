@@ -603,32 +603,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "butterfly-common"
-version = "2.0.0"
-dependencies = [
- "reqwest",
- "strsim",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "butterfly-dl"
 version = "2.0.0"
 dependencies = [
  "anyhow",
- "butterfly-common",
- "bytes",
  "clap",
  "ctor",
  "env_logger",
  "futures",
- "futures-util",
  "hex",
  "indicatif",
- "libc",
  "log",
- "num_cpus",
- "once_cell",
  "reqwest",
  "serde",
  "serde_json",
@@ -636,7 +621,6 @@ dependencies = [
  "strsim",
  "tempfile",
  "tokio",
- "tokio-test",
  "tokio-util",
  "toml",
  "wiremock",
@@ -3767,17 +3751,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "tokio-test"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
-dependencies = [
- "futures-core",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]

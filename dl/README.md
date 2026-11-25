@@ -79,7 +79,7 @@ butterfly-dl europe/germany
 - **Graceful fallback**: Works with servers without range support
 
 ### Error Handling
-Uses shared error handling from `butterfly-common` with:
+Error types live in `src/error.rs` (folded in from the former `butterfly-common` crate), with:
 - Geographic-aware fuzzy matching
 - Semantic intent recognition
 - Dynamic source discovery from Geofabrik API

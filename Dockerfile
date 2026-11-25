@@ -26,7 +26,6 @@ WORKDIR /build
 # Explicit COPYs, not `COPY . .`: the build context stays a few MB and
 # `target/` can never leak into the image or bust the layer cache.
 COPY Cargo.toml Cargo.lock ./
-COPY butterfly-common/ butterfly-common/
 COPY dl/ dl/
 COPY route/ route/
 

@@ -4,16 +4,16 @@
 
 use futures::StreamExt;
 use futures::TryStreamExt;
-use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::core::source::{DownloadSource, SourceConfig};
 use crate::core::stream::{DownloadOptions, DownloadStream, OverwriteBehavior, create_http_stream};
-use butterfly_common::{Error, Result};
+use crate::{Error, Result};
 
 /// Supertrait combining [`AsyncWrite`](tokio::io::AsyncWrite) and
 /// [`AsyncSeek`](tokio::io::AsyncSeek) so we can use it in `dyn` trait
@@ -39,14 +39,14 @@ const BASE_RETRY_DELAY_MS: u64 = 1000;
 ///   ~600 MB; on a 5 Mbit/s link the request is many minutes long but every
 ///   chunk arrives well within the read timeout. A wall-clock request timeout
 ///   would abort large downloads mid-stream regardless of connection health.
-static GLOBAL_CLIENT: Lazy<Client> = Lazy::new(|| {
+static GLOBAL_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     ClientBuilder::new()
         .tcp_keepalive(Duration::from_secs(60))
         .pool_idle_timeout(Duration::from_secs(90))
         .pool_max_idle_per_host(20)
         .read_timeout(Duration::from_secs(60))
         .connect_timeout(Duration::from_secs(30))
-        .user_agent(format!("butterfly-dl/{}", env!("BUTTERFLY_VERSION")))
+        .user_agent(format!("butterfly-dl/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("Failed to create HTTP client")
 });
@@ -668,7 +668,7 @@ impl Downloader {
 
 /// Calculate optimal number of connections based on file size and limits
 fn calculate_optimal_connections(file_size: u64, max_connections: usize) -> usize {
-    let cpu_count = num_cpus::get();
+    let cpu_count = std::thread::available_parallelism().map_or(1, |n| n.get());
 
     let base_connections = match file_size {
         size if size <= 1024 * 1024 => 1, // <= 1MB: single connection (curl-like)
@@ -723,7 +723,7 @@ fn create_helpful_http_error(url: &str, status: reqwest::StatusCode) -> Error {
         };
 
         if let Some(source) = source {
-            if let Some(suggestion) = butterfly_common::fuzzy::suggest_correction(&source) {
+            if let Some(suggestion) = crate::fuzzy::suggest_correction(&source) {
                 message = format!("Source '{source}' not found. Did you mean '{suggestion}'?");
             } else {
                 message = format!(
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_calculate_optimal_connections() {
-        let cpu_count = num_cpus::get();
+        let cpu_count = std::thread::available_parallelism().map_or(1, |n| n.get());
 
         assert_eq!(calculate_optimal_connections(512 * 1024, 16), 1); // 512KB: single connection
         assert_eq!(calculate_optimal_connections(5 * 1024 * 1024, 16), 2); // 5MB: 2 connections
@@ -773,7 +773,7 @@ mod tests {
         // Test with a large file (2GB) and max_connections limit of 8
         // Result should be limited by min(base_connections=16, max_connections=8, cpu_count*2)
         let result = calculate_optimal_connections(2 * 1024 * 1024 * 1024, 8);
-        let cpu_count = num_cpus::get();
+        let cpu_count = std::thread::available_parallelism().map_or(1, |n| n.get());
         let expected = std::cmp::min(8, cpu_count * 2); // Limited by either max_connections or CPU count
         assert_eq!(result, expected);
     }
