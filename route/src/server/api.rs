@@ -226,6 +226,38 @@ mod docs_parity {
             "docs/ENGINEERING.md",
             include_str!("../../../docs/ENGINEERING.md"),
         ),
+        (
+            "docs/engineering/1-build-run.md",
+            include_str!("../../../docs/engineering/1-build-run.md"),
+        ),
+        (
+            "docs/engineering/2-workspace-map.md",
+            include_str!("../../../docs/engineering/2-workspace-map.md"),
+        ),
+        (
+            "docs/engineering/3-query-surface.md",
+            include_str!("../../../docs/engineering/3-query-surface.md"),
+        ),
+        (
+            "docs/engineering/4-calibration-seam.md",
+            include_str!("../../../docs/engineering/4-calibration-seam.md"),
+        ),
+        (
+            "docs/engineering/5-testing-gate.md",
+            include_str!("../../../docs/engineering/5-testing-gate.md"),
+        ),
+        (
+            "docs/engineering/6-repo-boundaries.md",
+            include_str!("../../../docs/engineering/6-repo-boundaries.md"),
+        ),
+        (
+            "docs/engineering/7-dev-principles.md",
+            include_str!("../../../docs/engineering/7-dev-principles.md"),
+        ),
+        (
+            "docs/engineering/8-key-paths.md",
+            include_str!("../../../docs/engineering/8-key-paths.md"),
+        ),
         ("docs/api.md", include_str!("../../../docs/api.md")),
         (
             "docs/troubleshooting.md",
